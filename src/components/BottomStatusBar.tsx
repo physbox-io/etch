@@ -19,23 +19,11 @@ export const BottomStatusBar: React.FC = () => {
     setPan,
   } = useStore();
 
-  const [machineStatus, setMachineStatus] = useState<MachineStatus>({
-    connected: false,
-    baudRate: 115200,
-    state: 'Disconnected',
-    x: 0,
-    y: 0,
-    z: 0,
-    feedRate: 0,
-    spindlePower: 0,
-  });
+  // Seeded from the manager rather than a literal, so a bar that mounts after a
+  // connection (or after a status field is added) shows the real state.
+  const [machineStatus, setMachineStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
 
-  useEffect(() => {
-    const unsub = webSerialManager.subscribe((s) => setMachineStatus(s));
-    return () => {
-      unsub();
-    };
-  }, []);
+  useEffect(() => webSerialManager.subscribe(setMachineStatus), []);
 
   const gridSize = document.gridSize || 10;
 

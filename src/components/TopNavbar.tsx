@@ -3,6 +3,7 @@ import { useStore } from '../store/useStore';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
+import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
 import {
   Scissors,
@@ -20,6 +21,7 @@ import {
   Trash2,
   FileJson,
   FolderInput,
+  Info,
 } from 'lucide-react';
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -46,6 +48,7 @@ export const TopNavbar: React.FC = () => {
     userPresetNames,
     saveUserPresetByName,
     deleteUserPreset,
+    openDocs,
   } = useStore();
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
@@ -93,12 +96,7 @@ export const TopNavbar: React.FC = () => {
   const handleExportJson = () => {
     try {
       const blob = new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = window.document.createElement('a');
-      a.href = url;
-      a.download = `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.json`);
     } catch (e) {
       console.error('Failed to export JSON', e);
       alert('Failed to export JSON');
@@ -141,12 +139,9 @@ export const TopNavbar: React.FC = () => {
   const handleExportSvg = () => {
     const svgStr = exportToSVGString(document);
     const blob = new Blob([svgStr], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = window.document.createElement('a');
-    a.href = url;
-    a.download = `${document.name.toLowerCase().replace(/\s+/g, '_')}.svg`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // Imported documents are not guaranteed to carry a name, and exporting one
+    // used to throw rather than fall back.
+    downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.svg`);
   };
 
   const handleImportSvg = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -295,6 +290,15 @@ export const TopNavbar: React.FC = () => {
 
       {/* Circle Icon Buttons at Top Right (matching Mesh conventions) */}
       <div className="flex items-center gap-2">
+        {/* Reference Guide */}
+        <button
+          onClick={() => openDocs()}
+          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
+          title="Reference Guide"
+        >
+          <Info className="w-4 h-4 text-amber-500" />
+        </button>
+
         {/* Dark Mode Toggle */}
         <button
           onClick={toggleDarkMode}

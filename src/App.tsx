@@ -10,6 +10,7 @@ import { ClipArtModal } from './components/ClipArtModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { AICopilotPanel } from './components/AICopilotPanel';
+import { DocsModal } from './components/DocsModal';
 
 export const App: React.FC = () => {
   // Connect to WebSocket MCP bridge
@@ -94,6 +95,9 @@ export const App: React.FC = () => {
       <ClipArtModal />
       <GCodePreviewModal />
       <MachineControlModal />
+
+      {/* Rendered last so the Reference Guide sits above the modal that opened it */}
+      <DocsModal />
     </div>
   );
 };

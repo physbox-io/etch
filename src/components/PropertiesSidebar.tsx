@@ -45,6 +45,7 @@ export const PropertiesSidebar: React.FC = () => {
     addLayer,
     updateLayer,
     deleteLayer,
+    commitHistory,
     applyRadialSymmetryToSelected,
     vectorizeText,
     isVectorizing,
@@ -481,14 +482,16 @@ export const PropertiesSidebar: React.FC = () => {
                     <input
                       type="color"
                       value={layer.color}
-                      onChange={(e) => updateLayer(layer.id, { color: e.target.value })}
+                      onChange={(e) => updateLayer(layer.id, { color: e.target.value }, true)}
+                      onBlur={commitHistory}
                       className="w-3.5 h-3.5 rounded-full border-0 cursor-pointer bg-transparent p-0 flex-shrink-0"
                       title="Layer Color"
                     />
                     <input
                       type="text"
                       value={layer.name}
-                      onChange={(e) => updateLayer(layer.id, { name: e.target.value })}
+                      onChange={(e) => updateLayer(layer.id, { name: e.target.value }, true)}
+                      onBlur={commitHistory}
                       className="font-semibold text-slate-800 dark:text-slate-200 bg-transparent border-b border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-red-500 focus:outline-none text-xs truncate min-w-0 flex-1 px-0.5"
                     />
                     <select
@@ -539,7 +542,8 @@ export const PropertiesSidebar: React.FC = () => {
                       step="50"
                       min="1"
                       value={layer.speed}
-                      onChange={(e) => updateLayer(layer.id, { speed: Math.max(1, parseFloat(e.target.value) || 1) })}
+                      onChange={(e) => updateLayer(layer.id, { speed: Math.max(1, parseFloat(e.target.value) || 1) }, true)}
+                      onBlur={commitHistory}
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
                     />
                   </div>
@@ -551,7 +555,8 @@ export const PropertiesSidebar: React.FC = () => {
                       min="0"
                       max="100"
                       value={layer.power}
-                      onChange={(e) => updateLayer(layer.id, { power: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) })}
+                      onChange={(e) => updateLayer(layer.id, { power: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) }, true)}
+                      onBlur={commitHistory}
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
                     />
                   </div>
@@ -562,7 +567,8 @@ export const PropertiesSidebar: React.FC = () => {
                       step="0.1"
                       min="0"
                       value={layer.zDepth ?? 1}
-                      onChange={(e) => updateLayer(layer.id, { zDepth: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      onChange={(e) => updateLayer(layer.id, { zDepth: Math.max(0, parseFloat(e.target.value) || 0) }, true)}
+                      onBlur={commitHistory}
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
                     />
                   </div>
@@ -573,7 +579,8 @@ export const PropertiesSidebar: React.FC = () => {
                       step="1"
                       min="1"
                       value={layer.passes ?? 1}
-                      onChange={(e) => updateLayer(layer.id, { passes: Math.max(1, parseInt(e.target.value) || 1) })}
+                      onChange={(e) => updateLayer(layer.id, { passes: Math.max(1, parseInt(e.target.value) || 1) }, true)}
+                      onBlur={commitHistory}
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
                     />
                   </div>

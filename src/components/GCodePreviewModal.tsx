@@ -4,16 +4,20 @@ import { generateGCode } from '../utils/gcodeExporter';
 import { X, FileCode, Download, Settings, AlertTriangle } from 'lucide-react';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
+import { warpGcode, getGridStats } from '../utils/bedLeveler';
+import { downloadBlob } from '../utils/download';
+import { DocsInfoButton } from './DocsModal';
 
 export const GCodePreviewModal: React.FC = () => {
   const {
     isGCodeModalOpen, toggleGCodeModal, document, vectorizeText,
-    isVectorizing, textVectorizeError, setHatchDefaults,
+    isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid,
   } = useStore();
 
   const [laserMode, setLaserMode] = useState(true);
   const [innerContourFirst, setInnerContourFirst] = useState(true);
   const [travelSpeed, setTravelSpeed] = useState(3000);
+  const [applyLevelling, setApplyLevelling] = useState(true);
 
   // Text without usable outlines contributes nothing to the toolpath.
   const unvectorized = useMemo(
@@ -21,24 +25,23 @@ export const GCodePreviewModal: React.FC = () => {
     [document.elements]
   );
 
+  // A laser toolpath has no Z to warp, so levelling only applies to CNC output.
+  const levelling = !laserMode && applyLevelling ? bedProbeGrid : null;
+
   const gcodeStr = useMemo(() => {
-    return generateGCode(document, {
-      laserMode,
-      innerContourFirst,
-      travelSpeed,
-    });
-  }, [document, laserMode, innerContourFirst, travelSpeed]);
+    // This component stays mounted, and `document` changes identity on every
+    // frame of a drag — regenerating (including the scanline hatch fill) while
+    // the panel is closed would cost that on every mouse move.
+    if (!isGCodeModalOpen) return '';
+    const raw = generateGCode(document, { laserMode, innerContourFirst, travelSpeed });
+    return levelling ? warpGcode(raw, levelling) : raw;
+  }, [isGCodeModalOpen, document, laserMode, innerContourFirst, travelSpeed, levelling]);
 
   if (!isGCodeModalOpen) return null;
 
   const handleDownload = () => {
     const blob = new Blob([gcodeStr], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = window.document.createElement('a');
-    a.href = url;
-    a.download = `${document.name.toLowerCase().replace(/\s+/g, '_')}.gcode`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.gcode`);
   };
 
   return (
@@ -81,6 +84,45 @@ export const GCodePreviewModal: React.FC = () => {
                 <option value="cnc">CNC Router / Mill (G0 Z-Clearance &amp; Passes)</option>
               </select>
             </div>
+
+            {/* Bed levelling — only offered for CNC output, since a laser
+                toolpath has no Z to warp. */}
+            {!laserMode && (
+              <div className="p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">Bed Levelling</span>
+                    <DocsInfoButton tab="levelling" />
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={applyLevelling && !!bedProbeGrid}
+                    disabled={!bedProbeGrid}
+                    onChange={(e) => setApplyLevelling(e.target.checked)}
+                    className="w-4 h-4 accent-red-500 rounded cursor-pointer disabled:opacity-40"
+                  />
+                </div>
+                {bedProbeGrid ? (
+                  <p
+                    className={`text-[10px] leading-snug ${
+                      bedProbeGrid.simulated
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    {bedProbeGrid.simulated ? 'Simulated ' : ''}
+                    {bedProbeGrid.gridX}×{bedProbeGrid.gridY} heightmap,{' '}
+                    {getGridStats(bedProbeGrid).spanZ.toFixed(3)} mm span.
+                    {levelling ? ' Applied to the toolpath below.' : ' Not applied.'}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                    No heightmap. Probe the bed from the machine panel to make cut depth follow a bed
+                    that is not flat.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Inner Contour First */}
             <div className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">

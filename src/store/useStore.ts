@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import type { EtchDocument, EtchElement, EtchLayer, ToolMode, MandalaSettings } from '../types/etch';
+import type {
+  EtchDocument,
+  EtchElement,
+  EtchLayer,
+  ToolMode,
+  MandalaSettings,
+  BedProbeGrid,
+} from '../types/etch';
+import type { DocsTabId } from '../docs/docsContent';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 
@@ -40,6 +48,14 @@ interface EtchStore {
   isGCodeModalOpen: boolean;
   isMachineModalOpen: boolean;
   isClipArtModalOpen: boolean;
+  isDocsOpen: boolean;
+  docsTab: DocsTabId;
+  /**
+   * Last bed heightmap probed over the job. CNC toolpaths are warped to follow
+   * it, so it lives in the store rather than in the machine modal that measured
+   * it — the G-code preview needs it too.
+   */
+  bedProbeGrid: BedProbeGrid | null;
 
   // Actions
   setDocument: (doc: EtchDocument) => void;
@@ -59,6 +75,10 @@ interface EtchStore {
   toggleGCodeModal: () => void;
   toggleMachineModal: () => void;
   toggleClipArtModal: () => void;
+  openDocs: (tab?: DocsTabId) => void;
+  closeDocs: () => void;
+  setDocsTab: (tab: DocsTabId) => void;
+  setBedProbeGrid: (grid: BedProbeGrid | null) => void;
 
   // Save / Load / Save As / Delete (localStorage user presets)
   userPresetNames: string[];
@@ -83,7 +103,7 @@ interface EtchStore {
 
   // Layer Operations
   addLayer: (layer: EtchLayer) => void;
-  updateLayer: (layerId: string, updates: Partial<EtchLayer>) => void;
+  updateLayer: (layerId: string, updates: Partial<EtchLayer>, transient?: boolean) => void;
   deleteLayer: (layerId: string) => void;
 
   // Presets & History
@@ -118,6 +138,9 @@ export const useStore = create<EtchStore>((set, get) => ({
   isGCodeModalOpen: false,
   isMachineModalOpen: false,
   isClipArtModalOpen: false,
+  isDocsOpen: false,
+  docsTab: 'toolpaths',
+  bedProbeGrid: null,
 
   toggleDarkMode: () =>
     set((state) => {
@@ -268,6 +291,11 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleMachineModal: () => set((state) => ({ isMachineModalOpen: !state.isMachineModalOpen })),
   toggleClipArtModal: () => set((state) => ({ isClipArtModalOpen: !state.isClipArtModalOpen })),
 
+  openDocs: (tab) => set((state) => ({ isDocsOpen: true, docsTab: tab ?? state.docsTab })),
+  closeDocs: () => set({ isDocsOpen: false }),
+  setDocsTab: (tab) => set({ docsTab: tab }),
+  setBedProbeGrid: (grid) => set({ bedProbeGrid: grid }),
+
   addElement: (el) => {
     const { document, history, historyIndex } = get();
     const newDoc = {
@@ -399,15 +427,27 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
   },
 
+  /**
+   * Layer edits go through history like element edits do. Writing the document
+   * without a history entry left the change one Ctrl+Z away from being thrown
+   * out: undo restores a snapshot taken before it, so a cut power set after the
+   * last element move vanished when the user undid the move.
+   *
+   * `transient` is for controls that fire per keystroke or per pixel of a colour
+   * picker — they write the document and let a later `commitHistory` (on blur)
+   * record one entry for the whole edit.
+   */
   addLayer: (layer) => {
     const { document } = get();
     set({ document: { ...document, layers: [...document.layers, layer] } });
+    get().commitHistory();
   },
 
-  updateLayer: (layerId, updates) => {
+  updateLayer: (layerId, updates, transient) => {
     const { document } = get();
     const newLayers = document.layers.map((l) => (l.id === layerId ? { ...l, ...updates } : l));
     set({ document: { ...document, layers: newLayers } });
+    if (!transient) get().commitHistory();
   },
 
   deleteLayer: (layerId) => {
@@ -424,6 +464,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       document: { ...document, layers: newLayers, elements: newElements },
       activeLayerId: activeLayerId === layerId ? fallbackId : activeLayerId,
     });
+    get().commitHistory();
   },
 
   loadPreset: (presetId) => {

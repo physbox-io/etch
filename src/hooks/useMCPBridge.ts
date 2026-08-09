@@ -7,6 +7,13 @@ import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 
 export function useMCPBridge() {
   useEffect(() => {
+    // The bridge's WebSocket server lives in the Vite dev server plugin, so in a
+    // static production build there is nothing to connect to — and because the
+    // URL is derived from `location.host`, the failed upgrade is answered by our
+    // own nginx with index.html, and the retry below would re-request it every
+    // three seconds for as long as the tab is open.
+    if (!import.meta.env.DEV) return;
+
     let ws: WebSocket | null = null;
     let retryTimer: any = null;
     let dead = false;
@@ -45,7 +52,7 @@ export function useMCPBridge() {
         }
       };
 
-      ws.onerror = (err) => {
+      ws.onerror = () => {
         ws?.close();
       };
     }

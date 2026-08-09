@@ -9,8 +9,10 @@ export interface GCodeOptions {
   spindleSpeedMax: number;    // Maximum S-value (e.g. 1000 for GRBL)
   travelSpeed: number;        // Rapid move speed mm/min (e.g. 3000)
   innerContourFirst: boolean; // Cut internal holes before outer boundaries
-  kerfOffsetMm: number;       // Kerf width offset (e.g. 0.15mm)
 }
+// No kerf compensation option: offsetting contours by half the kerf is not
+// implemented, and an accepted-but-ignored `kerfOffsetMm` silently produced
+// parts undersized by the amount the user thought they had corrected for.
 
 export interface GCodeSegment {
   layerId: string;
@@ -30,7 +32,6 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
     spindleSpeedMax: 1000,
     travelSpeed: 3000,
     innerContourFirst: true,
-    kerfOffsetMm: 0,
     ...opts,
   };
 
@@ -113,9 +114,20 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
     }
   }
 
-  // Inner-contour-first sorting: smaller enclosed shapes cut first
+  // Inner-contour-first sorting: smaller enclosed shapes cut first.
+  //
+  // Sorted *within* each layer, never across them. Layer order is the order the
+  // operations happen in, and a global sort throws it away: a document whose
+  // engraving is larger than its cut features would emit the cut-outs first,
+  // freeing the part from the stock before it is engraved. Hatch fills carry a
+  // sort key of -1 to stay in scanline order, which globally would also hoist
+  // every fill in the document to the front of the job.
   if (options.innerContourFirst) {
-    segments.sort((a, b) => a.bBoxArea - b.bBoxArea);
+    const layerOrder = new Map(doc.layers.map((l, i) => [l.id, i]));
+    segments.sort((a, b) => {
+      const layerDelta = (layerOrder.get(a.layerId) ?? 0) - (layerOrder.get(b.layerId) ?? 0);
+      return layerDelta !== 0 ? layerDelta : a.bBoxArea - b.bBoxArea;
+    });
   }
 
   // Generate G-code header

@@ -1,5 +1,5 @@
 import type { EtchElement, EtchLayer } from '../types/etch';
-import { IDENTITY, matrixScale, multiply, parseTransform, type Matrix } from './matrix';
+import { matrixScale, multiply, parseTransform, type Matrix } from './matrix';
 import { transformPathD } from './pathTransform';
 import { pathPoints } from './pathFlatten';
 
@@ -255,7 +255,10 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
 
     const matrix = multiply(parentMatrix, parseTransform(node.getAttribute('transform')));
 
-    if (tag === 'g' || tag === 'svg' || tag === 'a' || tag === 'switch') {
+    // `symbol` counts as a container because that is what a <use> in a sprite
+    // sheet resolves to — without it the whole referenced subtree fell through
+    // to the shape branch and was dropped without a warning.
+    if (tag === 'g' || tag === 'svg' || tag === 'a' || tag === 'switch' || tag === 'symbol') {
       for (const child of Array.from(node.children)) walk(child, matrix, style, depth + 1);
       return;
     }

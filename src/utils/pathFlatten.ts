@@ -53,6 +53,28 @@ export function flattenPath(d: string): SubPath[] {
     const v = parseFloat(tokens[i++]);
     return Number.isFinite(v) ? v : 0;
   };
+  /**
+   * Reads an arc flag. Flags are single digits that SVGO and friends emit run
+   * together with what follows ("a5 5 0 0110 0"), which a number tokenizer
+   * reads as one 0110 — taking the flags, the endpoint and every command after
+   * it in that path with it. Splitting the digit off the front of the token
+   * puts the rest back for the next read.
+   */
+  const flag = (): number => {
+    let t = tokens[i];
+    while (t === '') t = tokens[++i];
+    if (t === undefined) return 0;
+    if (t === '0' || t === '1') {
+      i++;
+      return Number(t);
+    }
+    if (t[0] === '0' || t[0] === '1') {
+      tokens[i] = t.slice(1);
+      return Number(t[0]);
+    }
+    return num() !== 0 ? 1 : 0;
+  };
+
   const isCommand = (t: string) => /^[a-zA-Z]$/.test(t);
 
   while (i < tokens.length) {
@@ -174,7 +196,7 @@ export function flattenPath(d: string): SubPath[] {
       case 'a': {
         const rel = cmd === 'a';
         const rx = num(), ry = num(), rot = num();
-        const largeArc = num(), sweep = num();
+        const largeArc = flag(), sweep = flag();
         const x = num(), y = num();
         const end = { x: rel ? cx + x : x, y: rel ? cy + y : y };
         emitArc({ x: cx, y: cy }, rx, ry, rot, largeArc !== 0, sweep !== 0, end, lineTo);

@@ -145,15 +145,68 @@ export interface MandalaSettings {
   liveMode: boolean;
 }
 
+/**
+ * GRBL's own run states, plus the two the browser side owns (`Disconnected`
+ * before a port is open, `Connecting` while the picker is up). `Jog` and `Home`
+ * matter here because both mean "moving" — a probe or a zero issued during one
+ * would queue behind it.
+ */
+export type MachineState =
+  | 'Disconnected'
+  | 'Connecting'
+  | 'Idle'
+  | 'Run'
+  | 'Jog'
+  | 'Hold'
+  | 'Home'
+  | 'Alarm'
+  | 'Check'
+  | 'Door'
+  | 'Busy';
+
 export interface MachineStatus {
   connected: boolean;
   portName?: string;
   baudRate: number;
-  state: 'Disconnected' | 'Idle' | 'Run' | 'Hold' | 'Alarm' | 'Busy';
+  state: MachineState;
+  /** Machine position, against the homing switches. */
   x: number;
   y: number;
   z: number;
+  /** Work position — machine position less the active G54 offset. */
+  wx: number;
+  wy: number;
+  wz: number;
   feedRate: number;
   spindlePower: number;
   lastResponse?: string;
+  /** Last refusal or probe failure, for surfacing in the UI rather than the console. */
+  lastError?: string;
+}
+
+/** One probed point of a bed grid: bed XY in mm, and height relative to the reference point. */
+export interface ProbePoint {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * A bed heightmap, as measured by `webSerialManager.probeGrid`. Heights are
+ * relative to the first probed point, so this is a warp to add to commanded Z
+ * rather than an absolute surface.
+ */
+export interface BedProbeGrid {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  gridX: number;
+  gridY: number;
+  points: ProbePoint[][];
+  /** Points where the probe never made contact, recorded flat. */
+  missed: number;
+  /** True when the grid was simulated with no machine attached. */
+  simulated: boolean;
+  probedAt: number;
 }

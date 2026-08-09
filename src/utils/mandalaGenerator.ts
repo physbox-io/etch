@@ -1,4 +1,4 @@
-import type { EtchElement, BezierNode } from '../types/etch';
+import type { EtchElement } from '../types/etch';
 
 /**
  * Creates radial symmetry copies of an element around a center point (cx, cy).
