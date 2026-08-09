@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
-import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
+import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square } from 'lucide-react';
 
 /** Common machining grid pitches, in mm. */
 const GRID_PRESETS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -17,6 +17,7 @@ export const BottomStatusBar: React.FC = () => {
     toggleSnapToGrid,
     setZoom,
     setPan,
+    setMachineTarget,
   } = useStore();
 
   // Seeded from the manager rather than a literal, so a bar that mounts after a
@@ -100,6 +101,23 @@ export const BottomStatusBar: React.FC = () => {
           <Magnet className="w-3.5 h-3.5" />
           <span>Snap {document.snapToGrid ? 'On' : 'Off'}</span>
         </button>
+
+        <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
+
+        {/* Target machine. It decides whether Z means anything, so it belongs
+            where it is always visible rather than only inside the export panel. */}
+        <div className="flex items-center gap-1.5">
+          <Cpu className="w-3.5 h-3.5 text-amber-500" />
+          <select
+            value={document.machine ?? 'laser'}
+            onChange={(e) => setMachineTarget(e.target.value === 'cnc' ? 'cnc' : 'laser')}
+            title="What this document is cut on — a laser has no Z depth, a router does"
+            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+          >
+            <option value="laser">Laser</option>
+            <option value="cnc">CNC Router</option>
+          </select>
+        </div>
       </div>
 
       {/* Machine Status & Zoom */}
@@ -115,6 +133,42 @@ export const BottomStatusBar: React.FC = () => {
             {machineStatus.state}
           </span>
         </div>
+
+        {/* A running job must stay visible and stoppable with every panel
+            closed — the cutter does not stop because you shut a modal. */}
+        {machineStatus.jobRunning && (
+          <div className="flex items-center gap-2">
+            <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
+            <span className="font-mono text-slate-700 dark:text-slate-200">
+              {machineStatus.jobPaused ? 'Paused' : 'Cutting'} {machineStatus.currentLine}/
+              {machineStatus.totalLines}
+            </span>
+            <div className="w-20 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 transition-all"
+                style={{
+                  width: `${machineStatus.totalLines ? (machineStatus.currentLine / machineStatus.totalLines) * 100 : 0}%`,
+                }}
+              />
+            </div>
+            <button
+              onClick={() =>
+                machineStatus.jobPaused ? webSerialManager.resumeJob() : webSerialManager.pauseJob()
+              }
+              title={machineStatus.jobPaused ? 'Resume job' : 'Pause job'}
+              className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+            >
+              {machineStatus.jobPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              onClick={() => webSerialManager.cancelJob()}
+              title="Stop the job"
+              className="p-0.5 text-red-500 hover:text-red-600 cursor-pointer"
+            >
+              <Square className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
 

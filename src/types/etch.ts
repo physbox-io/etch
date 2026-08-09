@@ -112,6 +112,13 @@ export interface EtchDocument {
   /** Defaults applied when an element is switched to filled machining. */
   defaultHatchAngle?: number;
   defaultHatchSpacing?: number;
+  /**
+   * What this document is cut on. It decides whether Z means anything: a laser
+   * holds one height and modulates power, so a per-layer cut depth is not a
+   * setting it has — showing one invites people to set a depth that is silently
+   * dropped from the toolpath.
+   */
+  machine?: 'laser' | 'cnc';
   snapToGrid: boolean;
   units: 'mm' | 'inch';
   origin: 'top-left' | 'center' | 'bottom-left';
@@ -182,6 +189,17 @@ export interface MachineStatus {
   lastResponse?: string;
   /** Last refusal or probe failure, for surfacing in the UI rather than the console. */
   lastError?: string;
+
+  /** Streaming job progress. `totalLines` is 0 when no job is loaded. */
+  jobRunning: boolean;
+  jobPaused: boolean;
+  currentLine: number;
+  totalLines: number;
+  /**
+   * Why the job is parked, when it is. A tool change or material swap is a
+   * deliberate stop the operator has to act on, not a fault.
+   */
+  pauseMessage?: string;
 }
 
 /** One probed point of a bed grid: bed XY in mm, and height relative to the reference point. */

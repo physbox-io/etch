@@ -10,6 +10,7 @@ import {
   snapPoint,
 } from '../utils/geom';
 import { hasFreshOutline } from '../utils/textVectorizer';
+import { computeResize, resizeSeed } from '../utils/resizeElement';
 
 /** Equal 25mm margin on top, bottom, left and right of the bed. */
 const BED_MARGIN = 25;
@@ -309,62 +310,20 @@ export const EtchCanvas: React.FC = () => {
       const el = document.elements.find((it) => it.id === selectedIds[0]);
       if (!el || el.locked) return;
 
-      const dx = coords.x - transformStart.mouseX;
-      const dy = coords.y - transformStart.mouseY;
+      // Moves snap to the grid; resizing does not. Snapping the *pointer* while
+      // resizing quantized the drag to whole grid cells, so any drag shorter
+      // than half a cell produced a delta of exactly zero — which on a small
+      // element (a line of text is tens of mm) meant the handle appeared dead
+      // until you dragged most of a cell. Size is a dimension, not a position:
+      // it wants the real pointer.
+      const from = isTransforming === 'move' ? coords : rawCoords;
+      const dx = from.x - transformStart.mouseX;
+      const dy = from.y - transformStart.mouseY;
 
       if (isTransforming === 'move') {
         updateElement(el.id, { x: transformStart.elX + dx, y: transformStart.elY + dy }, true);
       } else if (isTransforming === 'resize-se') {
-        // The drag is measured in bed axes, but w/h/r are in the element's own
-        // frame — so the delta is rotated back through the element's rotation
-        // and divided by its scale. Without this, dragging the handle on a
-        // rotated shape grew it along the wrong axis, and on a scaled one it
-        // moved at a multiple of the cursor.
-        const rad = -((el.rotation || 0) * Math.PI) / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-        const sx = el.scaleX ?? 1;
-        const sy = el.scaleY ?? 1;
-        // Rotation-corrected only — the on-screen extent, for scale-driven shapes.
-        const rdx = dx * cos - dy * sin;
-        const rdy = dx * sin + dy * cos;
-        // …and additionally unscaled, for shapes sized by their own w/h/r.
-        const ldx = rdx / (sx || 1);
-        const ldy = rdy / (sy || 1);
-
-        if (el.type === 'circle') {
-          updateElement(el.id, { r: Math.max(0.5, transformStart.elR + ldx / 2) }, true);
-        } else if (el.type === 'ellipse') {
-          updateElement(
-            el.id,
-            {
-              rx2: Math.max(0.5, transformStart.elRx + ldx / 2),
-              ry2: Math.max(0.5, transformStart.elRy + ldy / 2),
-            },
-            true
-          );
-        } else if (el.type === 'line') {
-          updateElement(el.id, { x2: transformStart.elW + ldx, y2: transformStart.elH + ldy }, true);
-        } else if (el.type === 'rect') {
-          updateElement(
-            el.id,
-            { w: Math.max(1, transformStart.elW + ldx), h: Math.max(1, transformStart.elH + ldy) },
-            true
-          );
-        } else {
-          // Path-backed shapes (star, freehand, bezier, imported paths) and text
-          // have no usable w/h, so scale them instead — the handle used to do
-          // nothing at all on the former and silently nothing on the latter.
-          const local = getLocalBBox(el);
-          updateElement(
-            el.id,
-            {
-              scaleX: clampScale((transformStart.elW + rdx) / local.width),
-              scaleY: clampScale((transformStart.elH + rdy) / local.height),
-            },
-            true
-          );
-        }
+        updateElement(el.id, computeResize(el, transformStart, dx, dy), true);
       } else if (isTransforming === 'rotate') {
         const pivot = getPivotInBed(el);
         const angle = (Math.atan2(rawCoords.y - pivot.y, rawCoords.x - pivot.x) * 180) / Math.PI;
@@ -440,7 +399,6 @@ export const EtchCanvas: React.FC = () => {
 
   const beginTransform = (el: EtchElement, mode: TransformMode, at: { x: number; y: number }) => {
     const pivot = getPivotInBed(el);
-    const local = getLocalBBox(el);
     setIsTransforming(mode);
     setTransformStart({
       mouseX: at.x,
@@ -451,12 +409,8 @@ export const EtchCanvas: React.FC = () => {
       // *current on-screen* size, so seed them with the scaled extent. Seeding
       // the unscaled bbox (or a stale el.w) made the first drag snap the
       // element to a different size before it started tracking the pointer.
-      elW: el.type === 'line' ? el.x2 ?? 40 : isScaleDriven(el) ? local.width * (el.scaleX ?? 1) : el.w ?? local.width,
-      elH: el.type === 'line' ? el.y2 ?? 0 : isScaleDriven(el) ? local.height * (el.scaleY ?? 1) : el.h ?? local.height,
+      ...resizeSeed(el),
       elRot: el.rotation || 0,
-      elR: el.r ?? 20,
-      elRx: el.rx2 ?? 30,
-      elRy: el.ry2 ?? 20,
       grabAngle: (Math.atan2(at.y - pivot.y, at.x - pivot.x) * 180) / Math.PI,
     });
   };
@@ -863,7 +817,8 @@ export const EtchCanvas: React.FC = () => {
               className="cursor-nwse-resize"
               onMouseDown={(e) => {
                 e.stopPropagation();
-                beginTransform(selectedElement, 'resize-se', toBedSnapped(e));
+                // Raw, not snapped — see the resize branch in handleMouseMove.
+                beginTransform(selectedElement, 'resize-se', toBed(e));
               }}
             />
           </g>
@@ -893,22 +848,6 @@ export const EtchCanvas: React.FC = () => {
 };
 
 // ------------------------------------------------------------------ helpers
-
-/**
- * True for shapes the SE handle resizes via scaleX/scaleY rather than w/h.
- *
- * Text is here because its bounding box comes from the glyph outlines and the
- * font size — nothing reads `w`/`h` on a text element, so writing them changed
- * state and pushed history while the shape on screen never moved.
- */
-function isScaleDriven(el: EtchElement): boolean {
-  return !['circle', 'ellipse', 'line', 'rect'].includes(el.type);
-}
-
-function clampScale(s: number): number {
-  if (!Number.isFinite(s) || Math.abs(s) < 0.02) return 0.02;
-  return Math.min(Math.abs(s), 50) * Math.sign(s || 1);
-}
 
 function normalizeAngle(deg: number): number {
   const a = deg % 360;

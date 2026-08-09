@@ -187,6 +187,24 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           the part comes free, after which the holes are cut in a piece that is no longer held down.
         </Step>
       </Card>
+      <Card>
+        <Step title="Running it">
+          With a machine connected, <strong>Run on Machine</strong> in the G-code panel streams the
+          program over USB, one line at a time, paced by the controller's own acknowledgements. The
+          status bar keeps the progress, pause and stop controls visible with every panel closed —
+          shutting a dialog does not stop a cutter.
+        </Step>
+        <Step title="Pauses that are meant to happen">
+          A tool change (<code>M6</code>) or a programmed stop (<code>M0</code>) parks the tool,
+          switches the spindle or laser off, retracts 5 mm and waits. Change the tool, re-zero Z if
+          you changed its length, then press Resume.
+        </Step>
+        <Step title="When something goes wrong">
+          If the controller refuses a line, the job stops rather than streaming the rest of the
+          program into a machine that has lost the plot. Stop and E-STOP both reset the controller
+          and kill spindle and laser output.
+        </Step>
+      </Card>
       <Warn title="⚠️ Preview is geometry, not a simulation">
         The preview shows the path the tool will follow. It does not model the kerf, the bit
         diameter, clamps, or whether the material is where you think it is. Frame the job on the

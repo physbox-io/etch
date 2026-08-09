@@ -53,6 +53,9 @@ export const PropertiesSidebar: React.FC = () => {
   } = useStore();
 
   const selectedElement = document.elements.find((el) => selectedIds.includes(el.id));
+  // Laser is the default target — most Etch documents are cut on one, and the
+  // exporter treats an unset machine as a laser too.
+  const isLaser = (document.machine ?? 'laser') === 'laser';
 
   return (
     <aside className="w-72 h-[calc(100vh-3.5rem)] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-y-auto transition-colors">
@@ -560,18 +563,23 @@ export const PropertiesSidebar: React.FC = () => {
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
                     />
                   </div>
-                  <div>
-                    <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Depth / Z (mm)</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      value={layer.zDepth ?? 1}
-                      onChange={(e) => updateLayer(layer.id, { zDepth: Math.max(0, parseFloat(e.target.value) || 0) }, true)}
-                      onBlur={commitHistory}
-                      className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
-                    />
-                  </div>
+                  {/* A laser holds one height and modulates power — it has no
+                      cut depth. Offering the field on a laser job invited a
+                      number that the exporter then silently dropped. */}
+                  {!isLaser && (
+                    <div>
+                      <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Depth / Z (mm)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={layer.zDepth ?? 1}
+                        onChange={(e) => updateLayer(layer.id, { zDepth: Math.max(0, parseFloat(e.target.value) || 0) }, true)}
+                        onBlur={commitHistory}
+                        className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
+                      />
+                    </div>
+                  )}
                   <div>
                     <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Passes</label>
                     <input
@@ -585,6 +593,13 @@ export const PropertiesSidebar: React.FC = () => {
                     />
                   </div>
                 </div>
+
+                {isLaser && (
+                  <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                    Laser target: depth comes from power, speed and pass count — there is no Z. Switch
+                    to CNC in the G-code panel to set cut depths.
+                  </p>
+                )}
               </div>
             );
           })}

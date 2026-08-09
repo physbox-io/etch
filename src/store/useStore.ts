@@ -28,7 +28,30 @@ function writeUserPresets(presets: Record<string, EtchDocument>) {
 
 /** Deep clone so edits never mutate the module-level preset objects. */
 function cloneDoc(doc: EtchDocument): EtchDocument {
-  return JSON.parse(JSON.stringify(doc));
+  return sanitizeDoc(JSON.parse(JSON.stringify(doc)));
+}
+
+/**
+ * Repairs documents written by older versions of the app.
+ *
+ * Text elements could pick up `w`/`h` from a resize handle that wrote them
+ * without anything reading them back — inert, but it is stale state that would
+ * confuse anyone reading a saved file, and the sidebar shows a Width/Height
+ * field for any element that has them, so it also showed two boxes that did
+ * nothing. Stripped on load rather than migrated in place, so opening an old
+ * document is enough to clean it.
+ */
+export function sanitizeDoc(doc: EtchDocument): EtchDocument {
+  let touched = false;
+  const elements = doc.elements.map((el) => {
+    if (el.type !== 'text' || (el.w === undefined && el.h === undefined)) return el;
+    touched = true;
+    const rest = { ...el };
+    delete rest.w;
+    delete rest.h;
+    return rest;
+  });
+  return touched ? { ...doc, elements } : doc;
 }
 
 interface EtchStore {
@@ -79,6 +102,7 @@ interface EtchStore {
   closeDocs: () => void;
   setDocsTab: (tab: DocsTabId) => void;
   setBedProbeGrid: (grid: BedProbeGrid | null) => void;
+  setMachineTarget: (machine: 'laser' | 'cnc') => void;
 
   // Save / Load / Save As / Delete (localStorage user presets)
   userPresetNames: string[];
@@ -154,6 +178,9 @@ export const useStore = create<EtchStore>((set, get) => ({
     }),
 
   setDocument: (doc) => {
+    // Imported JSON and MCP-supplied documents come through here too, so the
+    // repair runs on every entry point rather than only on preset loads.
+    doc = sanitizeDoc(doc);
     set({
       document: doc,
       history: [doc],
@@ -295,6 +322,12 @@ export const useStore = create<EtchStore>((set, get) => ({
   closeDocs: () => set({ isDocsOpen: false }),
   setDocsTab: (tab) => set({ docsTab: tab }),
   setBedProbeGrid: (grid) => set({ bedProbeGrid: grid }),
+
+  // A view setting in the sense that it changes nothing about the geometry, but
+  // it lives on the document because it travels with it: a job authored for a
+  // router should still be a router job when it is reopened.
+  setMachineTarget: (machine) =>
+    set((state) => ({ document: { ...state.document, machine } })),
 
   addElement: (el) => {
     const { document, history, historyIndex } = get();

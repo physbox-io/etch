@@ -28,7 +28,9 @@ export interface GCodeSegment {
 
 export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {}): string {
   const options: GCodeOptions = {
-    laserMode: true,
+    // Defaults to the document's own target, so an export driven from the MCP
+    // bridge or a script matches what the UI shows rather than assuming laser.
+    laserMode: (doc.machine ?? 'laser') === 'laser',
     spindleSpeedMax: 1000,
     travelSpeed: 3000,
     innerContourFirst: true,

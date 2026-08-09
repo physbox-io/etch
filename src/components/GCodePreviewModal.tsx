@@ -1,7 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { generateGCode } from '../utils/gcodeExporter';
-import { X, FileCode, Download, Settings, AlertTriangle } from 'lucide-react';
+import { X, FileCode, Download, Settings, AlertTriangle, Play, Pause, Square, Usb } from 'lucide-react';
+import { webSerialManager } from '../utils/webSerialManager';
+import type { MachineStatus } from '../types/etch';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { warpGcode, getGridStats } from '../utils/bedLeveler';
@@ -11,13 +13,21 @@ import { DocsInfoButton } from './DocsModal';
 export const GCodePreviewModal: React.FC = () => {
   const {
     isGCodeModalOpen, toggleGCodeModal, document, vectorizeText,
-    isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid,
+    isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid, setMachineTarget,
+    toggleMachineModal,
   } = useStore();
 
-  const [laserMode, setLaserMode] = useState(true);
+  // Lives on the document, not in this modal: the layer inspector needs to know
+  // too, so it can stop offering a cut depth on a machine that has no Z.
+  const laserMode = (document.machine ?? 'laser') === 'laser';
   const [innerContourFirst, setInnerContourFirst] = useState(true);
   const [travelSpeed, setTravelSpeed] = useState(3000);
   const [applyLevelling, setApplyLevelling] = useState(true);
+  const [machine, setMachine] = useState<MachineStatus>(() => webSerialManager.getStatus());
+  const [confirmRun, setConfirmRun] = useState(false);
+  const [runNote, setRunNote] = useState<string | null>(null);
+
+  useEffect(() => webSerialManager.subscribe(setMachine), []);
 
   // Text without usable outlines contributes nothing to the toolpath.
   const unvectorized = useMemo(
@@ -77,7 +87,7 @@ export const GCodePreviewModal: React.FC = () => {
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Target Machine Mode</label>
               <select
                 value={laserMode ? 'laser' : 'cnc'}
-                onChange={(e) => setLaserMode(e.target.value === 'laser')}
+                onChange={(e) => setMachineTarget(e.target.value === 'laser' ? 'laser' : 'cnc')}
                 className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200"
               >
                 <option value="laser">Laser GRBL (M3 / M5 Power S-Value)</option>
@@ -216,8 +226,100 @@ export const GCodePreviewModal: React.FC = () => {
               </div>
             )}
 
+            {/* Run on the machine — the point of the whole panel. Gated behind a
+                confirm because it starts a machine that cuts, and the operator
+                needs a beat to check the work origin is where they think. */}
+            <div className="pt-2 space-y-2">
+              {machine.jobRunning ? (
+                <div className="p-2.5 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 space-y-2">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-emerald-800 dark:text-emerald-300">
+                      {machine.jobPaused ? 'Paused' : 'Running'}
+                    </span>
+                    <span className="font-mono text-slate-600 dark:text-slate-300">
+                      {machine.currentLine}/{machine.totalLines}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 transition-all"
+                      style={{
+                        width: `${machine.totalLines ? (machine.currentLine / machine.totalLines) * 100 : 0}%`,
+                      }}
+                    />
+                  </div>
+                  {machine.pauseMessage && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-snug">
+                      {machine.pauseMessage}
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() =>
+                        machine.jobPaused ? webSerialManager.resumeJob() : webSerialManager.pauseJob()
+                      }
+                      className="flex-1 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {machine.jobPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                      <span>{machine.jobPaused ? 'Resume' : 'Pause'}</span>
+                    </button>
+                    <button
+                      onClick={() => webSerialManager.cancelJob()}
+                      className="flex-1 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                      <span>Stop</span>
+                    </button>
+                  </div>
+                </div>
+              ) : confirmRun ? (
+                <div className="p-2.5 rounded-lg border border-amber-400/70 bg-amber-50 dark:bg-amber-950/40 space-y-2">
+                  <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                    Is the work origin set and the stock clamped? This starts cutting immediately.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        const result = webSerialManager.startJob(gcodeStr);
+                        setRunNote(result.message);
+                        setConfirmRun(false);
+                      }}
+                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold cursor-pointer"
+                    >
+                      Start cutting
+                    </button>
+                    <button
+                      onClick={() => setConfirmRun(false)}
+                      className="px-3 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg font-semibold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => (machine.connected ? setConfirmRun(true) : toggleMachineModal())}
+                  className={`w-full py-2 rounded-lg font-bold flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer ${
+                    machine.connected
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20'
+                      : 'bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+                  }`}
+                >
+                  {machine.connected ? <Play className="w-4 h-4" /> : <Usb className="w-4 h-4" />}
+                  <span>{machine.connected ? 'Run on Machine' : 'Connect a machine to run'}</span>
+                </button>
+              )}
+
+              {runNote && !machine.jobRunning && (
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">{runNote}</p>
+              )}
+              {machine.lastError && (
+                <p className="text-[10px] text-red-600 dark:text-red-400 leading-snug">{machine.lastError}</p>
+              )}
+            </div>
+
             {/* Download Button */}
-            <div className="pt-4">
+            <div className="pt-2">
               <button
                 onClick={handleDownload}
                 className="w-full py-2 bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-500 hover:to-amber-500 rounded-lg text-white font-bold flex items-center justify-center gap-2 shadow-md shadow-red-500/20 transition-all cursor-pointer"

@@ -14,7 +14,38 @@ const INITIAL_STATUS: MachineStatus = {
   wz: 0,
   feedRate: 0,
   spindlePower: 0,
+  jobRunning: false,
+  jobPaused: false,
+  currentLine: 0,
+  totalLines: 0,
 };
+
+/**
+ * Strips a G-code program down to the lines a controller should receive.
+ *
+ * Comments and blank lines are dropped here rather than sent: GRBL's serial
+ * buffer is small, and filling it with text that produces no motion is how a
+ * stream starves.
+ */
+export function prepareJobLines(gcode: string): string[] {
+  return gcode
+    .split('\n')
+    .map((l) => l.replace(/;.*$/, '').trim())
+    .filter((l) => l.length > 0);
+}
+
+/**
+ * Whether a line is a deliberate stop the operator has to act on.
+ *
+ * `M6` is a tool change and `M0`/`M1` a programmed pause — neither is a fault,
+ * and streaming past them would cut the rest of the job with the wrong tool.
+ */
+export function classifyJobLine(line: string): 'tool-change' | 'stop' | 'motion' {
+  const code = line.toUpperCase();
+  if (/\bM0*6\b/.test(code)) return 'tool-change';
+  if (/\bM0*[01]\b/.test(code)) return 'stop';
+  return 'motion';
+}
 
 /**
  * WebSerial link to a GRBL-class controller (GRBL 1.1, FluidNC, grblHAL).
@@ -42,6 +73,10 @@ class WebSerialManager {
    */
   private okWaiters: (() => void)[] = [];
   private pendingProbe: ((z: number | null) => void) | null = null;
+
+  /** The job being streamed, if any. */
+  private gcodeQueue: string[] = [];
+  private queueIndex = 0;
 
   public subscribe(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
@@ -251,10 +286,14 @@ class WebSerialManager {
   }
 
   public async emergencyStop() {
+    // Order matters: kill motion first, then tidy up. A job left streaming
+    // would keep feeding lines into a controller that has just been reset.
+    this.gcodeQueue = [];
+    this.queueIndex = 0;
     await this.writeRealtime('\x18'); // Ctrl-X soft reset, acted on immediately
     await this.sendCommand('M5');
     this.failPendingWaiters();
-    this.update({ state: 'Hold' });
+    this.update({ state: 'Hold', jobRunning: false, jobPaused: false, pauseMessage: undefined });
   }
 
   /** Traces the job's bounding box at low laser power so you can check the fit. */
@@ -271,6 +310,140 @@ class WebSerialManager {
     await this.sendCommand(`G1 X${minX.toFixed(3)} Y${maxY.toFixed(3)} F3000`);
     await this.sendCommand(`G1 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
     await this.sendCommand('M5');
+  }
+
+  // ---------------------------------------------------------------------
+  // Running a job
+  // ---------------------------------------------------------------------
+
+  /**
+   * Streams a G-code program to the machine, one line at a time.
+   *
+   * Paced by the controller's own `ok` rather than by a timer: GRBL's serial
+   * buffer is small, and pushing lines faster than it acknowledges them
+   * overflows it and drops motion mid-cut. One line in flight is slower than a
+   * character-counting stream but cannot lose a move, which is the right trade
+   * for a machine holding a spinning cutter.
+   *
+   * Comments and blank lines are stripped here rather than sent, so the buffer
+   * carries only motion.
+   */
+  public startJob(gcode: string): { started: boolean; message: string } {
+    if (!this.status.connected) {
+      return { started: false, message: 'Connect to a machine first.' };
+    }
+    if (this.status.jobRunning) {
+      return { started: false, message: 'A job is already running.' };
+    }
+    if (this.status.state === 'Alarm') {
+      return {
+        started: false,
+        message: 'The machine is in alarm. Home it, or unlock, before running a job.',
+      };
+    }
+
+    const lines = prepareJobLines(gcode);
+
+    if (lines.length === 0) {
+      return { started: false, message: 'That program has no machine commands in it.' };
+    }
+
+    this.gcodeQueue = lines;
+    this.queueIndex = 0;
+    this.update({
+      jobRunning: true,
+      jobPaused: false,
+      currentLine: 0,
+      totalLines: lines.length,
+      pauseMessage: undefined,
+      lastError: undefined,
+      state: 'Run',
+    });
+
+    this.advanceJob();
+    return { started: true, message: `Running ${lines.length} lines.` };
+  }
+
+  /** Sends the next queued line, or finishes the job. */
+  private advanceJob() {
+    if (!this.status.jobRunning || this.status.jobPaused) return;
+
+    if (this.queueIndex >= this.gcodeQueue.length) {
+      this.gcodeQueue = [];
+      this.update({
+        jobRunning: false,
+        jobPaused: false,
+        currentLine: this.status.totalLines,
+        state: 'Idle',
+      });
+      return;
+    }
+
+    const line = this.gcodeQueue[this.queueIndex];
+    this.queueIndex++;
+    this.update({ currentLine: this.queueIndex });
+
+    // A tool change or a programmed stop is the operator's cue, not a fault:
+    // park safely and wait to be told to carry on.
+    const kind = classifyJobLine(line);
+    if (kind === 'tool-change') {
+      this.pauseForOperator(`Tool change (${line}). Change the tool, re-zero Z, then resume.`);
+      return;
+    }
+    if (kind === 'stop') {
+      this.pauseForOperator('Programmed stop. Resume when ready.');
+      return;
+    }
+
+    this.sendCommand(line);
+  }
+
+  /** Parks the tool and waits for the operator. */
+  private async pauseForOperator(message: string) {
+    this.update({ jobPaused: true, pauseMessage: message, state: 'Hold' });
+    await this.sendCommand('M5'); // laser/spindle off
+    await this.sendCommand('G91 G0 Z5');
+    await this.sendCommand('G90');
+  }
+
+  /** Feed hold — decelerates and stops without losing position. */
+  public async pauseJob() {
+    if (!this.status.jobRunning || this.status.jobPaused) return;
+    await this.writeRealtime('!');
+    this.update({ jobPaused: true, pauseMessage: 'Paused.', state: 'Hold' });
+  }
+
+  public async resumeJob() {
+    if (!this.status.jobRunning || !this.status.jobPaused) return;
+    this.update({ jobPaused: false, pauseMessage: undefined, state: 'Run' });
+    await this.writeRealtime('~'); // cycle start
+    this.advanceJob();
+  }
+
+  /**
+   * Stops the job now. This is the button someone reaches for when a cut is
+   * going wrong, so it kills output first and tidies state after.
+   */
+  public async cancelJob() {
+    const wasRunning = this.status.jobRunning;
+    this.gcodeQueue = [];
+    this.queueIndex = 0;
+    this.update({ jobRunning: false, jobPaused: false, pauseMessage: undefined, totalLines: 0, currentLine: 0 });
+    if (wasRunning) await this.emergencyStop();
+  }
+
+  /** Ends a job because the machine refused something. */
+  private abortJob(message: string) {
+    this.gcodeQueue = [];
+    this.queueIndex = 0;
+    this.status = {
+      ...this.status,
+      jobRunning: false,
+      jobPaused: false,
+      pauseMessage: undefined,
+      lastError: message,
+    };
+    this.writeRealtime('\x18'); // soft reset: stop motion, do not keep cutting
   }
 
   // ---------------------------------------------------------------------
@@ -564,13 +737,25 @@ class WebSerialManager {
     }
 
     if (line.startsWith('ok')) {
+      // A waiter (probing, zeroing) owns the reply if one is queued; otherwise
+      // it is the job's own acknowledgement and pulls the next line through.
       const resolve = this.okWaiters.shift();
-      if (resolve) resolve();
+      if (resolve) {
+        resolve();
+      } else if (this.status.jobRunning && !this.status.jobPaused) {
+        this.advanceJob();
+      }
     } else if (line.startsWith('error:') || line.startsWith('ALARM:')) {
       // A refused command never completes, so release whoever is waiting on it
       // rather than hanging the cycle until its timeout.
       this.status.lastError = `Machine ${line}`;
       this.failPendingWaiters();
+      // Streaming the rest of a job after the controller refused a line means
+      // cutting the remainder in a state nobody intended, so a running job stops
+      // here and says why.
+      if (this.status.jobRunning) {
+        this.abortJob(`Job stopped — the machine refused a command (${line}).`);
+      }
     }
 
     this.notify();
