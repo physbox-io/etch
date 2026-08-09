@@ -315,34 +315,52 @@ export const EtchCanvas: React.FC = () => {
       if (isTransforming === 'move') {
         updateElement(el.id, { x: transformStart.elX + dx, y: transformStart.elY + dy }, true);
       } else if (isTransforming === 'resize-se') {
+        // The drag is measured in bed axes, but w/h/r are in the element's own
+        // frame — so the delta is rotated back through the element's rotation
+        // and divided by its scale. Without this, dragging the handle on a
+        // rotated shape grew it along the wrong axis, and on a scaled one it
+        // moved at a multiple of the cursor.
+        const rad = -((el.rotation || 0) * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const sx = el.scaleX ?? 1;
+        const sy = el.scaleY ?? 1;
+        // Rotation-corrected only — the on-screen extent, for scale-driven shapes.
+        const rdx = dx * cos - dy * sin;
+        const rdy = dx * sin + dy * cos;
+        // …and additionally unscaled, for shapes sized by their own w/h/r.
+        const ldx = rdx / (sx || 1);
+        const ldy = rdy / (sy || 1);
+
         if (el.type === 'circle') {
-          updateElement(el.id, { r: Math.max(0.5, transformStart.elR + dx / 2) }, true);
+          updateElement(el.id, { r: Math.max(0.5, transformStart.elR + ldx / 2) }, true);
         } else if (el.type === 'ellipse') {
           updateElement(
             el.id,
             {
-              rx2: Math.max(0.5, transformStart.elRx + dx / 2),
-              ry2: Math.max(0.5, transformStart.elRy + dy / 2),
+              rx2: Math.max(0.5, transformStart.elRx + ldx / 2),
+              ry2: Math.max(0.5, transformStart.elRy + ldy / 2),
             },
             true
           );
         } else if (el.type === 'line') {
-          updateElement(el.id, { x2: transformStart.elW + dx, y2: transformStart.elH + dy }, true);
-        } else if (el.type === 'rect' || el.type === 'text') {
+          updateElement(el.id, { x2: transformStart.elW + ldx, y2: transformStart.elH + ldy }, true);
+        } else if (el.type === 'rect') {
           updateElement(
             el.id,
-            { w: Math.max(1, transformStart.elW + dx), h: Math.max(1, transformStart.elH + dy) },
+            { w: Math.max(1, transformStart.elW + ldx), h: Math.max(1, transformStart.elH + ldy) },
             true
           );
         } else {
-          // Path-backed shapes (star, freehand, bezier, imported paths) have no
-          // w/h, so scale them instead — the handle used to do nothing at all.
+          // Path-backed shapes (star, freehand, bezier, imported paths) and text
+          // have no usable w/h, so scale them instead — the handle used to do
+          // nothing at all on the former and silently nothing on the latter.
           const local = getLocalBBox(el);
           updateElement(
             el.id,
             {
-              scaleX: clampScale((transformStart.elW + dx) / local.width),
-              scaleY: clampScale((transformStart.elH + dy) / local.height),
+              scaleX: clampScale((transformStart.elW + rdx) / local.width),
+              scaleY: clampScale((transformStart.elH + rdy) / local.height),
             },
             true
           );
@@ -876,9 +894,15 @@ export const EtchCanvas: React.FC = () => {
 
 // ------------------------------------------------------------------ helpers
 
-/** True for shapes the SE handle resizes via scaleX/scaleY rather than w/h. */
+/**
+ * True for shapes the SE handle resizes via scaleX/scaleY rather than w/h.
+ *
+ * Text is here because its bounding box comes from the glyph outlines and the
+ * font size — nothing reads `w`/`h` on a text element, so writing them changed
+ * state and pushed history while the shape on screen never moved.
+ */
 function isScaleDriven(el: EtchElement): boolean {
-  return !['circle', 'ellipse', 'line', 'rect', 'text'].includes(el.type);
+  return !['circle', 'ellipse', 'line', 'rect'].includes(el.type);
 }
 
 function clampScale(s: number): number {

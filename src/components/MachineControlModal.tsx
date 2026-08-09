@@ -40,15 +40,21 @@ export const MachineControlModal: React.FC = () => {
   const logEndRef = useRef<HTMLDivElement>(null);
   const jobBounds = useJobBounds();
 
-  useEffect(() => webSerialManager.subscribe(setStatus), []);
-
-  // A terminal that only ever showed the newest line was not much of a terminal.
-  // Status reports are excluded: at 3/second they would bury every real reply.
-  useEffect(() => {
-    const line = status.lastResponse;
-    if (!line || line.startsWith('<')) return;
-    setLog((prev) => (prev[prev.length - 1] === line ? prev : [...prev, line].slice(-200)));
-  }, [status.lastResponse]);
+  // The log is appended from the subscription itself rather than from an effect
+  // watching `status`: two consecutive identical replies are one state value but
+  // two lines, and an effect keyed on the value would only ever record the first.
+  // Status reports are excluded — at 3/second they would bury every real reply.
+  useEffect(
+    () =>
+      webSerialManager.subscribe((next) => {
+        setStatus(next);
+        const line = next.lastResponse;
+        if (line && !line.startsWith('<')) {
+          setLog((prev) => [...prev, line].slice(-200));
+        }
+      }),
+    []
+  );
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ block: 'end' });

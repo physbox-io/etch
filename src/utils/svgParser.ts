@@ -56,7 +56,9 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
   const fill = el.fillColor || (layer.operation === 'fill' ? stroke : 'none');
   const opacity = el.opacity ?? 1;
 
-  const style = `stroke="${stroke}" stroke-width="${strokeW}" fill="${fill}" opacity="${opacity}"`;
+  // Colours can carry text straight through from an imported file, so they are
+  // escaped like any other untrusted attribute value rather than interpolated raw.
+  const style = `stroke="${escapeXml(stroke)}" stroke-width="${strokeW}" fill="${escapeXml(fill)}" opacity="${opacity}"`;
 
   switch (el.type) {
     case 'rect':
@@ -80,16 +82,19 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
       // Export outlines when we have them: a downstream cutter cannot be
       // relied on to have the font installed.
       if (hasFreshOutline(el)) {
-        return `    <path ${transform} d="${el.outlineD}" ${style} data-text="${escapeXml(el.text || '')}" />\n`;
+        return `    <path ${transform} d="${escapeXml(el.outlineD || '')}" ${style} data-text="${escapeXml(el.text || '')}" />\n`;
       }
-      return `    <text ${transform} font-family="${el.fontFamily || 'Outfit'}" font-size="${el.fontSize || 16}" font-weight="${el.fontWeight || '600'}" letter-spacing="${el.letterSpacing || 0}" ${style}>${escapeXml(el.text || '')}</text>\n`;
+      // dominant-baseline matches the canvas and the bounding-box maths, which
+      // both hang the glyphs down from the origin. Without it the exported text
+      // sat one ascender higher than it appeared on screen.
+      return `    <text ${transform} dominant-baseline="hanging" font-family="${escapeXml(el.fontFamily || 'Outfit')}" font-size="${el.fontSize || 16}" font-weight="${escapeXml(String(el.fontWeight || '600'))}" letter-spacing="${el.letterSpacing || 0}" ${style}>${escapeXml(el.text || '')}</text>\n`;
 
     case 'path':
     case 'freehand':
     case 'bezier':
     case 'symbol':
     case 'star':
-      return `    <path ${transform} d="${el.d || ''}" ${style} />\n`;
+      return `    <path ${transform} d="${escapeXml(el.d || '')}" ${style} />\n`;
 
     default:
       return '';

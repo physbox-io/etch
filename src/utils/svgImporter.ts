@@ -348,8 +348,13 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
   // ---- Bounds --------------------------------------------------------------
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const el of elements) {
-    if (!el.d) continue;
-    for (const p of pathPoints(el.d)) {
+    // Text has no `d`, so it used to contribute nothing: a text-only import
+    // produced null bounds and skipped fitting entirely, leaving the text at
+    // raw viewBox coordinates — potentially far off the bed.
+    const pts = el.d
+      ? pathPoints(el.d)
+      : [{ x: el.x, y: el.y }, { x: el.x + (el.fontSize ?? 0) * (el.text?.length ?? 0) * 0.6, y: el.y + (el.fontSize ?? 0) }];
+    for (const p of pts) {
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y;

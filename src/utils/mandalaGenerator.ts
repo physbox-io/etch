@@ -1,7 +1,17 @@
 import type { EtchElement } from '../types/etch';
+import { getLocalBBox, getPivotInBed } from './geom';
 
 /**
- * Creates radial symmetry copies of an element around a center point (cx, cy).
+ * Creates radial symmetry copies of an element around a centre point (cx, cy).
+ *
+ * The point that gets rotated is the element's *pivot in bed space*, not its
+ * `x`/`y`. Those two are only the same for shapes whose local bounding box is
+ * centred on their origin (circles, polygons, stars) — for a rect, a path or
+ * anything imported, the origin sits at a corner, and rotating it put copies
+ * tens of millimetres from where the symmetry should have placed them.
+ *
+ * So: rotate the pivot, then solve back for the `x`/`y` that lands the pivot
+ * there under the element's own transform.
  */
 export function createRadialArray(
   element: EtchElement,
@@ -13,36 +23,50 @@ export function createRadialArray(
   const result: EtchElement[] = [];
   const angleStep = 360 / sectors;
 
+  const local = getLocalBBox(element);
+  const pivot = getPivotInBed(element);
+
+  /** Places a copy so its pivot sits at (px, py) under the given scale. */
+  const originFor = (px: number, py: number, scaleX: number, scaleY: number) => ({
+    x: px - scaleX * local.centerX,
+    y: py - scaleY * local.centerY,
+  });
+
   for (let i = 0; i < sectors; i++) {
     const angleDeg = i * angleStep;
     const angleRad = (angleDeg * Math.PI) / 180;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
 
-    // Rotate position around (cx, cy)
-    const dx = element.x - cx;
-    const dy = element.y - cy;
+    const dx = pivot.x - cx;
+    const dy = pivot.y - cy;
+    const px = cx + dx * cos - dy * sin;
+    const py = cy + dx * sin + dy * cos;
 
-    const rx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
-    const ry = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+    const scaleX = element.scaleX ?? 1;
+    const scaleY = element.scaleY ?? 1;
 
     const copy: EtchElement = {
       ...element,
       id: `${element.id}_mandala_${i}`,
       name: `${element.name} (Sector ${i + 1})`,
-      x: cx + rx,
-      y: cy + ry,
-      rotation: (element.rotation + angleDeg) % 360,
+      ...originFor(px, py, scaleX, scaleY),
+      rotation: ((element.rotation || 0) + angleDeg) % 360,
     };
-
     result.push(copy);
 
     if (mirror) {
-      const mirrorCopy: EtchElement = {
+      // Flipping scaleX moves the pivot too, so the origin is re-solved rather
+      // than inherited — otherwise every mirrored copy slid sideways by the
+      // width of the shape.
+      const mirroredScaleX = scaleX * -1;
+      result.push({
         ...copy,
         id: `${element.id}_mandala_m_${i}`,
         name: `${element.name} (Mirror ${i + 1})`,
-        scaleX: copy.scaleX * -1,
-      };
-      result.push(mirrorCopy);
+        scaleX: mirroredScaleX,
+        ...originFor(px, py, mirroredScaleX, scaleY),
+      });
     }
   }
 
