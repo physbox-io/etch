@@ -3,6 +3,7 @@ import { localToBed } from './geom';
 import { flattenPath, type Pt } from './pathFlatten';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchContours, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
+import { docToMachine, describeOrigin } from './machineCoords';
 
 export interface GCodeOptions {
   laserMode: boolean;          // True for Laser GRBL M3/M5, False for CNC router Z-axis passes
@@ -24,10 +25,36 @@ export interface GCodeSegment {
   isClosed: boolean;
   bBoxArea: number;
   points: Array<{ x: number; y: number }>;
+  /**
+   * How far the tool may travel to the next segment while staying engaged.
+   *
+   * Non-zero only for hatch fill, where consecutive scanlines are one pitch
+   * apart and the hop between them runs *inside* the region being engraved.
+   * Retracting and plunging for a 0.2 mm hop is what made engraved text spend
+   * its time bobbing up and down instead of cutting.
+   */
+  linkTolerance: number;
 }
 
-export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {}): string {
+/** Machining order by operation, regardless of where the layer sits in the list. */
+const OPERATION_ORDER: Record<GCodeSegment['type'], number> = { fill: 0, etch: 1, cut: 2 };
+
+/** Clearance height for rapids, in mm. */
+const SAFE_Z = 5;
+
+/**
+ * Builds the ordered toolpath for a document, without serialising it.
+ *
+ * Exported because the preview draws from exactly this — the same segments in
+ * the same order the machine will run them, rather than from re-parsing the
+ * G-code text and hoping the two agree.
+ */
+export function planToolpath(
+  doc: EtchDocument,
+  opts: Partial<GCodeOptions> = {}
+): { segments: GCodeSegment[]; skipped: string[] } {
   const options: GCodeOptions = {
+
     // Defaults to the document's own target, so an export driven from the MCP
     // bridge or a script matches what the UI shows rather than assuming laser.
     laserMode: (doc.machine ?? 'laser') === 'laser',
@@ -59,10 +86,11 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
       // Filled elements are engraved: hatch the interior, then optionally
       // follow the outline. Contours alone would only score the edge.
       if (el.machining === 'filled') {
+        const pitch = el.hatchSpacing ?? doc.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING;
         const hatch = hatchContours(
           contours,
           el.hatchAngle ?? doc.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
-          el.hatchSpacing ?? doc.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING
+          pitch
         );
         for (const line of hatch) {
           segments.push({
@@ -76,6 +104,9 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
             // Hatch lines must stay in engraving order, so they all share a
             // sort key and never get interleaved by inner-contour sorting.
             bBoxArea: -1,
+            // A gap of about one pitch is the next scanline; anything wider is
+            // a jump to a separate span (the counters of a 'B') and must lift.
+            linkTolerance: pitch * 1.6,
             points: line,
           });
         }
@@ -110,32 +141,58 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
           passes: layer.passes || 1,
           isClosed,
           bBoxArea: area,
+          linkTolerance: 0,
           points: pts,
         });
       }
     }
   }
 
-  // Inner-contour-first sorting: smaller enclosed shapes cut first.
+  // Machining order, most-to-least reversible:
   //
-  // Sorted *within* each layer, never across them. Layer order is the order the
-  // operations happen in, and a global sort throws it away: a document whose
-  // engraving is larger than its cut features would emit the cut-outs first,
-  // freeing the part from the stock before it is engraved. Hatch fills carry a
-  // sort key of -1 to stay in scanline order, which globally would also hoist
-  // every fill in the document to the front of the job.
-  if (options.innerContourFirst) {
-    const layerOrder = new Map(doc.layers.map((l, i) => [l.id, i]));
-    segments.sort((a, b) => {
-      const layerDelta = (layerOrder.get(a.layerId) ?? 0) - (layerOrder.get(b.layerId) ?? 0);
-      return layerDelta !== 0 ? layerDelta : a.bBoxArea - b.bBoxArea;
-    });
-  }
+  //   1. operation — fill, then etch, then cut. This is not the layer list's
+  //      order and must not follow it: a through-cut releases the part from the
+  //      stock, so anything engraved after it is engraved on a piece that is
+  //      free to shift. The default document happens to list "cut" first, which
+  //      is exactly the case that used to run a cut before an etch.
+  //   2. layer — within one operation, the author's order stands.
+  //   3. enclosed area — holes before the outline that contains them, for the
+  //      same reason. Hatch fills carry -1 so they stay in scanline order.
+  //
+  // Array.prototype.sort is stable, so segments equal on all three keep the
+  // order they were generated in.
+  const layerOrder = new Map(doc.layers.map((l, i) => [l.id, i]));
+  segments.sort((a, b) => {
+    const opDelta = OPERATION_ORDER[a.type] - OPERATION_ORDER[b.type];
+    if (opDelta !== 0) return opDelta;
+    const layerDelta = (layerOrder.get(a.layerId) ?? 0) - (layerOrder.get(b.layerId) ?? 0);
+    if (layerDelta !== 0) return layerDelta;
+    return options.innerContourFirst ? a.bBoxArea - b.bBoxArea : 0;
+  });
+
+
+  return { segments, skipped };
+}
+
+export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {}): string {
+  const options: GCodeOptions = {
+
+    // Defaults to the document's own target, so an export driven from the MCP
+    // bridge or a script matches what the UI shows rather than assuming laser.
+    laserMode: (doc.machine ?? 'laser') === 'laser',
+    spindleSpeedMax: 1000,
+    travelSpeed: 3000,
+    innerContourFirst: true,
+    ...opts,
+  };
+
+  const { segments, skipped } = planToolpath(doc, opts);
 
   // Generate G-code header
   let gcode = `; Generated by Physbox Etch (etch.physbox.io)\n`;
   gcode += `; Document: ${doc.name} (${doc.width}x${doc.height} mm)\n`;
   gcode += `; Mode: ${options.laserMode ? 'Laser Cutter (GRBL)' : 'CNC Router/Mill'}\n`;
+  gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   gcode += `; Segments: ${segments.length}\n`;
   for (const s of skipped) gcode += `; SKIPPED: ${s}\n`;
   gcode += `G90 ; Absolute positioning\n`;
@@ -144,44 +201,85 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
   if (options.laserMode) {
     gcode += `M5  ; Laser off initially\n`;
   } else {
-    gcode += `G0 Z5 ; Spindle clearance height\n`;
+    gcode += `G0 Z${SAFE_Z} ; Spindle clearance height\n`;
     gcode += `M3 S${options.spindleSpeedMax} ; Spindle turn on\n`;
   }
 
   let currentX = 0;
   let currentY = 0;
 
+  // Segments stay in document space so the preview can draw them exactly as the
+  // canvas does; the conversion to machine space happens here, once, on the way
+  // out. `currentX/currentY` are machine-space too, so the link and rapid
+  // distances below are measured in the frame the machine actually moves in.
+  const toMachine = (p: { x: number; y: number }) => docToMachine(doc, p.x, p.y);
+
+  // Tracks whether the tool is already down at this segment's depth, so a
+  // linked hop does not re-plunge to a depth it is already at.
+  let engagedDepth: number | null = null;
+
   for (let sIdx = 0; sIdx < segments.length; sIdx++) {
     const seg = segments[sIdx];
+    const prev = sIdx > 0 ? segments[sIdx - 1] : null;
     const sPower = Math.round((seg.power / 100) * options.spindleSpeedMax);
-
-    gcode += `\n; --- Segment ${sIdx + 1} (${seg.type.toUpperCase()}) --- Layer: ${seg.layerId} ---\n`;
 
     for (let pass = 1; pass <= seg.passes; pass++) {
       const zPassDepth = -Math.abs(seg.zDepth) * (pass / seg.passes);
+      const startPt = toMachine(seg.points[0]);
+      const gap = Math.hypot(currentX - startPt.x, currentY - startPt.y);
 
-      // Rapid move to start point
-      const startPt = seg.points[0];
-      if (Math.hypot(currentX - startPt.x, currentY - startPt.y) > 0.01) {
-        if (options.laserMode) {
-          gcode += `M5 ; Laser OFF for rapid\n`;
-        } else {
-          gcode += `G0 Z5 ; retract Z\n`;
-        }
-        gcode += `G0 X${startPt.x.toFixed(3)} Y${startPt.y.toFixed(3)} F${options.travelSpeed}\n`;
+      /**
+       * A "link" is a hop short enough to make inside the material: the next
+       * scanline of the same fill, at the same depth and power, one pitch away.
+       * Crossing it engaged costs one G1; lifting, rapiding and re-plunging
+       * costs three moves and two direction changes of the Z axis, which on
+       * engraved text is most of the job.
+       */
+      const isLink =
+        prev !== null &&
+        pass === 1 &&
+        seg.passes === 1 &&
+        prev.passes === 1 &&
+        seg.linkTolerance > 0 &&
+        prev.linkTolerance > 0 &&
+        seg.layerId === prev.layerId &&
+        seg.zDepth === prev.zDepth &&
+        seg.power === prev.power &&
+        gap <= seg.linkTolerance &&
+        engagedDepth === zPassDepth;
+
+      if (!isLink) {
+        gcode += `\n; --- Segment ${sIdx + 1} (${seg.type.toUpperCase()}) --- Layer: ${seg.layerId} ---\n`;
+      }
+
+      if (isLink) {
+        // Stay down and cut across — the hop is within the region being filled.
+        gcode += `G1 X${startPt.x.toFixed(3)} Y${startPt.y.toFixed(3)} F${seg.speed}\n`;
         currentX = startPt.x;
         currentY = startPt.y;
-      }
-
-      if (!options.laserMode) {
-        gcode += `G1 Z${zPassDepth.toFixed(3)} F${Math.min(seg.speed, 300)} ; Plunge Z\n`;
       } else {
-        gcode += `M3 S${sPower} ; Laser ON\n`;
+        if (gap > 0.01) {
+          if (options.laserMode) {
+            gcode += `M5 ; Laser OFF for rapid\n`;
+          } else if (engagedDepth !== null) {
+            gcode += `G0 Z${SAFE_Z} ; retract Z\n`;
+            engagedDepth = null;
+          }
+          gcode += `G0 X${startPt.x.toFixed(3)} Y${startPt.y.toFixed(3)} F${options.travelSpeed}\n`;
+          currentX = startPt.x;
+          currentY = startPt.y;
+        }
+
+        if (options.laserMode) {
+          gcode += `M3 S${sPower} ; Laser ON\n`;
+        } else if (engagedDepth !== zPassDepth) {
+          gcode += `G1 Z${zPassDepth.toFixed(3)} F${Math.min(seg.speed, 300)} ; Plunge Z\n`;
+          engagedDepth = zPassDepth;
+        }
       }
 
-      // Linear cut moves
       for (let pIdx = 1; pIdx < seg.points.length; pIdx++) {
-        const pt = seg.points[pIdx];
+        const pt = toMachine(seg.points[pIdx]);
         gcode += `G1 X${pt.x.toFixed(3)} Y${pt.y.toFixed(3)} F${seg.speed}\n`;
         currentX = pt.x;
         currentY = pt.y;

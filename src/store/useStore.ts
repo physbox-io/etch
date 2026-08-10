@@ -103,6 +103,7 @@ interface EtchStore {
   setDocsTab: (tab: DocsTabId) => void;
   setBedProbeGrid: (grid: BedProbeGrid | null) => void;
   setMachineTarget: (machine: 'laser' | 'cnc') => void;
+  setDocumentOrigin: (origin: EtchDocument['origin']) => void;
 
   // Save / Load / Save As / Delete (localStorage user presets)
   userPresetNames: string[];
@@ -328,6 +329,9 @@ export const useStore = create<EtchStore>((set, get) => ({
   // router should still be a router job when it is reopened.
   setMachineTarget: (machine) =>
     set((state) => ({ document: { ...state.document, machine } })),
+
+  setDocumentOrigin: (origin) =>
+    set((state) => ({ document: { ...state.document, origin } })),
 
   addElement: (el) => {
     const { document, history, historyIndex } = get();

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
 import { getBedBBox } from '../utils/geom';
+import { boundsToMachine } from '../utils/machineCoords';
 import type { MachineStatus } from '../types/etch';
 import { X, Cpu, Home, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
@@ -28,8 +29,11 @@ function useJobBounds() {
       maxY = Math.max(maxY, b.minY + b.height);
     }
     if (!Number.isFinite(minX) || maxX - minX < 1e-6 || maxY - minY < 1e-6) return null;
-    return { minX, minY, maxX, maxY };
-  }, [document.elements, document.layers]);
+    // Framing and bed probing drive the machine, so they are in machine space
+    // like the G-code — otherwise the frame traces a box mirrored against the
+    // job it is supposed to outline.
+    return boundsToMachine(document, { minX, minY, maxX, maxY });
+  }, [document]);
 }
 
 export const MachineControlModal: React.FC = () => {

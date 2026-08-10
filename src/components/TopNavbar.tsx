@@ -11,7 +11,7 @@ import {
   Download,
   Upload,
   Cpu,
-  FileCode,
+  Play,
   RotateCcw,
   RotateCw,
   Sun,
@@ -344,13 +344,15 @@ export const TopNavbar: React.FC = () => {
           <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
         </button>
 
-        {/* G-Code Preview */}
+        {/* Run the job. This is the button someone reaches for when the drawing
+            is finished, so it reads as one — not as a file format. */}
         <button
           onClick={toggleGCodeModal}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-red-200 dark:border-red-800 text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors cursor-pointer shadow-xs"
-          title="G-Code Toolpath Preview"
+          className="flex items-center gap-1.5 h-8 px-3 rounded-full border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors cursor-pointer shadow-xs font-bold text-xs"
+          title="Preview the toolpath and run the job"
         >
-          <FileCode className="w-4 h-4 text-red-500 dark:text-red-400" />
+          <Play className="w-4 h-4 fill-current" />
+          <span>Run</span>
         </button>
 
         {/* Machine Connect */}

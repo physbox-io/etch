@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store/useStore';
-import { generateGCode } from '../utils/gcodeExporter';
+import { generateGCode, planToolpath } from '../utils/gcodeExporter';
+import { ToolpathPreview } from './ToolpathPreview';
 import { X, FileCode, Download, Settings, AlertTriangle, Play, Pause, Square, Usb } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
@@ -15,6 +16,7 @@ export const GCodePreviewModal: React.FC = () => {
     isGCodeModalOpen, toggleGCodeModal, document, vectorizeText,
     isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid, setMachineTarget,
     toggleMachineModal,
+    setDocumentOrigin,
   } = useStore();
 
   // Lives on the document, not in this modal: the layer inspector needs to know
@@ -26,6 +28,8 @@ export const GCodePreviewModal: React.FC = () => {
   const [machine, setMachine] = useState<MachineStatus>(() => webSerialManager.getStatus());
   const [confirmRun, setConfirmRun] = useState(false);
   const [runNote, setRunNote] = useState<string | null>(null);
+  const [showTravel, setShowTravel] = useState(true);
+  const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => webSerialManager.subscribe(setMachine), []);
 
@@ -37,6 +41,11 @@ export const GCodePreviewModal: React.FC = () => {
 
   // A laser toolpath has no Z to warp, so levelling only applies to CNC output.
   const levelling = !laserMode && applyLevelling ? bedProbeGrid : null;
+
+  const plan = useMemo(
+    () => (isGCodeModalOpen ? planToolpath(document, { laserMode, innerContourFirst }) : { segments: [], skipped: [] }),
+    [isGCodeModalOpen, document, laserMode, innerContourFirst]
+  );
 
   const gcodeStr = useMemo(() => {
     // This component stays mounted, and `document` changes identity on every
@@ -62,7 +71,7 @@ export const GCodePreviewModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <FileCode className="w-5 h-5 text-red-500" />
             <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-              G-Code Generator &amp; Toolpath Simulator
+              Run Job &amp; Toolpath Preview
             </h2>
           </div>
           <button
@@ -93,6 +102,27 @@ export const GCodePreviewModal: React.FC = () => {
                 <option value="laser">Laser GRBL (M3 / M5 Power S-Value)</option>
                 <option value="cnc">CNC Router / Mill (G0 Z-Clearance &amp; Passes)</option>
               </select>
+            </div>
+
+            {/* Work origin. This decides how document coordinates map onto the
+                machine, and getting it wrong mirrors the whole job — which only
+                shows up on asymmetric geometry like text. */}
+            <div>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                Work Origin (machine X0 Y0)
+              </label>
+              <select
+                value={document.origin}
+                onChange={(e) => setDocumentOrigin(e.target.value as typeof document.origin)}
+                className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200"
+              >
+                <option value="top-left">Front-left, Y up the bed (standard GRBL)</option>
+                <option value="bottom-left">Front-left, coordinates already Y-up</option>
+                <option value="center">Centre of the bed</option>
+              </select>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                If engraved text comes out mirrored, this is the setting that is wrong.
+              </p>
             </div>
 
             {/* Bed levelling — only offered for CNC output, since a laser
@@ -330,9 +360,39 @@ export const GCodePreviewModal: React.FC = () => {
             </div>
           </div>
 
-          {/* G-Code Code Viewer */}
-          <div className="col-span-2 p-4 bg-slate-900 dark:bg-slate-950 overflow-y-auto font-mono text-[11px] text-emerald-400 select-text leading-relaxed">
-            <pre>{gcodeStr}</pre>
+          {/* Toolpath preview — the point of the panel. The G-code itself is
+              behind a toggle: it is the machine's business, not the operator's. */}
+          <div className="col-span-2 flex flex-col min-h-0 border-l border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 text-[11px]">
+              <label className="flex items-center gap-1.5 cursor-pointer text-slate-600 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showTravel}
+                  onChange={(e) => setShowTravel(e.target.checked)}
+                  className="w-3 h-3 accent-slate-400 cursor-pointer"
+                />
+                <span>Show rapids</span>
+              </label>
+              <button
+                onClick={() => setShowRaw((v) => !v)}
+                className="text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline underline-offset-2 cursor-pointer"
+              >
+                {showRaw ? 'Show toolpath' : 'Show raw G-code'}
+              </button>
+            </div>
+
+            {showRaw ? (
+              <div className="flex-1 min-h-0 p-4 bg-slate-900 dark:bg-slate-950 overflow-y-auto font-mono text-[11px] text-emerald-400 select-text leading-relaxed">
+                <pre>{gcodeStr}</pre>
+              </div>
+            ) : (
+              <ToolpathPreview
+                doc={document}
+                segments={plan.segments}
+                travelSpeed={travelSpeed}
+                showTravel={showTravel}
+              />
+            )}
           </div>
         </div>
       </div>

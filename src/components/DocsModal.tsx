@@ -79,9 +79,13 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           layer's treatment with the Machining control in the properties sidebar.
         </Step>
         <Step title="Origin and snapping">
-          The document's origin setting decides where X0 Y0 sits on the bed, and it must match how
-          you zero the machine — see Machine Setup &amp; Zeroing. Snap-to-grid quantizes new geometry
-          to the grid pitch, which is what keeps joints and slots meeting exactly.
+          The canvas is drawn the way SVG is, with Y increasing <em>downward</em> from the top of the
+          bed. A machine's work coordinates run the other way — Y increases away from you from the
+          front-left corner. <strong>Work Origin</strong> in the Run panel is what converts between
+          the two, and a wrong setting mirrors the whole job about the X axis. Symmetric shapes
+          survive that unnoticed; engraved text comes out backwards, which is the symptom to watch
+          for. Snap-to-grid quantizes new geometry to the grid pitch, which keeps joints and slots
+          meeting exactly.
         </Step>
       </Card>
     </div>
@@ -182,9 +186,17 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           per pass. The tool retracts to clearance between contours. Depth is measured from work Z0,
           which is why Z zeroing has to be right before anything else matters.
         </Step>
-        <Step title="Inner-first sorting">
-          Interior holes are cut before the outline that contains them. Cut the outline first and
-          the part comes free, after which the holes are cut in a piece that is no longer held down.
+        <Step title="What runs first">
+          Order is by operation, not by where a layer sits in the list: fills, then etching, then
+          cuts. A through-cut releases the part from the stock, so anything engraved after it is
+          engraved on a piece free to shift. Within one operation the layer order stands, and
+          interior holes are cut before the outline containing them for the same reason.
+        </Step>
+        <Step title="Reading the preview">
+          The Run panel draws the real toolpath: cutting moves in their layer colours, rapids as
+          faint dashed lines, and an estimate of cutting distance and time. Long dashed lines
+          criss-crossing the job mean the tool is spending its time travelling — usually a sign of
+          geometry split across layers that could share one.
         </Step>
       </Card>
       <Card>
