@@ -22,6 +22,7 @@ import {
   FileJson,
   FolderInput,
   Info,
+  Settings,
 } from 'lucide-react';
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -40,6 +41,8 @@ export const TopNavbar: React.FC = () => {
     toggleAiPanel,
     toggleGCodeModal,
     toggleMachineModal,
+    toggleSettings,
+    isSettingsOpen,
     undo,
     redo,
     historyIndex,
@@ -290,6 +293,19 @@ export const TopNavbar: React.FC = () => {
 
       {/* Circle Icon Buttons at Top Right (matching Mesh conventions) */}
       <div className="flex items-center gap-2">
+        {/* Settings */}
+        <button
+          onClick={toggleSettings}
+          className={`flex items-center justify-center w-8 h-8 rounded-full border transition-colors cursor-pointer shadow-xs ${
+            isSettingsOpen
+              ? 'bg-blue-100 border-blue-400 text-blue-700 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-400'
+              : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800'
+          }`}
+          title="Global Settings"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
+
         {/* Reference Guide */}
         <button
           onClick={() => openDocs()}
@@ -348,11 +364,10 @@ export const TopNavbar: React.FC = () => {
             is finished, so it reads as one — not as a file format. */}
         <button
           onClick={toggleGCodeModal}
-          className="flex items-center gap-1.5 h-8 px-3 rounded-full border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors cursor-pointer shadow-xs font-bold text-xs"
-          title="Preview the toolpath and run the job"
+          className="flex items-center justify-center w-8 h-8 rounded-full border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors cursor-pointer shadow-xs"
+          title="Preview and cut"
         >
           <Play className="w-4 h-4 fill-current" />
-          <span>Run</span>
         </button>
 
         {/* Machine Connect */}

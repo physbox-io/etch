@@ -16,6 +16,7 @@ import {
   Copy,
   Spline,
   Grid,
+  Waypoints,
 } from 'lucide-react';
 
 export const LeftToolbar: React.FC = () => {
@@ -33,6 +34,7 @@ export const LeftToolbar: React.FC = () => {
     { id: 'freehand', label: 'Fluid Freehand Pencil', icon: Pencil },
     { id: 'grid-freehand', label: 'Grid-Snapped Freehand Pencil', icon: Grid },
     { id: 'bezier', label: 'Bezier Curve Pen', icon: Spline },
+    { id: 'node-edit', label: 'Edit Nodes & Curve Handles', icon: Waypoints },
     { id: 'line', label: 'Line Tool', icon: Minus },
     { id: 'rect', label: 'Rectangle', icon: Square },
     { id: 'circle', label: 'Circle / Oval', icon: Circle },

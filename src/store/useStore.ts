@@ -71,6 +71,7 @@ interface EtchStore {
   isGCodeModalOpen: boolean;
   isMachineModalOpen: boolean;
   isClipArtModalOpen: boolean;
+  isSettingsOpen: boolean;
   isDocsOpen: boolean;
   docsTab: DocsTabId;
   /**
@@ -89,6 +90,7 @@ interface EtchStore {
   setPan: (pan: { x: number; y: number }) => void;
   setCursor: (cursor: { x: number; y: number }) => void;
   setGridSize: (mm: number) => void;
+  setDocumentSize: (size: { width?: number; height?: number }) => void;
   setHatchDefaults: (v: { angle?: number; spacing?: number }) => void;
   toggleSnapToGrid: () => void;
   setDocumentName: (name: string) => void;
@@ -98,6 +100,7 @@ interface EtchStore {
   toggleGCodeModal: () => void;
   toggleMachineModal: () => void;
   toggleClipArtModal: () => void;
+  toggleSettings: () => void;
   openDocs: (tab?: DocsTabId) => void;
   closeDocs: () => void;
   setDocsTab: (tab: DocsTabId) => void;
@@ -163,6 +166,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isGCodeModalOpen: false,
   isMachineModalOpen: false,
   isClipArtModalOpen: false,
+  isSettingsOpen: false,
   isDocsOpen: false,
   docsTab: 'toolpaths',
   bedProbeGrid: null,
@@ -206,6 +210,28 @@ export const useStore = create<EtchStore>((set, get) => ({
     set((state) => ({
       document: { ...state.document, gridSize: Math.max(0.1, Math.min(mm, 100)) },
     })),
+
+  /**
+   * Resizes the stock. Geometry is left where it is rather than rescaled with
+   * it: the drawing is in millimetres against the material, and silently
+   * scaling a 40 mm hole because the board got wider would be wrong on a
+   * machine. Anything now outside the area still shows on the canvas, which is
+   * how you see that it no longer fits.
+   *
+   * Committed straight to the document like the grid pitch, without a history
+   * entry, so dragging the number does not bury the undo stack.
+   */
+  setDocumentSize: ({ width, height }) =>
+    set((state) => {
+      const clamp = (v: number) => Math.max(10, Math.min(2000, v));
+      return {
+        document: {
+          ...state.document,
+          ...(width !== undefined && Number.isFinite(width) ? { width: clamp(width) } : {}),
+          ...(height !== undefined && Number.isFinite(height) ? { height: clamp(height) } : {}),
+        },
+      };
+    }),
 
   setHatchDefaults: ({ angle, spacing }) =>
     set((state) => ({
@@ -318,6 +344,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleGCodeModal: () => set((state) => ({ isGCodeModalOpen: !state.isGCodeModalOpen })),
   toggleMachineModal: () => set((state) => ({ isMachineModalOpen: !state.isMachineModalOpen })),
   toggleClipArtModal: () => set((state) => ({ isClipArtModalOpen: !state.isClipArtModalOpen })),
+  toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
 
   openDocs: (tab) => set((state) => ({ isDocsOpen: true, docsTab: tab ?? state.docsTab })),
   closeDocs: () => set({ isDocsOpen: false }),

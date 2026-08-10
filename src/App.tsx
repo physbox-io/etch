@@ -11,6 +11,7 @@ import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { AICopilotPanel } from './components/AICopilotPanel';
 import { DocsModal } from './components/DocsModal';
+import { SettingsPanel } from './components/SettingsPanel';
 
 export const App: React.FC = () => {
   // Connect to WebSocket MCP bridge
@@ -47,6 +48,10 @@ export const App: React.FC = () => {
       if (e.key === 'Escape') {
         useStore.getState().setToolMode('select');
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        // The node editor binds these to deleting a single node of the
+        // selected path, which it would be no use doing if the whole element
+        // vanished with it.
+        if (useStore.getState().activeTool === 'node-edit') return;
         if (selectedIds.length > 0) {
           deleteElements(selectedIds);
         }
@@ -95,6 +100,7 @@ export const App: React.FC = () => {
       <ClipArtModal />
       <GCodePreviewModal />
       <MachineControlModal />
+      <SettingsPanel />
 
       {/* Rendered last so the Reference Guide sits above the modal that opened it */}
       <DocsModal />

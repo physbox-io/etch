@@ -2,22 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { X, Sparkles, Wand2, RefreshCw, ArrowRight, MessageCircleQuestion, Settings2, AlertTriangle } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { importSVG, fitToBed } from '../utils/svgImporter';
-import { callLLM, extractJson, stripCodeFences, listClaudeModels, listGeminiModels, LLMError } from '../utils/llmClient';
+import { callLLM, extractJson, stripCodeFences, LLMError } from '../utils/llmClient';
 import { buildSystemPrompt } from '../docs/copilotInstructions';
 import {
   DEFAULT_MODEL,
-  FALLBACK_MODELS,
   isClaudeModel,
   readAnthropicKey,
   readGeminiKey,
   readMaxTokens,
   readModel,
-  writeAnthropicKey,
-  writeGeminiKey,
-  writeMaxTokens,
-  writeModel,
-  MIN_MAX_TOKENS,
-  MAX_MAX_TOKENS,
 } from '../utils/llmSettings';
 import type { EtchElement, ElementType } from '../types/etch';
 
@@ -61,6 +54,8 @@ export const AICopilotPanel: React.FC = () => {
   const {
     isAiPanelOpen,
     toggleAiPanel,
+    isSettingsOpen,
+    toggleSettings,
     document: doc,
     selectedIds,
     addElement,
@@ -75,32 +70,34 @@ export const AICopilotPanel: React.FC = () => {
   const [prompt, setPrompt] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [showSetup, setShowSetup] = useState(false);
-
+  // Mirrors of the browser-stored copilot settings, which are edited in the
+  // Settings popover. Kept live off `storage`, so the key warning and the model
+  // actually used here update as the fields are typed into, not on close.
   const [geminiKey, setGeminiKey] = useState(readGeminiKey);
   const [anthropicKey, setAnthropicKey] = useState(readAnthropicKey);
   const [model, setModel] = useState(readModel);
   const [maxTokens, setMaxTokens] = useState(readMaxTokens);
-  const [models, setModels] = useState<{ id: string; name: string }[]>(FALLBACK_MODELS);
 
   const logRef = useRef<HTMLDivElement>(null);
 
   const hasKeyForModel = isClaudeModel(model) ? !!anthropicKey.trim() : !!geminiKey.trim();
 
-  // The picker lists what the configured keys can actually reach; without a key
-  // it stays on the built-in list rather than showing an empty dropdown.
+  /** Opens rather than toggles, so a second nudge from here is not a dismissal. */
+  const openSettings = useCallback(() => {
+    if (!isSettingsOpen) toggleSettings();
+  }, [isSettingsOpen, toggleSettings]);
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const [claude, gemini] = await Promise.all([listClaudeModels(), listGeminiModels()]);
-      if (cancelled) return;
-      const fetched = [...claude, ...gemini];
-      setModels(fetched.length ? fetched : FALLBACK_MODELS);
-    })();
-    return () => {
-      cancelled = true;
+    const sync = () => {
+      setGeminiKey(readGeminiKey());
+      setAnthropicKey(readAnthropicKey());
+      setModel(readModel());
+      setMaxTokens(readMaxTokens());
     };
-  }, [anthropicKey, geminiKey]);
+    sync();
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, []);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
@@ -212,7 +209,7 @@ export const AICopilotPanel: React.FC = () => {
     if (!request || isRunning) return;
 
     if (!hasKeyForModel) {
-      setShowSetup(true);
+      openSettings();
       say({ role: 'assistant', mode, text: 'Add an API key for the selected model to run this.', isError: true });
       return;
     }
@@ -246,13 +243,13 @@ export const AICopilotPanel: React.FC = () => {
         // missing off the end, so say which failure this was.
         throw new LLMError(
           truncated
-            ? `The reply hit the ${maxTokens.toLocaleString()}-token limit and was cut off before the geometry was complete, so nothing was applied. Raise the response limit below, or ask for a smaller change.`
+            ? `The reply hit the ${maxTokens.toLocaleString()}-token limit and was cut off before the geometry was complete, so nothing was applied. Raise the response limit in Settings, or ask for a smaller change.`
             : 'The reply contained no usable geometry, so nothing was applied.'
         );
       }
       if (truncated) {
         throw new LLMError(
-          `The reply was cut off at the ${maxTokens.toLocaleString()}-token limit, so the geometry is incomplete and was not applied. Raise the response limit below, or ask for a smaller change.`
+          `The reply was cut off at the ${maxTokens.toLocaleString()}-token limit, so the geometry is incomplete and was not applied. Raise the response limit in Settings, or ask for a smaller change.`
         );
       }
 
@@ -276,9 +273,6 @@ export const AICopilotPanel: React.FC = () => {
 
   if (!isAiPanelOpen) return null;
 
-  const fieldClass =
-    'w-full px-2.5 py-1.5 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-purple-400';
-
   return (
     <aside className="fixed right-0 top-14 z-30 w-96 max-w-full h-[calc(100vh-3.5rem)] bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-l border-purple-200 dark:border-purple-500/20 shadow-2xl flex flex-col transition-colors">
       {/* Header */}
@@ -289,13 +283,9 @@ export const AICopilotPanel: React.FC = () => {
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setShowSetup((v) => !v)}
+            onClick={openSettings}
             title="API keys and model"
-            className={`p-1 rounded-lg transition-colors cursor-pointer ${
-              showSetup
-                ? 'text-purple-600 bg-purple-100 dark:bg-purple-900/50'
-                : 'text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <Settings2 className="w-4 h-4" />
           </button>
@@ -307,86 +297,6 @@ export const AICopilotPanel: React.FC = () => {
           </button>
         </div>
       </div>
-
-      {/* Setup drawer */}
-      {showSetup && (
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 space-y-3">
-          <div>
-            <label className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400">Model</label>
-            <select
-              value={model}
-              onChange={(e) => {
-                setModel(e.target.value);
-                writeModel(e.target.value);
-              }}
-              className={`${fieldClass} mt-1 cursor-pointer`}
-            >
-              {models.some((m) => m.id === model) ? null : <option value={model}>{model}</option>}
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400">
-              Anthropic API key
-            </label>
-            <input
-              type="password"
-              value={anthropicKey}
-              placeholder="sk-ant-…"
-              onChange={(e) => {
-                setAnthropicKey(e.target.value);
-                writeAnthropicKey(e.target.value);
-              }}
-              className={`${fieldClass} mt-1 font-mono`}
-            />
-          </div>
-
-          <div>
-            <label className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400">
-              Google Gemini API key
-            </label>
-            <input
-              type="password"
-              value={geminiKey}
-              placeholder="AIza…"
-              onChange={(e) => {
-                setGeminiKey(e.target.value);
-                writeGeminiKey(e.target.value);
-              }}
-              className={`${fieldClass} mt-1 font-mono`}
-            />
-          </div>
-
-          <div>
-            <label className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400">
-              Max response tokens
-            </label>
-            <input
-              type="number"
-              min={MIN_MAX_TOKENS}
-              max={MAX_MAX_TOKENS}
-              step={1000}
-              value={maxTokens}
-              onChange={(e) => setMaxTokens(parseInt(e.target.value) || MIN_MAX_TOKENS)}
-              onBlur={() => setMaxTokens(writeMaxTokens(maxTokens))}
-              className={`${fieldClass} mt-1 font-mono`}
-            />
-            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-              Raise this if complex artwork comes back cut off.
-            </p>
-          </div>
-
-          <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-relaxed">
-            Keys are stored in this browser and sent directly to the provider — never to a Physbox
-            server. Use a key scoped to this purpose, and clear it on a shared machine.
-          </p>
-        </div>
-      )}
 
       {/* Mode tabs */}
       <div className="flex border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 p-1 gap-1">
@@ -501,7 +411,7 @@ export const AICopilotPanel: React.FC = () => {
         {!hasKeyForModel && (
           <p className="text-[10px] text-amber-600 dark:text-amber-400 text-center">
             No API key for {isClaudeModel(model) ? 'Anthropic' : 'Gemini'} —{' '}
-            <button onClick={() => setShowSetup(true)} className="underline cursor-pointer">
+            <button onClick={openSettings} className="underline cursor-pointer">
               add one
             </button>
             .

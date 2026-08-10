@@ -4,6 +4,7 @@ import { flattenPath, type Pt } from './pathFlatten';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchContours, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
 import { docToMachine, describeOrigin } from './machineCoords';
+import { DEFAULT_TOOL, describeTool, type MachineKind } from './tooling';
 
 export interface GCodeOptions {
   laserMode: boolean;          // True for Laser GRBL M3/M5, False for CNC router Z-axis passes
@@ -18,6 +19,8 @@ export interface GCodeOptions {
 export interface GCodeSegment {
   layerId: string;
   type: 'cut' | 'etch' | 'fill';
+  /** T-number from the layer. Segments only run consecutively if these match. */
+  tool: number;
   speed: number;
   power: number;
   zDepth: number;
@@ -40,7 +43,7 @@ export interface GCodeSegment {
 const OPERATION_ORDER: Record<GCodeSegment['type'], number> = { fill: 0, etch: 1, cut: 2 };
 
 /** Clearance height for rapids, in mm. */
-const SAFE_Z = 5;
+export const SAFE_Z = 5;
 
 /**
  * Builds the ordered toolpath for a document, without serialising it.
@@ -96,6 +99,7 @@ export function planToolpath(
           segments.push({
             layerId: layer.id,
             type: layer.operation,
+            tool: layer.tool ?? DEFAULT_TOOL,
             speed: layer.speed,
             power: layer.power,
             zDepth: layer.zDepth,
@@ -135,6 +139,7 @@ export function planToolpath(
         segments.push({
           layerId: layer.id,
           type: layer.operation,
+          tool: layer.tool ?? DEFAULT_TOOL,
           speed: layer.speed,
           power: layer.power,
           zDepth: layer.zDepth,
@@ -170,8 +175,99 @@ export function planToolpath(
     return options.innerContourFirst ? a.bBoxArea - b.bBoxArea : 0;
   });
 
+  return { segments: routeByTool(segments), skipped };
+}
 
-  return { segments, skipped };
+/**
+ * Groups each operation's segments by tool, so a job stops to change tools once
+ * per tool rather than once per layer boundary.
+ *
+ * Regrouping happens strictly *within* one operation. Tool changes are cheaper
+ * than a ruined part, so nothing here is allowed to hoist a cut ahead of an etch
+ * to save a change — the fill/etch/cut order the sort established stands.
+ *
+ * Within an operation the ordering rule differs by how reversible that operation
+ * is:
+ *
+ *   - fill and etch remove surface only, so the groups are free to reorder. The
+ *     group matching the tool already in the spindle goes first, which is what
+ *     turns "etch with the V-bit, fill with the V-bit" plus an end-milled cut
+ *     into two changes instead of three.
+ *   - cut releases the part, so its groups keep inner-before-outer order: the
+ *     group containing the smallest enclosed area runs first. Reordering here to
+ *     save a change could cut an outline free before another tool cuts the holes
+ *     inside it.
+ *
+ * The number of changes inside a block is the number of distinct tools whatever
+ * the order, so the cut rule costs at most one extra change at the boundary.
+ */
+function routeByTool(segments: GCodeSegment[]): GCodeSegment[] {
+  if (segments.length === 0) return segments;
+
+  const routed: GCodeSegment[] = [];
+  let carry: number | null = null;
+
+  for (let i = 0; i < segments.length; ) {
+    // One operation's worth of segments — the sort left them contiguous.
+    const op = segments[i].type;
+    let end = i;
+    while (end < segments.length && segments[end].type === op) end++;
+    const block = segments.slice(i, end);
+    i = end;
+
+    // Grouped in first-appearance order, so a block with one tool is untouched.
+    const groups = new Map<number, GCodeSegment[]>();
+    for (const seg of block) {
+      const g = groups.get(seg.tool);
+      if (g) g.push(seg);
+      else groups.set(seg.tool, [seg]);
+    }
+
+    let order = [...groups.keys()];
+    if (op === 'cut') {
+      const minArea = new Map(
+        order.map((tool) => [tool, Math.min(...groups.get(tool)!.map((s) => s.bBoxArea))])
+      );
+      order.sort((a, b) => minArea.get(a)! - minArea.get(b)!);
+    } else if (carry !== null && groups.has(carry)) {
+      order = [carry, ...order.filter((t) => t !== carry)];
+    }
+
+    for (const tool of order) routed.push(...groups.get(tool)!);
+    carry = order[order.length - 1];
+  }
+
+  return routed;
+}
+
+/** Where the program stops for the operator to swap tools. */
+export interface ToolChange {
+  /** Index into the planned segments of the first segment cut with `tool`. */
+  segIndex: number;
+  from: number | null;
+  tool: number;
+}
+
+/**
+ * The tool changes a planned toolpath will stop for, in program order.
+ *
+ * A single-tool job returns nothing: the tool it needs is the one already in the
+ * machine, and a pause before the first cut of a job that never changes tools is
+ * a pause with nothing to do. A multi-tool job includes its *first* tool, so the
+ * operator confirms what is loaded before the spindle starts.
+ */
+export function planToolChanges(segments: GCodeSegment[]): ToolChange[] {
+  const changes: ToolChange[] = [];
+  let current: number | null = null;
+
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].tool !== current) {
+      changes.push({ segIndex: i, from: current, tool: segments[i].tool });
+      current = segments[i].tool;
+    }
+  }
+
+  return changes.length > 1 ? changes : [];
 }
 
 export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {}): string {
@@ -187,6 +283,12 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
   };
 
   const { segments, skipped } = planToolpath(doc, opts);
+  const machineKind: MachineKind = options.laserMode ? 'laser' : 'cnc';
+
+  // Where the program stops to be re-tooled, keyed by the segment it stops
+  // before, so the loop below can emit each change at exactly the right point.
+  const toolChanges = planToolChanges(segments);
+  const changeAt = new Map(toolChanges.map((c) => [c.segIndex, c]));
 
   // Generate G-code header
   let gcode = `; Generated by Physbox Etch (etch.physbox.io)\n`;
@@ -194,6 +296,12 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
   gcode += `; Mode: ${options.laserMode ? 'Laser Cutter (GRBL)' : 'CNC Router/Mill'}\n`;
   gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   gcode += `; Segments: ${segments.length}\n`;
+  if (toolChanges.length) {
+    gcode += `; Tool changes: ${toolChanges.length} — the job pauses at each one\n`;
+    for (const c of toolChanges) gcode += `;   ${describeTool(machineKind, c.tool)}\n`;
+  } else if (segments.length) {
+    gcode += `; Tool: ${describeTool(machineKind, segments[0].tool)}\n`;
+  }
   for (const s of skipped) gcode += `; SKIPPED: ${s}\n`;
   gcode += `G90 ; Absolute positioning\n`;
   gcode += `G21 ; Millimeter units\n`;
@@ -202,11 +310,19 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
     gcode += `M5  ; Laser off initially\n`;
   } else {
     gcode += `G0 Z${SAFE_Z} ; Spindle clearance height\n`;
-    gcode += `M3 S${options.spindleSpeedMax} ; Spindle turn on\n`;
+    // On a multi-tool job the spindle waits until the first tool is confirmed
+    // loaded — starting it here would spin up a collet nobody has checked.
+    if (!toolChanges.length) gcode += `M3 S${options.spindleSpeedMax} ; Spindle turn on\n`;
   }
 
   let currentX = 0;
   let currentY = 0;
+  /**
+   * Set after a tool change: the operator has had the machine to themselves and
+   * may have jogged it to reach the collet, so the next move must be a rapid to
+   * a known point rather than a cut from wherever the head is assumed to be.
+   */
+  let repositionNeeded = false;
 
   // Segments stay in document space so the preview can draw them exactly as the
   // canvas does; the conversion to machine space happens here, once, on the way
@@ -223,6 +339,24 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
     const prev = sIdx > 0 ? segments[sIdx - 1] : null;
     const sPower = Math.round((seg.power / 100) * options.spindleSpeedMax);
 
+    const change = changeAt.get(sIdx);
+    if (change) {
+      // M6 is not motion: the stream stops here and waits to be resumed, so
+      // everything is parked and switched off before it is sent.
+      gcode += `\n; --- Tool change: ${describeTool(machineKind, change.tool)} ---\n`;
+      gcode += `M5 ; spindle/laser off for the change\n`;
+      if (!options.laserMode) {
+        gcode += `G0 Z${SAFE_Z} ; retract clear of the work\n`;
+        engagedDepth = null;
+      }
+      gcode += `M6 T${change.tool} ; PAUSE — load the tool, re-zero Z, then resume\n`;
+      if (!options.laserMode) {
+        gcode += `M3 S${options.spindleSpeedMax} ; spindle back on\n`;
+        gcode += `G0 Z${SAFE_Z} ; clearance height before moving\n`;
+      }
+      repositionNeeded = true;
+    }
+
     for (let pass = 1; pass <= seg.passes; pass++) {
       const zPassDepth = -Math.abs(seg.zDepth) * (pass / seg.passes);
       const startPt = toMachine(seg.points[0]);
@@ -237,6 +371,7 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
        */
       const isLink =
         prev !== null &&
+        !repositionNeeded &&
         pass === 1 &&
         seg.passes === 1 &&
         prev.passes === 1 &&
@@ -258,7 +393,7 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
         currentX = startPt.x;
         currentY = startPt.y;
       } else {
-        if (gap > 0.01) {
+        if (gap > 0.01 || repositionNeeded) {
           if (options.laserMode) {
             gcode += `M5 ; Laser OFF for rapid\n`;
           } else if (engagedDepth !== null) {
@@ -268,6 +403,7 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
           gcode += `G0 X${startPt.x.toFixed(3)} Y${startPt.y.toFixed(3)} F${options.travelSpeed}\n`;
           currentX = startPt.x;
           currentY = startPt.y;
+          repositionNeeded = false;
         }
 
         if (options.laserMode) {

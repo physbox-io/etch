@@ -37,6 +37,30 @@ export function getGridStats(grid: BedProbeGrid): GridStats {
 }
 
 /**
+ * Suggests how many probe points to take along each axis for a given job.
+ *
+ * A square grid over a long thin board wastes probes across the narrow axis and
+ * leaves them too far apart along the long one, which is where the surface
+ * actually moves. Spacing is instead held roughly equal on both axes: `base`
+ * points across the shorter side, and however many that spacing implies across
+ * the longer one.
+ */
+export function suggestGridCounts(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  base = 3,
+  max = 10
+): { gridX: number; gridY: number } {
+  const clamp = (n: number) => Math.max(2, Math.min(max, Math.round(n)));
+  const width = bounds.maxX - bounds.minX;
+  const height = bounds.maxY - bounds.minY;
+  const shorter = Math.min(width, height);
+  if (!(shorter > 1e-6)) return { gridX: clamp(base), gridY: clamp(base) };
+
+  const spacing = shorter / (clamp(base) - 1);
+  return { gridX: clamp(width / spacing + 1), gridY: clamp(height / spacing + 1) };
+}
+
+/**
  * Bilinear height at (x, y). Points outside the probed area clamp to the edge
  * rather than extrapolating — a guessed slope beyond the measurements is how a
  * levelled job digs in just outside the grid.
@@ -68,6 +92,30 @@ export function interpolateGridZ(grid: BedProbeGrid, x: number, y: number): numb
   const top = z00 * (1 - tx) + z10 * tx;
   const bottom = z01 * (1 - tx) + z11 * tx;
   return top * (1 - ty) + bottom * ty;
+}
+
+/**
+ * Shifts a heightmap so it reads exactly zero at (x, y).
+ *
+ * A heightmap is a correction, and a correction has to vanish where the depth
+ * is already right — the point work Z0 was touched off at. Anchored anywhere
+ * else, every commanded Z in the job is off by the surface height difference
+ * between that anchor and the datum: a constant bias, applied everywhere, of
+ * the same order as the error being corrected.
+ *
+ * Points outside the probed area clamp to the edge (see `interpolateGridZ`), so
+ * a datum taken just off the job still resolves to the nearest measurement
+ * rather than to nothing.
+ */
+export function rereferenceGrid(grid: BedProbeGrid, x: number, y: number): BedProbeGrid {
+  const bias = interpolateGridZ(grid, x, y);
+  if (!Number.isFinite(bias) || bias === 0) return grid;
+  return {
+    ...grid,
+    points: grid.points.map((row) =>
+      row.map((p) => ({ ...p, z: parseFloat((p.z - bias).toFixed(3)) }))
+    ),
+  };
 }
 
 const f = (n: number) => n.toFixed(3);

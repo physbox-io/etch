@@ -1,7 +1,7 @@
 import { applyMatrix, type Matrix } from './matrix';
 import type { Pt } from './pathFlatten';
 
-type Seg =
+export type Seg =
   | { c: 'M'; p: Pt }
   | { c: 'L'; p: Pt }
   | { c: 'C'; c1: Pt; c2: Pt; p: Pt }
@@ -35,7 +35,17 @@ export function transformPathD(d: string, m: Matrix, precision = 4): string {
   return parts.join(' ');
 }
 
-/** Parses a `d` string into absolute M/L/C/Z segments. */
+/**
+ * Parses a `d` string into absolute M/L/C/Z segments.
+ *
+ * Exported because the node editor needs the same normalisation: an imported
+ * path full of relative arcs and smooth shorthands has to become plain cubics
+ * before it can be shown as draggable nodes with handles.
+ */
+export function normalizePathD(d: string): Seg[] {
+  return normalize(d);
+}
+
 function normalize(d: string): Seg[] {
   const out: Seg[] = [];
   const tokens = d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g);

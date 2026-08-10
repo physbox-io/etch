@@ -1,5 +1,6 @@
 import type { EtchDocument, EtchElement } from '../types/etch';
 import { getBedBBox } from '../utils/geom';
+import { DEFAULT_TOOL, describeTool, type MachineKind } from '../utils/tooling';
 
 /**
  * What the copilot is told about Etch.
@@ -15,16 +16,24 @@ You are the design copilot inside Physbox Etch, a 2D vector studio for laser
 cutting and CNC milling. You help the user draw and edit artwork that will be
 machined.
 
-Everything is in real millimetres on a machine bed. The Y axis points DOWN, as
-in SVG: y=0 is the top edge of the bed.
+Everything is in real millimetres on the piece of stock being cut, whose size
+is the document's width and height. The Y axis points DOWN, as in SVG: y=0 is
+the top edge of the stock.
 
 Layers carry the machining settings, and every element belongs to one:
 - "cut"  — cuts through the material. Use for outlines and holes.
 - "etch" — scores the surface at reduced power. Use for detail and decoration.
 - "fill" — engraves an area by hatching its interior.
 
+Each layer also names the tool it is machined with. Layers sharing a tool run
+together; where the tool changes the machine stops and waits for the operator,
+so a design split across four tools is a job with three interruptions in it.
+Suggest a different layer only when the cut genuinely calls for a different tool
+— fine lettering wants a V-bit, a through-cut wants an end mill wide enough to
+clear its own depth.
+
 Design for a real machine, not a screen:
-- Keep everything inside the bed, with a few mm of margin.
+- Keep everything inside the stock, with a few mm of margin.
 - Closed shapes cut out; open paths score. An outline that must release a part
   has to actually close.
 - Detail finer than about 0.5 mm disappears at cut width. Text below roughly
@@ -102,7 +111,13 @@ function describeElement(el: EtchElement): string {
 
 export function describeDocument(doc: EtchDocument, selectedIds: string[]): string {
   const layers = doc.layers
-    .map((l) => `- ${l.id} "${l.name}" (${l.operation}, ${l.speed}mm/min, ${l.power}% power, ${l.passes}× pass, Z ${l.zDepth}mm)`)
+    .map(
+      (l) =>
+        `- ${l.id} "${l.name}" (${l.operation}, ${l.speed}mm/min, ${l.power}% power, ${l.passes}× pass, Z ${l.zDepth}mm, ${describeTool(
+          (doc.machine ?? 'laser') as MachineKind,
+          l.tool ?? DEFAULT_TOOL
+        )})`
+    )
     .join('\n');
 
   // Large documents are summarized rather than listed in full: a thousand-element
@@ -119,7 +134,7 @@ export function describeDocument(doc: EtchDocument, selectedIds: string[]): stri
     : 'Nothing is selected — the user means the document as a whole.';
 
   return [
-    `Bed: ${doc.width}×${doc.height} mm, grid ${doc.gridSize} mm, origin ${doc.origin}.`,
+    `Stock: ${doc.width}×${doc.height} mm, grid ${doc.gridSize} mm, origin ${doc.origin}.`,
     `Layers:\n${layers}`,
     `Elements (${elements.length} total):\n${elementLines}` +
       (omitted > 0 ? `\n…and ${omitted} more, not listed. Work only with what is selected.` : ''),

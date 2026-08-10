@@ -7,9 +7,13 @@
  */
 export const DOCS_TABS = [
   {
+    group: 'User Interface',
+    items: [{ id: 'selection', label: '🖱️ Selecting & Moving' }],
+  },
+  {
     group: 'Design',
     items: [
-      { id: 'workspace', label: '🖥️ Bed, Layers & Units' },
+      { id: 'workspace', label: '🖥️ Stock, Layers & Units' },
       { id: 'text', label: '🔤 Text & Vectorizing' },
       { id: 'fill', label: '🪡 Engrave Fill & Hatch' },
       { id: 'import', label: '📥 SVG Import' },

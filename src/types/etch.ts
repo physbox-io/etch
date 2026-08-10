@@ -11,6 +11,14 @@ export interface EtchLayer {
   power: number;    // 0 - 100 %
   passes: number;   // number of passes
   zDepth: number;   // mm depth for CNC cut
+  /**
+   * The tool this layer is machined with, as a T-number. Layers that differ
+   * here are cut in separate blocks with a programmed pause between them, so
+   * this is what makes a V-carved inscription inside an end-milled part one job
+   * rather than two. Absent means the default tool — a single-tool job never
+   * pauses. See `utils/tooling.ts` for what the numbers mean.
+   */
+  tool?: number;
 }
 
 export type ElementType =
@@ -106,8 +114,14 @@ export interface EtchElement {
 export interface EtchDocument {
   id: string;
   name: string;
-  width: number;  // Bed width in mm (e.g. 300)
-  height: number; // Bed height in mm (e.g. 200)
+  /**
+   * The working area, in mm — the piece of stock this job is cut from, not the
+   * machine's full travel. It is what the canvas draws, what framing traces,
+   * what the bed is probed over, and (via `origin`) what machine X0 Y0 is
+   * measured from, so it should match the material actually clamped down.
+   */
+  width: number;
+  height: number;
   gridSize: number; // mm (e.g. 10)
   /** Defaults applied when an element is switched to filled machining. */
   defaultHatchAngle?: number;
@@ -211,8 +225,7 @@ export interface ProbePoint {
 
 /**
  * A bed heightmap, as measured by `webSerialManager.probeGrid`. Heights are
- * relative to the first probed point, so this is a warp to add to commanded Z
- * rather than an absolute surface.
+ * offsets to add to commanded Z, not an absolute surface.
  */
 export interface BedProbeGrid {
   minX: number;
@@ -222,6 +235,16 @@ export interface BedProbeGrid {
   gridX: number;
   gridY: number;
   points: ProbePoint[][];
+  /**
+   * Where the map reads zero, and so where cut depth is exactly as commanded.
+   *
+   * `z-datum` is the correct one: the point work Z0 was touched off at. A map
+   * anchored anywhere else biases the whole job by the height difference
+   * between that anchor and the datum, which is the error levelling is for.
+   * `first-point` means Z had not been zeroed when the bed was probed, and the
+   * map carries that bias.
+   */
+  referencedTo: 'z-datum' | 'first-point';
   /** Points where the probe never made contact, recorded flat. */
   missed: number;
   /** True when the grid was simulated with no machine attached. */

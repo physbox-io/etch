@@ -1,16 +1,33 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store/useStore';
 import type { EtchElement, BezierNode } from '../types/etch';
 import { ensureGoogleFont } from '../utils/googleFonts';
 import {
   getLocalBBox,
+  getBedBBox,
   getElementTransform,
   getPivotInBed,
   generateStarPath,
   snapPoint,
+  bedToLocal,
+  pivotAnchoredPosition,
 } from '../utils/geom';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { computeResize, resizeSeed } from '../utils/resizeElement';
+import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
+import {
+  nodesToPath,
+  elementNodePath,
+  nodePathUpdate,
+  insertNode,
+  removeNode,
+  moveNode,
+  setHandle,
+  closestPointOnPath,
+  ghostHandle,
+  type NodePath,
+  type HandleKind,
+} from '../utils/bezierNodes';
 
 /** Equal 25mm margin on top, bottom, left and right of the bed. */
 const BED_MARGIN = 25;
@@ -30,6 +47,32 @@ interface TransformStart {
   elRy: number;
   /** Mouse angle around the pivot at grab time, degrees. */
   grabAngle: number;
+  /**
+   * Every element a 'move' drags, with its position at grab time. Deltas are
+   * applied to these seeds rather than accumulated frame to frame, so a
+   * multi-element move cannot drift apart.
+   */
+  moves: Array<{ id: string; x: number; y: number }>;
+}
+
+/** What the node editor is currently dragging on the selected path. */
+interface NodeDrag {
+  index: number;
+  /** An anchor, or one of its two tangent handles. */
+  kind: 'node' | HandleKind;
+  /** Alt breaks handle symmetry, making a corner instead of a smooth node. */
+  mirror: boolean;
+}
+
+/** How close (mm on screen) a click must land to count as "on the path". */
+const NODE_GRAB_PX = 6;
+
+/** Marquee rectangle in bed (mm) coordinates. */
+interface Marquee {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 export const EtchCanvas: React.FC = () => {
@@ -73,9 +116,18 @@ export const EtchCanvas: React.FC = () => {
   // node's tangent handles (Illustrator/Inkscape pen behaviour).
   const [isDraggingHandle, setIsDraggingHandle] = useState(false);
 
+  // Node editing of an existing path
+  const [nodeDrag, setNodeDrag] = useState<NodeDrag | null>(null);
+  /** The anchor the Delete key acts on, and the one whose handles are shown. */
+  const [activeNode, setActiveNode] = useState<number | null>(null);
+
   // Element Transformation (Move, Resize, Rotate)
   const [isTransforming, setIsTransforming] = useState<TransformMode | null>(null);
   const [transformStart, setTransformStart] = useState<TransformStart | null>(null);
+
+  // Rubber-band (marquee) selection
+  const [marquee, setMarquee] = useState<Marquee | null>(null);
+  const [marqueeAdditive, setMarqueeAdditive] = useState(false);
 
   const gridSize = document.gridSize || 10;
   const snapEnabled = document.snapToGrid;
@@ -170,7 +222,7 @@ export const EtchCanvas: React.FC = () => {
           type: 'bezier',
           x: ox,
           y: oy,
-          d: bezierNodesToPath(local, close),
+          d: nodesToPath(local, close),
           bezierNodes: local,
           ...baseElementProps(),
         } as EtchElement);
@@ -209,6 +261,126 @@ export const EtchCanvas: React.FC = () => {
     if (activeTool !== 'bezier') finishRef.current(false);
   }, [activeTool]);
 
+  // ------------------------------------------------------------- Hit testing
+
+  /**
+   * Every element under the pointer, topmost first.
+   *
+   * Uses the browser's own hit testing (which respects strokes, fills and the
+   * fat transparent hit areas below) rather than bounding boxes, then walks up
+   * to the owning element group. `window.document` — the store's `document`
+   * shadows the global one in this component.
+   */
+  const hitStack = useCallback((e: { clientX: number; clientY: number }): string[] => {
+    const ids: string[] = [];
+    for (const node of window.document.elementsFromPoint(e.clientX, e.clientY)) {
+      const owner = node.closest?.('[data-el-id]');
+      const id = owner?.getAttribute('data-el-id');
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    return ids;
+  }, []);
+
+  /**
+   * Local bounding boxes for text, used as their click targets: a label is a
+   * block, and nobody aims at the stem of a letter. Memoized because it
+   * flattens the glyph outlines, and the canvas re-renders on every mouse move.
+   */
+  const textHitBoxes = useMemo(() => {
+    const boxes = new Map<string, ReturnType<typeof getLocalBBox>>();
+    for (const el of document.elements) {
+      if (el.type === 'text') boxes.set(el.id, getLocalBBox(el));
+    }
+    return boxes;
+  }, [document.elements]);
+
+  /** Selectable = actually on screen; hidden elements must not be marquee-able. */
+  const isPickable = useCallback(
+    (el: EtchElement) =>
+      el.visible !== false &&
+      document.layers.find((l) => l.id === el.layerId)?.visible !== false,
+    [document.layers]
+  );
+
+  // ----------------------------------------------------------- Node editing
+
+  const selectedElement =
+    selectedIds.length === 1
+      ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
+      : null;
+
+  /**
+   * The selected element's geometry as draggable nodes, when the node tool is
+   * up. Derived from the document rather than held in state, so an edit, an
+   * undo and a redo all land on the canvas the same way.
+   */
+  const editPath = useMemo<NodePath | null>(
+    () =>
+      activeTool === 'node-edit' && selectedElement && !selectedElement.locked
+        ? elementNodePath(selectedElement)
+        : null,
+    [activeTool, selectedElement]
+  );
+
+  /** Writes an edited path back to the element. Transient until mouse-up. */
+  const applyNodePath = useCallback(
+    (np: NodePath, transient: boolean) => {
+      if (!selectedElement) return;
+      const patch = nodePathUpdate(np);
+      // Editing the geometry moves the bbox centre the element rotates about,
+      // which would swing the untouched half of a rotated path across the bed.
+      updateElement(
+        selectedElement.id,
+        { ...patch, ...pivotAnchoredPosition(selectedElement, patch) },
+        transient
+      );
+    },
+    [selectedElement, updateElement]
+  );
+
+  /** Pointer position in the selected element's own coordinates. */
+  const toLocal = useCallback(
+    (e: { clientX: number; clientY: number }, snap: boolean) => {
+      if (!selectedElement) return { x: 0, y: 0 };
+      const bed = snap ? toBedSnapped(e) : toBed(e);
+      return bedToLocal(selectedElement, bed.x, bed.y);
+    },
+    [selectedElement, toBed, toBedSnapped]
+  );
+
+  // A node index only means anything for the path it came from, so switching
+  // path or tool drops it. Adjusted during render rather than in an effect:
+  // an effect would leave one frame drawing handles on the wrong shape.
+  const editKey = `${activeTool}:${selectedElement?.id ?? ''}`;
+  const [nodeOwner, setNodeOwner] = useState(editKey);
+  if (nodeOwner !== editKey) {
+    setNodeOwner(editKey);
+    setActiveNode(null);
+    setNodeDrag(null);
+  }
+
+  // An index can also be stranded by an edit that shortened the path.
+  const activeIdx =
+    editPath && activeNode !== null && activeNode < editPath.nodes.length ? activeNode : null;
+
+  // Delete/Backspace removes the selected node. App's global handler defers to
+  // this while the node tool is up, so the key does not delete the whole path.
+  useEffect(() => {
+    if (activeTool !== 'node-edit') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return;
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (!editPath || activeIdx === null) return;
+      e.preventDefault();
+      const next = removeNode(editPath, activeIdx);
+      if (next === editPath) return; // a 2-node path has nothing to spare
+      applyNodePath(next, false);
+      setActiveNode(Math.min(activeIdx, next.nodes.length - 1));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [activeTool, editPath, activeIdx, applyNodePath]);
+
   // ------------------------------------------------------------ Mouse down
 
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -222,11 +394,78 @@ export const EtchCanvas: React.FC = () => {
     const coords = toBedSnapped(e);
 
     if (activeTool === 'select') {
-      if ((e.target as Element).tagName === 'svg' || (e.target as Element).tagName === 'rect') {
-        // Only a click on empty canvas clears the selection; element hits stop
-        // propagation before reaching here.
-        if (!(e.target as Element).closest('#selection-box')) setSelectedIds([]);
+      // Overlay handles (rotate/resize) stop propagation before reaching here.
+      const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey);
+
+      if (!hit) {
+        const raw = toBed(e);
+
+        // Nothing inked under the pointer, but an element is already selected
+        // and the pointer is inside its box: grab it. Outline-only shapes are
+        // otherwise only draggable by their stroke, which is a hairline.
+        const selected = document.elements.filter(
+          (el) => selectedIds.includes(el.id) && !el.locked
+        );
+        const inside = selected.some((el) => {
+          const b = getBedBBox(el);
+          return (
+            raw.x >= b.minX && raw.x <= b.minX + b.width &&
+            raw.y >= b.minY && raw.y <= b.minY + b.height
+          );
+        });
+        if (inside && !e.shiftKey) {
+          beginTransform(selected[0], 'move', toBedSnapped(e), selected);
+          return;
+        }
+
+        // Empty canvas: start a rubber band. The selection is not cleared until
+        // mouse-up, so a marquee that turns out to be a plain click still
+        // clears, but Shift+drag can extend the existing selection.
+        setMarquee({ x0: raw.x, y0: raw.y, x1: raw.x, y1: raw.y });
+        setMarqueeAdditive(e.shiftKey);
+        return;
       }
+
+      // Shift toggles membership; a plain click on something already selected
+      // keeps the whole selection so the group can be dragged as one.
+      let next: string[];
+      if (e.shiftKey) {
+        next = toggleSelection(selectedIds, hit);
+      } else if (selectedIds.includes(hit) && !e.altKey) {
+        next = selectedIds;
+      } else {
+        next = [hit];
+      }
+      setSelectedIds(next);
+
+      const primary = document.elements.find((el) => el.id === hit);
+      const movable = document.elements.filter((el) => next.includes(el.id) && !el.locked);
+      if (primary && !e.shiftKey && movable.length > 0) {
+        beginTransform(primary, 'move', toBedSnapped(e), movable);
+      }
+      return;
+    }
+
+    // Node editing. Nodes and handles are overlay circles that claim their own
+    // mousedown, so anything arriving here is either a click on the path (add a
+    // node) or a click elsewhere (pick a different path to edit).
+    if (activeTool === 'node-edit') {
+      if (editPath) {
+        const local = toLocal(e, false);
+        const hit = closestPointOnPath(editPath, local);
+        // The tolerance is a screen distance, so zooming in does not make the
+        // outline harder to hit.
+        if (hit && hit.dist <= NODE_GRAB_PX / zoom) {
+          const next = insertNode(editPath, hit.segIndex, hit.t);
+          applyNodePath(next, true);
+          setActiveNode(hit.segIndex + 1);
+          setNodeDrag({ index: hit.segIndex + 1, kind: 'node', mirror: false });
+          return;
+        }
+      }
+      const pick = pickHit(hitStack(e), document.elements, selectedIds, e.altKey);
+      setSelectedIds(pick ? [pick] : []);
+      setActiveNode(null);
       return;
     }
 
@@ -301,8 +540,35 @@ export const EtchCanvas: React.FC = () => {
       return;
     }
 
+    // Dragging a node or one of its handles. Anchors land on the grid like
+    // every other position in the app; handles are a direction and a length,
+    // so they track the raw pointer.
+    if (nodeDrag && editPath) {
+      const local = toLocal(e, nodeDrag.kind === 'node' && snapEnabled);
+      const next =
+        nodeDrag.kind === 'node'
+          ? moveNode(editPath, nodeDrag.index, local)
+          : setHandle(editPath, nodeDrag.index, nodeDrag.kind, local, nodeDrag.mirror);
+      applyNodePath(next, true);
+      return;
+    }
+
     if (isCreatingShape && shapeStart) {
       setShapeCurrent(coords);
+      return;
+    }
+
+    if (marquee) {
+      setMarquee({ ...marquee, x1: rawCoords.x, y1: rawCoords.y });
+      return;
+    }
+
+    if (isTransforming === 'move' && transformStart) {
+      const dx = coords.x - transformStart.mouseX;
+      const dy = coords.y - transformStart.mouseY;
+      for (const m of transformStart.moves) {
+        updateElement(m.id, { x: m.x + dx, y: m.y + dy }, true);
+      }
       return;
     }
 
@@ -310,19 +576,16 @@ export const EtchCanvas: React.FC = () => {
       const el = document.elements.find((it) => it.id === selectedIds[0]);
       if (!el || el.locked) return;
 
-      // Moves snap to the grid; resizing does not. Snapping the *pointer* while
-      // resizing quantized the drag to whole grid cells, so any drag shorter
-      // than half a cell produced a delta of exactly zero — which on a small
-      // element (a line of text is tens of mm) meant the handle appeared dead
-      // until you dragged most of a cell. Size is a dimension, not a position:
-      // it wants the real pointer.
-      const from = isTransforming === 'move' ? coords : rawCoords;
-      const dx = from.x - transformStart.mouseX;
-      const dy = from.y - transformStart.mouseY;
+      // Moves snap to the grid (see the branch above); resizing does not.
+      // Snapping the *pointer* while resizing quantized the drag to whole grid
+      // cells, so any drag shorter than half a cell produced a delta of exactly
+      // zero — which on a small element (a line of text is tens of mm) meant
+      // the handle appeared dead until you dragged most of a cell. Size is a
+      // dimension, not a position: it wants the real pointer.
+      const dx = rawCoords.x - transformStart.mouseX;
+      const dy = rawCoords.y - transformStart.mouseY;
 
-      if (isTransforming === 'move') {
-        updateElement(el.id, { x: transformStart.elX + dx, y: transformStart.elY + dy }, true);
-      } else if (isTransforming === 'resize-se') {
+      if (isTransforming === 'resize-se') {
         updateElement(el.id, computeResize(el, transformStart, dx, dy), true);
       } else if (isTransforming === 'rotate') {
         const pivot = getPivotInBed(el);
@@ -341,6 +604,13 @@ export const EtchCanvas: React.FC = () => {
   const handleMouseUp = (e: React.MouseEvent<SVGSVGElement>) => {
     if (isPanning) setIsPanning(false);
     if (isDraggingHandle) setIsDraggingHandle(false);
+
+    if (nodeDrag) {
+      // One undo entry per gesture, matching how moves and resizes commit.
+      setNodeDrag(null);
+      commitHistory();
+      return;
+    }
 
     if (isFreehandDrawing) {
       setIsFreehandDrawing(false);
@@ -378,11 +648,54 @@ export const EtchCanvas: React.FC = () => {
       setShapeCurrent(null);
     }
 
+    if (marquee) {
+      const rect = normalizeRect(
+        { x: marquee.x0, y: marquee.y0 },
+        { x: marquee.x1, y: marquee.y1 }
+      );
+      // Below a fraction of a millimetre of travel this was a click on empty
+      // canvas, not a band: clear the selection (unless Shift was held to
+      // extend it).
+      if (Math.max(rect.maxX - rect.minX, rect.maxY - rect.minY) < 0.5) {
+        if (!marqueeAdditive) setSelectedIds([]);
+      } else {
+        const hits = elementsInMarquee(document.elements, rect, isPickable);
+        setSelectedIds(
+          marqueeAdditive
+            ? [...selectedIds, ...hits.filter((id) => !selectedIds.includes(id))]
+            : hits
+        );
+      }
+      setMarquee(null);
+      setMarqueeAdditive(false);
+      return;
+    }
+
     if (isTransforming) {
-      const el = document.elements.find((it) => it.id === selectedIds[0]);
-      // Land moves on the grid: every tool snaps at start AND end.
-      if (isTransforming === 'move' && el && snapEnabled) {
-        updateElement(el.id, snapPoint({ x: el.x, y: el.y }, gridSize), true);
+      // Land moves on the grid: every tool snaps at start AND end. The whole
+      // group shifts by ONE correction — snapping each element to its own
+      // nearest intersection would pull a multi-selection out of alignment.
+      if (isTransforming === 'move' && snapEnabled && transformStart) {
+        const live = useStore.getState().document.elements;
+        const lead = live.find((it) => it.id === transformStart.moves[0]?.id);
+        // Only a real drag lands on the grid. A plain click also opens a move
+        // gesture (that is how you grab a shape), and snapping on its way out
+        // would silently nudge an off-grid element you merely selected.
+        const moved = transformStart.moves.some((m) => {
+          const el = live.find((it) => it.id === m.id);
+          return el ? el.x !== m.x || el.y !== m.y : false;
+        });
+        if (lead && moved) {
+          const snapped = snapPoint({ x: lead.x, y: lead.y }, gridSize);
+          const cx = snapped.x - lead.x;
+          const cy = snapped.y - lead.y;
+          if (cx !== 0 || cy !== 0) {
+            for (const m of transformStart.moves) {
+              const el = live.find((it) => it.id === m.id);
+              if (el) updateElement(el.id, { x: el.x + cx, y: el.y + cy }, true);
+            }
+          }
+        }
       }
       setIsTransforming(null);
       setTransformStart(null);
@@ -392,17 +705,23 @@ export const EtchCanvas: React.FC = () => {
 
   const handleMouseLeave = (e: React.MouseEvent<SVGSVGElement>) => {
     // Releasing outside the canvas used to leave the app stuck mid-drag.
-    if (isPanning || isFreehandDrawing || isCreatingShape || isTransforming) {
+    if (isPanning || isFreehandDrawing || isCreatingShape || isTransforming || marquee || nodeDrag) {
       handleMouseUp(e);
     }
   };
 
-  const beginTransform = (el: EtchElement, mode: TransformMode, at: { x: number; y: number }) => {
+  const beginTransform = (
+    el: EtchElement,
+    mode: TransformMode,
+    at: { x: number; y: number },
+    moving: EtchElement[] = [el]
+  ) => {
     const pivot = getPivotInBed(el);
     setIsTransforming(mode);
     setTransformStart({
       mouseX: at.x,
       mouseY: at.y,
+      moves: moving.map((m) => ({ id: m.id, x: m.x, y: m.y })),
       elX: el.x,
       elY: el.y,
       // For scale-driven shapes the resize handler reads elW/elH back as the
@@ -415,11 +734,30 @@ export const EtchCanvas: React.FC = () => {
     });
   };
 
-  const selectedElement =
-    selectedIds.length === 1
-      ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
-      : null;
   const selectedLocal = selectedElement ? getLocalBBox(selectedElement) : null;
+
+  // Multi-selection: one axis-aligned box around everything, plus a thin
+  // outline per member so you can see exactly what is in the set. Resize and
+  // rotate handles stay a single-element affair — a group transform would have
+  // to rewrite every member's geometry, which this document model does not do.
+  const selectedElements =
+    selectedIds.length > 1 ? document.elements.filter((el) => selectedIds.includes(el.id)) : [];
+  const multiBox =
+    selectedElements.length > 1
+      ? selectedElements.reduce(
+          (acc, el) => {
+            const b = getBedBBox(el);
+            return {
+              minX: Math.min(acc.minX, b.minX),
+              minY: Math.min(acc.minY, b.minY),
+              maxX: Math.max(acc.maxX, b.minX + b.width),
+              maxY: Math.max(acc.maxY, b.minY + b.height),
+            };
+          },
+          { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+        )
+      : null;
+
   // Handle geometry is in bed mm; dividing by zoom keeps it a constant
   // on-screen size instead of ballooning as you zoom in.
   const hs = 1 / zoom;
@@ -444,8 +782,24 @@ export const EtchCanvas: React.FC = () => {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onDoubleClick={() => {
-          if (activeTool === 'bezier') finishBezier(false);
+        onDoubleClick={(e) => {
+          if (activeTool === 'bezier') {
+            finishBezier(false);
+            return;
+          }
+          // Double-clicking a curve with the select tool drops into node
+          // editing on it, the way every vector editor does — the node tool is
+          // otherwise something you have to know is in the toolbar. Only
+          // path-backed shapes qualify; text keeps its own double-click, which
+          // opens the text prompt.
+          if (activeTool === 'select') {
+            const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey);
+            const el = hit ? document.elements.find((it) => it.id === hit) : null;
+            if (el && !el.locked && elementNodePath(el)) {
+              setSelectedIds([el.id]);
+              setToolMode('node-edit');
+            }
+          }
         }}
         onContextMenu={(e) => {
           if (activeTool === 'bezier') {
@@ -574,37 +928,76 @@ export const EtchCanvas: React.FC = () => {
               el.strokeDash === 'dashed' ? '2,1' : el.strokeDash === 'dotted' ? '0.4,1' : undefined,
           };
           const isPathish = ['path', 'freehand', 'symbol', 'star', 'bezier'].includes(el.type);
+          const polyPoints =
+            el.points?.map((p) => `${p.x},${p.y}`).join(' ') ||
+            Array.from({ length: el.sides || 6 })
+              .map((_, i) => {
+                const a = (i * 2 * Math.PI) / (el.sides || 6);
+                const r = el.r || 25;
+                return `${(r * Math.cos(a)).toFixed(3)},${(r * Math.sin(a)).toFixed(3)}`;
+              })
+              .join(' ');
+          // A fat transparent copy of the outline, so hairline strokes are
+          // comfortably clickable. `transparent` is a paint, not `none`, so it
+          // is a hit target under visiblePainted while drawing nothing.
+          const hit = { fill: 'none', stroke: 'transparent', strokeWidth: Math.max(strokeW, 3) };
+          const textHit = el.type === 'text' ? textHitBoxes.get(el.id) : null;
 
           return (
             <g
               key={el.id}
+              data-el-id={el.id}
               transform={transform}
-              onMouseDown={(e) => {
-                if (activeTool !== 'select' || e.button !== 0) return;
-                e.stopPropagation();
-                setSelectedIds([el.id]);
-                if (!el.locked) beginTransform(el, 'move', toBedSnapped(e));
-              }}
+              // No mousedown handler: the canvas resolves clicks itself, from
+              // the full stack of elements under the pointer. Letting each
+              // group claim its own click made the winner depend on document
+              // order, so a shape sitting inside another was unreachable.
               className={activeTool === 'select' ? 'cursor-move' : ''}
-              style={{ pointerEvents: activeTool === 'select' ? 'all' : 'none' }}
+              // `visiblePainted`, not `all`: with `all` an element answers
+              // clicks anywhere in its interior even when it is drawn as a bare
+              // outline, so an unfilled boundary rectangle swallowed every
+              // click that landed inside it — including on the text it frames.
+              // Now a shape is grabbed where it is actually inked, plus the fat
+              // transparent hit outlines below.
+              // The node tool also needs to pick elements, so it can be handed
+              // a different path to edit by clicking one.
+              style={{
+                pointerEvents:
+                  activeTool === 'select' || activeTool === 'node-edit'
+                    ? 'visiblePainted'
+                    : 'none',
+              }}
             >
-              {/* Fat transparent hit area so hairline strokes are clickable */}
+              {/* Hit areas — transparent, and always first so they never cover
+                  the real geometry. */}
               {el.type === 'line' && (
-                <line
-                  x1="0"
-                  y1="0"
-                  x2={el.x2 ?? 40}
-                  y2={el.y2 ?? 0}
-                  stroke="transparent"
-                  strokeWidth={Math.max(strokeW, 3)}
+                <line x1="0" y1="0" x2={el.x2 ?? 40} y2={el.y2 ?? 0} {...hit} />
+              )}
+              {isPathish && <path d={el.d || ''} {...hit} />}
+              {el.type === 'rect' && (
+                <rect
+                  width={el.w || 40}
+                  height={el.h || 25}
+                  rx={el.rx || 0}
+                  ry={el.ry ?? el.rx ?? 0}
+                  {...hit}
                 />
               )}
-              {isPathish && (
-                <path
-                  d={el.d || ''}
-                  fill="none"
+              {el.type === 'circle' && <circle r={el.r || 20} {...hit} />}
+              {el.type === 'ellipse' && <ellipse rx={el.rx2 || 30} ry={el.ry2 || 20} {...hit} />}
+              {el.type === 'polygon' && <polygon points={polyPoints} {...hit} />}
+              {/* Text is grabbed by its whole box. Its glyph outlines are
+                  hairlines separated by gaps, so aiming at them meant most
+                  clicks on a label fell through to whatever sat behind it. */}
+              {el.type === 'text' && textHit && (
+                <rect
+                  x={textHit.minX}
+                  y={textHit.minY}
+                  width={textHit.width}
+                  height={textHit.height}
+                  fill="transparent"
                   stroke="transparent"
-                  strokeWidth={Math.max(strokeW, 3)}
+                  strokeWidth={1}
                 />
               )}
 
@@ -622,21 +1015,7 @@ export const EtchCanvas: React.FC = () => {
               {el.type === 'line' && (
                 <line x1="0" y1="0" x2={el.x2 ?? 40} y2={el.y2 ?? 0} {...common} fill="none" />
               )}
-              {el.type === 'polygon' && (
-                <polygon
-                  points={
-                    el.points?.map((p) => `${p.x},${p.y}`).join(' ') ||
-                    Array.from({ length: el.sides || 6 })
-                      .map((_, i) => {
-                        const a = (i * 2 * Math.PI) / (el.sides || 6);
-                        const r = el.r || 25;
-                        return `${(r * Math.cos(a)).toFixed(3)},${(r * Math.sin(a)).toFixed(3)}`;
-                      })
-                      .join(' ')
-                  }
-                  {...common}
-                />
-              )}
+              {el.type === 'polygon' && <polygon points={polyPoints} {...common} />}
               {/* Vectorized text draws as its real outlines, so the canvas
                   shows exactly the geometry the machine will follow. */}
               {el.type === 'text' && hasFreshOutline(el) && (
@@ -695,7 +1074,7 @@ export const EtchCanvas: React.FC = () => {
             {/* Rubber-band the segment under the cursor so you can see the
                 curve before committing the next node. */}
             <path
-              d={bezierNodesToPath(
+              d={nodesToPath(
                 isDraggingHandle ? bezierNodes : [...bezierNodes, { x: cursorPos.x, y: cursorPos.y }],
                 false
               )}
@@ -730,6 +1109,154 @@ export const EtchCanvas: React.FC = () => {
                 />
               </g>
             ))}
+          </g>
+        )}
+
+        {/* Node editor: anchors, tangent handles and the insert-here preview */}
+        {editPath && selectedElement && (
+          <g id="node-editor" transform={getElementTransform(selectedElement)}>
+            {/* The path itself, redrawn on top so the nodes read against it. */}
+            <path
+              d={nodesToPath(editPath.nodes, editPath.closed)}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth={0.4 * hs}
+              style={{ pointerEvents: 'none' }}
+            />
+
+            {editPath.nodes.map((n, idx) => {
+              // Handles a node actually has are always drawn — that is the
+              // curve's shape, and it is what you reach for. The missing ones
+              // are only offered around the node being worked on, so a long
+              // path is not buried under ghost control lines.
+              const near =
+                activeIdx !== null &&
+                (Math.abs(idx - activeIdx) <= 1 ||
+                  (editPath.closed && Math.abs(idx - activeIdx) === editPath.nodes.length - 1));
+              return (
+                <g key={idx}>
+                  {(['handleIn', 'handleOut'] as const).map((k) => {
+                    // A node placed by a plain click has no handle on this
+                    // side. Show where it would be, hollow, so it can still be
+                    // grabbed — dragging the ghost creates the real handle.
+                    const real = n[k];
+                    if (!real && !near) return null;
+                    const at = real
+                      ? { x: n.x + real.x, y: n.y + real.y }
+                      : ghostHandle(editPath, idx, k);
+                    if (!at) return null;
+                    return (
+                      <g
+                        key={k}
+                        className="cursor-grab active:cursor-grabbing"
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          setActiveNode(idx);
+                          // Alt breaks the node, so the two sides can point
+                          // in different directions.
+                          setNodeDrag({ index: idx, kind: k, mirror: !e.altKey });
+                        }}
+                      >
+                        <line
+                          x1={n.x}
+                          y1={n.y}
+                          x2={at.x}
+                          y2={at.y}
+                          stroke="#38bdf8"
+                          strokeWidth={0.3 * hs}
+                          strokeDasharray={real ? undefined : `${1 * hs},${1 * hs}`}
+                          style={{ pointerEvents: 'none' }}
+                        />
+                        <circle cx={at.x} cy={at.y} r={4 * hs} fill="transparent" />
+                        <circle
+                          cx={at.x}
+                          cy={at.y}
+                          r={1.3 * hs}
+                          fill={real ? '#38bdf8' : 'none'}
+                          stroke="#38bdf8"
+                          strokeWidth={0.35 * hs}
+                        />
+                      </g>
+                    );
+                  })}
+
+                  <g
+                    className="cursor-pointer"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      setActiveNode(idx);
+                      setNodeDrag({ index: idx, kind: 'node', mirror: false });
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      const next = removeNode(editPath, idx);
+                      if (next === editPath) return;
+                      applyNodePath(next, false);
+                      setActiveNode(null);
+                    }}
+                  >
+                    <circle cx={n.x} cy={n.y} r={4 * hs} fill="transparent" />
+                    <circle
+                      cx={n.x}
+                      cy={n.y}
+                      r={(idx === activeIdx ? 2 : 1.6) * hs}
+                      fill={idx === activeIdx ? '#f59e0b' : '#ffffff'}
+                      stroke="#f59e0b"
+                      strokeWidth={0.4 * hs}
+                    />
+                  </g>
+                </g>
+              );
+            })}
+          </g>
+        )}
+
+        {/* Rubber-band marquee */}
+        {marquee && (
+          <rect
+            id="selection-marquee"
+            x={Math.min(marquee.x0, marquee.x1)}
+            y={Math.min(marquee.y0, marquee.y1)}
+            width={Math.abs(marquee.x1 - marquee.x0)}
+            height={Math.abs(marquee.y1 - marquee.y0)}
+            fill="rgba(245, 158, 11, 0.10)"
+            stroke="#f59e0b"
+            strokeWidth={0.5 * hs}
+            strokeDasharray={`${2 * hs},${1.5 * hs}`}
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+
+        {/* Multi-selection overlay */}
+        {multiBox && activeTool === 'select' && (
+          <g id="multi-selection-box" style={{ pointerEvents: 'none' }}>
+            {selectedElements.map((el) => {
+              const l = getLocalBBox(el);
+              return (
+                <rect
+                  key={el.id}
+                  transform={getElementTransform(el)}
+                  x={l.minX}
+                  y={l.minY}
+                  width={l.width}
+                  height={l.height}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={0.4 * hs}
+                  strokeDasharray={`${1.5 * hs},${1.5 * hs}`}
+                />
+              );
+            })}
+            <rect
+              x={multiBox.minX - hs}
+              y={multiBox.minY - hs}
+              width={multiBox.maxX - multiBox.minX + 2 * hs}
+              height={multiBox.maxY - multiBox.minY + 2 * hs}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth={0.7 * hs}
+              strokeDasharray={`${3 * hs},${2 * hs}`}
+            />
           </g>
         )}
 
@@ -834,6 +1361,15 @@ export const EtchCanvas: React.FC = () => {
         </div>
       )}
 
+      {/* Node-tool hint */}
+      {activeTool === 'node-edit' && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+          {editPath
+            ? 'Drag a node to move it · drag a blue handle to curve it (Alt for a corner) · click the path to add a node · double-click or Delete to remove one'
+            : 'Click a path, freehand stroke or star to edit its nodes'}
+        </div>
+      )}
+
       {/* Escape hatch back to the select tool */}
       {activeTool !== 'select' && (
         <button
@@ -852,33 +1388,6 @@ export const EtchCanvas: React.FC = () => {
 function normalizeAngle(deg: number): number {
   const a = deg % 360;
   return Math.round((a < 0 ? a + 360 : a) * 10) / 10;
-}
-
-/**
- * Builds an SVG path from pen-tool nodes, emitting real cubic segments wherever
- * handles exist. The previous pen tool only ever emitted `L` commands, so the
- * "bezier" tool could not actually draw a curve.
- */
-function bezierNodesToPath(nodes: BezierNode[], close: boolean): string {
-  if (nodes.length === 0) return '';
-  const f = (n: number) => n.toFixed(3);
-  let d = `M ${f(nodes[0].x)} ${f(nodes[0].y)}`;
-
-  const seg = (a: BezierNode, b: BezierNode) => {
-    const c1 = a.handleOut ? { x: a.x + a.handleOut.x, y: a.y + a.handleOut.y } : null;
-    const c2 = b.handleIn ? { x: b.x + b.handleIn.x, y: b.y + b.handleIn.y } : null;
-    if (!c1 && !c2) return ` L ${f(b.x)} ${f(b.y)}`;
-    const p1 = c1 ?? { x: a.x, y: a.y };
-    const p2 = c2 ?? { x: b.x, y: b.y };
-    return ` C ${f(p1.x)} ${f(p1.y)} ${f(p2.x)} ${f(p2.y)} ${f(b.x)} ${f(b.y)}`;
-  };
-
-  for (let i = 1; i < nodes.length; i++) d += seg(nodes[i - 1], nodes[i]);
-  if (close && nodes.length > 2) {
-    d += seg(nodes[nodes.length - 1], nodes[0]);
-    d += ' Z';
-  }
-  return d;
 }
 
 function buildShape(

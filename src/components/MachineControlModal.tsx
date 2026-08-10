@@ -4,7 +4,7 @@ import { webSerialManager } from '../utils/webSerialManager';
 import { getBedBBox } from '../utils/geom';
 import { boundsToMachine } from '../utils/machineCoords';
 import type { MachineStatus } from '../types/etch';
-import { X, Cpu, Home, AlertTriangle, Unlock, Scan } from 'lucide-react';
+import { X, Cpu, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
 import { MachineWorkOriginPanel } from './MachineWorkOriginPanel';
 
@@ -37,7 +37,11 @@ function useJobBounds() {
 }
 
 export const MachineControlModal: React.FC = () => {
-  const { isMachineModalOpen, toggleMachineModal, openDocs, bedProbeGrid, setBedProbeGrid } = useStore();
+  const { isMachineModalOpen, toggleMachineModal, openDocs, bedProbeGrid, setBedProbeGrid, document } =
+    useStore();
+  // Decides what framing and probing mean: a laser holds one height and has no
+  // touch plate, a router plunges and does.
+  const isLaser = (document.machine ?? 'laser') === 'laser';
   const [status, setStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
   const [consoleInput, setConsoleInput] = useState('');
   const [log, setLog] = useState<string[]>([]);
@@ -142,12 +146,10 @@ export const MachineControlModal: React.FC = () => {
               </p>
             )}
 
-            {/* Machine-wide actions */}
+            {/* Machine-wide actions. Homing is not here: it is step 1 of the
+                zeroing sequence below, and two buttons for it invited doing it
+                out of order. */}
             <div className="flex items-center gap-2">
-              <button onClick={() => webSerialManager.home()} disabled={!status.connected} className={actionBtn}>
-                <Home className="w-3.5 h-3.5 text-cyan-500" />
-                <span>Home ($H)</span>
-              </button>
               <button
                 onClick={() => webSerialManager.unlockAlarm()}
                 disabled={!status.connected}
@@ -158,12 +160,16 @@ export const MachineControlModal: React.FC = () => {
                 <span>Unlock ($X)</span>
               </button>
               <button
-                onClick={() => jobBounds && webSerialManager.frameJob(jobBounds)}
+                onClick={() =>
+                  jobBounds && webSerialManager.frameJob(jobBounds, { laserMode: isLaser })
+                }
                 disabled={!status.connected || !jobBounds}
                 title={
-                  jobBounds
-                    ? 'Trace the job outline at low laser power to check it fits the stock'
-                    : 'Nothing visible to frame'
+                  !jobBounds
+                    ? 'Nothing visible to frame'
+                    : isLaser
+                      ? 'Trace the job outline at low laser power to check it fits the stock'
+                      : 'Retract and trace the job outline with the spindle off, to check it fits the stock'
                 }
                 className={actionBtn}
               >

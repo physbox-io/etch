@@ -16,6 +16,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
+import { DEFAULT_TOOL, toolCatalog, findTool, toolWarning, suggestTool } from '../utils/tooling';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import type { EtchElement } from '../types/etch';
 
@@ -56,6 +57,12 @@ export const PropertiesSidebar: React.FC = () => {
   // Laser is the default target — most Etch documents are cut on one, and the
   // exporter treats an unset machine as a laser too.
   const isLaser = (document.machine ?? 'laser') === 'laser';
+  const machineKind = isLaser ? 'laser' : 'cnc';
+  const tools = toolCatalog(machineKind);
+  // How many tools this job actually calls for. One means the machine never
+  // stops; two or more means the operator is standing there for each change,
+  // which is worth saying before they start rather than after.
+  const distinctTools = new Set(document.layers.map((l) => l.tool ?? DEFAULT_TOOL)).size;
 
   return (
     <aside className="w-72 h-[calc(100vh-3.5rem)] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-y-auto transition-colors">
@@ -458,6 +465,7 @@ export const PropertiesSidebar: React.FC = () => {
                 power: 80,
                 passes: 1,
                 zDepth: 2,
+                tool: suggestTool(machineKind, 'cut'),
               })
             }
             className="p-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
@@ -467,9 +475,19 @@ export const PropertiesSidebar: React.FC = () => {
           </button>
         </div>
 
+        {distinctTools > 1 && (
+          <p className="mb-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+            {distinctTools} tools in this job — it runs one tool at a time and stops for you to swap,
+            fill and etch first, cuts last.
+          </p>
+        )}
+
         <div className="space-y-2 text-xs">
           {document.layers.map((layer) => {
             const isActive = activeLayerId === layer.id;
+            const tool = layer.tool ?? DEFAULT_TOOL;
+            const profile = findTool(machineKind, tool);
+            const warning = toolWarning(machineKind, tool, layer);
             return (
               <div
                 key={layer.id}
@@ -592,6 +610,44 @@ export const PropertiesSidebar: React.FC = () => {
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
                     />
                   </div>
+                </div>
+
+                {/* Tool. Layers that disagree here are cut in separate blocks
+                    with a pause between them, so this is a machining decision
+                    as much as a settings one. */}
+                <div
+                  className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">
+                    {isLaser ? 'Lens / Head' : 'Tool'}
+                  </label>
+                  <select
+                    value={tool}
+                    onChange={(e) => updateLayer(layer.id, { tool: parseInt(e.target.value, 10) })}
+                    className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"
+                  >
+                    {tools.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        T{t.id} — {t.name}
+                      </option>
+                    ))}
+                    {/* A document cut on another machine can carry a T-number
+                        this catalogue has never heard of. Keep it selectable
+                        rather than silently snapping the layer onto T1. */}
+                    {!profile && <option value={tool}>T{tool} — uncatalogued</option>}
+                  </select>
+                  <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                    {profile
+                      ? profile.guidance
+                      : 'Not in the catalogue. The job will still pause for it, but Etch cannot advise on it.'}
+                  </p>
+                  {warning && (
+                    <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+                      <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
+                      <span>{warning}</span>
+                    </p>
+                  )}
                 </div>
 
                 {isLaser && (

@@ -13,7 +13,7 @@ Part of the [Physbox](https://physbox.io) suite, alongside [Mesh](https://mesh.p
 * **Engrave Fill (Hatch)** — Scanline fill with per-element angle and spacing, so solid glyphs and logos engrave as filled marks rather than outline drawings.
 * **Mandala & Radial Symmetry** — Live sector mirroring and radial array generation.
 * **SVG Import / Export** — Paths are flattened to real geometry, stroke colours become layers, and unit assumptions and skipped content are reported after every import.
-* **G-Code Export** — GRBL dialect, laser (M3/M5 power) or CNC (Z depth over multiple passes) mode, inner-contour-first ordering, and per-layer speed, power, depth and pass count.
+* **Toolpath Generation** — GRBL dialect, laser (M3/M5 power) or CNC (Z depth over multiple passes) mode, inner-contour-first ordering, and per-layer speed, power, depth and pass count. The program is streamed to the machine from the Run panel; it is not offered as a file, so a job can never drift out of step with the document and machine setup it was planned for. Documents leave the app as SVG or Etch JSON.
 * **Machine Control & Work Origin** — Jog pad (0.1/1/10 mm steps) with cancellable jogs, `G10 L20` XY zeroing, touch-plate Z probing that refuses to set a datum when the probe never makes contact, low-power job framing, and a GRBL terminal. GRBL 1.1 / FluidNC / grblHAL over WebSerial.
 * **Bed Levelling** — 3×3 or finer probing over the job's bounds, bilinearly interpolated and applied to CNC G-code so cut depth follows a bed or board that is not flat.
 * **Clip Art & Templates** — Built-in symbol library and starter documents, plus local save/load of your own.

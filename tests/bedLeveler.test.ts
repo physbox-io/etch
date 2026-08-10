@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { interpolateGridZ, getGridStats, warpGcode } from '../src/utils/bedLeveler';
+import { interpolateGridZ, getGridStats, warpGcode, rereferenceGrid, suggestGridCounts } from '../src/utils/bedLeveler';
 import type { BedProbeGrid } from '../src/types/etch';
 
 /** A 2×2 grid over 0..100 in both axes, with the given corner heights. */
@@ -23,6 +23,7 @@ function grid(z: [number, number, number, number]): BedProbeGrid {
     ],
     missed: 0,
     simulated: false,
+    referencedTo: 'z-datum',
     probedAt: 0,
   };
 }
@@ -104,5 +105,80 @@ describe('warpGcode', () => {
   it('returns the input unchanged when there is no heightmap', () => {
     const src = 'G90\nG1 X10 Y10 Z-1';
     expect(warpGcode(src, null as unknown as BedProbeGrid)).toBe(src);
+  });
+});
+
+describe('rereferenceGrid', () => {
+  it('makes the map read exactly zero at the datum', () => {
+    const g = rereferenceGrid(grid([0, 1, 2, 3]), 50, 50);
+    expect(interpolateGridZ(g, 50, 50)).toBeCloseTo(0);
+  });
+
+  it('shifts every point by the same amount, so the measured shape survives', () => {
+    const before = grid([0, 1, 2, 3]);
+    const after = rereferenceGrid(before, 50, 50);
+    expect(getGridStats(after).spanZ).toBeCloseTo(getGridStats(before).spanZ);
+    expect(after.points[0][0].z).toBeCloseTo(-1.5);
+    expect(after.points[1][1].z).toBeCloseTo(1.5);
+  });
+
+  it('clamps a datum taken outside the probed area to the nearest edge', () => {
+    // The datum sits well off the grid; it resolves to the (0,0) corner.
+    const g = rereferenceGrid(grid([0.4, 1, 2, 3]), -500, -500);
+    expect(interpolateGridZ(g, 0, 0)).toBeCloseTo(0);
+  });
+
+  it('removes the constant depth bias a wrongly-anchored map would apply', () => {
+    // Anchored at the first probed point, a surface 0.4 mm high there biases
+    // the whole job 0.4 mm deep. Re-referenced to a datum at the centre, the
+    // correction is zero where Z was actually touched off.
+    const anchoredAtCorner = grid([0, 0.8, 0.8, 1.6]);
+    // Plunge on the spot at the datum, so the move is not subdivided and the
+    // commanded depth is the only thing under test.
+    const cut = 'G90\nG0 X50 Y50\nG1 Z-1 F600';
+    expect(warpGcode(cut, anchoredAtCorner).split('\n')[2]).toBe('G1 Z-0.200 F600');
+
+    const atDatum = rereferenceGrid(anchoredAtCorner, 50, 50);
+    expect(warpGcode(cut, atDatum).split('\n')[2]).toBe('G1 Z-1.000 F600');
+  });
+
+  it('leaves a map that already reads zero at the datum alone', () => {
+    const g = grid([0, 1, 2, 3]);
+    expect(rereferenceGrid(g, 0, 0)).toBe(g);
+  });
+});
+
+describe('suggestGridCounts', () => {
+  it('holds the probe spacing roughly equal on both axes', () => {
+    // A 400 x 100 board probed 3 x 3 puts points 200 mm apart along the axis
+    // that actually bends, and 50 mm apart across the one that does not.
+    expect(suggestGridCounts({ minX: 0, minY: 0, maxX: 400, maxY: 100 })).toEqual({
+      gridX: 9,
+      gridY: 3,
+    });
+    expect(suggestGridCounts({ minX: 0, minY: 0, maxX: 100, maxY: 400 })).toEqual({
+      gridX: 3,
+      gridY: 9,
+    });
+  });
+
+  it('suggests a square grid for square stock', () => {
+    expect(suggestGridCounts({ minX: 10, minY: 10, maxX: 210, maxY: 210 })).toEqual({
+      gridX: 3,
+      gridY: 3,
+    });
+  });
+
+  it('never suggests fewer than 2 points or more than the cap', () => {
+    // A sliver of stock would otherwise ask for dozens of probes on the long
+    // axis, each one a full probing cycle.
+    const sliver = suggestGridCounts({ minX: 0, minY: 0, maxX: 1000, maxY: 5 });
+    expect(sliver).toEqual({ gridX: 10, gridY: 3 });
+
+    // Degenerate bounds have no ratio to follow; fall back to the base grid.
+    expect(suggestGridCounts({ minX: 0, minY: 0, maxX: 100, maxY: 0 })).toEqual({
+      gridX: 3,
+      gridY: 3,
+    });
   });
 });

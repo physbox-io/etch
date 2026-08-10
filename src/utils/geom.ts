@@ -167,12 +167,72 @@ export function localToBed(el: EtchElement, lx: number, ly: number): Pt {
   };
 }
 
+/**
+ * The exact inverse of `localToBed` — bed (mm) space back to element-local.
+ *
+ * The node editor needs it: nodes are stored in local coordinates, but the
+ * pointer arrives in bed millimetres, and a rotated or scaled element makes the
+ * two differ by more than an offset.
+ */
+export function bedToLocal(el: EtchElement, bx: number, by: number): Pt {
+  const pivot = getLocalBBox(el);
+  const sx = el.scaleX ?? 1;
+  const sy = el.scaleY ?? 1;
+  // Undo the translate + scale, leaving a point in the rotated local frame.
+  const rx = (bx - el.x) / (sx || 1);
+  const ry = (by - el.y) / (sy || 1);
+
+  const rad = ((el.rotation || 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = rx - pivot.centerX;
+  const dy = ry - pivot.centerY;
+
+  return {
+    x: dx * cos + dy * sin + pivot.centerX,
+    y: -dx * sin + dy * cos + pivot.centerY,
+  };
+}
+
 /** The rotation pivot in bed (mm) coordinates. Rotation never moves it. */
 export function getPivotInBed(el: EtchElement): Pt {
   const p = getLocalBBox(el);
   return {
     x: el.x + (el.scaleX ?? 1) * p.centerX,
     y: el.y + (el.scaleY ?? 1) * p.centerY,
+  };
+}
+
+/**
+ * Keeps a rotated element still while its geometry is edited.
+ *
+ * Rotation turns about the centre of the local bounding box, so any edit that
+ * changes that box — dragging a node, deleting one — moves the pivot, and a
+ * rotated shape swings around it. Everything the edit did not touch should stay
+ * exactly where it was on the bed, which takes a compensating shift of the
+ * element's position: x' = x + S·(R − I)·(c₁ − c₀).
+ *
+ * Returns the new x/y, or the old ones when there is nothing to correct.
+ */
+export function pivotAnchoredPosition(
+  el: EtchElement,
+  next: Partial<EtchElement>
+): { x: number; y: number } {
+  const rot = el.rotation || 0;
+  if (rot === 0) return { x: el.x, y: el.y };
+
+  const c0 = getLocalBBox(el);
+  const c1 = getLocalBBox({ ...el, ...next });
+  const vx = c1.centerX - c0.centerX;
+  const vy = c1.centerY - c0.centerY;
+  if (vx === 0 && vy === 0) return { x: el.x, y: el.y };
+
+  const rad = (rot * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: el.x + (el.scaleX ?? 1) * ((cos - 1) * vx - sin * vy),
+    y: el.y + (el.scaleY ?? 1) * (sin * vx + (cos - 1) * vy),
   };
 }
 

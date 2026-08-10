@@ -1,6 +1,39 @@
 import type { MachineStatus, BedProbeGrid, ProbePoint } from '../types/etch';
+import { rereferenceGrid } from './bedLeveler';
+import { DEFAULT_PLATE_THICKNESS_MM } from './machineSettings';
+import { describeTool, parseToolNumber, type MachineKind } from './tooling';
 
 type StatusListener = (status: MachineStatus) => void;
+
+/**
+ * What to do with the point the tool is parked over, in an assisted bed probe.
+ *
+ * `probe` runs the normal G38.2 cycle (a plate has been slid under the tool);
+ * `capture` records where the tool is standing right now, for a surface no
+ * probe circuit can reach; `skip` records a miss; `abort` ends the grid.
+ */
+export type AssistedProbeAction = 'probe' | 'capture' | 'skip' | 'abort';
+
+export interface AssistedProbePoint {
+  /** 0-based position in the visit order, and how many points there are. */
+  index: number;
+  total: number;
+  row: number;
+  col: number;
+  /** Where the tool is parked, in work coordinates (mm). */
+  x: number;
+  y: number;
+}
+
+export interface ProbeGridOptions {
+  /**
+   * `auto` probes every point unattended and needs a live probe circuit across
+   * the whole job. `assisted` parks over each point and waits for
+   * `onPointReady`, which is what makes non-conductive stock levellable.
+   */
+  mode?: 'auto' | 'assisted';
+  onPointReady?: (point: AssistedProbePoint) => Promise<AssistedProbeAction>;
+}
 
 const INITIAL_STATUS: MachineStatus = {
   connected: false,
@@ -65,6 +98,8 @@ class WebSerialManager {
   private isReading = false;
   private statusPollTimer: ReturnType<typeof setInterval> | null = null;
   private status: MachineStatus = { ...INITIAL_STATUS };
+  /** What the running job is cut on, so a T-number can be named at the pause. */
+  private jobMachine: MachineKind = 'cnc';
 
   /**
    * Waiters for a single command's reply. A queue rather than one slot because
@@ -77,6 +112,16 @@ class WebSerialManager {
   /** The job being streamed, if any. */
   private gcodeQueue: string[] = [];
   private queueIndex = 0;
+
+  /**
+   * Where work Z0 was last set, in **machine** coordinates.
+   *
+   * Machine rather than work coordinates because the operator may re-zero XY
+   * afterwards, which moves the work origin out from under a stored work-space
+   * point but not out from under this one. `probeGrid` needs it: a heightmap is
+   * only a correction if it reads zero at the point the datum was taken from.
+   */
+  private zDatumMachineXY: { x: number; y: number } | null = null;
 
   public subscribe(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
@@ -193,6 +238,11 @@ class WebSerialManager {
     this.port = null;
     this.reader = null;
     this.writer = null;
+    // The datum belonged to the machine that just went away; carrying it into
+    // the next connection would reference a heightmap to a point on a different
+    // setup entirely.
+    this.zDatumMachineXY = null;
+    this.workOffset = [0, 0, 0];
     this.status = { ...INITIAL_STATUS };
     this.notify();
   }
@@ -263,6 +313,54 @@ class WebSerialManager {
     } else {
       await this.sendCommand(`G10 L20 P1 ${axis}0`);
     }
+    // Zeroing Z by hand is a datum like a probed one, and levelling has to be
+    // referenced to it either way.
+    if (axis === 'Z' || axis === 'ALL') this.recordZDatum();
+  }
+
+  /**
+   * Sets work Z0 from where the tool is standing now, allowing for whatever is
+   * shimmed under it — the paper trick: wind Z down until a sheet just drags,
+   * then zero with the paper's thickness as the offset, so Z0 lands on the
+   * stock's face rather than one sheet above it.
+   *
+   * No probe circuit is involved, which is the whole point: it works on wood,
+   * acrylic and painted stock, where a touch plate has nothing to conduct to.
+   */
+  public async zeroZHere(shimThicknessMm = 0): Promise<{ success: boolean; message: string; machineZ?: number }> {
+    if (!this.status.connected) {
+      return { success: false, message: 'Not connected to a machine.' };
+    }
+    const machineZ = this.status.z;
+    await this.sendAndWait(`G10 L20 P1 Z${shimThicknessMm.toFixed(3)}`);
+    // A hand-set datum is still a datum, and a heightmap has to be referenced
+    // to it exactly as it would be to a probed one.
+    this.recordZDatum();
+    return {
+      success: true,
+      machineZ,
+      message: shimThicknessMm
+        ? `Z zeroed by hand at machine Z${machineZ.toFixed(3)}, ${shimThicknessMm} mm shim allowed for.`
+        : `Z zeroed by hand at machine Z${machineZ.toFixed(3)}, with the tool taken as touching the work.`,
+    };
+  }
+
+  /** Remembers where work Z0 was taken, for `probeGrid` to reference against. */
+  private recordZDatum() {
+    this.zDatumMachineXY = { x: this.status.x, y: this.status.y };
+  }
+
+  /**
+   * The Z datum in current work coordinates, or null if Z has not been zeroed
+   * this session. Derived from the machine-space point rather than stored in
+   * work space, so a later `zeroXY` does not silently move it.
+   */
+  private zDatumWorkXY(): { x: number; y: number } | null {
+    if (!this.zDatumMachineXY) return null;
+    return {
+      x: this.zDatumMachineXY.x - this.workOffset[0],
+      y: this.zDatumMachineXY.y - this.workOffset[1],
+    };
   }
 
   /** Retracts and drives to the work XY origin, to check where zero landed. */
@@ -283,6 +381,11 @@ class WebSerialManager {
    */
   public async unlockAlarm() {
     await this.sendCommand('$X');
+    // An alarm refuses G-code, so whatever was in flight when it tripped may
+    // never have been applied — including the `G90` that ends a probing cycle.
+    // Re-asserting the modal state here is what stops the next positioning move
+    // being interpreted as relative and walking the tool off the job.
+    await this.sendCommand('G21 G90');
   }
 
   public async emergencyStop() {
@@ -296,20 +399,47 @@ class WebSerialManager {
     this.update({ state: 'Hold', jobRunning: false, jobPaused: false, pauseMessage: undefined });
   }
 
-  /** Traces the job's bounding box at low laser power so you can check the fit. */
+  /**
+   * Traces the job's bounding box so you can check it fits the stock.
+   *
+   * What that means depends on the machine, and getting it wrong is destructive
+   * in one direction only:
+   *
+   *  - **Laser** — trace at a low guide power so the dot is visible. There is no
+   *    Z in the toolpath, so none is commanded here either.
+   *  - **CNC** — retract to clearance first and trace with the spindle *off*.
+   *    A router sits at work Z0 after zeroing, which is the surface of the
+   *    stock; framing there with `M3` running drags a spinning cutter right
+   *    around the outline of the part before a single line of the job has run.
+   */
   public async frameJob(
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
-    guidePower = 5
+    opts: { laserMode?: boolean; guidePower?: number; safeZ?: number } = {}
   ) {
+    const { laserMode = true, guidePower = 5, safeZ = 5 } = opts;
     const { minX, minY, maxX, maxY } = bounds;
+    const corners: Array<[number, number]> = [
+      [maxX, minY],
+      [maxX, maxY],
+      [minX, maxY],
+      [minX, minY],
+    ];
+
     await this.sendCommand('G21 G90');
+    if (!laserMode) await this.sendCommand(`G0 Z${safeZ.toFixed(3)}`);
     await this.sendCommand(`G0 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
-    await this.sendCommand(`M3 S${Math.round(guidePower)}`);
-    await this.sendCommand(`G1 X${maxX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
-    await this.sendCommand(`G1 X${maxX.toFixed(3)} Y${maxY.toFixed(3)} F3000`);
-    await this.sendCommand(`G1 X${minX.toFixed(3)} Y${maxY.toFixed(3)} F3000`);
-    await this.sendCommand(`G1 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
-    await this.sendCommand('M5');
+
+    if (laserMode) {
+      await this.sendCommand(`M3 S${Math.round(guidePower)}`);
+      for (const [x, y] of corners) {
+        await this.sendCommand(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+      }
+      await this.sendCommand('M5');
+    } else {
+      for (const [x, y] of corners) {
+        await this.sendCommand(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -328,7 +458,10 @@ class WebSerialManager {
    * Comments and blank lines are stripped here rather than sent, so the buffer
    * carries only motion.
    */
-  public startJob(gcode: string): { started: boolean; message: string } {
+  public startJob(
+    gcode: string,
+    opts: { machine?: MachineKind } = {}
+  ): { started: boolean; message: string } {
     if (!this.status.connected) {
       return { started: false, message: 'Connect to a machine first.' };
     }
@@ -350,6 +483,10 @@ class WebSerialManager {
 
     this.gcodeQueue = lines;
     this.queueIndex = 0;
+    // Kept for the tool-change prompt: a T-number alone tells the operator
+    // nothing about which bit to reach for, and only the document knows whether
+    // T3 is a V-bit or a lens.
+    this.jobMachine = opts.machine ?? 'cnc';
     this.update({
       jobRunning: true,
       jobPaused: false,
@@ -387,7 +524,13 @@ class WebSerialManager {
     // park safely and wait to be told to carry on.
     const kind = classifyJobLine(line);
     if (kind === 'tool-change') {
-      this.pauseForOperator(`Tool change (${line}). Change the tool, re-zero Z, then resume.`);
+      const tool = parseToolNumber(line);
+      const what = tool === null ? 'the next tool' : describeTool(this.jobMachine, tool);
+      this.pauseForOperator(
+        this.jobMachine === 'laser'
+          ? `Tool change: fit ${what}, re-focus, then resume.`
+          : `Tool change: fit ${what}, re-zero Z on the new tool, then resume.`
+      );
       return;
     }
     if (kind === 'stop') {
@@ -534,7 +677,7 @@ class WebSerialManager {
    * contact means no datum, and the caller is told why.
    */
   public async zeroZ(
-    touchPlateThicknessMm = 15.0,
+    touchPlateThicknessMm = DEFAULT_PLATE_THICKNESS_MM,
     searchDepthMm = 25,
     feedRate = 50
   ): Promise<{ success: boolean; message: string; machineZ?: number }> {
@@ -554,6 +697,9 @@ class WebSerialManager {
     }
 
     await this.sendAndWait(`G10 L20 P1 Z${touchPlateThicknessMm.toFixed(3)}`);
+    // Where the datum was taken, so a later heightmap can be referenced to it.
+    // XY has not moved during the probe, so this is the plate's position.
+    this.recordZDatum();
     // Relative retract: it clears the plate by the same 5 mm wherever the datum
     // ended up, and does not depend on the offset just written.
     await this.sendAndWait('G91 G0 Z5.000');
@@ -569,22 +715,40 @@ class WebSerialManager {
   }
 
   /**
-   * Probes a grid across the job's bounds and returns each point's height
-   * relative to the first, which is what the leveller adds back to commanded Z.
+   * Probes a grid across the job's bounds and returns a heightmap of offsets to
+   * add to commanded Z.
+   *
+   * The reference point matters more than it looks. The map is a *correction*,
+   * so it has to read zero where the cut depth is already right — and that is
+   * the point where work Z0 was taken, not an arbitrary corner of the grid.
+   * Referencing every point to the first probed one instead put a constant bias
+   * through the whole job equal to the surface height difference between the
+   * touch-off point and that corner: precisely the error levelling exists to
+   * remove, applied everywhere at once. So when the Z datum is known, the grid
+   * is shifted so its interpolated height there is exactly zero. Without one
+   * (bed probed before Z was zeroed) it falls back to the first contact and
+   * says so in `referencedTo`.
    *
    * Disconnected, it returns a plausible tilt and dish so the rest of the
    * pipeline can be exercised without hardware — flagged `simulated`, never
    * presented as a measurement.
    *
-   * No touch plate thickness here, unlike `zeroZ`: heights are relative to the
-   * reference point, and a constant plate thickness cancels out of a difference.
-   * A point that never makes contact is recorded flat rather than guessed at.
+   * No touch plate thickness here, unlike `zeroZ`: heights are differences, and
+   * a constant plate thickness cancels out of one. A point that never makes
+   * contact is recorded flat rather than guessed at.
+   *
+   * In `assisted` mode the cycle stops at every point and asks the caller what
+   * to do, which is what makes this usable on wood, acrylic and anything else
+   * that will not close a probe circuit: the operator either slides a plate
+   * under the tool for a real probe, or winds the tool down onto the surface by
+   * hand and has the position captured. Same grid, same maths, no continuity.
    */
   public async probeGrid(
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     gridX = 3,
     gridY = 3,
-    onProgress?: (probedCount: number, totalCount: number) => void
+    onProgress?: (probedCount: number, totalCount: number) => void,
+    opts: ProbeGridOptions = {}
   ): Promise<BedProbeGrid> {
     const gx = Math.max(2, Math.round(gridX));
     const gy = Math.max(2, Math.round(gridY));
@@ -592,36 +756,82 @@ class WebSerialManager {
     const stepX = (bounds.maxX - bounds.minX) / (gx - 1);
     const stepY = (bounds.maxY - bounds.minY) / (gy - 1);
 
-    const points: ProbePoint[][] = [];
     const totalPoints = gx * gy;
     let probed = 0;
     let missed = 0;
+    let aborted = false;
 
     const isLive = this.status.connected;
+    // Nothing to assist with when there is no machine to drive: the simulated
+    // map would otherwise stop and ask the operator about points it invented.
+    const assisted = isLive && opts.mode === 'assisted' && !!opts.onPointReady;
     if (isLive) await this.sendAndWait('G21 G90');
 
-    // Machine Z of the first contact. Every later point is reported against it,
-    // so the grid comes out as offsets whatever the tool length or datum.
-    let referenceZ: number | null = null;
+    // Raw machine Z of each contact, or null where the probe never touched.
+    // Kept absolute until the whole grid is in, because which point becomes the
+    // reference is not known until then.
+    const raw: Array<Array<number | null>> = [];
+    let firstContactZ: number | null = null;
 
-    for (let row = 0; row < gy; row++) {
-      const rowPoints: ProbePoint[] = [];
+    for (let row = 0; row < gy && !aborted; row++) {
+      const rawRow: Array<number | null> = [];
       const y = bounds.minY + row * stepY;
 
       for (let col = 0; col < gx; col++) {
         const x = bounds.minX + col * stepX;
-        let probedZ = 0;
+        let contactZ: number | null;
 
         if (isLive) {
-          await this.sendAndWait(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} Z5.000 F3000`);
-          const contactZ = await this.probePoint(20, 50);
+          // Lift clear, *then* traverse. One combined `G0 X Y Z` is a
+          // coordinated move: starting from anywhere below the clearance height
+          // it cuts the corner and drags the tool diagonally across the work.
+          await this.sendAndWait('G0 Z5.000 F1000');
+          await this.sendAndWait(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+
+          let action: AssistedProbeAction = 'probe';
+          if (assisted) {
+            action = await opts.onPointReady!({
+              index: probed,
+              total: totalPoints,
+              row,
+              col,
+              x,
+              y,
+            });
+          }
+
+          if (action === 'abort') {
+            aborted = true;
+            rawRow.push(null);
+            break;
+          }
+
+          if (action === 'skip') {
+            contactZ = null;
+          } else if (action === 'capture') {
+            // The operator has wound the tool down onto the surface, so the
+            // measurement is simply where it is standing. Machine Z, same frame
+            // `[PRB:]` reports in — mixing the work frame in here would offset
+            // hand-captured points against probed ones by the work offset.
+            contactZ = await this.settledMachineZ();
+          } else {
+            contactZ = await this.probePoint(20, 50);
+          }
+
+          // Retract before the next traverse whichever way the point was taken:
+          // a captured point leaves the tool touching the work.
           await this.sendAndWait('G0 Z5.000 F1000');
 
-          if (contactZ === null) {
-            missed++;
-          } else {
-            if (referenceZ === null) referenceZ = contactZ;
-            probedZ = parseFloat((contactZ - referenceZ).toFixed(3));
+          if (contactZ === null) missed++;
+          else if (firstContactZ === null) firstContactZ = contactZ;
+
+          // An alarm (a failed probe raises ALARM:5) refuses every command that
+          // follows it, so the rest of the grid would record as dead flat and
+          // then be applied to a job as though it had been measured. Stop.
+          if (this.status.state === 'Alarm') {
+            aborted = true;
+            rawRow.push(contactZ);
+            break;
           }
         } else {
           // Simulated heightmap: slight 0.18mm bed tilt + 0.08mm dish warp.
@@ -629,29 +839,34 @@ class WebSerialManager {
           const normY = row / (gy - 1);
           const tilt = (normX - 0.5) * 0.18 + (normY - 0.5) * 0.12;
           const warp = Math.sin(normX * Math.PI) * Math.sin(normY * Math.PI) * -0.08;
-          probedZ = parseFloat((tilt + warp).toFixed(3));
+          contactZ = parseFloat((tilt + warp).toFixed(3));
           await new Promise((r) => setTimeout(r, 80));
         }
 
-        rowPoints.push({ x, y, z: probedZ });
+        rawRow.push(contactZ);
         probed++;
         onProgress?.(probed, totalPoints);
       }
-      points.push(rowPoints);
-    }
 
-    if (isLive) {
-      await this.sendAndWait('G0 Z10.000 F3000');
-      if (missed > 0) {
-        this.update({
-          lastError:
-            `Probe made no contact at ${missed} of ${totalPoints} points — those are recorded flat, ` +
-            `so levelling will be wrong there. Check the probe clip and the starting Z.`,
-        });
-      }
+      // A row cut short by an alarm still has to be square, or the bilinear
+      // lookup indexes past the end of it.
+      while (rawRow.length < gx) rawRow.push(null);
+      raw.push(rawRow);
     }
+    while (raw.length < gy) raw.push(new Array<number | null>(gx).fill(null));
 
-    return {
+    // Anchor the map somewhere real first: misses record flat *against the
+    // measured surface*, not against zero in an absolute machine frame.
+    const anchor = isLive ? (firstContactZ ?? 0) : 0;
+    const points: ProbePoint[][] = raw.map((rawRow, row) =>
+      rawRow.map((z, col) => ({
+        x: bounds.minX + col * stepX,
+        y: bounds.minY + row * stepY,
+        z: z === null ? 0 : parseFloat((z - anchor).toFixed(3)),
+      }))
+    );
+
+    let grid: BedProbeGrid = {
       minX: bounds.minX,
       minY: bounds.minY,
       maxX: bounds.maxX,
@@ -659,10 +874,46 @@ class WebSerialManager {
       gridX: gx,
       gridY: gy,
       points,
-      missed,
+      missed: missed + (aborted ? totalPoints - probed : 0),
       simulated: !isLive,
+      referencedTo: 'first-point',
       probedAt: Date.now(),
     };
+
+    // Re-reference to the Z datum, so the correction is zero where the depth is
+    // already known to be right. Outside the probed area `interpolateGridZ`
+    // clamps to the edge, which is the nearest measurement there is.
+    const datum = isLive ? this.zDatumWorkXY() : null;
+    if (datum) {
+      grid = { ...rereferenceGrid(grid, datum.x, datum.y), referencedTo: 'z-datum' };
+    }
+
+    if (isLive) {
+      await this.sendAndWait('G0 Z10.000 F3000');
+      if (aborted) {
+        this.update({
+          lastError:
+            `Bed probing stopped after ${probed} of ${totalPoints} points — the machine went into ` +
+            `alarm. The heightmap is incomplete and should not be used. Clear the alarm, check the ` +
+            `probe clip and starting Z, and probe again.`,
+        });
+      } else if (missed > 0) {
+        this.update({
+          lastError:
+            `Probe made no contact at ${missed} of ${totalPoints} points — those are recorded flat, ` +
+            `so levelling will be wrong there. Check the probe clip and the starting Z.`,
+        });
+      } else if (!datum) {
+        this.update({
+          lastError:
+            `Heightmap measured, but work Z0 has not been set this session — it is referenced to the ` +
+            `first probed point instead. Probe Z zero, then probe the bed again, or cut depth will be ` +
+            `off by the height difference between the two.`,
+        });
+      }
+    }
+
+    return grid;
   }
 
   // ---------------------------------------------------------------------
@@ -670,6 +921,40 @@ class WebSerialManager {
   // ---------------------------------------------------------------------
 
   /** Polls GRBL status with '?' every 300ms so the DRO tracks the machine. */
+  /** Resolves on the next status report, which it also asks for. */
+  private nextStatusReport(timeoutMs = 1000): Promise<void> {
+    return new Promise((resolve) => {
+      const fire = () => {
+        clearTimeout(timer);
+        this.statusWaiters.delete(fire);
+        resolve();
+      };
+      const timer = setTimeout(fire, timeoutMs);
+      this.statusWaiters.add(fire);
+      this.writeRealtime('?');
+    });
+  }
+
+  /**
+   * Machine Z once the tool has actually stopped moving.
+   *
+   * Status is polled every 300 ms and a jog returns as soon as it is accepted,
+   * not when it finishes — so reading `status.z` the moment the operator says
+   * "use this position" can record a height the tool was merely passing
+   * through, on its way further down. Two agreeing reports in `Idle` is the
+   * cheap proof that the axis has come to rest.
+   */
+  private async settledMachineZ(timeoutMs = 5000): Promise<number> {
+    const deadline = Date.now() + timeoutMs;
+    let previous = NaN;
+    while (Date.now() < deadline) {
+      await this.nextStatusReport();
+      if (this.status.state === 'Idle' && this.status.z === previous) return this.status.z;
+      previous = this.status.z;
+    }
+    return this.status.z;
+  }
+
   private startStatusPolling() {
     this.stopStatusPolling();
     this.statusPollTimer = setInterval(() => {
@@ -806,10 +1091,14 @@ class WebSerialManager {
       this.status.z = wpos[2] + offset[2];
     }
 
+    for (const waiter of [...this.statusWaiters]) waiter();
+
     this.notify();
   }
 
   private workOffset: [number, number, number] = [0, 0, 0];
+  /** One-shot callbacks awaiting the next status report (see `settledMachineZ`). */
+  private statusWaiters = new Set<() => void>();
 }
 
 export const webSerialManager = new WebSerialManager();

@@ -1,14 +1,14 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store/useStore';
-import { generateGCode, planToolpath } from '../utils/gcodeExporter';
+import { generateGCode, planToolpath, planToolChanges } from '../utils/gcodeExporter';
+import { describeTool } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
-import { X, FileCode, Download, Settings, AlertTriangle, Play, Pause, Square, Usb } from 'lucide-react';
+import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { warpGcode, getGridStats } from '../utils/bedLeveler';
-import { downloadBlob } from '../utils/download';
 import { DocsInfoButton } from './DocsModal';
 
 export const GCodePreviewModal: React.FC = () => {
@@ -47,6 +47,8 @@ export const GCodePreviewModal: React.FC = () => {
     [isGCodeModalOpen, document, laserMode, innerContourFirst]
   );
 
+  const toolChanges = useMemo(() => planToolChanges(plan.segments), [plan.segments]);
+
   const gcodeStr = useMemo(() => {
     // This component stays mounted, and `document` changes identity on every
     // frame of a drag — regenerating (including the scanline hatch fill) while
@@ -57,11 +59,6 @@ export const GCodePreviewModal: React.FC = () => {
   }, [isGCodeModalOpen, document, laserMode, innerContourFirst, travelSpeed, levelling]);
 
   if (!isGCodeModalOpen) return null;
-
-  const handleDownload = () => {
-    const blob = new Blob([gcodeStr], { type: 'text/plain' });
-    downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.gcode`);
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
@@ -84,8 +81,11 @@ export const GCodePreviewModal: React.FC = () => {
 
         {/* Modal Content Grid */}
         <div className="flex-1 grid grid-cols-3 overflow-hidden">
-          {/* Controls Sidebar */}
-          <div className="p-4 border-r border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+          {/* Controls sidebar. The options scroll; the run controls are pinned
+              to the bottom of the column, because a long options list used to
+              push the one button this panel exists for off the modal. */}
+          <div className="flex flex-col min-h-0 border-r border-slate-200 dark:border-slate-800 text-xs">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
             <h3 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
               <Settings className="w-3.5 h-3.5 text-slate-500" />
               <span>Toolpath Options</span>
@@ -256,10 +256,12 @@ export const GCodePreviewModal: React.FC = () => {
               </div>
             )}
 
+            </div>
+
             {/* Run on the machine — the point of the whole panel. Gated behind a
                 confirm because it starts a machine that cuts, and the operator
                 needs a beat to check the work origin is where they think. */}
-            <div className="pt-2 space-y-2">
+            <div className="shrink-0 p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-2">
               {machine.jobRunning ? (
                 <div className="p-2.5 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 space-y-2">
                   <div className="flex items-center justify-between text-[11px]">
@@ -307,10 +309,29 @@ export const GCodePreviewModal: React.FC = () => {
                   <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
                     Is the work origin set and the stock clamped? This starts cutting immediately.
                   </p>
+                  {/* Which tools to have to hand, before the machine is holding
+                      a half-cut part waiting for one that is still in a drawer. */}
+                  {toolChanges.length > 0 && (
+                    <div className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                      <p className="font-semibold">
+                        {toolChanges.length} tool stops — have these ready:
+                      </p>
+                      <ul className="mt-0.5 space-y-0.5">
+                        {toolChanges.map((c, i) => (
+                          <li key={i} className="font-mono">
+                            {describeTool(laserMode ? 'laser' : 'cnc', c.tool)}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-1">Re-zero Z after each change.</p>
+                    </div>
+                  )}
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
-                        const result = webSerialManager.startJob(gcodeStr);
+                        const result = webSerialManager.startJob(gcodeStr, {
+                          machine: laserMode ? 'laser' : 'cnc',
+                        });
                         setRunNote(result.message);
                         setConfirmRun(false);
                       }}
@@ -348,16 +369,10 @@ export const GCodePreviewModal: React.FC = () => {
               )}
             </div>
 
-            {/* Download Button */}
-            <div className="pt-2">
-              <button
-                onClick={handleDownload}
-                className="w-full py-2 bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-500 hover:to-amber-500 rounded-lg text-white font-bold flex items-center justify-center gap-2 shadow-md shadow-red-500/20 transition-all cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download G-Code (.gcode)</span>
-              </button>
-            </div>
+            {/* No G-code file export. A .gcode file is a machine program tied to
+                one origin, one tool and one heightmap, and once it leaves the app
+                nothing can keep those in step with the document it came from. The
+                job is run from here; the document travels as SVG or Etch JSON. */}
           </div>
 
           {/* Toolpath preview — the point of the panel. The G-code itself is
@@ -391,6 +406,7 @@ export const GCodePreviewModal: React.FC = () => {
                 segments={plan.segments}
                 travelSpeed={travelSpeed}
                 showTravel={showTravel}
+                laserMode={laserMode}
               />
             )}
           </div>

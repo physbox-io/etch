@@ -59,13 +59,69 @@ const Warn = ({ title, children }: { title: string; children: React.ReactNode })
 
 /** One body per tab id — a missing entry is a compile error, not a blank panel. */
 const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
+  selection: (
+    <div className="flex flex-col gap-4">
+      <H>🖱️ Selecting &amp; Moving</H>
+      <P>
+        With the <strong>Select</strong> tool, a shape is grabbed where it is actually drawn — its
+        outline, or its fill if it has one. Shapes here are usually bare outlines, so the empty
+        middle of a rectangle belongs to whatever is inside it, not to the rectangle. That is what
+        lets you click a label sitting on a frame and get the label.
+      </P>
+      <Card>
+        <Step title="Overlapping shapes: the smallest one wins">
+          When several shapes are under the pointer, the click takes the one with the smallest
+          footprint — the thing you almost always meant, and the same choice every time. Draw order
+          only breaks ties between shapes of equal size.
+        </Step>
+        <Step title="Alt-click to reach what is underneath">
+          <strong>Alt</strong>-click steps down through everything under the pointer, one shape per
+          click, and wraps back to the top. Nothing is ever unreachable, however it is stacked.
+        </Step>
+        <Step title="Box-select">
+          Drag across empty canvas to pull a rubber band; releasing selects everything it touches,
+          enclosed or not. Hold <strong>Shift</strong> while dragging to add the band's catch to what
+          is already selected.
+        </Step>
+        <Step title="Building a selection by hand">
+          <strong>Shift</strong>-click adds a shape, and removes it again if it is already in.{' '}
+          <strong>Ctrl/Cmd+A</strong> takes everything, and clicking empty canvas clears.
+        </Step>
+        <Step title="Moving">
+          Dragging any selected shape moves the whole selection together. Once something is
+          selected you can also grab it from anywhere inside its box, which is how you drag an
+          outline-only shape without aiming at its stroke. With snapping on, the group lands on the
+          grid as one, keeping the shapes' spacing exact.
+        </Step>
+        <Step title="Resize and rotate">
+          The corner knob and the stem above the box appear for a single selection only, and act on
+          the shape's own centre — shown by the crosshair in the middle of the box. Hold{' '}
+          <strong>Shift</strong> while rotating for 15° steps. There is no group resize: each shape
+          keeps its own geometry, which is what keeps a drawing dimensionally honest.
+        </Step>
+      </Card>
+      <P>
+        Locked shapes and shapes on hidden layers stay out of the way — they can neither be dragged
+        nor caught by a box-select.
+      </P>
+    </div>
+  ),
+
   workspace: (
     <div className="flex flex-col gap-4">
-      <H>🖥️ Bed, Layers &amp; Units</H>
+      <H>🖥️ Stock, Layers &amp; Units</H>
       <P>
-        The canvas is your machine's bed, drawn 1:1 in millimetres. Set its size to the real cutting
-        area in the document panel — anything outside it will not be reachable, and the G-code will
-        be refused or clipped by the controller rather than resized to fit.
+        The canvas is the piece of material you are cutting, drawn 1:1 in millimetres. Set its size
+        with the <strong>Stock</strong> boxes in the status bar, at the bottom left, and make it the
+        real size of what is clamped down: it is the rectangle framing traces, the area the bed is
+        probed over, and — through the work origin — what X0 Y0 is measured from. Documents start at
+        300 × 200 mm; after that it is yours to set.
+      </P>
+      <P>
+        Geometry outside the rectangle still draws, so you can see that it does not fit. Nothing
+        stops it being cut, though — the app does not know your machine's travel, so a move past the
+        edge of the stock is a cut into the spoilboard, a clamp, or thin air. Check it with Frame Job
+        before you run anything.
       </P>
       <Card>
         <Step title="Layers carry the cut settings">
@@ -102,7 +158,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       <Card>
         <Step title="Why text can go missing from a job">
           If the font file could not be downloaded, the outlines do not exist and the text is left
-          out of the G-code. The export dialog says so and offers to convert; it does not silently
+          out of the toolpath. The Run panel says so and offers to convert; it does not silently
           ship a file with a hole in it.
         </Step>
         <Step title="Fonts come from the network">
@@ -200,6 +256,34 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         </Step>
       </Card>
       <Card>
+        <Step title="One tool per layer">
+          Each layer carries a tool number. Layers that share one are machined together; where the
+          number changes the program stops, switches everything off, retracts, and waits for you to
+          swap the tool and press Resume. A job whose layers all use one tool never stops.
+        </Step>
+        <Step title="Which tool for what">
+          Flat end mills cut and clear pockets — the wider the bit, the faster and the coarser, and
+          nothing survives detail finer than the bit is wide. V-bits engrave: line width comes from
+          depth, so they hold the sharp corners a round cutter rounds off. Ball noses give smooth
+          engraved floors but a ragged edge on a through-cut. On a laser the "tool" is the lens: a
+          long-focus lens for thick stock, a short one for fine engraving. The layer inspector
+          describes each one and warns about the pairings it knows are wrong — a 6 mm cutter on an
+          etch layer, or a 1.5 mm cutter asked to go 12 mm deep.
+        </Step>
+        <Step title="How multi-tool jobs are ordered">
+          Still fills, then etching, then cuts — tool changes are cheap and a part cut loose early is
+          not, so nothing is ever hoisted across an operation to save a swap. Within fills and
+          etching the tool already in the spindle goes first, so two V-bit layers either side of an
+          end-milled one cost one change rather than two. Within cutting, holes keep their place
+          ahead of the outline that contains them even when the two use different tools.
+        </Step>
+        <Step title="Re-zero Z after every change">
+          A new tool is a new length, so work Z0 moves with it. On a multi-tool job the program also
+          pauses before the first cut, so you can confirm what is actually in the collet — the
+          spindle does not start until you resume.
+        </Step>
+      </Card>
+      <Card>
         <Step title="Running it">
           With a machine connected, <strong>Run on Machine</strong> in the G-code panel streams the
           program over USB, one line at a time, paced by the controller's own acknowledgements. The
@@ -243,7 +327,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         <Step title="2️⃣ Jog X/Y to the origin">
           Use the arrow pad to drive the tool over the point on your stock that should be X0 Y0.
           Steps are 0.1 / 1 / 10 mm — take the last approach at 0.1 mm and sight down the tool. The
-          red ⏹ button cancels a jog in flight. Then press <strong>Set XY Zero Here</strong>, and{' '}
+          red ⏹ button cancels a jog in flight. Then press <strong>Set XY Zero</strong>, and{' '}
           <strong>Go To Zero</strong> to confirm it landed where you meant.
         </Step>
         <Step title="3️⃣ Zero Z with the touch plate">
@@ -252,10 +336,20 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           The tool descends slowly until the circuit closes, then work Z0 is set at the stock
           surface. <strong>Remove the plate before cutting.</strong>
         </Step>
+        <Step title="3️⃣ …or zero Z by hand (the paper trick)">
+          No touch plate, or stock that will not conduct? Open{' '}
+          <strong>No touch plate? Zero Z by hand</strong>, lay a sheet of paper on the stock, and jog
+          Z down in 0.1 mm steps until the paper just drags under the tool. Press{' '}
+          <strong>Set Z Zero Here</strong> and the shim thickness (0.1 mm for copier paper) is added
+          back, so Z0 lands on the stock rather than on the paper. It is as accurate as your feel for
+          the drag — good to a few hundredths in practice, and it works on wood, acrylic and painted
+          stock where a plate has nothing to conduct to.
+        </Step>
         <Step title="4️⃣ Frame, then cut">
-          Framing traces the job's bounding box at low power so you can check it fits the stock. For
-          routing, Probe Bed measures a grid across the job so cut depth follows a bed that is not
-          flat.
+          Framing traces the job's bounding box so you can check it fits the stock — at low laser
+          power on a laser, and retracted with the spindle off on a router, which is sitting on the
+          surface it was just zeroed against. For routing, Probe Bed then measures a grid across the
+          job so cut depth follows a board that is not flat.
         </Step>
       </Card>
       <Warn title="⚠️ If the probe misses">
@@ -267,8 +361,10 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       </Warn>
       <P>
         Requires a Chromium browser (WebSerial) and GRBL-compatible firmware — GRBL 1.1, FluidNC, or
-        grblHAL. The plate thickness field defaults to 15 mm; set it to your own plate's measured
-        thickness before the first cut.
+        grblHAL. The plate thickness field defaults to 13 mm and is remembered between sessions;
+        measure your own plate and set it once, before the first cut. Work Z0 lands exactly that far
+        below the plate's top face, so a value left at someone else's plate is a cut too deep by the
+        difference — the one number here that is wrong silently.
       </P>
     </div>
   ),
@@ -282,11 +378,50 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         the job measures that surface, and the exported CNC toolpath is warped to follow it.
       </P>
       <Card>
-        <Step title="Probing the grid">
-          <strong>Probe Bed Heightmap</strong> in the machine panel walks a grid over the job's
-          bounds, probing each point. 3×3 catches tilt; 5×5 or more catches a dish or a twist. Every
-          point is measured against the first, so the map is a set of offsets and does not depend on
-          where Z was zeroed.
+        <Step title="Automatic mode — unattended, needs a conductive job">
+          The machine drives itself to every point and probes it (a <code>G38.2</code> move down
+          onto the surface), lifting to a 5 mm clearance between points. Nothing is asked of you
+          while it runs. Because the tool moves and you do not, the probe circuit has to be live
+          everywhere on the job: clip on the tool, other lead on the workpiece. Bare metal or a
+          copper-clad PCB is the case this is for.
+        </Step>
+        <Step title="Assisted mode — any material">
+          The machine parks over each point and waits. Slide a touch plate under the tool and{' '}
+          <strong>Probe here</strong>, or jog Z down until the tool just kisses the surface and{' '}
+          <strong>Use current Z</strong> — the jog pad stays live while a point is pending, and the
+          captured position is taken once motion has settled. Wood, acrylic, painted stock: nothing
+          has to conduct. <strong>Skip</strong> records a point flat, <strong>Stop</strong> ends the
+          grid.
+        </Step>
+        <Step title="Plate thickness does not enter into the heightmap">
+          Heights here are differences, so a plate of constant thickness under every point cancels
+          out — as does the tool sitting on the surface in the hand-wound method. What matters is
+          that you use the <em>same</em> method at every point of one grid. The thickness box beside{' '}
+          <strong>Probe Z Zero</strong> is a different thing entirely: it is the depth of work Z0
+          below whatever you touched off on.
+        </Step>
+        <Step title="Milling a PCB: set the plate thickness to 0">
+          Touching Z off directly on the copper with a plate thickness still set (it defaults to 13
+          mm and is remembered per machine, not per document) tells the controller the surface is 13
+          mm higher than it is, and the first plunge goes through the board into the spoilboard. Zero
+          on bare copper means thickness <code>0</code>. Touch off somewhere on the board itself,
+          too — the map is anchored to the datum point, so a datum on a fixture beside the job is a
+          datum the grid cannot resolve against.
+        </Step>
+        <Step title="How many points">
+          The two boxes are the point counts across X and along Y. They default to the job's aspect
+          ratio so the spacing is about the same on both axes — a 400 × 100 mm board suggests 9 × 3,
+          not 3 × 3 — and either can be set by hand between 2 and 10. <em>auto</em> returns to the
+          suggestion. Every point costs a probing cycle, so 3 × 3 catches tilt, and 5 × 5 or more is
+          for a dish or a twist.
+        </Step>
+        <Step title="Zero Z first">
+          The map is a correction, so it has to read zero where the depth is already right — the
+          point you touched off Z at. That is what it is anchored to, which means Z has to be zeroed
+          before the bed is probed. Probe it first and the map is anchored to an arbitrary corner of
+          the grid instead, and the whole job is cut deep or shallow by the height difference
+          between the two. The panel says so in amber when that has happened; re-probe after
+          zeroing.
         </Step>
         <Step title="How the correction is applied">
           Long cutting moves are subdivided and each point's Z is raised or lowered by the
