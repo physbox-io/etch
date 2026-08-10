@@ -734,7 +734,18 @@ export const EtchCanvas: React.FC = () => {
     });
   };
 
-  const selectedLocal = selectedElement ? getLocalBBox(selectedElement) : null;
+  // The overlay groups below carry the element's own transform so they travel
+  // with the shape under rotation — but that transform includes the element's
+  // scale, which used to multiply the chrome as well: a 5x-scaled shape got a
+  // 5x-fat dotted box with 5x-long dashes. Undoing the scale inside the group
+  // (and pre-multiplying the box into scaled space, see scaleBox) keeps the
+  // outline and handles a constant on-screen size while still hugging the shape.
+  const selectedLocal = selectedElement
+    ? scaleBox(getLocalBBox(selectedElement), selectedElement.scaleX, selectedElement.scaleY)
+    : null;
+  const selUnscale = selectedElement
+    ? `scale(${1 / safeScale(selectedElement.scaleX)}, ${1 / safeScale(selectedElement.scaleY)})`
+    : undefined;
 
   // Multi-selection: one axis-aligned box around everything, plus a thin
   // outline per member so you can see exactly what is in the set. Resize and
@@ -1231,20 +1242,22 @@ export const EtchCanvas: React.FC = () => {
         {multiBox && activeTool === 'select' && (
           <g id="multi-selection-box" style={{ pointerEvents: 'none' }}>
             {selectedElements.map((el) => {
-              const l = getLocalBBox(el);
+              const l = scaleBox(getLocalBBox(el), el.scaleX, el.scaleY);
               return (
-                <rect
-                  key={el.id}
-                  transform={getElementTransform(el)}
-                  x={l.minX}
-                  y={l.minY}
-                  width={l.width}
-                  height={l.height}
-                  fill="none"
-                  stroke="#f59e0b"
-                  strokeWidth={0.4 * hs}
-                  strokeDasharray={`${1.5 * hs},${1.5 * hs}`}
-                />
+                <g key={el.id} transform={getElementTransform(el)}>
+                  <g transform={`scale(${1 / safeScale(el.scaleX)}, ${1 / safeScale(el.scaleY)})`}>
+                    <rect
+                      x={l.minX}
+                      y={l.minY}
+                      width={l.width}
+                      height={l.height}
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth={0.4 * hs}
+                      strokeDasharray={`${1.5 * hs},${1.5 * hs}`}
+                    />
+                  </g>
+                </g>
               );
             })}
             <rect
@@ -1268,86 +1281,88 @@ export const EtchCanvas: React.FC = () => {
         */}
         {selectedElement && selectedLocal && activeTool === 'select' && (
           <g id="selection-box" transform={getElementTransform(selectedElement)}>
-            <rect
-              x={selectedLocal.minX - hs}
-              y={selectedLocal.minY - hs}
-              width={selectedLocal.width + 2 * hs}
-              height={selectedLocal.height + 2 * hs}
-              fill="none"
-              stroke="#f59e0b"
-              strokeWidth={0.6 * hs}
-              strokeDasharray={`${2 * hs},${2 * hs}`}
-              style={{ pointerEvents: 'none' }}
-            />
-
-            {/* Pivot marker — shows exactly what rotation turns about */}
-            <g style={{ pointerEvents: 'none' }} stroke="#f59e0b" fill="none">
-              <circle cx={selectedLocal.centerX} cy={selectedLocal.centerY} r={1.2 * hs} strokeWidth={0.4 * hs} />
-              <line
-                x1={selectedLocal.centerX - 2.5 * hs}
-                y1={selectedLocal.centerY}
-                x2={selectedLocal.centerX + 2.5 * hs}
-                y2={selectedLocal.centerY}
-                strokeWidth={0.3 * hs}
+            <g transform={selUnscale}>
+              <rect
+                x={selectedLocal.minX - hs}
+                y={selectedLocal.minY - hs}
+                width={selectedLocal.width + 2 * hs}
+                height={selectedLocal.height + 2 * hs}
+                fill="none"
+                stroke="#f59e0b"
+                strokeWidth={0.6 * hs}
+                strokeDasharray={`${2 * hs},${2 * hs}`}
+                style={{ pointerEvents: 'none' }}
               />
+
+              {/* Pivot marker — shows exactly what rotation turns about */}
+              <g style={{ pointerEvents: 'none' }} stroke="#f59e0b" fill="none">
+                <circle cx={selectedLocal.centerX} cy={selectedLocal.centerY} r={1.2 * hs} strokeWidth={0.4 * hs} />
+                <line
+                  x1={selectedLocal.centerX - 2.5 * hs}
+                  y1={selectedLocal.centerY}
+                  x2={selectedLocal.centerX + 2.5 * hs}
+                  y2={selectedLocal.centerY}
+                  strokeWidth={0.3 * hs}
+                />
+                <line
+                  x1={selectedLocal.centerX}
+                  y1={selectedLocal.centerY - 2.5 * hs}
+                  x2={selectedLocal.centerX}
+                  y2={selectedLocal.centerY + 2.5 * hs}
+                  strokeWidth={0.3 * hs}
+                />
+              </g>
+
+              {/* Rotation Handle */}
               <line
                 x1={selectedLocal.centerX}
-                y1={selectedLocal.centerY - 2.5 * hs}
+                y1={selectedLocal.minY - hs}
                 x2={selectedLocal.centerX}
-                y2={selectedLocal.centerY + 2.5 * hs}
-                strokeWidth={0.3 * hs}
+                y2={selectedLocal.minY - 12 * hs}
+                stroke="#f59e0b"
+                strokeWidth={0.6 * hs}
+                style={{ pointerEvents: 'none' }}
               />
-            </g>
+              <g
+                className="cursor-grab active:cursor-grabbing"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  beginTransform(selectedElement, 'rotate', toBed(e));
+                }}
+              >
+                <circle
+                  cx={selectedLocal.centerX}
+                  cy={selectedLocal.minY - 14 * hs}
+                  r={5 * hs}
+                  fill="transparent"
+                />
+                <circle
+                  cx={selectedLocal.centerX}
+                  cy={selectedLocal.minY - 14 * hs}
+                  r={2.2 * hs}
+                  fill="#f59e0b"
+                  stroke="#ffffff"
+                  strokeWidth={0.4 * hs}
+                />
+              </g>
 
-            {/* Rotation Handle */}
-            <line
-              x1={selectedLocal.centerX}
-              y1={selectedLocal.minY - hs}
-              x2={selectedLocal.centerX}
-              y2={selectedLocal.minY - 12 * hs}
-              stroke="#f59e0b"
-              strokeWidth={0.6 * hs}
-              style={{ pointerEvents: 'none' }}
-            />
-            <g
-              className="cursor-grab active:cursor-grabbing"
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                beginTransform(selectedElement, 'rotate', toBed(e));
-              }}
-            >
-              <circle
-                cx={selectedLocal.centerX}
-                cy={selectedLocal.minY - 14 * hs}
-                r={5 * hs}
-                fill="transparent"
-              />
-              <circle
-                cx={selectedLocal.centerX}
-                cy={selectedLocal.minY - 14 * hs}
-                r={2.2 * hs}
+              {/* SE Resize Handle */}
+              <rect
+                x={selectedLocal.minX + selectedLocal.width - 1.5 * hs}
+                y={selectedLocal.minY + selectedLocal.height - 1.5 * hs}
+                width={3 * hs}
+                height={3 * hs}
                 fill="#f59e0b"
                 stroke="#ffffff"
-                strokeWidth={0.4 * hs}
+                strokeWidth={0.3 * hs}
+                className="cursor-nwse-resize"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  // Raw, not snapped — see the resize branch in handleMouseMove.
+                  beginTransform(selectedElement, 'resize-se', toBed(e));
+                }}
               />
             </g>
-
-            {/* SE Resize Handle */}
-            <rect
-              x={selectedLocal.minX + selectedLocal.width - 1.5 * hs}
-              y={selectedLocal.minY + selectedLocal.height - 1.5 * hs}
-              width={3 * hs}
-              height={3 * hs}
-              fill="#f59e0b"
-              stroke="#ffffff"
-              strokeWidth={0.3 * hs}
-              className="cursor-nwse-resize"
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                // Raw, not snapped — see the resize branch in handleMouseMove.
-                beginTransform(selectedElement, 'resize-se', toBed(e));
-              }}
-            />
           </g>
         )}
       </svg>
@@ -1384,6 +1399,38 @@ export const EtchCanvas: React.FC = () => {
 };
 
 // ------------------------------------------------------------------ helpers
+
+/** A zero scale would make the inverse infinite, and a missing one means 1. */
+function safeScale(s: number | undefined): number {
+  return s === undefined || s === 0 ? 1 : s;
+}
+
+/**
+ * Pushes a local bbox through the element's scale, normalised so a mirrored
+ * (negative) scale still yields a positive width/height. Paired with an inner
+ * `scale(1/sx, 1/sy)` group this reproduces the element's geometry exactly
+ * while leaving stroke widths and dashes unscaled.
+ */
+function scaleBox(
+  b: { minX: number; minY: number; width: number; height: number },
+  sx: number | undefined,
+  sy: number | undefined
+) {
+  const kx = safeScale(sx);
+  const ky = safeScale(sy);
+  const x0 = b.minX * kx;
+  const x1 = (b.minX + b.width) * kx;
+  const y0 = b.minY * ky;
+  const y1 = (b.minY + b.height) * ky;
+  return {
+    minX: Math.min(x0, x1),
+    minY: Math.min(y0, y1),
+    width: Math.abs(x1 - x0),
+    height: Math.abs(y1 - y0),
+    centerX: (x0 + x1) / 2,
+    centerY: (y0 + y1) / 2,
+  };
+}
 
 function normalizeAngle(deg: number): number {
   const a = deg % 360;
