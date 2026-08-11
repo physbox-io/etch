@@ -23,12 +23,24 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       snapToGrid: true,
       units: 'mm',
       origin: 'top-left',
+      /**
+       * The stock each preset is drawn for, as data rather than as prose.
+       *
+       * This one's notecard has always said "3 mm Birch Plywood", but nothing
+       * read it, so the document fell back to the app-wide default of 6 mm and
+       * a 3 mm cut depth that no longer went through. A preset that recommends
+       * a material should *be* set to that material — feeds, spindle speed and
+       * pass count are all derived from it now, so it is part of the design and
+       * not a note attached to one.
+       */
+      material: 'plywood',
+      stockThickness: 3,
       notecard: `### Vintage Hotel Key Tag Preset
 - **Cut Layer (Red)**: Outer diamond outline (80x45mm) & 5mm key-ring mounting hole.
 - **Etch Layer (Blue)**: Decorative inner border line & room number typography.
 - **Recommended Material**: 3mm Birch Plywood or Acrylic.`,
       layers: [
-        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3 },
+        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3.3 },
         { id: 'etch', name: 'Vector Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 1800, power: 35, passes: 1, zDepth: 0.5 },
       ],
       selectedIds: [],
@@ -60,12 +72,14 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       snapToGrid: true,
       units: 'mm',
       origin: 'top-left',
+      material: 'plywood',
+      stockThickness: 3,
       notecard: `### Sacred Mandala Coaster Preset
 - **Cut Layer**: 100mm outer coaster boundary.
 - **Etch Layer**: Concentric sacred geometry rings and 8-fold lotus petal array.
 - **Mandala Tools**: Double click or use Mandala Tool sidebar to generate customized radial symmetry!`,
       layers: [
-        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3 },
+        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3.3 },
         { id: 'etch', name: 'Vector Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 2000, power: 30, passes: 1, zDepth: 0.5 },
       ],
       selectedIds: [],
@@ -95,11 +109,13 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       snapToGrid: true,
       units: 'mm',
       origin: 'top-left',
+      material: 'plywood',
+      stockThickness: 3,
       notecard: `### Finger Joint Panel Preset
 - **Finger Tabs**: 10mm width tabs around the 140x100mm perimeter spaced for 3mm material interlocking.
 - **Kerf Compensation**: Set kerf width in G-code exporter for friction-fit joints.`,
       layers: [
-        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 450, power: 95, passes: 1, zDepth: 3 },
+        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 450, power: 95, passes: 1, zDepth: 3.3 },
         { id: 'etch', name: 'Vector Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 1800, power: 35, passes: 1, zDepth: 0.5 },
       ],
       selectedIds: [],
@@ -146,11 +162,13 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       snapToGrid: true,
       units: 'mm',
       origin: 'top-left',
+      material: 'plywood',
+      stockThickness: 4,
       notecard: `### Spur Gear Preset
 - **Module**: 2.0 mm pitch spur gear.
 - **Center Shaft**: 6.35mm (1/4") D-shaft keyway hole.`,
       layers: [
-        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 400, power: 100, passes: 1, zDepth: 4 },
+        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 400, power: 100, passes: 1, zDepth: 4.3 },
         { id: 'etch', name: 'Pitch Circle Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 2200, power: 25, passes: 1, zDepth: 0.5 },
       ],
       selectedIds: [],
@@ -178,10 +196,12 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       snapToGrid: true,
       units: 'mm',
       origin: 'top-left',
+      material: 'plywood',
+      stockThickness: 3,
       notecard: `### Ornate Desk Sign Preset
 - Perfect for wood carving on a CNC mill or laser raster engraving.`,
       layers: [
-        { id: 'cut', name: 'Sign Outer Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3 },
+        { id: 'cut', name: 'Sign Outer Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3.3 },
         { id: 'etch', name: 'Typography Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 2000, power: 40, passes: 1, zDepth: 0.5 },
       ],
       selectedIds: [],
@@ -211,10 +231,12 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       snapToGrid: true,
       units: 'mm',
       origin: 'top-left',
+      material: 'plywood',
+      stockThickness: 3,
       notecard: `### Cyberpunk Circuit Badge Preset
 - **Raster Pocket Fill (Green)**: Etched mesh pattern on metallic acrylic stock.`,
       layers: [
-        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3 },
+        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3.3 },
         { id: 'etch', name: 'Vector Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 1800, power: 35, passes: 1, zDepth: 0.5 },
         { id: 'fill', name: 'Raster Pocket Fill', color: '#10b981', operation: 'fill', visible: true, locked: false, speed: 2500, power: 50, passes: 1, zDepth: 0.8 },
       ],

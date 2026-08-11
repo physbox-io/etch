@@ -8,7 +8,7 @@ import type {
   BedProbeGrid,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
-import type { MaterialId } from '../utils/materials';
+import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 
@@ -367,13 +367,42 @@ export const useStore = create<EtchStore>((set, get) => ({
   setMaterial: (material) =>
     set((state) => ({ document: { ...state.document, material } })),
 
-  setStockThickness: (mm) =>
-    set((state) => ({
-      document: {
-        ...state.document,
-        stockThickness: Math.max(0.1, Math.min(200, mm)),
-      },
-    })),
+  /**
+   * Sets the stock thickness, and takes the cut layers down with it.
+   *
+   * A cut layer's job is to get through the stock, so its depth is not really an
+   * independent number — it is the thickness plus enough to clear the underside.
+   * Leaving the two to be set separately is what let the shipped keychain preset
+   * sit at 3 mm depth against a 6 mm default, which is a cut that does not cut
+   * through and a part that never comes free.
+   *
+   * Etch and fill layers are left alone: they are surface work, and how deep you
+   * score something has nothing to do with how thick it is.
+   *
+   * The new depth is a starting point, not a lock — it stays editable, and a
+   * layer that wants a different depth just gets one. Changing the stock again
+   * retargets them again, which is the predictable behaviour: a cut layer at
+   * anything other than through-depth is unusual enough to be worth re-stating.
+   */
+  setStockThickness: (mm) => {
+    const { document, history, historyIndex } = get();
+    const stockThickness = Math.max(0.1, Math.min(200, mm));
+    const throughDepth = Math.round((stockThickness + THROUGH_CUT_OVERCUT_MM) * 10) / 10;
+    const newDoc = {
+      ...document,
+      stockThickness,
+      layers: document.layers.map((l) =>
+        l.operation === 'cut' ? { ...l, zDepth: throughDepth } : l
+      ),
+    };
+
+    // Unlike the grid and the zoom, this is a document edit and not a view
+    // setting: it rewrites every cut depth in the job. Undo has to be able to
+    // put them back, so it pushes history like any other change to the drawing.
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+    set({ document: newDoc, history: newHistory, historyIndex: newHistory.length - 1 });
+  },
 
   setDocumentOrigin: (origin) =>
     set((state) => ({ document: { ...state.document, origin } })),
