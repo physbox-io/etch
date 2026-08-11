@@ -2,7 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
-import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square, RectangleHorizontal } from 'lucide-react';
+import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2 } from 'lucide-react';
+import {
+  materialCatalog,
+  findMaterial,
+  DEFAULT_MATERIAL,
+  DEFAULT_STOCK_THICKNESS_MM,
+  type MaterialId,
+} from '../utils/materials';
 
 /** Common machining grid pitches, in mm. */
 const GRID_PRESETS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -19,6 +26,8 @@ export const BottomStatusBar: React.FC = () => {
     setZoom,
     setPan,
     setMachineTarget,
+    setMaterial,
+    setStockThickness,
   } = useStore();
 
   // Seeded from the manager rather than a literal, so a bar that mounts after a
@@ -150,6 +159,49 @@ export const BottomStatusBar: React.FC = () => {
             <option value="cnc">CNC Router</option>
           </select>
         </div>
+
+        {/*
+          The stock, on a router only.
+
+          This is the one thing the app cannot work out for itself and cannot do
+          without: feed, spindle speed and depth per pass are all derived from
+          it. It is deliberately the *only* machining control on show — everything
+          it decides used to be a field the user had to fill in and mostly got
+          wrong. A laser has no use for it, so it is not shown there.
+        */}
+        {(document.machine ?? 'laser') === 'cnc' && (
+          <>
+            <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
+            <div className="flex items-center gap-1.5">
+              <Layers2 className="w-3.5 h-3.5 text-emerald-500" />
+              <select
+                value={document.material ?? DEFAULT_MATERIAL}
+                onChange={(e) => setMaterial(e.target.value as MaterialId)}
+                title={findMaterial(document.material).note}
+                className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+              >
+                {materialCatalog().map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="number"
+                min="0.1"
+                step="0.5"
+                value={document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (Number.isFinite(v)) setStockThickness(v);
+                }}
+                title="Stock thickness in millimetres — what 'cut through' has to get through"
+                className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
+              />
+              <span className="text-slate-400">mm</span>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Machine Status & Zoom */}

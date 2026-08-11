@@ -322,6 +322,18 @@ export const EtchCanvas: React.FC = () => {
     [activeTool, selectedElement]
   );
 
+  /**
+   * The same path in the element's scaled space — what the node editor draws,
+   * under an inverse-scale group. Edits still go through `editPath`.
+   */
+  const shownPath = useMemo(
+    () =>
+      editPath && selectedElement
+        ? scaleNodePath(editPath, selectedElement.scaleX, selectedElement.scaleY)
+        : null,
+    [editPath, selectedElement]
+  );
+
   /** Writes an edited path back to the element. Transient until mouse-up. */
   const applyNodePath = useCallback(
     (np: NodePath, transient: boolean) => {
@@ -454,8 +466,11 @@ export const EtchCanvas: React.FC = () => {
         const local = toLocal(e, false);
         const hit = closestPointOnPath(editPath, local);
         // The tolerance is a screen distance, so zooming in does not make the
-        // outline harder to hit.
-        if (hit && hit.dist <= NODE_GRAB_PX / zoom) {
+        // outline harder to hit. hit.dist is in the element's local units,
+        // which its scale shrinks — without dividing that out, a 5x-scaled
+        // path grabbed clicks from 5x further away than the 6px it looks.
+        const grab = NODE_GRAB_PX / (zoom * elementScale(selectedElement));
+        if (hit && hit.dist <= grab) {
           const next = insertNode(editPath, hit.segIndex, hit.t);
           applyNodePath(next, true);
           setActiveNode(hit.segIndex + 1);
@@ -1124,101 +1139,109 @@ export const EtchCanvas: React.FC = () => {
         )}
 
         {/* Node editor: anchors, tangent handles and the insert-here preview */}
-        {editPath && selectedElement && (
+        {editPath && shownPath && selectedElement && (
           <g id="node-editor" transform={getElementTransform(selectedElement)}>
-            {/* The path itself, redrawn on top so the nodes read against it. */}
-            <path
-              d={nodesToPath(editPath.nodes, editPath.closed)}
-              fill="none"
-              stroke="#f59e0b"
-              strokeWidth={0.4 * hs}
-              style={{ pointerEvents: 'none' }}
-            />
+            {/*
+              Same trick as the selection box: draw in scaled space under an
+              inverse scale, so dots, control lines and dashes keep a constant
+              on-screen size on a scaled element. Interaction still runs off
+              `editPath` — indices match, and drags are computed from the mouse.
+            */}
+            <g transform={selUnscale}>
+              {/* The path itself, redrawn on top so the nodes read against it. */}
+              <path
+                d={nodesToPath(shownPath.nodes, shownPath.closed)}
+                fill="none"
+                stroke="#f59e0b"
+                strokeWidth={0.4 * hs}
+                style={{ pointerEvents: 'none' }}
+              />
 
-            {editPath.nodes.map((n, idx) => {
-              // Handles a node actually has are always drawn — that is the
-              // curve's shape, and it is what you reach for. The missing ones
-              // are only offered around the node being worked on, so a long
-              // path is not buried under ghost control lines.
-              const near =
-                activeIdx !== null &&
-                (Math.abs(idx - activeIdx) <= 1 ||
-                  (editPath.closed && Math.abs(idx - activeIdx) === editPath.nodes.length - 1));
-              return (
-                <g key={idx}>
-                  {(['handleIn', 'handleOut'] as const).map((k) => {
-                    // A node placed by a plain click has no handle on this
-                    // side. Show where it would be, hollow, so it can still be
-                    // grabbed — dragging the ghost creates the real handle.
-                    const real = n[k];
-                    if (!real && !near) return null;
-                    const at = real
-                      ? { x: n.x + real.x, y: n.y + real.y }
-                      : ghostHandle(editPath, idx, k);
-                    if (!at) return null;
-                    return (
-                      <g
-                        key={k}
-                        className="cursor-grab active:cursor-grabbing"
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          setActiveNode(idx);
-                          // Alt breaks the node, so the two sides can point
-                          // in different directions.
-                          setNodeDrag({ index: idx, kind: k, mirror: !e.altKey });
-                        }}
-                      >
-                        <line
-                          x1={n.x}
-                          y1={n.y}
-                          x2={at.x}
-                          y2={at.y}
-                          stroke="#38bdf8"
-                          strokeWidth={0.3 * hs}
-                          strokeDasharray={real ? undefined : `${1 * hs},${1 * hs}`}
-                          style={{ pointerEvents: 'none' }}
-                        />
-                        <circle cx={at.x} cy={at.y} r={4 * hs} fill="transparent" />
-                        <circle
-                          cx={at.x}
-                          cy={at.y}
-                          r={1.3 * hs}
-                          fill={real ? '#38bdf8' : 'none'}
-                          stroke="#38bdf8"
-                          strokeWidth={0.35 * hs}
-                        />
-                      </g>
-                    );
-                  })}
+              {shownPath.nodes.map((n, idx) => {
+                // Handles a node actually has are always drawn — that is the
+                // curve's shape, and it is what you reach for. The missing ones
+                // are only offered around the node being worked on, so a long
+                // path is not buried under ghost control lines.
+                const near =
+                  activeIdx !== null &&
+                  (Math.abs(idx - activeIdx) <= 1 ||
+                    (shownPath.closed && Math.abs(idx - activeIdx) === shownPath.nodes.length - 1));
+                return (
+                  <g key={idx}>
+                    {(['handleIn', 'handleOut'] as const).map((k) => {
+                      // A node placed by a plain click has no handle on this
+                      // side. Show where it would be, hollow, so it can still be
+                      // grabbed — dragging the ghost creates the real handle.
+                      const real = n[k];
+                      if (!real && !near) return null;
+                      const at = real
+                        ? { x: n.x + real.x, y: n.y + real.y }
+                        : ghostHandle(shownPath, idx, k);
+                      if (!at) return null;
+                      return (
+                        <g
+                          key={k}
+                          className="cursor-grab active:cursor-grabbing"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setActiveNode(idx);
+                            // Alt breaks the node, so the two sides can point
+                            // in different directions.
+                            setNodeDrag({ index: idx, kind: k, mirror: !e.altKey });
+                          }}
+                        >
+                          <line
+                            x1={n.x}
+                            y1={n.y}
+                            x2={at.x}
+                            y2={at.y}
+                            stroke="#38bdf8"
+                            strokeWidth={0.3 * hs}
+                            strokeDasharray={real ? undefined : `${1 * hs},${1 * hs}`}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <circle cx={at.x} cy={at.y} r={4 * hs} fill="transparent" />
+                          <circle
+                            cx={at.x}
+                            cy={at.y}
+                            r={1.3 * hs}
+                            fill={real ? '#38bdf8' : 'none'}
+                            stroke="#38bdf8"
+                            strokeWidth={0.35 * hs}
+                          />
+                        </g>
+                      );
+                    })}
 
-                  <g
-                    className="cursor-pointer"
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      setActiveNode(idx);
-                      setNodeDrag({ index: idx, kind: 'node', mirror: false });
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      const next = removeNode(editPath, idx);
-                      if (next === editPath) return;
-                      applyNodePath(next, false);
-                      setActiveNode(null);
-                    }}
-                  >
-                    <circle cx={n.x} cy={n.y} r={4 * hs} fill="transparent" />
-                    <circle
-                      cx={n.x}
-                      cy={n.y}
-                      r={(idx === activeIdx ? 2 : 1.6) * hs}
-                      fill={idx === activeIdx ? '#f59e0b' : '#ffffff'}
-                      stroke="#f59e0b"
-                      strokeWidth={0.4 * hs}
-                    />
+                    <g
+                      className="cursor-pointer"
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        setActiveNode(idx);
+                        setNodeDrag({ index: idx, kind: 'node', mirror: false });
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        const next = removeNode(editPath, idx);
+                        if (next === editPath) return;
+                        applyNodePath(next, false);
+                        setActiveNode(null);
+                      }}
+                    >
+                      <circle cx={n.x} cy={n.y} r={4 * hs} fill="transparent" />
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={(idx === activeIdx ? 2 : 1.6) * hs}
+                        fill={idx === activeIdx ? '#f59e0b' : '#ffffff'}
+                        stroke="#f59e0b"
+                        strokeWidth={0.4 * hs}
+                      />
+                    </g>
                   </g>
-                </g>
-              );
-            })}
+                );
+              })}
+              </g>
           </g>
         )}
 
@@ -1403,6 +1426,38 @@ export const EtchCanvas: React.FC = () => {
 /** A zero scale would make the inverse infinite, and a missing one means 1. */
 function safeScale(s: number | undefined): number {
   return s === undefined || s === 0 ? 1 : s;
+}
+
+/**
+ * One number standing in for an element's scale when converting a length
+ * between local and screen space. A non-uniform scale has no single such
+ * factor, so this averages the two axes — close enough for a grab radius.
+ */
+function elementScale(el: EtchElement | null | undefined): number {
+  if (!el) return 1;
+  return (Math.abs(safeScale(el.scaleX)) + Math.abs(safeScale(el.scaleY))) / 2;
+}
+
+/**
+ * The node-editor twin of scaleBox: pushes every anchor and tangent handle
+ * through the element's scale so the editor can draw inside an inverse-scaled
+ * group. Scaling is affine, so the cubic segments come out identical — only
+ * the dots, control lines and stroke widths stop inheriting the scale.
+ */
+function scaleNodePath(path: NodePath, sx: number | undefined, sy: number | undefined): NodePath {
+  const kx = safeScale(sx);
+  const ky = safeScale(sy);
+  if (kx === 1 && ky === 1) return path;
+  const pt = (p: { x: number; y: number }) => ({ x: p.x * kx, y: p.y * ky });
+  return {
+    ...path,
+    nodes: path.nodes.map((n) => ({
+      ...n,
+      ...pt(n),
+      handleIn: n.handleIn ? pt(n.handleIn) : n.handleIn,
+      handleOut: n.handleOut ? pt(n.handleOut) : n.handleOut,
+    })),
+  };
 }
 
 /**

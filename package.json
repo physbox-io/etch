@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "clipper-lib": "^6.4.2",
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",
     "opentype.js": "^2.0.0",

@@ -1,7 +1,7 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
 import { FontPicker } from './FontPicker';
-import type { LayerOperation } from '../types/etch';
+import type { LayerOperation, EtchLayer } from '../types/etch';
 import {
   SlidersHorizontal,
   Layers,
@@ -16,12 +16,239 @@ import {
   Upload,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
-import { DEFAULT_TOOL, toolCatalog, findTool, toolWarning, suggestTool } from '../utils/tooling';
+import { DEFAULT_TOOL, toolCatalog, findTool, toolWarning, suggestTool, type ToolProfile } from '../utils/tooling';
+import { deriveFeeds, planPasses, formatRpm } from '../utils/feeds';
+import {
+  findMaterial,
+  DEFAULT_STOCK_THICKNESS_MM,
+  THROUGH_CUT_OVERCUT_MM,
+  type MaterialProfile,
+} from '../utils/materials';
+import { readSpindleRange } from '../utils/machineSettings';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import type { EtchElement } from '../types/etch';
 
 const NUM_INPUT =
   'w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono';
+
+const SMALL_INPUT =
+  'w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500';
+
+const SMALL_LABEL =
+  'block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400';
+
+/**
+ * The machining settings for one layer on a router.
+ *
+ * Everything here except the cut depth is derived from the material and the
+ * tool, and shown rather than asked for. The overrides exist — someone who
+ * knows their machine better than the feeds table does should be able to say so
+ * — but they are behind a disclosure that is shut by default, because a
+ * beginner opening this panel should see what the job is going to do, not six
+ * numbers they have to be right about.
+ */
+const CncLayerCutting: React.FC<{
+  layer: EtchLayer;
+  profile: ToolProfile | undefined;
+  material: MaterialProfile;
+  stockThickness: number;
+  update: (patch: Partial<EtchLayer>, transient?: boolean) => void;
+  commit: () => void;
+}> = ({ layer, profile, material, stockThickness, update, commit }) => {
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
+
+  // The spindle is a property of the bench, so it is read here rather than
+  // being threaded through the document.
+  const spindle = React.useMemo(() => readSpindleRange(), []);
+  const recipe = React.useMemo(
+    () => (profile ? deriveFeeds(profile, material, spindle) : null),
+    [profile, material, spindle]
+  );
+
+  const depth = Math.abs(layer.zDepth ?? 0);
+  const feed = layer.feedOverride ?? recipe?.feed ?? layer.speed;
+  const rpm = layer.rpmOverride ?? recipe?.rpm ?? 0;
+  const stepdown = layer.stepdownOverride ?? recipe?.stepdown ?? depth;
+  const passes = depth > 0 ? planPasses(depth, stepdown).depths.length : 0;
+
+  /** The depth that just clears the stock, grazing the spoilboard. */
+  const throughDepth = round1(stockThickness + THROUGH_CUT_OVERCUT_MM);
+  const isThrough = Math.abs(depth - throughDepth) < 0.05;
+
+  return (
+    <div
+      className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50 space-y-2"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div>
+        <div className="flex items-center justify-between">
+          <label className={SMALL_LABEL}>Depth / Z (mm)</label>
+          {/* "Through" is the depth people actually want and the one they get
+              wrong: it is the stock thickness plus enough to not leave a fringe
+              of uncut fuzz holding the part in. */}
+          {layer.operation === 'cut' && !isThrough && (
+            <button
+              onClick={() => {
+                update({ zDepth: throughDepth });
+                commit();
+              }}
+              className="text-[9px] px-1 py-px rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer"
+              title={`Cut through ${stockThickness} mm of stock, plus ${THROUGH_CUT_OVERCUT_MM} mm into the spoilboard`}
+            >
+              through stock
+            </button>
+          )}
+        </div>
+        <input
+          type="number"
+          step="0.1"
+          min="0"
+          value={layer.zDepth ?? 1}
+          onChange={(e) => update({ zDepth: Math.max(0, parseFloat(e.target.value) || 0) }, true)}
+          onBlur={commit}
+          className={SMALL_INPUT}
+        />
+      </div>
+
+      {/* What the job will actually do, in the units the machine uses. */}
+      <div className="rounded bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 px-2 py-1.5">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">
+            {recipe ? `Derived for ${material.name}` : 'Uncatalogued tool'}
+          </span>
+          {passes > 0 && (
+            <span className="text-[10px] font-mono text-slate-600 dark:text-slate-300">
+              {passes} pass{passes === 1 ? '' : 'es'}
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-100">
+          {rpm > 0 ? `${formatRpm(rpm)} RPM · ` : ''}
+          {feed} mm/min · {stepdown} mm/pass
+        </p>
+        {recipe?.notes.map((n) => (
+          <p
+            key={n}
+            className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug"
+          >
+            <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
+            <span>{n}</span>
+          </p>
+        ))}
+      </div>
+
+      {layer.operation === 'cut' && (
+        <label className="flex items-center gap-1.5 text-[10px] text-slate-600 dark:text-slate-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={layer.tabs ?? true}
+            onChange={(e) => {
+              update({ tabs: e.target.checked });
+              commit();
+            }}
+            className="cursor-pointer"
+          />
+          <span>Holding tabs — leave the part attached until you snap it out</span>
+        </label>
+      )}
+
+      <button
+        onClick={() => setShowAdvanced((v) => !v)}
+        className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+      >
+        {showAdvanced ? '▾' : '▸'} Advanced — override the derived feeds
+      </button>
+
+      {showAdvanced && (
+        <div className="space-y-2">
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+            Leave these blank to use the derived values. A number here is used exactly as typed,
+            including one the cutter cannot survive.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={SMALL_LABEL}>Feed (mm/min)</label>
+              <input
+                type="number"
+                step="50"
+                min="1"
+                placeholder={String(recipe?.feed ?? '')}
+                value={layer.feedOverride ?? ''}
+                onChange={(e) =>
+                  update(
+                    { feedOverride: e.target.value === '' ? undefined : Math.max(1, parseFloat(e.target.value) || 1) },
+                    true
+                  )
+                }
+                onBlur={commit}
+                className={SMALL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={SMALL_LABEL}>Spindle (RPM)</label>
+              <input
+                type="number"
+                step="1000"
+                min="1000"
+                placeholder={String(recipe?.rpm ?? '')}
+                value={layer.rpmOverride ?? ''}
+                onChange={(e) =>
+                  update(
+                    { rpmOverride: e.target.value === '' ? undefined : Math.max(1000, parseFloat(e.target.value) || 1000) },
+                    true
+                  )
+                }
+                onBlur={commit}
+                className={SMALL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={SMALL_LABEL}>Stepdown (mm)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.05"
+                placeholder={String(recipe?.stepdown ?? '')}
+                value={layer.stepdownOverride ?? ''}
+                onChange={(e) =>
+                  update(
+                    { stepdownOverride: e.target.value === '' ? undefined : Math.max(0.05, parseFloat(e.target.value) || 0.05) },
+                    true
+                  )
+                }
+                onBlur={commit}
+                className={SMALL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={SMALL_LABEL}>Cutter offset</label>
+              <select
+                value={layer.cutSide ?? 'auto'}
+                onChange={(e) => update({ cutSide: e.target.value as EtchLayer['cutSide'] })}
+                className={`${SMALL_INPUT} cursor-pointer`}
+                title="Which side of the line the cutter runs on"
+              >
+                <option value="auto">Auto</option>
+                <option value="outside">Outside</option>
+                <option value="inside">Inside</option>
+                <option value="on">On the line</option>
+              </select>
+            </div>
+          </div>
+          {(layer.cutSide ?? 'auto') === 'on' && layer.operation === 'cut' && (
+            <p className="flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+              <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
+              <span>
+                Cutting on the line makes the part {profile?.diameter ?? 0} mm smaller than drawn,
+                and its holes that much bigger.
+              </span>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
@@ -63,6 +290,8 @@ export const PropertiesSidebar: React.FC = () => {
   // stops; two or more means the operator is standing there for each change,
   // which is worth saying before they start rather than after.
   const distinctTools = new Set(document.layers.map((l) => l.tool ?? DEFAULT_TOOL)).size;
+  const material = findMaterial(document.material);
+  const stockThickness = document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM;
 
   return (
     <aside className="w-72 h-[calc(100vh-3.5rem)] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-y-auto transition-colors">
@@ -551,66 +780,69 @@ export const PropertiesSidebar: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Layer Parameters Input Grid */}
-                <div
-                  className="grid grid-cols-2 gap-2 text-[10px] text-slate-500 dark:text-slate-400 mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div>
-                    <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Speed (mm/min)</label>
-                    <input
-                      type="number"
-                      step="50"
-                      min="1"
-                      value={layer.speed}
-                      onChange={(e) => updateLayer(layer.id, { speed: Math.max(1, parseFloat(e.target.value) || 1) }, true)}
-                      onBlur={commitHistory}
-                      className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Power (%)</label>
-                    <input
-                      type="number"
-                      step="5"
-                      min="0"
-                      max="100"
-                      value={layer.power}
-                      onChange={(e) => updateLayer(layer.id, { power: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) }, true)}
-                      onBlur={commitHistory}
-                      className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
-                    />
-                  </div>
-                  {/* A laser holds one height and modulates power — it has no
-                      cut depth. Offering the field on a laser job invited a
-                      number that the exporter then silently dropped. */}
-                  {!isLaser && (
+                {/*
+                  Laser controls.
+
+                  Speed, power and pass count are the whole of how deep a laser
+                  cuts, so on that machine they are the settings and there is
+                  nothing to derive. On a router they are not: feed follows from
+                  the cutter and the material, and "power %" is not a thing a
+                  spindle has — the exporter ignored it entirely while this panel
+                  went on accepting it, so a layer set to 40% ran at 100%.
+                */}
+                {isLaser ? (
+                  <div
+                    className="grid grid-cols-2 gap-2 text-[10px] text-slate-500 dark:text-slate-400 mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <div>
-                      <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Depth / Z (mm)</label>
+                      <label className={SMALL_LABEL}>Speed (mm/min)</label>
                       <input
                         type="number"
-                        step="0.1"
-                        min="0"
-                        value={layer.zDepth ?? 1}
-                        onChange={(e) => updateLayer(layer.id, { zDepth: Math.max(0, parseFloat(e.target.value) || 0) }, true)}
+                        step="50"
+                        min="1"
+                        value={layer.speed}
+                        onChange={(e) => updateLayer(layer.id, { speed: Math.max(1, parseFloat(e.target.value) || 1) }, true)}
                         onBlur={commitHistory}
-                        className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
+                        className={SMALL_INPUT}
                       />
                     </div>
-                  )}
-                  <div>
-                    <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">Passes</label>
-                    <input
-                      type="number"
-                      step="1"
-                      min="1"
-                      value={layer.passes ?? 1}
-                      onChange={(e) => updateLayer(layer.id, { passes: Math.max(1, parseInt(e.target.value) || 1) }, true)}
-                      onBlur={commitHistory}
-                      className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-mono text-slate-800 dark:text-slate-200 text-xs focus:outline-none focus:border-red-500"
-                    />
+                    <div>
+                      <label className={SMALL_LABEL}>Power (%)</label>
+                      <input
+                        type="number"
+                        step="5"
+                        min="0"
+                        max="100"
+                        value={layer.power}
+                        onChange={(e) => updateLayer(layer.id, { power: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) }, true)}
+                        onBlur={commitHistory}
+                        className={SMALL_INPUT}
+                      />
+                    </div>
+                    <div>
+                      <label className={SMALL_LABEL}>Passes</label>
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={layer.passes ?? 1}
+                        onChange={(e) => updateLayer(layer.id, { passes: Math.max(1, parseInt(e.target.value) || 1) }, true)}
+                        onBlur={commitHistory}
+                        className={SMALL_INPUT}
+                      />
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <CncLayerCutting
+                    layer={layer}
+                    profile={profile}
+                    material={material}
+                    stockThickness={stockThickness}
+                    update={(patch, transient) => updateLayer(layer.id, patch, transient)}
+                    commit={commitHistory}
+                  />
+                )}
 
                 {/* Tool. Layers that disagree here are cut in separate blocks
                     with a pause between them, so this is a machining decision

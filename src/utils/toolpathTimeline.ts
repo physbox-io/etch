@@ -1,4 +1,5 @@
 import { SAFE_Z, planToolChanges, type GCodeSegment } from './gcodeExporter';
+import { planMoves, type MoveKind } from './toolpathMoves';
 
 /**
  * One move of the tool, with the clock time it occupies.
@@ -16,7 +17,7 @@ export interface ToolMove {
   /** Z at the start and end of the move. Negative is into the stock. */
   z0: number;
   z1: number;
-  kind: 'cut' | 'travel' | 'plunge' | 'retract';
+  kind: MoveKind;
   layerId: string;
   type: GCodeSegment['type'];
   /** 0–100, as set on the layer. Stands in for depth on a laser, which has no Z. */
@@ -68,209 +69,88 @@ export interface Timeline {
   toolChanges: TimelineToolChange[];
 }
 
-const PLUNGE_FEED_CAP = 300;
-
 /**
- * Replays the planned segments into timed moves.
+ * Puts the planned moves on a clock.
  *
- * Deliberately mirrors generateGCode()'s traversal — same link rule, same
- * per-pass depth, same retract-before-rapid — so the animation and the estimate
- * describe the program that will actually be sent, not an idealised version of
- * it. If the two ever drift, the preview is lying about the job.
+ * This used to replay the segments itself, mirroring generateGCode()'s
+ * traversal by hand and carrying a comment warning that the preview would start
+ * lying about the job if the two ever drifted. They now share `planMoves`, so
+ * the animation is not a reconstruction of the program — it is the program,
+ * with times attached.
  */
 export function buildTimeline(
   segments: GCodeSegment[],
   opts: { travelSpeed: number; laserMode: boolean }
 ): Timeline {
   const travelSpeed = Math.max(1, opts.travelSpeed);
-  const moves: ToolMove[] = [];
+  const changes = planToolChanges(segments);
+  const program = planMoves(segments, {
+    laserMode: opts.laserMode,
+    travelSpeed,
+    safeZ: SAFE_Z,
+    toolChanges: new Map(changes.map((c) => [c.segIndex, { tool: c.tool, from: c.from }])),
+  });
 
-  let cx = 0;
-  let cy = 0;
-  let started = false;
-  let engaged: number | null = null;
+  const moves: ToolMove[] = [];
+  const toolChanges: TimelineToolChange[] = [];
+  const changeAtMove = new Map(program.toolChanges.map((c) => [c.moveIndex, c]));
+
   let t = 0;
   let cutLength = 0;
   let travelLength = 0;
   let deepestZ = 0;
   let maxPower = 0;
 
-  const clearanceZ = opts.laserMode ? 0 : SAFE_Z;
-
-  const changeAt = new Map(planToolChanges(segments).map((c) => [c.segIndex, c]));
-  const toolChanges: TimelineToolChange[] = [];
-  let repositionNeeded = false;
-
-  const push = (move: Omit<ToolMove, 't0' | 't1'>, feed: number, distance: number) => {
-    const dt = distance / Math.max(1, feed);
-    moves.push({ ...move, t0: t, t1: t + dt });
-    t += dt;
-  };
-
-  for (let sIdx = 0; sIdx < segments.length; sIdx++) {
-    const seg = segments[sIdx];
-    const prev = sIdx > 0 ? segments[sIdx - 1] : null;
-    if (seg.points.length < 1) continue;
-
-    const change = changeAt.get(sIdx);
+  for (let i = 0; i < program.moves.length; i++) {
+    const change = changeAtMove.get(i);
     if (change) {
-      // Mirrors the exporter: park, then wait. The retract is real motion and
-      // costs time; the wait itself is the operator's and is not on the clock.
-      if (!opts.laserMode && engaged !== null) {
-        const lift = Math.abs(SAFE_Z - engaged);
-        push(
-          {
-            layerId: seg.layerId,
-            type: seg.type,
-            power: seg.power,
-            segIndex: sIdx,
-            pass: 1,
-            passes: seg.passes,
-            along0: 0,
-            along1: 0,
-            x1: cx,
-            y1: cy,
-            x2: cx,
-            y2: cy,
-            z0: engaged,
-            z1: SAFE_Z,
-            kind: 'retract',
-          },
-          travelSpeed,
-          lift
-        );
-        engaged = null;
-      }
-      toolChanges.push({ tool: change.tool, from: change.from, segIndex: sIdx, x: cx, y: cy, t });
-      repositionNeeded = true;
+      const at = program.moves[i];
+      toolChanges.push({
+        tool: change.tool,
+        from: change.from,
+        segIndex: change.segIndex,
+        x: at.x1,
+        y: at.y1,
+        t,
+      });
     }
 
-    for (let pass = 1; pass <= seg.passes; pass++) {
-      const zPass = opts.laserMode ? 0 : -Math.abs(seg.zDepth) * (pass / seg.passes);
-      if (zPass < deepestZ) deepestZ = zPass;
-      if (seg.points.length > 1 && seg.power > maxPower) maxPower = seg.power;
+    const m = program.moves[i];
+    // Z counts towards the distance travelled: a ramp descends while it moves,
+    // and a job of many shallow passes spends real time on that descent.
+    const distance = Math.hypot(m.x2 - m.x1, m.y2 - m.y1, m.z2 - m.z1);
+    const dt = distance / Math.max(1, m.feed);
 
-      const first = seg.points[0];
-      const gap = started ? Math.hypot(cx - first.x, cy - first.y) : 0;
+    if (m.z2 < deepestZ) deepestZ = m.z2;
+    if (m.kind === 'cut' && m.power > maxPower) maxPower = m.power;
+    if (m.kind === 'cut' || m.kind === 'ramp') cutLength += Math.hypot(m.x2 - m.x1, m.y2 - m.y1);
+    else if (m.kind === 'travel') travelLength += Math.hypot(m.x2 - m.x1, m.y2 - m.y1);
 
-      const isLink =
-        prev !== null &&
-        !repositionNeeded &&
-        pass === 1 &&
-        seg.passes === 1 &&
-        prev.passes === 1 &&
-        seg.linkTolerance > 0 &&
-        prev.linkTolerance > 0 &&
-        seg.layerId === prev.layerId &&
-        seg.zDepth === prev.zDepth &&
-        seg.power === prev.power &&
-        gap <= seg.linkTolerance &&
-        (opts.laserMode || engaged === zPass);
-
-      const common = {
-        layerId: seg.layerId,
-        type: seg.type,
-        power: seg.power,
-        segIndex: sIdx,
-        pass,
-        passes: seg.passes,
-        along0: 0,
-        along1: 0,
-      };
-      let along = 0;
-
-      if (isLink && gap > 0) {
-        // Crossed with the tool down: this is a scanline pitch inside the fill.
-        push(
-          { ...common, x1: cx, y1: cy, x2: first.x, y2: first.y, z0: zPass, z1: zPass, kind: 'cut' },
-          seg.speed,
-          gap
-        );
-        cutLength += gap;
-      } else if (!isLink) {
-        if (gap > 0.01 || repositionNeeded) {
-          if (!opts.laserMode && engaged !== null) {
-            const lift = Math.abs(SAFE_Z - engaged);
-            push(
-              { ...common, x1: cx, y1: cy, x2: cx, y2: cy, z0: engaged, z1: SAFE_Z, kind: 'retract' },
-              travelSpeed,
-              lift
-            );
-            engaged = null;
-          }
-          push(
-            {
-              ...common,
-              x1: cx,
-              y1: cy,
-              x2: first.x,
-              y2: first.y,
-              z0: clearanceZ,
-              z1: clearanceZ,
-              kind: 'travel',
-            },
-            travelSpeed,
-            gap
-          );
-          travelLength += gap;
-          repositionNeeded = false;
-        }
-
-        if (!opts.laserMode && engaged !== zPass) {
-          const from = engaged ?? SAFE_Z;
-          push(
-            {
-              ...common,
-              x1: first.x,
-              y1: first.y,
-              x2: first.x,
-              y2: first.y,
-              z0: from,
-              z1: zPass,
-              kind: 'plunge',
-            },
-            Math.min(seg.speed, PLUNGE_FEED_CAP),
-            Math.abs(zPass - from)
-          );
-          engaged = zPass;
-        }
-      }
-
-      cx = first.x;
-      cy = first.y;
-      started = true;
-
-      for (let i = 1; i < seg.points.length; i++) {
-        const p = seg.points[i];
-        const d = Math.hypot(p.x - cx, p.y - cy);
-        if (d > 0) {
-          push(
-            {
-              ...common,
-              x1: cx,
-              y1: cy,
-              x2: p.x,
-              y2: p.y,
-              z0: zPass,
-              z1: zPass,
-              kind: 'cut',
-              along0: along,
-              along1: along + d,
-            },
-            seg.speed,
-            d
-          );
-          cutLength += d;
-          along += d;
-        }
-        cx = p.x;
-        cy = p.y;
-      }
-    }
+    moves.push({
+      x1: m.x1,
+      y1: m.y1,
+      x2: m.x2,
+      y2: m.y2,
+      z0: m.z1,
+      z1: m.z2,
+      kind: m.kind,
+      layerId: m.layerId,
+      type: m.type,
+      power: m.power,
+      segIndex: m.segIndex,
+      pass: m.pass,
+      passes: m.passes,
+      along0: m.along0,
+      along1: m.along1,
+      t0: t,
+      t1: t + dt,
+    });
+    t += dt;
   }
 
   return { moves, minutes: t, cutLength, travelLength, deepestZ, maxPower, toolChanges };
 }
+
 
 /** The move in progress at time `t`, by binary search over the cumulative clock. */
 export function moveIndexAt(moves: ToolMove[], t: number): number {

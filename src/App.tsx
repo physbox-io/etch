@@ -9,6 +9,7 @@ import { BottomStatusBar } from './components/BottomStatusBar';
 import { ClipArtModal } from './components/ClipArtModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
+import { JobPauseBanner } from './components/JobPauseBanner';
 import { AICopilotPanel } from './components/AICopilotPanel';
 import { DocsModal } from './components/DocsModal';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -95,6 +96,10 @@ export const App: React.FC = () => {
 
       {/* Bottom Status Bar */}
       <BottomStatusBar />
+
+      {/* A parked job asks the operator for something, and has to say so with
+          every panel closed — same reason the status bar keeps the controls. */}
+      <JobPauseBanner />
 
       {/* Modals */}
       <ClipArtModal />

@@ -15,6 +15,9 @@ import {
   Info,
   Check,
   Grid3x3,
+  PauseCircle,
+  Play,
+  Square,
 } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
 import { getGridStats, suggestGridCounts } from '../utils/bedLeveler';
@@ -84,7 +87,16 @@ export const MachineWorkOriginPanel: React.FC<{
   const [xyZeroed, setXyZeroed] = useState<{ x: number; y: number } | null>(null);
   // How Z zero was arrived at is part of the confirmation: a hand-set datum is
   // as good as its operator's feel for a sheet of paper, and worth saying so.
-  const [zZeroed, setZZeroed] = useState<{ z: number; manual: boolean; shim?: number } | null>(null);
+  // `pausedLine` is what makes the datum answerable against a paused job: "Z is
+  // zeroed" is true of the tool that has just been taken out of the collet too.
+  // It holds the line the job was parked at when zero was taken, or null if it
+  // was taken with nothing running — which is the ordinary pre-job case.
+  const [zZeroed, setZZeroed] = useState<{
+    z: number;
+    manual: boolean;
+    shim?: number;
+    pausedLine: number | null;
+  } | null>(null);
   const [showManualZ, setShowManualZ] = useState(false);
   const [shimThickness, setShimThickness] = useState(readShimThickness);
   // Homing is the real first step: until the machine has found its limit
@@ -92,6 +104,7 @@ export const MachineWorkOriginPanel: React.FC<{
   // and nothing below can be repeated tomorrow.
   const [homed, setHomed] = useState(false);
   const [isHoming, setIsHoming] = useState(false);
+  const jobPaused = status.jobRunning && status.jobPaused;
 
   const suggested = useMemo(
     () =>
@@ -139,13 +152,23 @@ export const MachineWorkOriginPanel: React.FC<{
     setXyZeroed({ x: now.x, y: now.y });
   };
 
+  /** Which stop this zeroing belongs to, read live rather than from a stale render. */
+  const pausedLineNow = () => {
+    const now = webSerialManager.getStatus();
+    return now.jobRunning && now.jobPaused ? now.currentLine : null;
+  };
+
   const handleZeroZ = async () => {
     setIsProbingZ(true);
     setProbeMessage(null);
     try {
       const result = await webSerialManager.zeroZ(plateThickness);
       setProbeMessage({ ok: result.success, text: result.message });
-      setZZeroed(result.success ? { z: webSerialManager.getStatus().z, manual: false } : null);
+      setZZeroed(
+        result.success
+          ? { z: webSerialManager.getStatus().z, manual: false, pausedLine: pausedLineNow() }
+          : null
+      );
     } finally {
       setIsProbingZ(false);
     }
@@ -157,7 +180,12 @@ export const MachineWorkOriginPanel: React.FC<{
     // The reported Z is where the tool stood when zero was taken, which is the
     // number worth showing — reading it back afterwards races the status poll.
     if (result.success) {
-      setZZeroed({ z: result.machineZ ?? webSerialManager.getStatus().z, manual: true, shim: shimThickness });
+      setZZeroed({
+        z: result.machineZ ?? webSerialManager.getStatus().z,
+        manual: true,
+        shim: shimThickness,
+        pausedLine: pausedLineNow(),
+      });
     }
   };
 
@@ -222,12 +250,70 @@ export const MachineWorkOriginPanel: React.FC<{
   );
 
   const gridStats = probeGrid ? getGridStats(probeGrid) : null;
+  // A datum taken at this stop is the new tool's. One from before it belongs to
+  // the tool that has just been swapped out, and resuming on that cuts off by
+  // the difference in tool length.
+  const zeroedSincePause = jobPaused && zZeroed?.pausedLine === status.currentLine;
 
   return (
     /* Nothing here keys off viewport breakpoints: this panel lives in a modal
        column that is ~half the window wide, so `xl:` fired while there was no
        room for the columns it asked for. Rows wrap on their own instead. */
     <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+      {/* Resuming lives here, next to the buttons that make it safe to resume.
+          The operator arrives at this panel *because* the job stopped for a tool
+          change, and sending them back to the G-code panel to press Play would
+          be asking them to close the thing they came to use. */}
+      {jobPaused && (
+        <div className="rounded-xl border border-amber-400/80 dark:border-amber-600/70 bg-amber-50 dark:bg-amber-950/40 p-3 space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+              <PauseCircle className="w-4 h-4 text-amber-500" />
+              Job paused
+            </span>
+            <span className="font-mono text-[10px] text-amber-700/80 dark:text-amber-300/80">
+              {status.currentLine}/{status.totalLines}
+            </span>
+          </div>
+
+          <p className="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+            {status.pauseMessage ?? 'Waiting for the operator.'}
+          </p>
+
+          {/* Said plainly, because the mistake this panel exists to prevent is
+              resuming a multi-tool job on the last tool's Z datum. */}
+          {showZProbe &&
+            (zeroedSincePause ? (
+              <p className={doneNote}>
+                Z re-zeroed since the pause — machine Z:{zZeroed!.z.toFixed(2)}
+              </p>
+            ) : (
+              <p className="text-[10px] leading-snug text-amber-700 dark:text-amber-400">
+                Z has not been re-zeroed since the job stopped. A new tool is a new length: touch off
+                below before resuming, or the cut depth moves with it.
+              </p>
+            ))}
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => webSerialManager.resumeJob()}
+              className="flex-1 py-2 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/20 transition-colors"
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>Resume Job</span>
+            </button>
+            <button
+              onClick={() => webSerialManager.cancelJob()}
+              title="Stop the job"
+              className="py-2 px-3 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <Square className="w-3.5 h-3.5" />
+              <span>Stop</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-1.5">
           <h4 className="text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">

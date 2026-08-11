@@ -1,3 +1,5 @@
+import type { MaterialId } from '../utils/materials';
+
 export type LayerOperation = 'cut' | 'etch' | 'fill';
 
 export interface EtchLayer {
@@ -7,10 +9,59 @@ export interface EtchLayer {
   operation: LayerOperation;
   visible: boolean;
   locked: boolean;
+  /**
+   * Laser controls. A laser has no depth of cut: how deep it goes is how fast
+   * it moves and how hard it fires, so these two *are* the cut on that machine.
+   *
+   * They are not the router's controls. A router's feed follows from the cutter
+   * and the material via `utils/feeds.ts`, and its spindle speed is an RPM
+   * rather than a percentage — the CNC exporter used to ignore `power` entirely
+   * while the sidebar happily accepted it, so a layer set to 40% ran the spindle
+   * flat out. On a CNC document these are unused and the fields are hidden; see
+   * the `*Override` fields below for the router equivalents.
+   */
   speed: number;    // mm/min
   power: number;    // 0 - 100 %
+  /**
+   * Pass count.
+   *
+   * On a laser this is how many times to go over the line. On a router it is an
+   * *override*: passes are normally derived from the cut depth and how deep a
+   * bite the tool and material allow, and leaving this unset is what stops a
+   * document that says "1 pass, 18 mm" from plunging a cutter through 18 mm of
+   * oak in one go.
+   */
   passes: number;   // number of passes
   zDepth: number;   // mm depth for CNC cut
+
+  /**
+   * CNC overrides, all optional. Unset — the normal case — means the value is
+   * derived from the document's material and this layer's tool.
+   *
+   * These exist because someone who knows their machine better than the feeds
+   * table does should be able to say so, not because anyone should have to. The
+   * inspector keeps them behind a disclosure for that reason: a beginner never
+   * opens it, and the numbers they would have had to invent are already right.
+   */
+  feedOverride?: number;      // mm/min along the path
+  rpmOverride?: number;       // spindle speed
+  stepdownOverride?: number;  // mm of depth per pass
+  /**
+   * Whether a through-cut on this layer gets holding tabs. Defaults to on for
+   * `cut` layers, because the alternative is the part coming loose under a
+   * spinning cutter on the last pass.
+   */
+  tabs?: boolean;
+  /**
+   * Which side of the line the cutter runs on.
+   *
+   * 'auto' — the default — puts it outside the outermost contour and inside
+   * anything enclosed, which is what makes a part come out the size it was
+   * drawn and its holes fit what goes through them. 'on' reproduces the old
+   * behaviour of driving the centreline down the line, leaving every part
+   * undersized by half a cutter.
+   */
+  cutSide?: 'auto' | 'outside' | 'inside' | 'on';
   /**
    * The tool this layer is machined with, as a T-number. Layers that differ
    * here are cut in separate blocks with a programmed pause between them, so
@@ -133,6 +184,17 @@ export interface EtchDocument {
    * dropped from the toolpath.
    */
   machine?: 'laser' | 'cnc';
+  /**
+   * What the stock is made of, and how thick it is in mm.
+   *
+   * The one thing the app genuinely cannot guess and genuinely needs: feed,
+   * spindle speed and depth per pass all follow from it, and "cut through"
+   * means nothing without a thickness. It is a property of the job rather than
+   * the machine — the same router cuts ply on Tuesday and acrylic on Wednesday
+   * — so unlike the touch plate it lives in the document.
+   */
+  material?: MaterialId;
+  stockThickness?: number;
   snapToGrid: boolean;
   units: 'mm' | 'inch';
   origin: 'top-left' | 'center' | 'bottom-left';

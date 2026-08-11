@@ -101,7 +101,9 @@ export const ToolpathPreview: React.FC<{
     for (let i = 0; i < TRACK_COLUMNS; i++) {
       const t = ((i + 0.5) / TRACK_COLUMNS) * minutes;
       const s = sampleAt(moves, t);
-      const cutting = s.move?.kind === 'cut';
+      // A ramp is engaged in the material, just descending while it goes, so it
+      // counts as cutting everywhere the animation distinguishes the two.
+      const cutting = s.move?.kind === 'cut' || s.move?.kind === 'ramp';
       const raw = laserMode ? (cutting ? s.move!.power : 0) : Math.abs(s.z);
       cols.push({ v: span > 0 ? clamp01(raw / span) : 0, cutting });
     }
@@ -155,11 +157,11 @@ export const ToolpathPreview: React.FC<{
         l.setAttribute('y1', String(move.y1));
         l.setAttribute('x2', String(done ? move.x2 : s.x));
         l.setAttribute('y2', String(done ? move.y2 : s.y));
-        l.setAttribute('opacity', done || move.kind === 'cut' ? '0' : '0.9');
+        l.setAttribute('opacity', done || move.kind === 'cut' || move.kind === 'ramp' ? '0' : '0.9');
       }
 
       const depthFrac = laserMode
-        ? (move && move.kind === 'cut' ? move.power / 100 : 0)
+        ? (move && (move.kind === 'cut' || move.kind === 'ramp') ? move.power / 100 : 0)
         : timeline.deepestZ < 0
           ? clamp01(Math.abs(s.z) / Math.abs(timeline.deepestZ))
           : 0;
@@ -177,7 +179,7 @@ export const ToolpathPreview: React.FC<{
       }
       if (depthTextRef.current) {
         depthTextRef.current.textContent = laserMode
-          ? `S ${Math.round((move && move.kind === 'cut' ? move.power : 0))}%`
+          ? `S ${Math.round((move && (move.kind === 'cut' || move.kind === 'ramp') ? move.power : 0))}%`
           : `Z ${s.z.toFixed(2)} mm`;
       }
       if (timeTextRef.current) {

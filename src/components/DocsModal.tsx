@@ -125,9 +125,17 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       </P>
       <Card>
         <Step title="Layers carry the cut settings">
-          Speed, power, pass count and Z depth live on the layer, not the shape. Everything on the
-          same layer is machined with the same settings, in one block of G-code, so group by
-          operation — through-cuts on one layer, score lines on another.
+          Cut depth and the tool live on the layer, not the shape. Everything on the same layer is
+          machined with the same settings, in one block of G-code, so group by operation —
+          through-cuts on one layer, score lines on another.
+        </Step>
+        <Step title="On a router, most of it is worked out for you">
+          Pick the material and its thickness in the status bar and Etch derives the feed rate,
+          spindle speed and depth per pass from that and the cutter you chose. You are not asked for
+          a chipload, because nobody should have to guess one. The layer panel shows what it settled
+          on; the Advanced disclosure underneath will let you override any of it if you know your
+          machine better than the table does. On a laser there is nothing to derive — speed, power
+          and pass count <em>are</em> the cut, so they stay as plain fields.
         </Step>
         <Step title="Operations">
           <strong>Cut</strong> follows the outline at full depth, <strong>Etch</strong> scores it at
@@ -238,9 +246,19 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           There is no Z motion at all, so bed levelling does not apply — focus is set by hand.
         </Step>
         <Step title="CNC mode">
-          Each layer's Z depth is reached over its pass count, so a 6 mm cut at 3 passes takes 2 mm
-          per pass. The tool retracts to clearance between contours. Depth is measured from work Z0,
-          which is why Z zeroing has to be right before anything else matters.
+          Depth is reached in as many passes as the cutter can stand — a 1/8" end mill takes about
+          2.5 mm at a time in ply, so 18 mm is eight passes whatever the layer says. The tool never
+          drops straight into the work: it ramps in at a shallow angle along the path, or helixes
+          down if the contour is closed, because a bit that snaps almost always snaps on entry.
+          Depth is measured from work Z0, which is why Z zeroing has to be right before anything
+          else matters.
+        </Step>
+        <Step title="Cutter offset and tabs">
+          A through-cut runs half a cutter <em>outside</em> the line, and its holes half a cutter
+          inside, so the part comes out the size you drew it rather than a tool-width smaller.
+          Closed cuts also get holding tabs — short bridges of material left at the bottom of the
+          cut so the part is not loose under a spinning bit on the last pass. Snap or pare them off
+          afterwards. Both are per-layer settings if you want them off.
         </Step>
         <Step title="What runs first">
           Order is by operation, not by where a layer sits in the list: fills, then etching, then
@@ -292,8 +310,10 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         </Step>
         <Step title="Pauses that are meant to happen">
           A tool change (<code>M6</code>) or a programmed stop (<code>M0</code>) parks the tool,
-          switches the spindle or laser off, retracts 5 mm and waits. Change the tool, re-zero Z if
-          you changed its length, then press Resume.
+          switches the spindle or laser off, retracts 5 mm and waits. A banner says what it is
+          waiting for, with a shortcut straight to the machine controls — touch off Z on the new
+          tool there and hit <strong>Resume Job</strong> in the same panel. The work origin panel
+          will tell you if you have not re-zeroed since the job stopped.
         </Step>
         <Step title="When something goes wrong">
           If the controller refuses a line, the job stops rather than streaming the rest of the

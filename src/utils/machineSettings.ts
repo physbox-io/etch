@@ -89,3 +89,70 @@ export function writeShimThickness(value: number): number {
   }
   return clamped;
 }
+
+const SPINDLE_MIN_KEY = 'etch_spindle_min_rpm';
+const SPINDLE_MAX_KEY = 'etch_spindle_max_rpm';
+
+/**
+ * The speed range of the spindle, in RPM.
+ *
+ * Another shop fact, not a document one: it is a property of the machine on the
+ * bench and the same for every job cut on it. The feeds model asks the material
+ * for a target speed and then clamps it to this, so a trim router that will not
+ * go below 10,000 RPM does not get sent S6000 and quietly run at its own idle
+ * instead of the speed the toolpath was calculated for.
+ *
+ * The defaults describe a typical hobby trim router. A machine with a VFD
+ * spindle reaches lower, and a Dremel-class tool does not reach the bottom of
+ * this range at all — measure yours and set it once.
+ */
+export const DEFAULT_SPINDLE_MIN_RPM = 10000;
+export const DEFAULT_SPINDLE_MAX_RPM = 30000;
+
+/** Below this is not a spindle speed, it is a typo or a lathe. */
+const MIN_PLAUSIBLE_RPM = 1000;
+const MAX_PLAUSIBLE_RPM = 80000;
+
+function clampRpm(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(MIN_PLAUSIBLE_RPM, Math.min(MAX_PLAUSIBLE_RPM, Math.round(value)));
+}
+
+function readRpm(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return clampRpm(Number(raw), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * The stored spindle range, always with min <= max.
+ *
+ * The two values are read together and reconciled here rather than separately,
+ * because an inverted range is the one combination that makes the clamp in
+ * `deriveFeeds` nonsense — it would pin every speed to whichever bound was
+ * applied last.
+ */
+export function readSpindleRange(): { min: number; max: number } {
+  const min = readRpm(SPINDLE_MIN_KEY, DEFAULT_SPINDLE_MIN_RPM);
+  const max = readRpm(SPINDLE_MAX_KEY, DEFAULT_SPINDLE_MAX_RPM);
+  return min <= max ? { min, max } : { min: max, max: min };
+}
+
+export function writeSpindleRange(min: number, max: number): { min: number; max: number } {
+  const range = {
+    min: clampRpm(min, DEFAULT_SPINDLE_MIN_RPM),
+    max: clampRpm(max, DEFAULT_SPINDLE_MAX_RPM),
+  };
+  const ordered = range.min <= range.max ? range : { min: range.max, max: range.min };
+  try {
+    localStorage.setItem(SPINDLE_MIN_KEY, String(ordered.min));
+    localStorage.setItem(SPINDLE_MAX_KEY, String(ordered.max));
+  } catch {
+    // Non-fatal: the setting just won't survive a reload.
+  }
+  return ordered;
+}

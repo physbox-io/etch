@@ -43,7 +43,8 @@ export const GCodePreviewModal: React.FC = () => {
   const levelling = !laserMode && applyLevelling ? bedProbeGrid : null;
 
   const plan = useMemo(
-    () => (isGCodeModalOpen ? planToolpath(document, { laserMode, innerContourFirst }) : { segments: [], skipped: [] }),
+    () => (isGCodeModalOpen ? planToolpath(document, { laserMode, innerContourFirst })
+        : { segments: [], skipped: [], notes: [] }),
     [isGCodeModalOpen, document, laserMode, innerContourFirst]
   );
 
@@ -253,6 +254,40 @@ export const GCodePreviewModal: React.FC = () => {
                     {textVectorizeError}
                   </p>
                 )}
+              </div>
+            )}
+
+            {/*
+              Where the planner could not do exactly what the settings asked.
+
+              A pass count overridden because the cutter could not take that
+              bite, a feature dropped because it is narrower than the tool, a
+              spindle that will not turn slowly enough. These are already in the
+              G-code header, but nobody reads the header — and each one is a
+              difference between the part on screen and the part that comes off
+              the machine, which has to be seen before the Run button, not after.
+            */}
+            {plan.notes.length > 0 && (
+              <div className="mx-4 mb-3 p-2.5 rounded-lg border border-amber-400/60 bg-amber-50 dark:bg-amber-950/40">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                      Etch changed {plan.notes.length === 1 ? 'something' : 'a few things'} to keep the
+                      cutter alive
+                    </div>
+                    <ul className="space-y-1">
+                      {plan.notes.map((n) => (
+                        <li
+                          key={n}
+                          className="text-[10px] text-amber-700 dark:text-amber-400/90 leading-snug"
+                        >
+                          {n}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
               </div>
             )}
 

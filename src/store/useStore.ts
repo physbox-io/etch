@@ -8,6 +8,7 @@ import type {
   BedProbeGrid,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
+import type { MaterialId } from '../utils/materials';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 
@@ -106,6 +107,8 @@ interface EtchStore {
   setDocsTab: (tab: DocsTabId) => void;
   setBedProbeGrid: (grid: BedProbeGrid | null) => void;
   setMachineTarget: (machine: 'laser' | 'cnc') => void;
+  setMaterial: (material: MaterialId) => void;
+  setStockThickness: (mm: number) => void;
   setDocumentOrigin: (origin: EtchDocument['origin']) => void;
 
   // Save / Load / Save As / Delete (localStorage user presets)
@@ -356,6 +359,21 @@ export const useStore = create<EtchStore>((set, get) => ({
   // router should still be a router job when it is reopened.
   setMachineTarget: (machine) =>
     set((state) => ({ document: { ...state.document, machine } })),
+
+  /**
+   * The stock on the bed. Not a view setting: feed, spindle speed and depth per
+   * pass are all derived from it, so changing it changes the toolpath.
+   */
+  setMaterial: (material) =>
+    set((state) => ({ document: { ...state.document, material } })),
+
+  setStockThickness: (mm) =>
+    set((state) => ({
+      document: {
+        ...state.document,
+        stockThickness: Math.max(0.1, Math.min(200, mm)),
+      },
+    })),
 
   setDocumentOrigin: (origin) =>
     set((state) => ({ document: { ...state.document, origin } })),

@@ -1,6 +1,7 @@
 import type { EtchDocument, EtchElement } from '../types/etch';
 import { getBedBBox } from '../utils/geom';
 import { DEFAULT_TOOL, describeTool, type MachineKind } from '../utils/tooling';
+import { findMaterial, DEFAULT_STOCK_THICKNESS_MM } from '../utils/materials';
 
 /**
  * What the copilot is told about Etch.
@@ -31,6 +32,15 @@ so a design split across four tools is a job with three interruptions in it.
 Suggest a different layer only when the cut genuinely calls for a different tool
 — fine lettering wants a V-bit, a through-cut wants an end mill wide enough to
 clear its own depth.
+
+On a CNC document, do not set speed, power or pass counts. Feed rate, spindle
+speed and depth per pass are derived from the document's material and the
+layer's tool, and a layer's stored speed and pass count are ignored in favour of
+them. What you can usefully set is the cut depth, and what you should suggest —
+in words, not JSON — is the material, if the user is cutting something the
+document does not say it is made of. Those numbers are only settable through the
+per-layer overrides, which exist for people who know their machine and are the
+wrong tool for a suggestion.
 
 Design for a real machine, not a screen:
 - Keep everything inside the stock, with a few mm of margin.
@@ -113,7 +123,14 @@ export function describeDocument(doc: EtchDocument, selectedIds: string[]): stri
   const layers = doc.layers
     .map(
       (l) =>
-        `- ${l.id} "${l.name}" (${l.operation}, ${l.speed}mm/min, ${l.power}% power, ${l.passes}× pass, Z ${l.zDepth}mm, ${describeTool(
+        // Speed, power and pass count are the laser's controls. On a router
+        // they are derived, so reporting the stored values would describe a job
+        // that is not the one about to run.
+        `- ${l.id} "${l.name}" (${l.operation}, ${
+          (doc.machine ?? 'laser') === 'laser'
+            ? `${l.speed}mm/min, ${l.power}% power, ${l.passes}× pass`
+            : 'feeds derived from material'
+        }, Z ${l.zDepth}mm, ${describeTool(
           (doc.machine ?? 'laser') as MachineKind,
           l.tool ?? DEFAULT_TOOL
         )})`
@@ -134,7 +151,12 @@ export function describeDocument(doc: EtchDocument, selectedIds: string[]): stri
     : 'Nothing is selected — the user means the document as a whole.';
 
   return [
-    `Stock: ${doc.width}×${doc.height} mm, grid ${doc.gridSize} mm, origin ${doc.origin}.`,
+    `Stock: ${doc.width}×${doc.height} mm, grid ${doc.gridSize} mm, origin ${doc.origin}.` +
+      ((doc.machine ?? 'laser') === 'cnc'
+        ? ` Material: ${findMaterial(doc.material).name}, ${
+            doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM
+          } mm thick.`
+        : ''),
     `Layers:\n${layers}`,
     `Elements (${elements.length} total):\n${elementLines}` +
       (omitted > 0 ? `\n…and ${omitted} more, not listed. Work only with what is selected.` : ''),
