@@ -124,8 +124,9 @@ describe('Custom CNC Tool Library', () => {
       },
     ];
 
-    writeCncTools(customTools);
-
+    // Deliberately NOT written to storage: this asserts the tools reach the
+    // exporter through the option the UI passes, not through the fallback that
+    // reads localStorage behind its back.
     const testDoc = {
       id: 'd1',
       name: 'TestDoc',
@@ -175,5 +176,105 @@ describe('Custom CNC Tool Library', () => {
 
     const gcode = generateGCode(testDoc, { laserMode: false, customCncTools: customTools });
     expect(gcode).toMatch(/Custom 20° Precision V-Bit/);
+    // And the stock rack it would have fallen back to is nowhere in the file.
+    expect(gcode).not.toMatch(/flat end mill/);
+  });
+
+  it('reports whether the library actually reached storage', () => {
+    expect(writeCncTools(DEFAULT_CNC_TOOLS)).toBe(true);
+
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    try {
+      expect(writeCncTools(DEFAULT_CNC_TOOLS)).toBe(false);
+    } finally {
+      Storage.prototype.setItem = setItem;
+    }
+  });
+
+  it('falls back to defaults rather than machining with a malformed library', () => {
+    localStorage.setItem(CNC_TOOLS_KEY, 'not json at all');
+    expect(readCncTools()).toEqual(DEFAULT_CNC_TOOLS);
+
+    // An unversioned library from an older build.
+    localStorage.setItem(CNC_TOOLS_KEY, JSON.stringify([{ id: 1, name: 'Old', bestFor: ['cut'], minDetailMm: 3 }]));
+    expect(readCncTools()).toEqual(DEFAULT_CNC_TOOLS);
+
+    // Right shape, unusable numbers: a cutting spec present but incoherent.
+    localStorage.setItem(
+      CNC_TOOLS_KEY,
+      JSON.stringify({
+        version: CNC_TOOLS_VERSION,
+        tools: [
+          {
+            id: 1,
+            name: 'Broken',
+            diameter: 3,
+            bestFor: ['cut'],
+            guidance: '',
+            minDetailMm: 3,
+            cutting: { flutes: 'two', centerCutting: true, maxStepdownRatio: 1, maxStepoverRatio: 0.4, maxPlungeRate: 300 },
+          },
+        ],
+      })
+    );
+    expect(readCncTools()).toEqual(DEFAULT_CNC_TOOLS);
+  });
+
+  it('clamps a stored tip angle that would make the groove infinitely wide', () => {
+    localStorage.setItem(
+      CNC_TOOLS_KEY,
+      JSON.stringify({
+        version: CNC_TOOLS_VERSION,
+        tools: [
+          { id: 1, name: 'Impossible V', diameter: 0.2, tipAngleDeg: 200, bestFor: ['etch'], guidance: '', minDetailMm: 0.2 },
+        ],
+      })
+    );
+
+    const tool = readCncTools()[0];
+    expect(tool.tipAngleDeg).toBe(MAX_TIP_ANGLE_DEG);
+    expect(Number.isFinite(cutWidthAtDepth(tool, 1))).toBe(true);
+    expect(cutWidthAtDepth(tool, 1)).toBeGreaterThan(0);
+
+    // And the same guard holds if a profile reaches the geometry unstored.
+    expect(
+      cutWidthAtDepth({ id: 1, name: 'x', diameter: 0.2, tipAngleDeg: 180, bestFor: ['etch'], guidance: '', minDetailMm: 0.2 }, 1)
+    ).toBeLessThan(1000);
+  });
+
+  it('feeds a custom V-bit by its engaged width, not its tip', () => {
+    const custom: ToolProfile = {
+      id: 1,
+      name: 'Shop 60° V-bit',
+      diameter: 0.2,
+      tipAngleDeg: 60,
+      bestFor: ['etch'],
+      guidance: '',
+      minDetailMm: 0.2,
+      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 0.6, maxStepoverRatio: 0.5, maxPlungeRate: 200 },
+    };
+
+    // No feedDiameter on the profile, so it must come from the taper.
+    expect(defaultFeedDiameter(custom)).toBeCloseTo(1.93, 2);
+
+    const tapered = deriveFeeds(custom, 'plywood', { min: 10000, max: 30000 })!;
+    const asTip = deriveFeeds(
+      { ...custom, tipAngleDeg: undefined },
+      'plywood',
+      { min: 10000, max: 30000 }
+    )!;
+    expect(tapered.feed).toBeGreaterThan(asTip.feed);
+
+    // A straight cutter still feeds by its diameter.
+    expect(defaultFeedDiameter(DEFAULT_CNC_TOOLS[0])).toBe(3.175);
+  });
+
+  it('labels a rack whose slot numbers are not contiguous', () => {
+    expect(toolRackLabel(DEFAULT_CNC_TOOLS)).toBe('Tool rack T1–T6');
+    expect(toolRackLabel([DEFAULT_CNC_TOOLS[0]])).toBe('Tool rack T1');
+    expect(toolRackLabel([])).toBe('No tools');
   });
 });
