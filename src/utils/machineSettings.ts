@@ -142,6 +142,90 @@ export function readSpindleRange(): { min: number; max: number } {
   return min <= max ? { min, max } : { min: max, max: min };
 }
 
+const LASER_SOURCE_KEY = 'etch_laser_source';
+
+/**
+ * What kind of light the machine makes, and how much of it.
+ *
+ * The laser equivalent of the spindle range, and needed for the same reason:
+ * "60% power" is not a quantity. Sixty percent of a 40 W CO2 tube is 24 W of
+ * far-infrared that glass absorbs at the surface; sixty percent of a 5 W diode
+ * is 3 W of blue that passes through glass entirely. Without knowing which is
+ * on the bench, a materials table can only offer percentages copied off a forum
+ * post about somebody else's machine.
+ *
+ * Wavelength is a bigger difference than wattage. It decides not just how fast
+ * a material is marked but whether it is marked at all, which is why it is a
+ * kind here rather than a number.
+ */
+export type LaserKind = 'co2' | 'diode';
+
+export interface LaserSource {
+  /** Which machine this is, as picked from the list — the stored value. */
+  id: string;
+  kind: LaserKind;
+  /** Optical output, in watts — what the tube delivers, not what it draws. */
+  watts: number;
+}
+
+/**
+ * The lasers people actually have, rather than a wattage field.
+ *
+ * A number box would be more general and worse: "optical watts" is not what is
+ * printed on the box a diode machine arrives in, the figure advertised is
+ * usually the electrical draw of the module, and being out by a factor of three
+ * there quietly wrongs every speed in the app. Picking your machine off a list
+ * is a thing an owner can do correctly.
+ *
+ * Ordered by how likely it is to be the one in front of you: diodes first,
+ * smallest to largest, then the CO2 tubes.
+ */
+export const LASER_SOURCES: LaserSource[] = [
+  { id: '5w-diode', kind: 'diode', watts: 5 },
+  { id: '7w-diode', kind: 'diode', watts: 7 },
+  { id: '10w-diode', kind: 'diode', watts: 10 },
+  { id: '12w-diode', kind: 'diode', watts: 12 },
+  { id: '20w-diode', kind: 'diode', watts: 20 },
+  { id: '40w-co2', kind: 'co2', watts: 40 },
+  { id: '60w-co2', kind: 'co2', watts: 60 },
+  { id: '80w-co2', kind: 'co2', watts: 80 },
+];
+
+/**
+ * A 10 W diode: the commonest desktop machine sold today, and the conservative
+ * choice of the two families. Assuming a CO2 that is not there would derive
+ * speeds a diode cannot reach and mark nothing; assuming a diode that is
+ * actually a tube only means a job runs slower than it had to.
+ */
+export const DEFAULT_LASER_SOURCE: LaserSource = LASER_SOURCES.find((s) => s.id === '10w-diode')!;
+
+export function findLaserSource(id: string | undefined): LaserSource {
+  return LASER_SOURCES.find((s) => s.id === id) ?? DEFAULT_LASER_SOURCE;
+}
+
+export function readLaserSource(): LaserSource {
+  try {
+    return findLaserSource(localStorage.getItem(LASER_SOURCE_KEY) ?? undefined);
+  } catch {
+    return DEFAULT_LASER_SOURCE;
+  }
+}
+
+export function writeLaserSource(id: string): LaserSource {
+  const source = findLaserSource(id);
+  try {
+    localStorage.setItem(LASER_SOURCE_KEY, source.id);
+  } catch {
+    // Non-fatal: the setting just won't survive a reload.
+  }
+  return source;
+}
+
+/** "40 W CO2" — for the picker, the derived-values box and the G-code header. */
+export function describeLaserSource(source: LaserSource): string {
+  return `${source.watts} W ${source.kind === 'co2' ? 'CO2' : 'diode'}`;
+}
+
 export function writeSpindleRange(min: number, max: number): { min: number; max: number } {
   const range = {
     min: clampRpm(min, DEFAULT_SPINDLE_MIN_RPM),

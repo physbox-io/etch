@@ -129,13 +129,17 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           machined with the same settings, in one block of G-code, so group by operation —
           through-cuts on one layer, score lines on another.
         </Step>
-        <Step title="On a router, most of it is worked out for you">
-          Pick the material and its thickness in the status bar and Etch derives the feed rate,
-          spindle speed and depth per pass from that and the cutter you chose. You are not asked for
-          a chipload, because nobody should have to guess one. The layer panel shows what it settled
-          on; the Advanced disclosure underneath will let you override any of it if you know your
-          machine better than the table does. On a laser there is nothing to derive — speed, power
-          and pass count <em>are</em> the cut, so they stay as plain fields.
+        <Step title="Most of it is worked out for you">
+          Pick the material in the status bar — and its thickness, on a router — and Etch derives the
+          rest. On a router that is the feed rate, spindle speed and depth per pass, from the
+          material and the cutter you chose. On a laser it is the speed, power and pass count, from
+          the material and the tube: energy per millimetre of travel is what decides whether a line
+          is marked, charred or untouched, so that is what the table holds and what the derivation
+          keeps constant. You are asked for neither a chipload nor a power percentage, because nobody
+          should have to guess one. On a laser, pick your machine from the list beside the target —
+          60% of a 40 W CO2 tube and 60% of a 5 W diode are not the same job, and that choice is what
+          makes a percentage mean something. The layer panel shows what it all settled on, and the
+          Advanced disclosure underneath overrides any of it.
         </Step>
         <Step title="Operations">
           <strong>Cut</strong> follows the outline at full depth, <strong>Etch</strong> scores it at
@@ -283,10 +287,10 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           Flat end mills cut and clear pockets — the wider the bit, the faster and the coarser, and
           nothing survives detail finer than the bit is wide. V-bits engrave: line width comes from
           depth, so they hold the sharp corners a round cutter rounds off. Ball noses give smooth
-          engraved floors but a ragged edge on a through-cut. On a laser the "tool" is the lens: a
-          long-focus lens for thick stock, a short one for fine engraving. The layer inspector
-          describes each one and warns about the pairings it knows are wrong — a 6 mm cutter on an
-          etch layer, or a 1.5 mm cutter asked to go 12 mm deep.
+          engraved floors but a ragged edge on a through-cut. The layer inspector describes each one
+          and warns about the pairings it knows are wrong — a 6 mm cutter on an etch layer, or a
+          1.5 mm cutter asked to go 12 mm deep. None of this applies to a laser: it has one head,
+          whatever came with it, and no tool to choose.
         </Step>
         <Step title="How multi-tool jobs are ordered">
           Still fills, then etching, then cuts — tool changes are cheap and a part cut loose early is

@@ -85,7 +85,10 @@ export const JobPauseBanner: React.FC = () => {
             <span>{isLaser ? 'Machine Controls' : 'Re-zero Z'}</span>
           </button>
           <button
-            onClick={() => webSerialManager.resumeJob()}
+            onClick={() => {
+              webSerialManager.resumeJob();
+              useStore.setState({ isMachineModalOpen: false, isGCodeModalOpen: true });
+            }}
             className="flex-1 min-w-[9rem] py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/20 transition-colors"
           >
             <Play className="w-3.5 h-3.5" />

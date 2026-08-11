@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { generateGCode, planToolpath } from '../src/utils/gcodeExporter';
+import { generateGCode, planToolpath, generateAirCutGCode } from '../src/utils/gcodeExporter';
+import { outlineSignature } from '../src/utils/textVectorizer';
 import type { EtchDocument, EtchElement, EtchLayer, LayerOperation } from '../src/types/etch';
 
 const layer = (id: string, operation: LayerOperation): EtchLayer => ({
@@ -172,4 +173,146 @@ describe('generateGCode basics', () => {
     expect(g).toContain('G90');
     expect(g).toContain('G21');
   });
+
 });
+
+/**
+ * The reported bug: cutting the "Physbox Hotel" preset filled in the counters —
+ * the enclosed holes — of its 'P' and 'B'. Two separate causes, one per test.
+ */
+describe('glyph counters survive engraving', () => {
+  /** A 'P': a stem, a bowl, and a counter inside the bowl, at 7 pt glyph scale. */
+  const GLYPH_D =
+    'M 0 0 L 0.8 0 L 0.8 5 L 0 5 Z ' + // stem
+    'M 0.8 3 L 2.6 3 L 2.6 5 L 0.8 5 Z ' + // bowl
+    'M 1.2 3.4 L 2.2 3.4 L 2.2 4.6 L 1.2 4.6 Z'; // counter
+  const COUNTER = { minX: 1.2, maxX: 2.2, minY: 3.4, maxY: 4.6 };
+
+  const glyph = (extra: Partial<EtchElement> = {}): EtchElement => {
+    const base = {
+      id: 'txt',
+      name: 'Title Text',
+      type: 'text',
+      layerId: 'etch',
+      text: 'P',
+      fontFamily: 'Outfit',
+      fontWeight: '600',
+      fontSize: 7,
+      outlineD: GLYPH_D,
+      x: 0,
+      y: 0,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: 1,
+      strokeWidth: 0.3,
+      visible: true,
+      locked: false,
+      ...extra,
+    } as EtchElement;
+    return { ...base, outlineSig: outlineSignature(base) } as EtchElement;
+  };
+
+  /** The 60° V-bit, which is what small lettering is engraved with. */
+  const vBitEtchLayer = (zDepth: number): EtchLayer => ({
+    ...layer('etch', 'etch'),
+    tool: 3,
+    zDepth,
+  });
+
+  const distanceToCounter = (segments: { points: { x: number; y: number }[] }[]) => {
+    let nearest = Infinity;
+    for (const s of segments) {
+      for (const p of s.points) {
+        const dx = Math.max(COUNTER.minX - p.x, 0, p.x - COUNTER.maxX);
+        const dy = Math.max(COUNTER.minY - p.y, 0, p.y - COUNTER.maxY);
+        nearest = Math.min(nearest, Math.hypot(dx, dy));
+      }
+    }
+    return nearest;
+  };
+
+  /**
+   * Filled engraving must not put a toolpath *through* a counter, and must not
+   * run so close to its edge that the groove reaches in and closes it anyway.
+   * A 60° bit 0.5 mm deep cuts 0.78 mm wide, so a scanline within 0.39 mm of
+   * the counter is cutting into it — which is what insetting by the 0.1 mm tip
+   * radius used to allow.
+   */
+  it('keeps the fill clear of a counter by half the groove the V-bit cuts', () => {
+    const d = doc(
+      [vBitEtchLayer(0.5)],
+      [glyph({ machining: 'filled', hatchOutline: false })],
+      'cnc'
+    );
+    const { segments } = planToolpath(d);
+    expect(segments.length).toBeGreaterThan(0);
+    // 0.78 mm groove ⇒ 0.39 mm of overhang either side of the path.
+    expect(distanceToCounter(segments)).toBeGreaterThanOrEqual(0.38);
+  });
+
+  /** Filled means filled: nothing should trace the outline once it is off. */
+  it('traces no outline when hatchOutline is off', () => {
+    const d = doc(
+      [vBitEtchLayer(0.5)],
+      [glyph({ machining: 'filled', hatchOutline: false })],
+      'cnc'
+    );
+    const { segments } = planToolpath(d);
+    expect(segments.every((s) => !s.isClosed)).toBe(true);
+  });
+
+  /**
+   * The other half of the bug: at depth the tool is simply too fat for the
+   * drawing, and no toolpath can fix that. Say so before the job runs.
+   */
+  it('warns when detail is finer than the groove the tool cuts at depth', () => {
+    const d = doc([vBitEtchLayer(1.5)], [glyph({ machining: 'filled' })], 'cnc');
+    const { notes } = planToolpath(d);
+    // A 60° bit 1.5 mm deep cuts 0.2 + 2 × 1.5 × tan30° = 1.93 mm wide, well
+    // over the 0.8 mm stem.
+    expect(notes.some((n) => /Title Text.*finer than the 1\.93 mm groove/.test(n))).toBe(true);
+  });
+
+  it('says nothing about fine detail when the tool is shallow enough to hold it', () => {
+    const d = doc([vBitEtchLayer(0.15)], [glyph({ machining: 'filled' })], 'cnc');
+    const { notes } = planToolpath(d);
+    expect(notes.some((n) => /finer than/.test(n))).toBe(false);
+  });
+
+  /**
+   * Machining mode is the element's own setting and export must not invent one:
+   * the sidebar shows unset text as "outline", so defaulting it to a fill at
+   * export time would cut something other than what the UI describes.
+   */
+  it('leaves text with no machining mode set as an outline trace', () => {
+    const d = doc([vBitEtchLayer(0.5)], [glyph()], 'cnc');
+    const { segments } = planToolpath(d);
+    expect(segments.some((s) => s.isClosed)).toBe(true);
+  });
+});
+
+describe('generateAirCutGCode', () => {
+  it('offsets CNC Z coordinates by +20mm default', () => {
+    const rawGCode = `G90\nG0 Z5.000\nG1 X10.0 Y20.0 Z-2.500 F600 ; cut move`;
+    const airCut = generateAirCutGCode(rawGCode, { laserMode: false });
+    expect(airCut).toContain('G0 Z25.000');
+    expect(airCut).toContain('G1 X10.0 Y20.0 Z17.500 F600 ; cut move');
+    expect(airCut).toContain('AIR CUT DRY RUN PROGRAM (+20mm Z-Offset)');
+  });
+
+  it('respects custom zOffsetMm', () => {
+    const rawGCode = `G0 Z5.000\nG1 Z-1.000`;
+    const airCut = generateAirCutGCode(rawGCode, { laserMode: false, zOffsetMm: 15 });
+    expect(airCut).toContain('G0 Z20.000');
+    expect(airCut).toContain('G1 Z14.000');
+  });
+
+  it('disables laser cutting power in laser mode', () => {
+    const rawGCode = `G1 X10 Y10 S800 F1500 ; laser cut`;
+    const airCut = generateAirCutGCode(rawGCode, { laserMode: true });
+    expect(airCut).toContain('G1 X10 Y10 S0 F1500 ; laser cut');
+    expect(airCut).not.toContain('S800');
+  });
+});
+

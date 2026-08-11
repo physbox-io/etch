@@ -159,6 +159,98 @@ export async function loadFont(family: string, weight: string = '400'): Promise<
  * The canvas draws text with dominant-baseline="hanging", so local y=0 is the
  * top of the em box; the baseline is placed at the font's ascender to match.
  */
+/**
+ * Cleans path commands produced by opentype.js.
+ *
+ * 1. Replaces NaN or invalid numbers with 0.
+ * 2. Clamps coordinates within `threshold` of zero to 0. This works around a
+ *    bug in opentype.js's `toPathData()` packing logic: when a coordinate is a
+ *    tiny negative float (e.g. -1.776e-15 from baseline scaling), opentype.js
+ *    omits the space separator because `-1.776e-15 < 0` is true, but then
+ *    rounds it to "0". Without a leading minus sign or space, the previous
+ *    coordinate and "0" merge (e.g. `L2.25000`), breaking the SVG path parser
+ *    and causing browser text vector rendering to halt mid-string.
+ */
+/**
+ * Cleans path commands produced by opentype.js and ensures all contours are closed.
+ *
+ * 1. Replaces NaN or invalid numbers with 0.
+ * 2. Clamps coordinates within `threshold` of zero to 0. This works around a
+ *    bug in opentype.js's `toPathData()` packing logic: when a coordinate is a
+ *    tiny negative float (e.g. -1.776e-15 from baseline scaling), opentype.js
+ *    omits the space separator because `-1.776e-15 < 0` is true, but then
+ *    rounds it to "0". Without a leading minus sign or space, the previous
+ *    coordinate and "0" merge (e.g. `L2.25000`), breaking the SVG path parser
+ *    and causing browser text vector rendering to halt mid-string.
+ * 3. Ensures every open contour sequence starting with `M` ends with `Z` before
+ *    the next `M` or end-of-path, preventing stroke gaps when SVG renders unfilled paths.
+ */
+function sanitizePathCommands(commands: any[], decimalPlaces = 4): any[] {
+  const threshold = Math.pow(10, -decimalPlaces) / 2;
+  const newCommands: any[] = [];
+  let hasCommandsInContour = false;
+
+  for (let i = 0; i < commands.length; i++) {
+    const cmd = commands[i];
+    if (!cmd) continue;
+
+    for (const key of ['x', 'y', 'x1', 'y1', 'x2', 'y2']) {
+      if (key in cmd && typeof cmd[key] === 'number') {
+        if (Number.isNaN(cmd[key])) {
+          cmd[key] = 0;
+        } else if (Math.abs(cmd[key]) < threshold) {
+          cmd[key] = 0;
+        }
+      }
+    }
+
+    if (cmd.type === 'M') {
+      if (hasCommandsInContour) {
+        newCommands.push({ type: 'Z' });
+      }
+      hasCommandsInContour = false;
+      newCommands.push(cmd);
+    } else if (cmd.type === 'Z' || cmd.type === 'z') {
+      newCommands.push(cmd);
+      hasCommandsInContour = false;
+    } else {
+      hasCommandsInContour = true;
+      newCommands.push(cmd);
+    }
+  }
+
+  if (hasCommandsInContour) {
+    newCommands.push({ type: 'Z' });
+  }
+
+  return newCommands;
+}
+
+/** Validates that an SVG path string contains no NaNs or malformed commands. */
+function isPathDataValid(d: string): boolean {
+  if (!d || d.includes('NaN')) return false;
+  const cmdMatches = d.match(/([MLCQZ])([^MLCQZ]*)/g) || [];
+  for (const m of cmdMatches) {
+    const type = m[0].toUpperCase();
+    if (type === 'Z') continue;
+    const rest = m.substring(1).trim();
+    const numbers = rest.match(/[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g) || [];
+    let expected = 2;
+    if (type === 'C') expected = 6;
+    if (type === 'Q') expected = 4;
+    if (numbers.length === 0 || numbers.length % expected !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Outline path for a text element, in the element's LOCAL coordinates.
+ *
+ * The canvas draws text with dominant-baseline="hanging", so local y=0 is the
+ * top of the em box; the baseline is placed at the font's ascender to match.
+ */
 export async function textToOutlineD(el: EtchElement): Promise<string> {
   const text = el.text ?? '';
   if (!text.trim()) return '';
@@ -171,12 +263,16 @@ export async function textToOutlineD(el: EtchElement): Promise<string> {
   const tracking = el.letterSpacing || 0;
 
   // font.getPath() gives the best typography (ligatures, shaping), but it runs
-  // the font's GSUB tables and opentype.js throws on lookup formats it does not
-  // implement — which several Google families use. Fall back to laying the
-  // glyphs out ourselves rather than failing to produce a cuttable path.
+  // the font's GSUB tables and opentype.js throws or outputs NaNs on lookup formats
+  // it does not implement. Fall back to laying the glyphs out ourselves.
   if (!tracking) {
     try {
-      return font.getPath(text, 0, baselineY, size).toPathData(4);
+      const p = font.getPath(text, 0, baselineY, size);
+      p.commands = sanitizePathCommands(p.commands, 4);
+      const d = p.toPathData(4);
+      if (isPathDataValid(d)) {
+        return d;
+      }
     } catch {
       /* fall through to manual layout */
     }
@@ -204,8 +300,10 @@ function layoutGlyphs(
 
   for (let i = 0; i < chars.length; i++) {
     const glyph = font.charToGlyph(chars[i]);
-    const d = glyph.getPath(x, baselineY, size).toPathData(4);
-    if (d) parts.push(d);
+    const gPath = glyph.getPath(x, baselineY, size);
+    gPath.commands = sanitizePathCommands(gPath.commands, 4);
+    const d = gPath.toPathData(4);
+    if (d && isPathDataValid(d)) parts.push(d);
 
     x += glyph.advanceWidth * scale + tracking;
 
@@ -213,7 +311,10 @@ function layoutGlyphs(
     const next = chars[i + 1];
     if (next && typeof font.getKerningValue === 'function') {
       try {
-        x += font.getKerningValue(glyph, font.charToGlyph(next)) * scale;
+        const kern = font.getKerningValue(glyph, font.charToGlyph(next));
+        if (typeof kern === 'number' && !Number.isNaN(kern)) {
+          x += kern * scale;
+        }
       } catch {
         /* font has no usable kerning table */
       }

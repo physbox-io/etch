@@ -484,8 +484,8 @@ class WebSerialManager {
     this.gcodeQueue = lines;
     this.queueIndex = 0;
     // Kept for the tool-change prompt: a T-number alone tells the operator
-    // nothing about which bit to reach for, and only the document knows whether
-    // T3 is a V-bit or a lens.
+    // nothing about which bit to reach for, and only the document knows what T3
+    // is. Laser jobs never raise one — that machine has no tools to change.
     this.jobMachine = opts.machine ?? 'cnc';
     this.update({
       jobRunning: true,
@@ -526,10 +526,24 @@ class WebSerialManager {
     if (kind === 'tool-change') {
       const tool = parseToolNumber(line);
       const what = tool === null ? 'the next tool' : describeTool(this.jobMachine, tool);
+      
+      // Look ahead in queue for target spindle speed RPM
+      let rpmText = '';
+      for (let i = this.queueIndex; i < Math.min(this.gcodeQueue.length, this.queueIndex + 5); i++) {
+        const match = this.gcodeQueue[i].match(/M3\s+S(\d+)/i);
+        if (match) {
+          const val = parseInt(match[1], 10);
+          if (this.jobMachine === 'cnc' && val > 0) {
+            rpmText = ` (set spindle to ${val.toLocaleString()} RPM)`;
+          }
+          break;
+        }
+      }
+
       this.pauseForOperator(
         this.jobMachine === 'laser'
           ? `Tool change: fit ${what}, re-focus, then resume.`
-          : `Tool change: fit ${what}, re-zero Z on the new tool, then resume.`
+          : `Tool change: fit ${what}${rpmText}, re-zero Z on the new tool, then resume.`
       );
       return;
     }

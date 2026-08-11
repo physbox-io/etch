@@ -16,15 +16,23 @@ import {
   Upload,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
-import { DEFAULT_TOOL, toolCatalog, findTool, toolWarning, suggestTool, type ToolProfile } from '../utils/tooling';
-import { deriveFeeds, planPasses, formatRpm } from '../utils/feeds';
+import {
+  DEFAULT_TOOL,
+  toolCatalog,
+  findTool,
+  toolWarning,
+  suggestTool,
+  hasToolCatalog,
+  type ToolProfile,
+} from '../utils/tooling';
+import { deriveFeeds, deriveLaserFeeds, laserRefusal, planPasses, formatRpm } from '../utils/feeds';
 import {
   findMaterial,
   DEFAULT_STOCK_THICKNESS_MM,
   THROUGH_CUT_OVERCUT_MM,
   type MaterialProfile,
 } from '../utils/materials';
-import { readSpindleRange } from '../utils/machineSettings';
+import { readSpindleRange, describeLaserSource, type LaserSource } from '../utils/machineSettings';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import type { EtchElement } from '../types/etch';
 
@@ -36,6 +44,146 @@ const SMALL_INPUT =
 
 const SMALL_LABEL =
   'block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400';
+
+/**
+ * The machining settings for one layer on a laser.
+ *
+ * Deliberately the same shape as the router panel below it: what the job will
+ * do, stated in the machine's own units, and the overrides shut away behind a
+ * disclosure. Speed and power used to be two blank boxes here, which is a fair
+ * description of what the app knew — and an unfair thing to ask of someone who
+ * has just picked "Glass" and wants a coaster rather than a physics exercise.
+ *
+ * The tube itself is edited here too, next to the numbers it decides. It is a
+ * property of the bench rather than of the drawing, so it is stored with the
+ * machine settings and not in the document — a file sent to someone with a
+ * different laser should derive that laser's numbers, not carry these.
+ */
+const LaserLayerCutting: React.FC<{
+  layer: EtchLayer;
+  material: MaterialProfile;
+  /** The laser on the bench, chosen in the status bar — see the store. */
+  source: LaserSource;
+  stockThickness: number;
+  update: (patch: Partial<EtchLayer>, transient?: boolean) => void;
+  commit: () => void;
+}> = ({ layer, material, source, stockThickness, update, commit }) => {
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
+
+  const recipe = React.useMemo(
+    () => deriveLaserFeeds(material, layer.operation, source, stockThickness),
+    [material, layer.operation, source, stockThickness]
+  );
+  const refusal = laserRefusal(material, layer.operation, source);
+
+  const speed = layer.speedOverride ?? recipe?.speed ?? layer.speed;
+  const power = layer.powerOverride ?? recipe?.power ?? layer.power;
+  const passes = Math.max(layer.passes || 1, recipe?.passes ?? 1);
+
+  return (
+    <div
+      className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50 space-y-2"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="rounded bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 px-2 py-1.5">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">
+            {recipe ? `Derived for ${material.name}` : 'Not derivable'}
+          </span>
+          <span className="text-[10px] font-mono text-slate-600 dark:text-slate-300">
+            {describeLaserSource(source)}
+          </span>
+        </div>
+        <p className="mt-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-100">
+          {speed} mm/min · {power}% · {passes} pass{passes === 1 ? '' : 'es'}
+        </p>
+        {[...(refusal ? [refusal] : []), ...(recipe?.notes ?? [])].map((n) => (
+          <p
+            key={n}
+            className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug"
+          >
+            <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
+            <span>{n}</span>
+          </p>
+        ))}
+      </div>
+
+      <button
+        onClick={() => setShowAdvanced((v) => !v)}
+        className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+      >
+        {showAdvanced ? '▾' : '▸'} Advanced — override the derived settings
+      </button>
+
+      {showAdvanced && (
+        <div className="space-y-2">
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+            Leave speed and power blank to use the derived values. Passes are a floor, not a
+            ceiling: ask for more and you get more, ask for fewer than the beam needs and it still
+            makes the cut.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={SMALL_LABEL}>Speed (mm/min)</label>
+              <input
+                type="number"
+                step="50"
+                min="1"
+                placeholder={String(recipe?.speed ?? '')}
+                value={layer.speedOverride ?? ''}
+                onChange={(e) =>
+                  update(
+                    { speedOverride: e.target.value === '' ? undefined : Math.max(1, parseFloat(e.target.value) || 1) },
+                    true
+                  )
+                }
+                onBlur={commit}
+                className={SMALL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={SMALL_LABEL}>Power (%)</label>
+              <input
+                type="number"
+                step="5"
+                min="0"
+                max="100"
+                placeholder={String(recipe?.power ?? '')}
+                value={layer.powerOverride ?? ''}
+                onChange={(e) =>
+                  update(
+                    {
+                      powerOverride:
+                        e.target.value === ''
+                          ? undefined
+                          : Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)),
+                    },
+                    true
+                  )
+                }
+                onBlur={commit}
+                className={SMALL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={SMALL_LABEL}>Passes</label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                value={layer.passes ?? 1}
+                onChange={(e) => update({ passes: Math.max(1, parseInt(e.target.value) || 1) }, true)}
+                onBlur={commit}
+                className={SMALL_INPUT}
+              />
+            </div>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+};
 
 /**
  * The machining settings for one layer on a router.
@@ -278,6 +426,9 @@ export const PropertiesSidebar: React.FC = () => {
     vectorizeText,
     isVectorizing,
     textVectorizeError,
+    laserSource,
+    cncTools,
+    openToolConfigModal,
   } = useStore();
 
   const selectedElement = document.elements.find((el) => selectedIds.includes(el.id));
@@ -285,7 +436,7 @@ export const PropertiesSidebar: React.FC = () => {
   // exporter treats an unset machine as a laser too.
   const isLaser = (document.machine ?? 'laser') === 'laser';
   const machineKind = isLaser ? 'laser' : 'cnc';
-  const tools = toolCatalog(machineKind);
+  const tools = toolCatalog(machineKind, cncTools);
   // How many tools this job actually calls for. One means the machine never
   // stops; two or more means the operator is standing there for each change,
   // which is worth saying before they start rather than after.
@@ -694,7 +845,7 @@ export const PropertiesSidebar: React.FC = () => {
                 power: 80,
                 passes: 1,
                 zDepth: 2,
-                tool: suggestTool(machineKind, 'cut'),
+                tool: suggestTool(machineKind, 'cut', cncTools),
               })
             }
             className="p-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
@@ -715,8 +866,8 @@ export const PropertiesSidebar: React.FC = () => {
           {document.layers.map((layer) => {
             const isActive = activeLayerId === layer.id;
             const tool = layer.tool ?? DEFAULT_TOOL;
-            const profile = findTool(machineKind, tool);
-            const warning = toolWarning(machineKind, tool, layer);
+            const profile = findTool(machineKind, tool, cncTools);
+            const warning = toolWarning(machineKind, tool, layer, cncTools);
             return (
               <div
                 key={layer.id}
@@ -781,58 +932,24 @@ export const PropertiesSidebar: React.FC = () => {
                 </div>
 
                 {/*
-                  Laser controls.
+                  What this layer does at the machine.
 
-                  Speed, power and pass count are the whole of how deep a laser
-                  cuts, so on that machine they are the settings and there is
-                  nothing to derive. On a router they are not: feed follows from
-                  the cutter and the material, and "power %" is not a thing a
-                  spindle has — the exporter ignored it entirely while this panel
-                  went on accepting it, so a layer set to 40% ran at 100%.
+                  Both panels now answer the same question the same way — here is
+                  what the job will do, derived from the stock and the machine,
+                  and here is the disclosure for saying otherwise. The laser side
+                  used to be two blank boxes, which was an honest description of
+                  what the app knew and an unfair thing to hand someone who had
+                  just picked a material.
                 */}
                 {isLaser ? (
-                  <div
-                    className="grid grid-cols-2 gap-2 text-[10px] text-slate-500 dark:text-slate-400 mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div>
-                      <label className={SMALL_LABEL}>Speed (mm/min)</label>
-                      <input
-                        type="number"
-                        step="50"
-                        min="1"
-                        value={layer.speed}
-                        onChange={(e) => updateLayer(layer.id, { speed: Math.max(1, parseFloat(e.target.value) || 1) }, true)}
-                        onBlur={commitHistory}
-                        className={SMALL_INPUT}
-                      />
-                    </div>
-                    <div>
-                      <label className={SMALL_LABEL}>Power (%)</label>
-                      <input
-                        type="number"
-                        step="5"
-                        min="0"
-                        max="100"
-                        value={layer.power}
-                        onChange={(e) => updateLayer(layer.id, { power: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) }, true)}
-                        onBlur={commitHistory}
-                        className={SMALL_INPUT}
-                      />
-                    </div>
-                    <div>
-                      <label className={SMALL_LABEL}>Passes</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        value={layer.passes ?? 1}
-                        onChange={(e) => updateLayer(layer.id, { passes: Math.max(1, parseInt(e.target.value) || 1) }, true)}
-                        onBlur={commitHistory}
-                        className={SMALL_INPUT}
-                      />
-                    </div>
-                  </div>
+                  <LaserLayerCutting
+                    layer={layer}
+                    material={material}
+                    source={laserSource}
+                    stockThickness={stockThickness}
+                    update={(patch, transient) => updateLayer(layer.id, patch, transient)}
+                    commit={commitHistory}
+                  />
                 ) : (
                   <CncLayerCutting
                     layer={layer}
@@ -844,48 +961,60 @@ export const PropertiesSidebar: React.FC = () => {
                   />
                 )}
 
-                {/* Tool. Layers that disagree here are cut in separate blocks
-                    with a pause between them, so this is a machining decision
-                    as much as a settings one. */}
-                <div
-                  className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">
-                    {isLaser ? 'Lens / Head' : 'Tool'}
-                  </label>
-                  <select
-                    value={tool}
-                    onChange={(e) => updateLayer(layer.id, { tool: parseInt(e.target.value, 10) })}
-                    className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"
+                {/* Tool, on a machine that has them. Layers that disagree here
+                    are cut in separate blocks with a pause between them, so this
+                    is a machining decision as much as a settings one. A laser
+                    has no catalogue and no choice to make — see tooling.ts. */}
+                {hasToolCatalog(machineKind, cncTools) && (
+                  <div
+                    className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    {tools.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        T{t.id} — {t.name}
-                      </option>
-                    ))}
-                    {/* A document cut on another machine can carry a T-number
-                        this catalogue has never heard of. Keep it selectable
-                        rather than silently snapping the layer onto T1. */}
-                    {!profile && <option value={tool}>T{tool} — uncatalogued</option>}
-                  </select>
-                  <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                    {profile
-                      ? profile.guidance
-                      : 'Not in the catalogue. The job will still pause for it, but Etch cannot advise on it.'}
-                  </p>
-                  {warning && (
-                    <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
-                      <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
-                      <span>{warning}</span>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">
+                        Tool
+                      </label>
+                      <button
+                        onClick={openToolConfigModal}
+                        className="text-[9px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                        title="Configure CNC tool rack"
+                      >
+                        ⚙️ Edit Tool Rack
+                      </button>
+                    </div>
+                    <select
+                      value={tool}
+                      onChange={(e) => updateLayer(layer.id, { tool: parseInt(e.target.value, 10) })}
+                      className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"
+                    >
+                      {tools.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          T{t.id} — {t.name}
+                        </option>
+                      ))}
+                      {/* A document cut on another machine can carry a T-number
+                          this catalogue has never heard of. Keep it selectable
+                          rather than silently snapping the layer onto T1. */}
+                      {!profile && <option value={tool}>T{tool} — uncatalogued</option>}
+                    </select>
+                    <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                      {profile
+                        ? profile.guidance
+                        : 'Not in the catalogue. The job will still pause for it, but Etch cannot advise on it.'}
                     </p>
-                  )}
-                </div>
+                    {warning && (
+                      <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+                        <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />
+                        <span>{warning}</span>
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {isLaser && (
                   <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                    Laser target: depth comes from power, speed and pass count — there is no Z. Switch
-                    to CNC in the G-code panel to set cut depths.
+                    Laser target: there is no Z. How deep it goes is speed, power and passes, derived
+                    above. Switch to CNC in the status bar to set cut depths.
                   </p>
                 )}
               </div>

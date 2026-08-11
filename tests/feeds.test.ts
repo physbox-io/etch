@@ -7,10 +7,18 @@ const SPINDLE = { min: 10000, max: 30000 };
 const endMill = () => findTool('cnc', 1)!;
 
 describe('deriveFeeds', () => {
-  it('has nothing to say about a laser lens', () => {
-    // A lens has no flutes, no plunge and no depth of cut. Inventing them would
-    // produce numbers that look real and describe nothing.
-    expect(deriveFeeds(findTool('laser', 1)!, 'plywood', SPINDLE)).toBeNull();
+  it('has nothing to say about a tool with no cutting spec', () => {
+    // Nothing without flutes has a plunge rate or a depth of cut, and inventing
+    // them would produce numbers that look real and describe nothing. The laser
+    // lens catalogue that used to stand for this case is gone — see tooling.ts —
+    // but the contract it tested is still the one callers rely on.
+    const lens = { id: 1, name: 'no such cutter', bestFor: [], guidance: '', minDetailMm: 0.1 };
+    expect(deriveFeeds(lens, 'plywood', SPINDLE)).toBeNull();
+  });
+
+  it('offers a laser no tools to choose between', () => {
+    expect(toolCatalog('laser')).toEqual([]);
+    expect(findTool('laser', 1)).toBeUndefined();
   });
 
   it('feeds harder material more gently than soft', () => {

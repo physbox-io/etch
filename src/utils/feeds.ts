@@ -1,5 +1,6 @@
 import { findMaterial, type MaterialId, type MaterialProfile } from './materials';
-import type { ToolProfile } from './tooling';
+import { describeLaserSource, type LaserSource } from './machineSettings';
+import { defaultFeedDiameter, type ToolProfile } from './tooling';
 
 /**
  * Turns "this cutter, in this material" into the numbers a toolpath needs.
@@ -85,9 +86,11 @@ export const RAMP_ANGLE_DEG = 3;
 /**
  * The feeds for a tool in a material, or null if the tool has no cutting spec.
  *
- * Null means a laser lens: it has no flutes, no plunge and no depth of cut, and
- * this function will not invent them. Callers handle the null rather than
- * receiving a plausible-looking set of numbers that describe nothing.
+ * Null means the tool has no flutes, no plunge and no depth of cut, and this
+ * function will not invent them. Callers handle the null rather than receiving a
+ * plausible-looking set of numbers that describe nothing. A laser never reaches
+ * here at all: it has no tool catalogue, and `deriveLaserFeeds` below is what
+ * answers for that machine.
  */
 export function deriveFeeds(
   tool: ToolProfile,
@@ -102,13 +105,16 @@ export function deriveFeeds(
 
   /**
    * The width actually doing the cutting — the tool's `feedDiameter` when it
-   * has one, otherwise its geometric diameter.
+   * has one, otherwise what its geometry implies.
    *
    * Deliberately not `tool.diameter` for a V-bit: that is the tip width, which
    * is the right answer for how fine a detail it holds and the wrong one for
-   * how hard it may be driven.
+   * how hard it may be driven. A tapered tool the operator defined themselves
+   * carries an angle rather than a measured engaged width, so
+   * `defaultFeedDiameter` derives one from the taper instead of feeding the job
+   * as if the tip were the whole cutter.
    */
-  const engaged = spec.feedDiameter ?? tool.diameter ?? REFERENCE_DIAMETER_MM;
+  const engaged = spec.feedDiameter ?? defaultFeedDiameter(tool) ?? REFERENCE_DIAMETER_MM;
   const ratio = engaged / REFERENCE_DIAMETER_MM;
 
   // Chipload rises with diameter, but sub-linearly: a cutter twice as wide is
@@ -185,6 +191,190 @@ export function deriveFeeds(
     summary: `${formatRpm(rpm)} RPM · ${feed} mm/min · ${stepdown} mm per pass`,
     notes,
   };
+}
+
+/**
+ * Fastest and slowest the head is driven with the beam on, mm/min.
+ *
+ * The ceiling is a gantry limit rather than an optical one: past it a belt
+ * machine rounds corners and overshoots ends, and on a raster fill it spends
+ * more time turning round than marking. The floor is where a job stops being
+ * slow and starts being a fire risk — a beam that dwells is a beam that ignites,
+ * and the answer to needing more dose than this is another pass, not a crawl.
+ */
+export const MAX_LASER_SPEED_MM_MIN = 6000;
+export const MIN_LASER_SPEED_MM_MIN = 120;
+
+/** Lowest power worth firing at: below this the beam is not reaching threshold. */
+const MIN_LASER_POWER_PERCENT = 2;
+
+/** How many times over one line before it is a bad plan rather than a slow one. */
+const MAX_LASER_PASSES = 12;
+
+export interface LaserRecipe {
+  /** Travel speed with the beam on, mm/min. */
+  speed: number;
+  /** Beam power as a percentage of the tube, 0–100 — the S-word, scaled. */
+  power: number;
+  /** How many times to go over the line. */
+  passes: number;
+  /** "24 W · 1,400 mm/min · 1 pass". */
+  summary: string;
+  /** Where the derivation was compromised, or refused. Same contract as feeds. */
+  notes: string[];
+}
+
+/**
+ * The speed and power for a material under a given beam, or null if the machine
+ * cannot do this job at all.
+ *
+ * The model is dose: joules per millimetre of travel, which the material table
+ * states and which speed and power between them supply. That is one equation
+ * with two unknowns, so the second is pinned by the material — run at the
+ * highest power it tolerates and let speed fall out — and only unpinned when
+ * the machine runs out of speed at the top or the bottom.
+ *
+ * Null is returned rather than a slow number when the pairing is impossible: a
+ * diode at clear glass, any hobby beam at parting aluminium. A number there
+ * would be worse than nothing, because it reads as a job that will work.
+ */
+export function deriveLaserFeeds(
+  material: MaterialProfile,
+  operation: 'cut' | 'etch' | 'fill',
+  source: LaserSource,
+  stockThicknessMm: number
+): LaserRecipe | null {
+  const spec = material.laser;
+  const notes: string[] = [];
+
+  if (source.kind === 'diode' && spec.diodeFactor === null) {
+    return null;
+  }
+  // A fill is an engrave with more lines in it: same surface, same dose.
+  const cutting = operation === 'cut';
+  const baseDose = cutting
+    ? spec.cutDoseJPerMm2 === null
+      ? null
+      : spec.cutDoseJPerMm2 * Math.max(0.1, stockThicknessMm)
+    : spec.etchDoseJPerMm;
+  if (baseDose === null) return null;
+
+  const dose = baseDose * (source.kind === 'diode' ? spec.diodeFactor! : 1);
+
+  /**
+   * Power is spent before speed is.
+   *
+   * At a fixed dose the two trade off exactly, so the choice between them is
+   * about everything else: a faster pass at higher power puts the same joules
+   * into the line but less heat into what surrounds it, which is the difference
+   * between a crisp engrave and a scorched halo. The materials that do not want
+   * that — glass, which chips — say so with `maxPowerFraction`.
+   */
+  let powerFraction = spec.maxPowerFraction;
+  let watts = source.watts * powerFraction;
+  let passes = 1;
+
+  // Dose is J/mm and watts are J/s, so watts ÷ dose is mm/s.
+  let speed = (watts / dose) * 60;
+
+  if (speed > MAX_LASER_SPEED_MM_MIN) {
+    /**
+     * Too much laser for the job — so use less of it.
+     *
+     * The router model turns the spindle down here for the same reason: the
+     * quantity being protected is the dose, and once the gantry is at its limit
+     * the only remaining way to hold it is to stop firing so hard. Racing past
+     * at full power would deliver a fraction of the energy the material needs
+     * and mark nothing.
+     */
+    speed = MAX_LASER_SPEED_MM_MIN;
+    watts = (dose * speed) / 60;
+    powerFraction = watts / source.watts;
+    notes.push(
+      `${material.name} needs so little of a ${describeLaserSource(source)} that the head would have ` +
+        `to outrun the machine. Power is turned down to ${Math.round(powerFraction * 100)}% instead, ` +
+        `so the line gets the energy it needs at a speed the gantry can hold.`
+    );
+  } else if (speed < MIN_LASER_SPEED_MM_MIN) {
+    /**
+     * Not enough laser — so go over it more than once.
+     *
+     * Multiple passes are how a small tube does a big job. Crawling instead
+     * would put the same energy in, but all at once and all in one place, which
+     * is how stock catches fire and how an engrave ends up a charred trench.
+     */
+    passes = Math.ceil(MIN_LASER_SPEED_MM_MIN / speed);
+    if (passes > MAX_LASER_PASSES) {
+      notes.push(
+        `A ${describeLaserSource(source)} would need ${passes} passes to ${
+          cutting ? `cut ${stockThicknessMm} mm of ` : 'mark '
+        }${material.name}, which is past the point of being worth setting up. ` +
+          `Capped at ${MAX_LASER_PASSES} — expect it not to go through.`
+      );
+      passes = MAX_LASER_PASSES;
+    } else {
+      notes.push(
+        `One pass would need ${Math.round(speed)} mm/min, slow enough to char and to risk a flare-up. ` +
+          `Split into ${passes} passes at ${MIN_LASER_SPEED_MM_MIN} mm/min instead.`
+      );
+    }
+    speed = MIN_LASER_SPEED_MM_MIN;
+  }
+
+  const power = Math.max(MIN_LASER_POWER_PERCENT, Math.min(100, Math.round(powerFraction * 100)));
+  const rounded = Math.round(speed);
+
+  if (cutting && spec.cutDoseJPerMm2 !== null && stockThicknessMm > 0) {
+    // Said plainly, because "12 passes" on a preview reads as a settings
+    // problem rather than as the machine being the wrong size for the stock.
+    const perPass = (source.watts * powerFraction * 60) / (rounded * (spec.cutDoseJPerMm2 * (source.kind === 'diode' ? spec.diodeFactor! : 1)));
+    if (perPass < stockThicknessMm && passes >= MAX_LASER_PASSES) {
+      notes.push(
+        `${stockThicknessMm} mm is thick for a ${describeLaserSource(source)}. Cut it on the router, ` +
+          `or work in thinner stock.`
+      );
+    }
+  }
+
+  return {
+    speed: rounded,
+    power,
+    passes,
+    summary: `${round1(source.watts * powerFraction)} W · ${rounded} mm/min · ${passes} pass${
+      passes === 1 ? '' : 'es'
+    }`,
+    notes,
+  };
+}
+
+/**
+ * Why this beam cannot do this material, in one line — the companion to a null
+ * from `deriveLaserFeeds`.
+ *
+ * Separate from the derivation because it is the only thing the caller can show
+ * when there are no numbers, and because "it will not work" has to say which of
+ * the two reasons applies: the wrong colour of light, or a job no beam does.
+ */
+export function laserRefusal(
+  material: MaterialProfile,
+  operation: 'cut' | 'etch' | 'fill',
+  source: LaserSource
+): string | null {
+  const spec = material.laser;
+  if (source.kind === 'diode' && spec.diodeFactor === null) {
+    return (
+      `A diode will not mark ${material.name} at all — it is the wavelength, not the wattage. ` +
+      (spec.warning ?? 'Use a CO2, or prepare the surface first.')
+    );
+  }
+  if (operation === 'cut' && spec.cutDoseJPerMm2 === null) {
+    return `A laser does not cut ${material.name}. It can only mark the surface.`;
+  }
+  return null;
+}
+
+function round1(v: number): number {
+  return Math.round(v * 10) / 10;
 }
 
 /**

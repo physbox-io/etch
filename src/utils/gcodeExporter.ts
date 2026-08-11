@@ -4,10 +4,26 @@ import { flattenPath, type Pt } from './pathFlatten';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchContours, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
 import { docToMachine, describeOrigin } from './machineCoords';
-import { DEFAULT_TOOL, describeTool, findTool, type MachineKind } from './tooling';
-import { deriveFeeds, planPasses, formatRpm, RAMP_ANGLE_DEG, type SpindleRange } from './feeds';
-import { findMaterial } from './materials';
-import { readSpindleRange } from './machineSettings';
+import {
+  DEFAULT_TOOL,
+  cutWidthAtDepth,
+  describeTool,
+  findTool,
+  hasToolCatalog,
+  type MachineKind,
+  type ToolProfile,
+} from './tooling';
+import {
+  deriveFeeds,
+  deriveLaserFeeds,
+  laserRefusal,
+  planPasses,
+  formatRpm,
+  RAMP_ANGLE_DEG,
+  type SpindleRange,
+} from './feeds';
+import { DEFAULT_STOCK_THICKNESS_MM, findMaterial } from './materials';
+import { readSpindleRange, readLaserSource, describeLaserSource, type LaserSource } from './machineSettings';
 import { offsetContours, type OffsetSide } from './contourOffset';
 import { planMoves, type PlannedMove } from './toolpathMoves';
 
@@ -22,6 +38,21 @@ export interface GCodeOptions {
    * driven from the UI.
    */
   spindle: SpindleRange;
+  /**
+   * The tube on the bench, for the laser feeds model. Same contract as
+   * `spindle`: a shop fact, defaulted from what the machine settings have
+   * stored, so a scripted export and a UI one agree about what is firing.
+   */
+  laser: LaserSource;
+  /**
+   * The tool rack this job is cut with.
+   *
+   * Callers should pass the rack they are showing the operator rather than
+   * relying on the stored-library fallback: the store is the copy that is
+   * certainly current, and the only one that exists at all if the browser
+   * refused to persist an edit.
+   */
+  customCncTools?: ToolProfile[];
 }
 // Kerf compensation is no longer an option because it is no longer optional:
 // cutting on the centreline makes every part undersized by half the cutter, so
@@ -47,6 +78,147 @@ const TAB_WIDTH_MM = 6;
 const TAB_HEIGHT_MM = 1.2;
 const TAB_SPACING_MM = 60;
 const MIN_TABS = 3;
+
+/**
+ * Extra tab height when the job asks for thicker tabs, as a fraction of the
+ * stock.
+ *
+ * Proportional rather than fixed, because "a bit more" means a different number
+ * of millimetres in 1.4 mm ply than in 12 mm — and because the tab that has to
+ * grow is exactly the one on thin stock, where the ordinary rule leaves a
+ * quarter of a millimetre.
+ */
+const THICK_TAB_EXTRA_RATIO = 0.25;
+
+/**
+ * Fraction of the cut depth a tab may reach back up, thick tabs or not.
+ *
+ * Past this the tool is skimming rather than cutting for the whole width of the
+ * tab, and what is left is less a tab than an uncut stretch of outline.
+ */
+const MAX_TAB_DEPTH_FRACTION = 0.6;
+
+/**
+ * How far into the stock an etch has to go before it stops being decoration and
+ * starts being a fold line, as a fraction of the thickness.
+ *
+ * A quarter is where a groove begins to dominate what is left under it: the
+ * shipped keychain preset scores 0.5 mm, which is a sixth of the 3 mm ply it
+ * was drawn for and over a third of 1.4 mm ply, and on the thin sheet the tag
+ * breaks along the etch rather than at its tabs.
+ */
+const SCORE_LINE_FRACTION = 0.25;
+
+/** The stock on the bed, and the two allowances the job may ask of it. */
+export interface StockSettings {
+  thickness: number;
+  thickTabs: boolean;
+  shallowEtch: boolean;
+}
+
+/**
+ * How far the tool rises for the width of a tab.
+ *
+ * The base is a third of the cut, capped — enough to hold a part against a
+ * cutter, thin enough to snap afterwards. Thicker tabs add a share of the
+ * stock on top of that, and the cap keeps the result a tab rather than an uncut
+ * stretch of outline.
+ *
+ * Note this is a height above the *floor of the cut*, not a thickness of
+ * material: the cut runs below the stock by the overcut, so the material left
+ * holding the part is this less that overshoot. `tabHoldingMm` does that sum
+ * for anything that wants to state it in the terms the operator sees.
+ */
+function resolveTabHeight(zDepth: number, stock: { thickness: number; thickTabs: boolean }): number {
+  const base = Math.min(TAB_HEIGHT_MM, zDepth / 3);
+  if (!stock.thickTabs) return base;
+  return Math.min(base + stock.thickness * THICK_TAB_EXTRA_RATIO, zDepth * MAX_TAB_DEPTH_FRACTION);
+}
+
+/**
+ * Material left holding the part at each tab, in mm — the number to put in
+ * front of someone choosing how firmly to hold it, since it is the one they
+ * will be cutting through with a knife afterwards.
+ *
+ * Null when the job has no tabbed through-cut to describe.
+ */
+export function tabHoldingMm(doc: EtchDocument, thickTabs: boolean): number | null {
+  const thickness = doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM;
+  const layer = doc.layers.find(
+    (l) => l.visible && l.operation === 'cut' && (l.tabs ?? true) && Math.abs(l.zDepth) > 0
+  );
+  if (!layer) return null;
+
+  const zDepth = Math.abs(layer.zDepth);
+  const height = resolveTabHeight(zDepth, { thickness, thickTabs });
+  // The cut floor sits `zDepth - thickness` below the stock; a tab only starts
+  // leaving material once it rises past that.
+  return Math.max(0, Math.min(thickness, height - (zDepth - thickness)));
+}
+
+/**
+ * The deepest surface cut relative to the stock, when that is deep enough to
+ * weaken the part — otherwise null.
+ *
+ * Exported because the same judgement is needed in two places: the exporter
+ * writes it into the notes, and the preview panel offers the tab setting that
+ * answers it. Both must agree about when it applies, and the way to guarantee
+ * that is for both to ask the same function.
+ */
+export function scoreLineRisk(doc: EtchDocument): ScoreLineRisk | null {
+  if ((doc.machine ?? 'laser') !== 'cnc') return null;
+  const stockThickness = doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM;
+  if (stockThickness <= 0) return null;
+
+  let worst: ScoreLineRisk | null = null;
+  for (const layer of doc.layers) {
+    if (!layer.visible || layer.operation === 'cut') continue;
+    // A layer nothing is drawn on cuts nothing, however deep it claims to go.
+    if (!doc.elements.some((el) => el.layerId === layer.id && el.visible)) continue;
+
+    const zDepth = Math.abs(layer.zDepth);
+    const fraction = zDepth / stockThickness;
+    if (fraction < SCORE_LINE_FRACTION) continue;
+    if (!worst || fraction > worst.fraction) {
+      worst = {
+        layerId: layer.id,
+        layerName: layer.name,
+        zDepth,
+        stockThickness,
+        fraction,
+        safeDepth: safeEtchDepth(stockThickness),
+      };
+    }
+  }
+  return worst;
+}
+
+export interface ScoreLineRisk {
+  layerId: string;
+  layerName: string;
+  zDepth: number;
+  stockThickness: number;
+  /** How far through the stock this layer goes, 0–1. */
+  fraction: number;
+  /** A depth for this stock that is decoration rather than a fold line. */
+  safeDepth: number;
+}
+
+/**
+ * The deepest a surface cut can go in this stock and still be surface work.
+ *
+ * Rounded down to a hundredth so it reads as a depth someone would type, and
+ * then held strictly under the threshold rather than exactly on it: a value
+ * that leaves the warning still showing would be a fix that does not look like
+ * one. Never returns zero — a layer set to no depth at all cuts nothing, which
+ * is not the advice being given.
+ */
+function safeEtchDepth(stockThickness: number): number {
+  const limit = stockThickness * SCORE_LINE_FRACTION;
+  const rounded = Math.floor(limit * 100) / 100;
+  const under = rounded < limit ? rounded : rounded - 0.01;
+  return Math.max(0.01, Math.round(under * 100) / 100);
+}
 
 export interface GCodeSegment {
   layerId: string;
@@ -118,6 +290,47 @@ export function planToolpath(
   const notes: string[] = [];
   const machineKind: MachineKind = options.laserMode ? 'laser' : 'cnc';
   const material = findMaterial(doc.material);
+  const stock: StockSettings = {
+    thickness: doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM,
+    thickTabs: doc.thickTabs === true,
+    shallowEtch: doc.shallowEtch === true,
+  };
+
+  /**
+   * A surface cut deep enough to be a fold line, said before the job runs.
+   *
+   * This one is not a change the planner made — it is a warning that the part
+   * has a weakness designed into it, which is a different thing and the reason
+   * the preview panel puts the two settings that answer it alongside rather
+   * than only listing it. It is stated even with thicker tabs already on: the
+   * tabs stop the part moving during the cut, they do not make the groove
+   * shallower. A shallow etch does, so the warning gives way to the note
+   * `resolveLayerCutting` writes about the depth it actually used.
+   */
+  const scoreRisk = stock.shallowEtch ? null : scoreLineRisk(doc);
+  if (scoreRisk) {
+    notes.push(
+      `"${scoreRisk.layerName}" cuts ${scoreRisk.zDepth} mm into ${scoreRisk.stockThickness} mm ` +
+        `stock — ${Math.round(scoreRisk.fraction * 100)}% of the way through. A groove that deep is ` +
+        `a fold line, and the part is liable to break along it rather than at its tabs. Etch ` +
+        `shallower, or hold it with thicker tabs.`
+    );
+  }
+
+  /**
+   * Stock the beam will not mark as it is, said once for the job.
+   *
+   * Job-level rather than per-layer, because it is a fact about what is on the
+   * bed rather than about how any one layer is being run — and because the way
+   * it fails is indistinguishable from an underpowered job, so the operator's
+   * instinct is to run it again harder rather than to go and find the spray can.
+   * Only stated when the document actually names its stock: the fallback
+   * material is an assumption, and warning on an assumption teaches people to
+   * ignore the warnings.
+   */
+  if (options.laserMode && doc.material && material.laser.warning) {
+    notes.push(`${material.name}: ${material.laser.warning}`);
+  }
 
   // Extract path points from all visible elements across layers
   for (const layer of doc.layers) {
@@ -131,7 +344,15 @@ export function planToolpath(
      * produces is cut with the same tool in the same material, and deriving it
      * repeatedly would be the same answer at more expense.
      */
-    const cut = resolveLayerCutting(layer, machineKind, material, options.spindle);
+    const cut = resolveLayerCutting(
+      layer,
+      machineKind,
+      material,
+      options.spindle,
+      options.laser,
+      stock,
+      options.customCncTools
+    );
     notes.push(...cut.notes);
 
     /**
@@ -153,6 +374,34 @@ export function planToolpath(
       }
 
       const contours = extractElementContours(el);
+
+      /**
+       * Detail finer than the groove, said before the job runs rather than
+       * discovered in the material.
+       *
+       * The case this exists for is small lettering: the counters of a 'P' or a
+       * 'B' at 7 pt are a few tenths across, and a 60° V-bit at 0.5 mm deep
+       * cuts a groove 0.58 mm wide. Both sides of that groove meet in the
+       * middle of the counter and it closes up — the toolpath is correct, the
+       * tool simply does not fit the drawing. `minDetailMm` never caught it
+       * because for a V-bit it describes the tip flat, which is not what cuts.
+       *
+       * Engraving only. A through-cut narrower than its cutter is already
+       * reported where the offset drops it, and that note is the more useful
+       * of the two — it says the feature was left out, not that it will come
+       * out mushy.
+       */
+      if (!options.laserMode && cut.grooveRadius > 0 && layer.operation !== 'cut') {
+        const finest = finestFeatureMm(contours);
+        const groove = cut.grooveRadius * 2;
+        if (finest < groove) {
+          notes.push(
+            `"${el.name}" has detail about ${finest.toFixed(2)} mm across, finer than the ` +
+              `${groove.toFixed(2)} mm groove a ${cut.toolName} cuts at ${cut.zDepth} mm deep — ` +
+              `features that size will close up. Go shallower, or use a finer tool.`
+          );
+        }
+      }
 
       // Filled elements are engraved: hatch the interior, then optionally
       // follow the outline. Contours alone would only score the edge.
@@ -177,16 +426,21 @@ export function planToolpath(
         }
 
         /**
-         * Hatch inside a boundary pulled in by the cutter radius.
+         * Hatch inside a boundary pulled in by half the groove the tool cuts.
          *
          * Scanlines run to the outline itself, so the cutter's far half hangs
-         * over the edge and the pocket comes out a full diameter too big. The
+         * over the edge and the pocket comes out a full width too big. The
          * outline pass that follows cuts the true edge; this clears up to it.
+         *
+         * Half the *groove*, not half the shank: a V-bit insetting by its
+         * 0.1 mm tip leaves a scanline a tenth of a millimetre from the edge
+         * cutting three tenths past it, which is how the counters of a 'P' came
+         * out filled in even after the fill itself stopped crossing them.
          */
         const region =
-          options.laserMode || cut.radius <= 0
+          options.laserMode || cut.grooveRadius <= 0
             ? contours
-            : offsetContours(contours, cut.radius, 'inside').contours;
+            : offsetContours(contours, cut.grooveRadius, 'inside').contours;
 
         const hatch = hatchContours(
           region,
@@ -292,6 +546,7 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     travelSpeed: 3000,
     innerContourFirst: true,
     spindle: readSpindleRange(),
+    laser: readLaserSource(),
     ...opts,
   };
 }
@@ -317,6 +572,16 @@ interface LayerCutting {
   stepover: number;
   /** Half the cutter, for radius compensation. Zero on a laser. */
   radius: number;
+  /**
+   * Half the groove this tool actually cuts at this layer's depth. Zero on a
+   * laser.
+   *
+   * The same number as `radius` for a cutter with parallel sides, and the one
+   * that matters for a V-bit, whose width comes from depth rather than from its
+   * tip. Engraving geometry is planned against this: a path is not a line, it
+   * is a groove this wide, and detail finer than the groove does not survive.
+   */
+  grooveRadius: number;
   side: OffsetSide;
   tabs: boolean;
   tabHeight: number;
@@ -328,27 +593,70 @@ function resolveLayerCutting(
   layer: EtchLayer,
   machine: MachineKind,
   material: ReturnType<typeof findMaterial>,
-  spindle: SpindleRange
+  spindle: SpindleRange,
+  laser: LaserSource,
+  stock: StockSettings,
+  customCncTools?: ToolProfile[]
 ): LayerCutting {
   const toolNumber = layer.tool ?? DEFAULT_TOOL;
-  const profile = findTool(machine, toolNumber);
+  const profile = findTool(machine, toolNumber, customCncTools);
   const toolName = profile?.name ?? `tool T${toolNumber}`;
   const notes: string[] = [];
 
   if (machine === 'laser') {
-    // A laser has no depth of cut and no spindle. Its passes are how many times
-    // it goes over the line, which is exactly what the layer says.
-    const passes = Math.max(1, layer.passes || 1);
+    /**
+     * A laser has no depth of cut and no spindle: how deep it goes is how fast
+     * it moves and how hard it fires, and both now come from the material and
+     * the tube rather than from whatever was typed on the layer.
+     *
+     * The precedence is the router's, for the same reasons — an explicit
+     * override wins, the derived recipe wins next, and the layer's own numbers
+     * are the last resort. That last case is not dead code: it is every document
+     * drawn before this existed, and every pairing the derivation refuses.
+     */
+    const recipe = deriveLaserFeeds(material, layer.operation, laser, stock.thickness);
+    if (recipe) notes.push(...recipe.notes);
+
+    const refusal = laserRefusal(material, layer.operation, laser);
+    if (refusal) {
+      notes.push(
+        `Layer "${layer.name}": ${refusal} Its speed and power are the ones stored on the layer — ` +
+          `nothing was derived for them.`
+      );
+    }
+
+    const speed = layer.speedOverride ?? recipe?.speed ?? layer.speed;
+    const power = layer.powerOverride ?? recipe?.power ?? layer.power;
+
+    /**
+     * Passes, taking whichever is more: what the layer asks for, or what the
+     * beam needs to get through.
+     *
+     * The same asymmetry as the router's pass count. More passes than derived is
+     * a slower job, which is the user's to choose; fewer is a cut that does not
+     * go through, which is the failure this derivation exists to prevent.
+     */
+    const asked = Math.max(1, layer.passes || 1);
+    const passes = Math.max(asked, recipe?.passes ?? 1);
+    if (recipe && recipe.passes > asked) {
+      notes.push(
+        `Layer "${layer.name}" asks for ${asked} pass${asked === 1 ? '' : 'es'}; a ` +
+          `${describeLaserSource(laser)} needs ${recipe.passes} at ${speed} mm/min to get through ` +
+          `${material.name}. Running ${recipe.passes}.`
+      );
+    }
+
     return {
-      speed: layer.speed,
-      power: layer.power,
+      speed,
+      power,
       rpm: 0,
-      plungeRate: layer.speed,
+      plungeRate: speed,
       rampAngleDeg: RAMP_ANGLE_DEG,
       zDepth: 0,
       depths: new Array(passes).fill(0),
       stepover: 0,
       radius: 0,
+      grooveRadius: 0,
       side: 'on',
       tabs: false,
       tabHeight: 0,
@@ -371,7 +679,30 @@ function resolveLayerCutting(
   const rpm = layer.rpmOverride ?? recipe?.rpm ?? 0;
   const plungeRate = Math.min(speed, recipe?.plungeRate ?? Math.min(speed, 300));
   const stepdown = layer.stepdownOverride ?? recipe?.stepdown ?? Math.abs(layer.zDepth);
-  const zDepth = Math.abs(layer.zDepth);
+
+  /**
+   * The depth this layer is actually cut at.
+   *
+   * Normally the layer's own, and everything downstream — pass count, tab
+   * height, the groove a V-bit leaves — is derived from it. When the job asks
+   * for a shallow etch it is the drawn depth or a quarter of the stock,
+   * whichever is less, so that a design drawn for 3 mm ply can be run on 1.4 mm
+   * without the etch turning into a fold line. Cuts are never clamped: a
+   * through-cut that stops short is not a shallower cut, it is a part that does
+   * not come off the sheet.
+   */
+  const drawnDepth = Math.abs(layer.zDepth);
+  const clamped =
+    stock.shallowEtch && layer.operation !== 'cut'
+      ? Math.min(drawnDepth, safeEtchDepth(stock.thickness))
+      : drawnDepth;
+  if (clamped < drawnDepth) {
+    notes.push(
+      `"${layer.name}" cut ${clamped} mm deep rather than the ${drawnDepth} mm on the layer — ` +
+        `shallow etch is on, holding surface work to a quarter of ${stock.thickness} mm stock.`
+    );
+  }
+  const zDepth = clamped;
 
   const plan = planPasses(zDepth, stepdown);
   let depths = plan.depths;
@@ -403,10 +734,27 @@ function resolveLayerCutting(
     );
   }
 
+  /**
+   * A through-cut in stock that cannot be through-cut is still emitted.
+   *
+   * The app does not know what is in the collet or whether the operator has a
+   * water feed rigged, and refusing to export would leave them with no way to
+   * run a job they may well understand better than this file does. What it will
+   * not do is stay quiet: the pass plan below looks identical whether the
+   * material parts at the end of it or shatters halfway.
+   */
+  if (material.surfaceOnly && layer.operation === 'cut') {
+    notes.push(
+      `Layer "${layer.name}" cuts through ${zDepth} mm of ${material.name}. A router does not part ` +
+        `brittle stock, it grinds it away — at this depth it will fracture long before the part ` +
+        `releases. Engrave it instead, and cut the blank to size another way.`
+    );
+  }
+
   // Tabs default on for through-cuts, because the alternative is the part
   // coming loose under the cutter on the last pass.
   const tabs = layer.operation === 'cut' && (layer.tabs ?? true);
-  const tabHeight = tabs ? Math.min(TAB_HEIGHT_MM, zDepth / 3) : 0;
+  const tabHeight = tabs ? resolveTabHeight(zDepth, stock) : 0;
 
   return {
     speed,
@@ -418,6 +766,7 @@ function resolveLayerCutting(
     depths,
     stepover: recipe?.stepover ?? 0,
     radius: (profile?.diameter ?? 0) / 2,
+    grooveRadius: cutWidthAtDepth(profile, zDepth) / 2,
     side: resolveCutSide(layer),
     tabs,
     tabHeight,
@@ -515,6 +864,33 @@ function boundingArea(pts: Pt[]): number {
     if (p.y > maxY) maxY = p.y;
   }
   return (maxX - minX) * (maxY - minY);
+}
+
+/**
+ * Roughly the finest thing in these contours, in mm — the smallest bounding-box
+ * side any one of them has.
+ *
+ * A cheap proxy, and deliberately so: it is asked only whether some feature is
+ * in the same size range as the cut, to warn before the job runs. Measuring
+ * true local width would mean a medial axis, which is a great deal of work to
+ * sharpen a sentence of advice. It reads a touch generous on diagonal shapes —
+ * the box around a thin slash is wider than the slash — so it under-warns
+ * rather than crying wolf, which is the right way round for advice.
+ */
+function finestFeatureMm(contours: Pt[][]): number {
+  let finest = Infinity;
+  for (const pts of contours) {
+    if (pts.length < 3) continue;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    finest = Math.min(finest, maxX - minX, maxY - minY);
+  }
+  return finest;
 }
 
 function pathLength(pts: Pt[]): number {
@@ -632,7 +1008,11 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
   const { segments, skipped, notes } = planToolpath(doc, opts);
   const machineKind: MachineKind = options.laserMode ? 'laser' : 'cnc';
 
-  const toolChanges = planToolChanges(segments);
+  // No catalogue means nothing to change to, so a laser job never pauses for a
+  // tool — including one carrying T-numbers from a document cut on a router.
+  const toolChanges = hasToolCatalog(machineKind, options.customCncTools)
+    ? planToolChanges(segments)
+    : [];
   const program = planMoves(segments, {
     laserMode: options.laserMode,
     travelSpeed: options.travelSpeed,
@@ -651,14 +1031,26 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
     gcode += `; Material: ${material.name}`;
     if (doc.stockThickness) gcode += `, ${doc.stockThickness} mm thick`;
     gcode += ` — feeds and depths are derived from this\n`;
+  } else {
+    // The tube is in the header for the same reason the material is: it is half
+    // of where every speed and power below came from, and the file may well be
+    // run on a different machine from the one it was calculated for.
+    gcode += `; Material: ${material.name}`;
+    if (doc.stockThickness) gcode += `, ${doc.stockThickness} mm thick`;
+    gcode += `\n; Laser: ${describeLaserSource(options.laser)} — speeds and power are derived from these\n`;
   }
   gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   gcode += `; Segments: ${segments.length}\n`;
-  if (toolChanges.length) {
-    gcode += `; Tool changes: ${toolChanges.length} — the job pauses at each one\n`;
-    for (const c of toolChanges) gcode += `;   ${describeTool(machineKind, c.tool)}\n`;
-  } else if (segments.length) {
-    gcode += `; Tool: ${describeTool(machineKind, segments[0].tool)}\n`;
+  // A laser has no tool catalogue and nothing to change, so it gets no T-line:
+  // "T1 — uncatalogued tool" in the header of every laser job was an answer to a
+  // question that machine does not ask.
+  if (hasToolCatalog(machineKind, options.customCncTools)) {
+    if (toolChanges.length) {
+      gcode += `; Tool changes: ${toolChanges.length} — the job pauses at each one\n`;
+      for (const c of toolChanges) gcode += `;   ${describeTool(machineKind, c.tool, options.customCncTools)}\n`;
+    } else if (segments.length) {
+      gcode += `; Tool: ${describeTool(machineKind, segments[0].tool, options.customCncTools)}\n`;
+    }
   }
   for (const s of skipped) gcode += `; SKIPPED: ${s}\n`;
   // Everything the planner had to compromise on, said once and up front rather
@@ -699,7 +1091,7 @@ export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {
     if (change) {
       // M6 is not motion: the stream stops here and waits to be resumed, so
       // everything is parked and switched off before it is sent.
-      gcode += `\n; --- Tool change: ${describeTool(machineKind, change.tool)} ---\n`;
+      gcode += `\n; --- Tool change: ${describeTool(machineKind, change.tool, options.customCncTools)} ---\n`;
       gcode += `M5 ; spindle/laser off for the change\n`;
       if (!options.laserMode) gcode += `G0 Z${SAFE_Z} ; retract clear of the work\n`;
       gcode += `M6 T${change.tool} ; PAUSE — load the tool, re-zero Z, then resume\n`;
@@ -801,7 +1193,7 @@ export function planProgramMoves(
 ): { moves: PlannedMove[]; segments: GCodeSegment[] } {
   const options = resolveOptions(doc, opts);
   const { segments } = planToolpath(doc, opts);
-  const toolChanges = planToolChanges(segments);
+  const toolChanges = options.laserMode ? [] : planToolChanges(segments);
   const program = planMoves(segments, {
     laserMode: options.laserMode,
     travelSpeed: options.travelSpeed,
@@ -908,6 +1300,49 @@ function extractElementContours(el: EtchElement): Pt[][] {
 
   return [];
 }
+
+/**
+ * Transforms a G-code program into an Air Cut dry run program.
+ *
+ * In CNC mode: Shifts all Z-axis depth moves by `zOffsetMm` (default +20 mm), so the
+ * cutter operates safely elevated in thin air above stock and clamps.
+ * In Laser mode: Overrides laser power (S-values) to 0 (or guide dot) so the machine
+ * executes the full job trajectory without firing the laser beam, and elevates Z if present.
+ */
+export function generateAirCutGCode(
+  gcode: string,
+  opts: { laserMode?: boolean; zOffsetMm?: number } = {}
+): string {
+  const zOffset = opts.zOffsetMm ?? 20;
+  const isLaser = opts.laserMode ?? false;
+
+  const lines = gcode.split('\n');
+  const transformed = lines.map((line) => {
+    const commentIdx = line.indexOf(';');
+    const codePart = commentIdx !== -1 ? line.slice(0, commentIdx) : line;
+    const commentPart = commentIdx !== -1 ? line.slice(commentIdx) : '';
+
+    let transformedCode = codePart;
+
+    // Shift Z coordinates by zOffset
+    transformedCode = transformedCode.replace(/\bZ(-?\d+(?:\.\d+)?)\b/gi, (_, zVal) => {
+      const z = parseFloat(zVal);
+      const newZ = z + zOffset;
+      return `Z${newZ.toFixed(3)}`;
+    });
+
+    // In laser mode, disable cutting laser power by replacing positive S-values with S0
+    if (isLaser) {
+      transformedCode = transformedCode.replace(/\bS([1-9]\d*|0\.\d+)\b/gi, 'S0');
+    }
+
+    return transformedCode + commentPart;
+  });
+
+  const header = `; --- AIR CUT DRY RUN PROGRAM (+${zOffset}mm Z-Offset) ---\n`;
+  return header + transformed.join('\n');
+}
+
 
 /** Segment count for a full circle of radius r at ~0.02mm chord tolerance. */
 function arcSteps(r: number): number {

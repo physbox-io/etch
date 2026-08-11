@@ -5,6 +5,7 @@
 
 declare module 'opentype.js' {
   export interface OTPath {
+    commands: any[];
     toPathData(decimals?: number): string;
   }
   export interface OTGlyph {

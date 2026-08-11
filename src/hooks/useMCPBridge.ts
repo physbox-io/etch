@@ -147,7 +147,12 @@ export function useMCPBridge() {
 
         case 'etch_generate_gcode':
         case 'GENERATE_GCODE': {
-          const gcode = generateGCode(store.document, msg.options || {});
+          // Same rack the UI is showing: an MCP-driven export must not quietly
+          // fall back to the stock tools the operator edited away from.
+          const gcode = generateGCode(store.document, {
+            customCncTools: store.cncTools,
+            ...(msg.options || {}),
+          });
           return { ok: true, gcode };
         }
 

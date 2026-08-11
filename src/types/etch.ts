@@ -10,15 +10,20 @@ export interface EtchLayer {
   visible: boolean;
   locked: boolean;
   /**
-   * Laser controls. A laser has no depth of cut: how deep it goes is how fast
-   * it moves and how hard it fires, so these two *are* the cut on that machine.
+   * Laser fallbacks, not laser settings.
    *
-   * They are not the router's controls. A router's feed follows from the cutter
-   * and the material via `utils/feeds.ts`, and its spindle speed is an RPM
-   * rather than a percentage — the CNC exporter used to ignore `power` entirely
-   * while the sidebar happily accepted it, so a layer set to 40% ran the spindle
-   * flat out. On a CNC document these are unused and the fields are hidden; see
-   * the `*Override` fields below for the router equivalents.
+   * These were the laser's controls when nothing knew what the stock was: how
+   * deep a beam goes is how fast it moves and how hard it fires, and both were
+   * numbers the user typed. They are now derived from the material and the tube
+   * the same way a router's feed is derived from the material and the cutter —
+   * see `deriveLaserFeeds` — and these fields are what remains when a derivation
+   * is impossible, plus what old documents carry.
+   *
+   * They are not the router's controls either. A router's spindle speed is an
+   * RPM rather than a percentage, and the CNC exporter used to ignore `power`
+   * entirely while the sidebar happily accepted it, so a layer set to 40% ran
+   * the spindle flat out. On a CNC document these are unused and hidden; see the
+   * `*Override` fields below.
    */
   speed: number;    // mm/min
   power: number;    // 0 - 100 %
@@ -46,6 +51,17 @@ export interface EtchLayer {
   feedOverride?: number;      // mm/min along the path
   rpmOverride?: number;       // spindle speed
   stepdownOverride?: number;  // mm of depth per pass
+  /**
+   * Laser overrides, on the same terms as the router ones above: unset means
+   * derived from the material and the tube, and a number here is obeyed exactly.
+   *
+   * Separate fields rather than reusing `speed` and `power` because those two
+   * always hold a value — every layer ever created has them — so there would be
+   * no way to tell "the user chose 600 mm/min" from "600 is what the field was
+   * initialised to", which is the same mistake the router's pass count made.
+   */
+  speedOverride?: number;     // mm/min with the beam on
+  powerOverride?: number;     // 0 - 100 % of the tube
   /**
    * Whether a through-cut on this layer gets holding tabs. Defaults to on for
    * `cut` layers, because the alternative is the part coming loose under a
@@ -195,6 +211,31 @@ export interface EtchDocument {
    */
   material?: MaterialId;
   stockThickness?: number;
+  /**
+   * Hold parts to the stock with more material than usual at each tab.
+   *
+   * Off by default and offered where the risk shows up: a part with an etch
+   * scored a good way into thin stock has a fold line built into it, and the
+   * ordinary tab leaves so little to break that the part gives at the score
+   * instead. Thicker tabs hold it steady while the cut runs, at the price of
+   * needing a knife rather than a thumb to free it.
+   */
+  thickTabs?: boolean;
+  /**
+   * Cut surface work no deeper than a quarter of the stock, whatever the layers
+   * say.
+   *
+   * A run-time clamp rather than an edit to the layers, and deliberately so: it
+   * is for the case where the design is right and the sheet on the bed is
+   * thinner than the one it was drawn for. Reaching into every etch layer to
+   * retype a depth, and then back again for the next sheet, is work the machine
+   * panel can do at the point the sheet is in front of you.
+   *
+   * The layer inspector still shows the drawn depth, because that is what the
+   * document says. The export says what it actually cut, in the notes and in
+   * the G-code header.
+   */
+  shallowEtch?: boolean;
   snapToGrid: boolean;
   units: 'mm' | 'inch';
   origin: 'top-left' | 'center' | 'bottom-left';

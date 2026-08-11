@@ -2,7 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { generateGCode, planToolpath, planToolChanges } from '../src/utils/gcodeExporter';
 import { buildTimeline } from '../src/utils/toolpathTimeline';
 import { classifyJobLine, prepareJobLines } from '../src/utils/webSerialManager';
-import { describeTool, parseToolNumber, toolWarning, suggestTool } from '../src/utils/tooling';
+import {
+  cutWidthAtDepth,
+  describeTool,
+  findTool,
+  parseToolNumber,
+  toolWarning,
+  suggestTool,
+  hasToolCatalog,
+  toolCatalog,
+} from '../src/utils/tooling';
 import type { EtchDocument, EtchElement, EtchLayer, LayerOperation } from '../src/types/etch';
 
 const layer = (
@@ -229,7 +238,7 @@ describe('tool guidance', () => {
   it('warns when a slender cutter is asked to go deep', () => {
     expect(toolWarning('cnc', 2, { operation: 'cut', zDepth: 12 })).toMatch(/deep for a 1\.5 mm/);
     expect(toolWarning('cnc', 2, { operation: 'cut', zDepth: 3 })).toBeNull();
-    // A laser has no cutter to break, and its "tools" are lenses.
+    // A laser has no cutter to break and no tools at all.
     expect(toolWarning('laser', 2, { operation: 'cut', zDepth: 40 })).toBeNull();
   });
 
@@ -238,8 +247,48 @@ describe('tool guidance', () => {
     expect(describeTool('cnc', 99)).toBe('T99 — uncatalogued tool');
   });
 
+  /**
+   * There used to be a catalogue of three lens focal lengths here. It described
+   * something real, and choosing between them is still not a decision a hobby
+   * laser owner has: the head came with the machine.
+   */
+  it('offers a laser no tools, and asks it for no tool changes', () => {
+    expect(hasToolCatalog('laser')).toBe(false);
+    expect(hasToolCatalog('cnc')).toBe(true);
+    expect(toolCatalog('laser')).toEqual([]);
+  });
+
   it('suggests a tool that suits the operation', () => {
     expect(suggestTool('cnc', 'etch')).toBe(3);
     expect(suggestTool('cnc', 'cut')).toBe(1);
+  });
+});
+
+describe('groove width at depth', () => {
+  /**
+   * The number the counters of a 'P' turned on. A 60° bit measures 0.2 mm at
+   * the tip and cuts nearly three times that at a normal engraving depth, so
+   * anything planned against the tip alone plans a cut that is not the one the
+   * machine makes.
+   */
+  it('widens a V-bit with depth', () => {
+    const vBit = findTool('cnc', 3);
+    expect(cutWidthAtDepth(vBit, 0)).toBeCloseTo(0.2, 3);
+    expect(cutWidthAtDepth(vBit, 0.5)).toBeCloseTo(0.777, 3);
+    expect(cutWidthAtDepth(vBit, 1.5)).toBeCloseTo(1.932, 3);
+    // The finer bit is narrower at the same depth, which is what it is for.
+    expect(cutWidthAtDepth(findTool('cnc', 4), 0.5)).toBeLessThan(
+      cutWidthAtDepth(vBit, 0.5)
+    );
+  });
+
+  it('leaves a parallel-sided cutter at its diameter, whatever the depth', () => {
+    const endMill = findTool('cnc', 1);
+    expect(cutWidthAtDepth(endMill, 0)).toBe(3.175);
+    expect(cutWidthAtDepth(endMill, 8)).toBe(3.175);
+  });
+
+  it('has no width for a tool it does not know', () => {
+    expect(cutWidthAtDepth(findTool('cnc', 99), 2)).toBe(0);
   });
 });

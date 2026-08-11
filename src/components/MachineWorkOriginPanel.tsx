@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useStore } from '../store/useStore';
 import {
   ArrowUp,
   ArrowDown,
@@ -22,8 +23,6 @@ import {
 import { webSerialManager } from '../utils/webSerialManager';
 import { getGridStats, suggestGridCounts } from '../utils/bedLeveler';
 import {
-  readPlateThickness,
-  writePlateThickness,
   readShimThickness,
   writeShimThickness,
   MAX_SHIM_THICKNESS_MM,
@@ -56,13 +55,9 @@ export const MachineWorkOriginPanel: React.FC<{
   /** Deep-links to the zeroing walkthrough in the Reference Guide. */
   onOpenDocs?: () => void;
 }> = ({ status, showZProbe = true, bedBounds, probeGrid, onProbeGrid, onOpenDocs }) => {
+  const { touchPlateThickness, setTouchPlateThickness } = useStore();
   const [step, setStep] = useState(1);
   const [feedRate, setFeedRate] = useState(1000);
-  // The plate is a fixture of the machine, not of the document, so it is read
-  // back from storage rather than reset to a default every time this mounts.
-  // Work Z0 lands this far below the plate's top face: a stale value here is a
-  // cut too deep by exactly the difference, with nothing to show it.
-  const [plateThickness, setPlateThickness] = useState(readPlateThickness);
   const [isProbingZ, setIsProbingZ] = useState(false);
   const [probeMessage, setProbeMessage] = useState<{ ok: boolean; text: string } | null>(null);
   // Point counts follow the stock's aspect ratio until the user says otherwise:
@@ -162,7 +157,7 @@ export const MachineWorkOriginPanel: React.FC<{
     setIsProbingZ(true);
     setProbeMessage(null);
     try {
-      const result = await webSerialManager.zeroZ(plateThickness);
+      const result = await webSerialManager.zeroZ(touchPlateThickness);
       setProbeMessage({ ok: result.success, text: result.message });
       setZZeroed(
         result.success
@@ -296,7 +291,10 @@ export const MachineWorkOriginPanel: React.FC<{
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => webSerialManager.resumeJob()}
+              onClick={() => {
+                webSerialManager.resumeJob();
+                useStore.setState({ isMachineModalOpen: false, isGCodeModalOpen: true });
+              }}
               className="flex-1 py-2 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/20 transition-colors"
             >
               <Play className="w-3.5 h-3.5" />
@@ -497,9 +495,9 @@ export const MachineWorkOriginPanel: React.FC<{
                   min={0}
                   max={100}
                   step={0.1}
-                  value={plateThickness}
+                  value={touchPlateThickness}
                   onChange={(e) =>
-                    setPlateThickness(writePlateThickness(parseFloat(e.target.value) || 0))
+                    setTouchPlateThickness(parseFloat(e.target.value) || 0)
                   }
                   title="Touch plate thickness — work Z 0 ends up this far below the plate's top face. Remembered between sessions."
                   className={`w-20 ${numInput}`}
@@ -562,7 +560,7 @@ export const MachineWorkOriginPanel: React.FC<{
                 Work Z0 is at machine Z:{zZeroed.z.toFixed(2)}
                 {zZeroed.manual
                   ? `, set by hand${zZeroed.shim ? ` over a ${zZeroed.shim} mm shim` : ''}`
-                  : `, ${plateThickness} mm plate allowed for`}
+                  : `, ${touchPlateThickness} mm plate allowed for`}
               </p>
             )}
           </div>

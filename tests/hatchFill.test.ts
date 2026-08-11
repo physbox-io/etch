@@ -75,6 +75,11 @@ function docWith(el: EtchElement): EtchDocument {
   return {
     id: 'd', name: 'Test', width: 300, height: 200, gridSize: 10,
     snapToGrid: true, units: 'mm', origin: 'top-left',
+    // Thin stock on purpose: these are geometry tests, and they count cutting
+    // moves. Thick stock is a real reason for a laser to go round twice, which
+    // would double the counts below without anything about the geometry having
+    // changed.
+    stockThickness: 1,
     layers: [layer], elements: [el], selectedIds: [],
   };
 }

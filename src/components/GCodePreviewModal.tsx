@@ -1,9 +1,16 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store/useStore';
-import { generateGCode, planToolpath, planToolChanges } from '../utils/gcodeExporter';
+import {
+  generateGCode,
+  generateAirCutGCode,
+  planToolpath,
+  planToolChanges,
+  scoreLineRisk,
+  tabHoldingMm,
+} from '../utils/gcodeExporter';
 import { describeTool } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
-import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb } from 'lucide-react';
+import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
 import { hasFreshOutline } from '../utils/textVectorizer';
@@ -17,6 +24,9 @@ export const GCodePreviewModal: React.FC = () => {
     isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid, setMachineTarget,
     toggleMachineModal,
     setDocumentOrigin,
+    setThickTabs,
+    setShallowEtch,
+    cncTools,
   } = useStore();
 
   // Lives on the document, not in this modal: the layer inspector needs to know
@@ -27,9 +37,12 @@ export const GCodePreviewModal: React.FC = () => {
   const [applyLevelling, setApplyLevelling] = useState(true);
   const [machine, setMachine] = useState<MachineStatus>(() => webSerialManager.getStatus());
   const [confirmRun, setConfirmRun] = useState(false);
+  const [confirmAirCut, setConfirmAirCut] = useState(false);
+  const [airCutZOffset, setAirCutZOffset] = useState(20);
   const [runNote, setRunNote] = useState<string | null>(null);
   const [showTravel, setShowTravel] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => webSerialManager.subscribe(setMachine), []);
 
@@ -48,16 +61,53 @@ export const GCodePreviewModal: React.FC = () => {
     [isGCodeModalOpen, document, laserMode, innerContourFirst]
   );
 
-  const toolChanges = useMemo(() => planToolChanges(plan.segments), [plan.segments]);
+  // A laser has no tools to change between, so it never lists any — the same
+  // rule the exporter follows when it decides whether to pause the job.
+  const toolChanges = useMemo(
+    () => (laserMode ? [] : planToolChanges(plan.segments)),
+    [plan.segments, laserMode]
+  );
+
+  /**
+   * Whether the job has an etch deep enough to weaken the part.
+   *
+   * Asked separately from the notes even though one of the notes says the same
+   * thing, because this one has an answer the operator can give: the tab
+   * setting is offered beside it rather than left to be found in the layer
+   * inspector after the part has already broken.
+   */
+  const scoreRisk = useMemo(
+    () => (isGCodeModalOpen ? scoreLineRisk(document) : null),
+    [isGCodeModalOpen, document]
+  );
+
+  // Both sides of the choice, so the checkbox states what it costs rather than
+  // only what it is called.
+  const thinTabMm = useMemo(
+    () => (scoreRisk ? tabHoldingMm(document, false) : null),
+    [scoreRisk, document]
+  );
+  const thickTabMm = useMemo(
+    () => (scoreRisk ? tabHoldingMm(document, true) : null),
+    [scoreRisk, document]
+  );
 
   const gcodeStr = useMemo(() => {
     // This component stays mounted, and `document` changes identity on every
     // frame of a drag — regenerating (including the scanline hatch fill) while
     // the panel is closed would cost that on every mouse move.
     if (!isGCodeModalOpen) return '';
-    const raw = generateGCode(document, { laserMode, innerContourFirst, travelSpeed });
+    // The rack is passed explicitly rather than left to the exporter's storage
+    // fallback: the store is what the operator edited, and it is the only copy
+    // guaranteed to exist if the browser refused to save it.
+    const raw = generateGCode(document, {
+      laserMode,
+      innerContourFirst,
+      travelSpeed,
+      customCncTools: cncTools,
+    });
     return levelling ? warpGcode(raw, levelling) : raw;
-  }, [isGCodeModalOpen, document, laserMode, innerContourFirst, travelSpeed, levelling]);
+  }, [isGCodeModalOpen, document, laserMode, innerContourFirst, travelSpeed, levelling, cncTools]);
 
   if (!isGCodeModalOpen) return null;
 
@@ -105,27 +155,6 @@ export const GCodePreviewModal: React.FC = () => {
               </select>
             </div>
 
-            {/* Work origin. This decides how document coordinates map onto the
-                machine, and getting it wrong mirrors the whole job — which only
-                shows up on asymmetric geometry like text. */}
-            <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                Work Origin (machine X0 Y0)
-              </label>
-              <select
-                value={document.origin}
-                onChange={(e) => setDocumentOrigin(e.target.value as typeof document.origin)}
-                className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200"
-              >
-                <option value="top-left">Front-left, Y up the bed (standard GRBL)</option>
-                <option value="bottom-left">Front-left, coordinates already Y-up</option>
-                <option value="center">Centre of the bed</option>
-              </select>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
-                If engraved text comes out mirrored, this is the setting that is wrong.
-              </p>
-            </div>
-
             {/* Bed levelling — only offered for CNC output, since a laser
                 toolpath has no Z to warp. */}
             {!laserMode && (
@@ -165,67 +194,100 @@ export const GCodePreviewModal: React.FC = () => {
               </div>
             )}
 
-            {/* Inner Contour First */}
-            <div className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
-              <div>
-                <div className="font-semibold text-slate-800 dark:text-slate-200">Inner-First Sorting</div>
-                <div className="text-[10px] text-slate-500 dark:text-slate-400">Cut interior holes before outer bounds</div>
-              </div>
-              <input
-                type="checkbox"
-                checked={innerContourFirst}
-                onChange={(e) => setInnerContourFirst(e.target.checked)}
-                className="w-4 h-4 accent-red-500 rounded cursor-pointer"
-              />
-            </div>
+            {/* Advanced Settings Disclosure */}
+            <button
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer pt-1"
+            >
+              {showAdvanced ? '▾' : '▸'} Advanced Options
+            </button>
 
-            {/* Travel Speed */}
-            <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rapid Travel Speed (mm/min)</label>
-              <input
-                type="number"
-                value={travelSpeed}
-                onChange={(e) => setTravelSpeed(parseInt(e.target.value) || 3000)}
-                className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
-              />
-            </div>
-
-            {/* Engrave-fill defaults for this document. Individual elements can
-                still override them in the Properties inspector. */}
-            <div className="space-y-2 p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
-              <div className="font-semibold text-slate-800 dark:text-slate-200">Engrave Fill Defaults</div>
-              <div className="grid grid-cols-2 gap-2">
+            {showAdvanced && (
+              <div className="space-y-3 pt-1 border-t border-slate-200/60 dark:border-slate-700/50">
+                {/* Work origin. This decides how document coordinates map onto the
+                    machine, and getting it wrong mirrors the whole job — which only
+                    shows up on asymmetric geometry like text. */}
                 <div>
                   <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                    Hatch Angle
+                    Work Origin (machine X0 Y0)
                   </label>
+                  <select
+                    value={document.origin}
+                    onChange={(e) => setDocumentOrigin(e.target.value as typeof document.origin)}
+                    className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200"
+                  >
+                    <option value="top-left">Front-left, Y up the bed (standard GRBL)</option>
+                    <option value="bottom-left">Front-left, coordinates already Y-up</option>
+                    <option value="center">Centre of the bed</option>
+                  </select>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                    If engraved text comes out mirrored, this is the setting that is wrong.
+                  </p>
+                </div>
+
+                {/* Inner Contour First */}
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
+                  <div>
+                    <div className="font-semibold text-slate-800 dark:text-slate-200">Inner-First Sorting</div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">Cut interior holes before outer bounds</div>
+                  </div>
                   <input
-                    type="number"
-                    step="5"
-                    value={document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE}
-                    onChange={(e) => setHatchDefaults({ angle: parseFloat(e.target.value) || 0 })}
-                    className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                    type="checkbox"
+                    checked={innerContourFirst}
+                    onChange={(e) => setInnerContourFirst(e.target.checked)}
+                    className="w-4 h-4 accent-red-500 rounded cursor-pointer"
                   />
                 </div>
+
+                {/* Travel Speed */}
                 <div>
-                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                    Spacing (mm)
-                  </label>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rapid Travel Speed (mm/min)</label>
                   <input
                     type="number"
-                    step="0.05"
-                    min="0.02"
-                    value={document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING}
-                    onChange={(e) => setHatchDefaults({ spacing: parseFloat(e.target.value) || 0.02 })}
-                    className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                    value={travelSpeed}
+                    onChange={(e) => setTravelSpeed(parseInt(e.target.value) || 3000)}
+                    className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
                   />
+                </div>
+
+                {/* Engrave-fill defaults for this document. Individual elements can
+                    still override them in the Properties inspector. */}
+                <div className="space-y-2 p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
+                  <div className="font-semibold text-slate-800 dark:text-slate-200">Engrave Fill Defaults</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                        Hatch Angle
+                      </label>
+                      <input
+                        type="number"
+                        step="5"
+                        value={document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE}
+                        onChange={(e) => setHatchDefaults({ angle: parseFloat(e.target.value) || 0 })}
+                        className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                        Spacing (mm)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0.02"
+                        value={document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING}
+                        onChange={(e) => setHatchDefaults({ spacing: parseFloat(e.target.value) || 0.02 })}
+                        className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                    Match spacing to your beam or bit width. Elements with their own
+                    setting keep it.
+                  </p>
                 </div>
               </div>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                Match spacing to your beam or bit width. Elements with their own
-                setting keep it.
-              </p>
-            </div>
+            )}
 
             {/* Un-machineable text guard — better to catch it here than to
                 discover a missing engraving after the job has run. */}
@@ -286,6 +348,58 @@ export const GCodePreviewModal: React.FC = () => {
                         </li>
                       ))}
                     </ul>
+
+                    {/*
+                      The one note above that has an answer, with both answers
+                      attached: make the groove shallower, or hold the part
+                      harder while it is cut.
+
+                      Both are settings on the job rather than edits to the
+                      layers, because both belong to the sheet on the bed and
+                      not to the drawing. A design worked out for 3 mm ply is
+                      still the design when a 1.4 mm offcut goes down; what
+                      changes is what that sheet will take, and answering that
+                      by retyping depths layer by layer — and again for the next
+                      sheet — is work this panel can do at the moment the
+                      question comes up. The layer keeps the depth it was drawn
+                      with; the notes above say what was actually cut.
+                    */}
+                    {scoreRisk && (
+                      <label className="mt-2 flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={document.shallowEtch === true}
+                          onChange={(e) => setShallowEtch(e.target.checked)}
+                          className="mt-0.5 accent-amber-600 cursor-pointer"
+                        />
+                        <span className="text-[10px] text-amber-700 dark:text-amber-400/90 leading-snug">
+                          <span className="font-semibold">Use a shallower etch</span> — cut surface
+                          work at {scoreRisk.safeDepth} mm instead of the {scoreRisk.zDepth} mm on
+                          "{scoreRisk.layerName}", for this stock only. The layer keeps its depth.
+                        </span>
+                      </label>
+                    )}
+
+                    {scoreRisk && (
+                      <label className="mt-2 flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={document.thickTabs === true}
+                          onChange={(e) => setThickTabs(e.target.checked)}
+                          className="mt-0.5 accent-amber-600 cursor-pointer"
+                        />
+                        <span className="text-[10px] text-amber-700 dark:text-amber-400/90 leading-snug">
+                          <span className="font-semibold">Use thicker tabs</span>
+                          {thinTabMm !== null && thickTabMm !== null && (
+                            <>
+                              {' '}— hold the part with {thickTabMm.toFixed(2)} mm of stock at each
+                              tab instead of {thinTabMm.toFixed(2)} mm. Steadier under the cutter,
+                              and cut free with a knife rather than snapped.
+                            </>
+                          )}
+                        </span>
+                      </label>
+                    )}
                   </div>
                 </div>
               </div>
@@ -339,11 +453,79 @@ export const GCodePreviewModal: React.FC = () => {
                     </button>
                   </div>
                 </div>
+              ) : confirmAirCut ? (
+                <div className="p-2.5 rounded-lg border border-sky-400/70 bg-sky-50 dark:bg-sky-950/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-sky-800 dark:text-sky-300 font-semibold text-xs">
+                      <Wind className="w-4 h-4 text-sky-500 shrink-0" />
+                      <span>Air Cut Dry Run (+{airCutZOffset}mm Z)</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
+                      <label htmlFor="air-cut-z-offset" className="font-medium">Offset:</label>
+                      <input
+                        id="air-cut-z-offset"
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={airCutZOffset}
+                        onChange={(e) => setAirCutZOffset(Math.max(1, parseInt(e.target.value) || 20))}
+                        className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-center font-mono text-[10px]"
+                      />
+                      <span>mm</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-sky-800 dark:text-sky-300/90 leading-snug">
+                    {laserMode
+                      ? `Runs complete path with laser power disabled (S0). Safe dry run to verify path and origin.`
+                      : `Shifts all Z cuts upward by +${airCutZOffset} mm into thin air. Safe dry run to check motion and clamps without touching stock.`}
+                  </p>
+                  {!machine.connected && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                      <Usb className="w-3 h-3 shrink-0" />
+                      <span>Machine is not connected. Starting will open the port selector.</span>
+                    </p>
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => {
+                        if (!machine.connected) {
+                          toggleMachineModal();
+                          return;
+                        }
+                        const airCutGCode = generateAirCutGCode(gcodeStr, {
+                          laserMode,
+                          zOffsetMm: airCutZOffset,
+                        });
+                        const result = webSerialManager.startJob(airCutGCode, {
+                          machine: laserMode ? 'laser' : 'cnc',
+                        });
+                        setRunNote(`[Air Cut] ${result.message}`);
+                        setConfirmAirCut(false);
+                      }}
+                      className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold cursor-pointer text-xs flex items-center justify-center gap-1.5 shadow-sm"
+                    >
+                      {machine.connected ? <Play className="w-3.5 h-3.5" /> : <Usb className="w-3.5 h-3.5" />}
+                      <span>{machine.connected ? 'Start Air Cut' : 'Connect & Start Air Cut'}</span>
+                    </button>
+                    <button
+                      onClick={() => setConfirmAirCut(false)}
+                      className="px-3 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg font-semibold cursor-pointer text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               ) : confirmRun ? (
                 <div className="p-2.5 rounded-lg border border-amber-400/70 bg-amber-50 dark:bg-amber-950/40 space-y-2">
                   <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
                     Is the work origin set and the stock clamped? This starts cutting immediately.
                   </p>
+                  {!machine.connected && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                      <Usb className="w-3 h-3 shrink-0" />
+                      <span>Machine is not connected. Starting will open the port selector.</span>
+                    </p>
+                  )}
                   {/* Which tools to have to hand, before the machine is holding
                       a half-cut part waiting for one that is still in a drawer. */}
                   {toolChanges.length > 0 && (
@@ -354,7 +536,7 @@ export const GCodePreviewModal: React.FC = () => {
                       <ul className="mt-0.5 space-y-0.5">
                         {toolChanges.map((c, i) => (
                           <li key={i} className="font-mono">
-                            {describeTool(laserMode ? 'laser' : 'cnc', c.tool)}
+                            {describeTool(laserMode ? 'laser' : 'cnc', c.tool, cncTools)}
                           </li>
                         ))}
                       </ul>
@@ -364,36 +546,60 @@ export const GCodePreviewModal: React.FC = () => {
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
+                        if (!machine.connected) {
+                          toggleMachineModal();
+                          return;
+                        }
                         const result = webSerialManager.startJob(gcodeStr, {
                           machine: laserMode ? 'laser' : 'cnc',
                         });
                         setRunNote(result.message);
                         setConfirmRun(false);
                       }}
-                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold cursor-pointer"
+                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold cursor-pointer text-xs flex items-center justify-center gap-1.5"
                     >
-                      Start cutting
+                      {machine.connected ? <Play className="w-3.5 h-3.5" /> : <Usb className="w-3.5 h-3.5" />}
+                      <span>{machine.connected ? 'Start cutting' : 'Connect & Start cutting'}</span>
                     </button>
                     <button
                       onClick={() => setConfirmRun(false)}
-                      className="px-3 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg font-semibold cursor-pointer"
+                      className="px-3 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg font-semibold cursor-pointer text-xs"
                     >
                       Cancel
                     </button>
                   </div>
                 </div>
               ) : (
-                <button
-                  onClick={() => (machine.connected ? setConfirmRun(true) : toggleMachineModal())}
-                  className={`w-full py-2 rounded-lg font-bold flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer ${
-                    machine.connected
-                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20'
-                      : 'bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
-                  }`}
-                >
-                  {machine.connected ? <Play className="w-4 h-4" /> : <Usb className="w-4 h-4" />}
-                  <span>{machine.connected ? 'Run on Machine' : 'Connect a machine to run'}</span>
-                </button>
+                <div className="space-y-1.5">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setConfirmAirCut(false);
+                        setConfirmRun(true);
+                      }}
+                      className="flex-1 py-2 rounded-lg font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-500/20 transition-all cursor-pointer text-xs"
+                    >
+                      {machine.connected ? <Play className="w-4 h-4" /> : <Usb className="w-4 h-4" />}
+                      <span>Run on Machine</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setConfirmRun(false);
+                        setConfirmAirCut(true);
+                      }}
+                      className="py-2 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 transition-all cursor-pointer text-xs shrink-0"
+                      title="Run dry run elevated above stock (+20mm Z)"
+                    >
+                      <Wind className="w-4 h-4" />
+                      <span>Air Cut</span>
+                    </button>
+                  </div>
+                  {!machine.connected && (
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 text-center">
+                      No machine connected — clicking either button prompts connection.
+                    </p>
+                  )}
+                </div>
               )}
 
               {runNote && !machine.jobRunning && (

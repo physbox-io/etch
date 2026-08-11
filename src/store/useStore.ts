@@ -9,7 +9,17 @@ import type {
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
 import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
-import { PRESET_ETCHINGS } from '../presets/presetEtchings';
+import {
+  readLaserSource,
+  writeLaserSource,
+  readPlateThickness,
+  writePlateThickness,
+  readShimThickness,
+  writeShimThickness,
+  type LaserSource,
+} from '../utils/machineSettings';
+import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type ToolProfile } from '../utils/tooling';
+import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
@@ -74,7 +84,17 @@ interface EtchStore {
   isClipArtModalOpen: boolean;
   isSettingsOpen: boolean;
   isDocsOpen: boolean;
+  isToolConfigModalOpen: boolean;
   docsTab: DocsTabId;
+  cncTools: ToolProfile[];
+  /**
+   * Set when the tool rack could not be written to storage.
+   *
+   * The rack is still live for this session — the store is what the exporter
+   * and the sidebar read — but it will not survive a reload, and the operator
+   * should know that before they set up a job around it.
+   */
+  cncToolsUnsaved: boolean;
   /**
    * Last bed heightmap probed over the job. CNC toolpaths are warped to follow
    * it, so it lives in the store rather than in the machine modal that measured
@@ -102,13 +122,43 @@ interface EtchStore {
   toggleMachineModal: () => void;
   toggleClipArtModal: () => void;
   toggleSettings: () => void;
+  toggleToolConfigModal: () => void;
+  openToolConfigModal: () => void;
+  closeToolConfigModal: () => void;
+  setCncTools: (tools: ToolProfile[]) => void;
+  resetCncTools: () => void;
   openDocs: (tab?: DocsTabId) => void;
   closeDocs: () => void;
   setDocsTab: (tab: DocsTabId) => void;
   setBedProbeGrid: (grid: BedProbeGrid | null) => void;
   setMachineTarget: (machine: 'laser' | 'cnc') => void;
   setMaterial: (material: MaterialId) => void;
+  /**
+   * The laser on the bench.
+   *
+   * Deliberately not part of the document: it describes the shop, not the
+   * drawing, and a file opened by someone with a different machine must derive
+   * *their* speeds rather than inherit these. It lives here rather than in
+   * component state only so the status bar and the layer inspector cannot
+   * disagree about what is firing.
+   */
+  laserSource: LaserSource;
+  setLaserSource: (id: string) => void;
+  /**
+   * Touch plate thickness (probe height), in mm.
+   * Saved in localStorage and remembered across sessions.
+   */
+  touchPlateThickness: number;
+  setTouchPlateThickness: (mm: number) => void;
+  /**
+   * Manual Z zeroing shim thickness (paper / feeler gauge), in mm.
+   * Saved in localStorage and remembered across sessions.
+   */
+  shimThickness: number;
+  setShimThickness: (mm: number) => void;
   setStockThickness: (mm: number) => void;
+  setThickTabs: (on: boolean) => void;
+  setShallowEtch: (on: boolean) => void;
   setDocumentOrigin: (origin: EtchDocument['origin']) => void;
 
   // Save / Load / Save As / Delete (localStorage user presets)
@@ -143,7 +193,7 @@ interface EtchStore {
   redo: () => void;
 }
 
-const defaultDoc: EtchDocument = cloneDoc(PRESET_ETCHINGS[0].doc);
+const defaultDoc: EtchDocument = cloneDoc(DEFAULT_PRESET.doc);
 
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
@@ -155,7 +205,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   zoom: 1.0,
   pan: { x: 0, y: 0 },
   cursor: { x: 0, y: 0 },
-  activePreset: PRESET_ETCHINGS[0].id,
+  activePreset: DEFAULT_PRESET_ID,
   userPresetNames: Object.keys(readUserPresets()).sort(),
   mandalaSettings: {
     sectorCount: 8,
@@ -171,8 +221,24 @@ export const useStore = create<EtchStore>((set, get) => ({
   isClipArtModalOpen: false,
   isSettingsOpen: false,
   isDocsOpen: false,
+  isToolConfigModalOpen: false,
   docsTab: 'toolpaths',
+  cncTools: readCncTools(),
+  cncToolsUnsaved: false,
   bedProbeGrid: null,
+
+  toggleToolConfigModal: () => set((state) => ({ isToolConfigModalOpen: !state.isToolConfigModalOpen })),
+  openToolConfigModal: () => set({ isToolConfigModalOpen: true }),
+  closeToolConfigModal: () => set({ isToolConfigModalOpen: false }),
+
+  setCncTools: (tools) => {
+    set({ cncTools: tools, cncToolsUnsaved: !writeCncTools(tools) });
+  },
+
+  resetCncTools: () => {
+    const defaults = resetCncToolsUtil();
+    set({ cncTools: defaults, cncToolsUnsaved: false });
+  },
 
   toggleDarkMode: () =>
     set((state) => {
@@ -278,7 +344,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       writeUserPresets(presets);
       set({ userPresetNames: Object.keys(presets).sort() });
       if (get().activePreset === `user:${name}`) {
-        get().loadPreset(PRESET_ETCHINGS[0].id);
+        get().loadPreset(DEFAULT_PRESET_ID);
       }
     } catch (e) {
       console.error('Failed to delete user preset', e);
@@ -360,12 +426,39 @@ export const useStore = create<EtchStore>((set, get) => ({
   setMachineTarget: (machine) =>
     set((state) => ({ document: { ...state.document, machine } })),
 
+  laserSource: readLaserSource(),
+
+  // Written through to the machine settings, so an export driven from a script
+  // — which reads them directly — agrees with what the UI is showing.
+  setLaserSource: (id) => set({ laserSource: writeLaserSource(id) }),
+
+  touchPlateThickness: readPlateThickness(),
+  setTouchPlateThickness: (mm) => set({ touchPlateThickness: writePlateThickness(mm) }),
+
+  shimThickness: readShimThickness(),
+  setShimThickness: (mm) => set({ shimThickness: writeShimThickness(mm) }),
+
   /**
    * The stock on the bed. Not a view setting: feed, spindle speed and depth per
    * pass are all derived from it, so changing it changes the toolpath.
    */
   setMaterial: (material) =>
     set((state) => ({ document: { ...state.document, material } })),
+
+  /**
+   * How much material each tab keeps. Like the material, it changes the
+   * toolpath rather than the drawing, so it lives on the document and travels
+   * with the job.
+   */
+  setThickTabs: (thickTabs) =>
+    set((state) => ({ document: { ...state.document, thickTabs } })),
+
+  /**
+   * Clamps surface work to a depth the stock can take. Like the tabs, a setting
+   * the job carries rather than an edit to the layers it applies to.
+   */
+  setShallowEtch: (shallowEtch) =>
+    set((state) => ({ document: { ...state.document, shallowEtch } })),
 
   /**
    * Sets the stock thickness, and takes the cut layers down with it.

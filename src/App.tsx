@@ -13,6 +13,7 @@ import { JobPauseBanner } from './components/JobPauseBanner';
 import { AICopilotPanel } from './components/AICopilotPanel';
 import { DocsModal } from './components/DocsModal';
 import { SettingsPanel } from './components/SettingsPanel';
+import { ToolConfigModal } from './components/ToolConfigModal';
 
 export const App: React.FC = () => {
   // Connect to WebSocket MCP bridge
@@ -106,6 +107,7 @@ export const App: React.FC = () => {
       <GCodePreviewModal />
       <MachineControlModal />
       <SettingsPanel />
+      <ToolConfigModal />
 
       {/* Rendered last so the Reference Guide sits above the modal that opened it */}
       <DocsModal />

@@ -1,15 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { LASER_SOURCES, describeLaserSource } from '../utils/machineSettings';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
-import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2 } from 'lucide-react';
+import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
 import {
   materialCatalog,
   findMaterial,
+  materialNote,
   DEFAULT_MATERIAL,
   DEFAULT_STOCK_THICKNESS_MM,
   type MaterialId,
 } from '../utils/materials';
+import { toolRackLabel } from '../utils/tooling';
 
 /** Common machining grid pitches, in mm. */
 const GRID_PRESETS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -28,6 +31,10 @@ export const BottomStatusBar: React.FC = () => {
     setMachineTarget,
     setMaterial,
     setStockThickness,
+    laserSource,
+    setLaserSource,
+    cncTools,
+    openToolConfigModal,
   } = useStore();
 
   // Seeded from the manager rather than a literal, so a bar that mounts after a
@@ -37,6 +44,7 @@ export const BottomStatusBar: React.FC = () => {
   useEffect(() => webSerialManager.subscribe(setMachineStatus), []);
 
   const gridSize = document.gridSize || 10;
+  const machineKind = (document.machine ?? 'laser') === 'cnc' ? 'cnc' : 'laser';
 
   return (
     <footer className="h-8 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors">
@@ -158,34 +166,98 @@ export const BottomStatusBar: React.FC = () => {
             <option value="laser">Laser</option>
             <option value="cnc">CNC Router</option>
           </select>
+
+          {/*
+            Which laser, immediately next to the fact that it is one.
+
+            Speed and power are derived from the tube the same way a router's
+            feed is derived from the cutter, so this belongs beside the machine
+            picker rather than buried in a layer's advanced settings: it is one
+            fact about the bench, not a per-layer choice, and it is the single
+            input that decides whether "60% power" means anything at all.
+          */}
+          {machineKind === 'laser' && (
+            <select
+              value={laserSource.id}
+              onChange={(e) => setLaserSource(e.target.value)}
+              title="The laser on your bench. Speed and power are derived from it — a 5 W diode and a 40 W tube are not the same job."
+              className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+            >
+              {LASER_SOURCES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {describeLaserSource(s)}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {machineKind === 'cnc' && (
+            <div className="flex items-center gap-1">
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value === 'configure') {
+                    openToolConfigModal();
+                  }
+                }}
+                title="CNC tool rack. Click to configure cutters, diameters, and feeds."
+                className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+              >
+                <option value="" disabled hidden>
+                  {toolRackLabel(cncTools)} ({cncTools.length} cutter{cncTools.length === 1 ? '' : 's'})
+                </option>
+                <optgroup label="🛠️ Configured Tool Rack" className="bg-white dark:bg-slate-900">
+                  {cncTools.map((t) => (
+                    <option key={t.id} value={t.id} disabled>
+                      T{t.id} — {t.name}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="⚙️ Configuration" className="bg-white dark:bg-slate-900">
+                  <option value="configure">⚙️ Configure tool rack...</option>
+                </optgroup>
+              </select>
+              <button
+                onClick={openToolConfigModal}
+                className="p-1 rounded text-amber-600 dark:text-amber-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Configure CNC tool rack"
+              >
+                <Wrench className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/*
-          The stock, on a router only.
+          The stock.
 
-          This is the one thing the app cannot work out for itself and cannot do
-          without: feed, spindle speed and depth per pass are all derived from
-          it. It is deliberately the *only* machining control on show — everything
-          it decides used to be a field the user had to fill in and mostly got
-          wrong. A laser has no use for it, so it is not shown there.
+          Half of every derivation in the app, on either machine: the router
+          gets its feed, spindle speed and depth per pass from it, and the laser
+          gets its speed and power from it and the tube next door. So it shows
+          on both. Only the thickness is router-only — it is what "cut through"
+          has to get through, and a laser document has no Z to measure it
+          against.
         */}
+        <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
+        <div className="flex items-center gap-1.5">
+          <Layers2 className="w-3.5 h-3.5 text-emerald-500" />
+          <select
+            value={document.material ?? DEFAULT_MATERIAL}
+            onChange={(e) => setMaterial(e.target.value as MaterialId)}
+            title={materialNote(findMaterial(document.material), machineKind)}
+            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+          >
+            {materialCatalog().map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {(document.machine ?? 'laser') === 'cnc' && (
           <>
-            <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
             <div className="flex items-center gap-1.5">
-              <Layers2 className="w-3.5 h-3.5 text-emerald-500" />
-              <select
-                value={document.material ?? DEFAULT_MATERIAL}
-                onChange={(e) => setMaterial(e.target.value as MaterialId)}
-                title={findMaterial(document.material).note}
-                className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
-              >
-                {materialCatalog().map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
               <input
                 type="number"
                 min="0.1"

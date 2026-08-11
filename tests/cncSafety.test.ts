@@ -101,6 +101,55 @@ describe('depth of cut', () => {
   });
 });
 
+describe('brittle stock', () => {
+  /**
+   * Glass, stone and tile are engraving materials on a router. Nothing stops the
+   * user asking for a through-cut, but a pass plan that looks like any other one
+   * is not an answer — the job ends in a cracked workpiece, not a part.
+   */
+  it('warns that a through-cut will not go through', () => {
+    for (const material of ['glass', 'stone', 'ceramic'] as const) {
+      const { notes } = planToolpath(
+        doc([layer('cut', 'cut', { zDepth: 6 })], [rect('r', 'cut')], {
+          material,
+          stockThickness: 6,
+        })
+      );
+      expect(notes.join(' '), material).toMatch(/does not part brittle stock/);
+    }
+  });
+
+  it('says nothing about a surface engrave in the same stock', () => {
+    const { notes } = planToolpath(
+      doc([layer('etch', 'etch', { zDepth: 0.3, tool: 4 })], [rect('r', 'etch')], {
+        material: 'glass',
+        stockThickness: 6,
+      })
+    );
+    expect(notes.join(' ')).not.toMatch(/brittle/);
+  });
+
+  it('leaves wood alone', () => {
+    const { notes } = planToolpath(doc([layer('cut', 'cut')], [rect('r', 'cut')]));
+    expect(notes.join(' ')).not.toMatch(/brittle/);
+  });
+
+  it('takes far shallower bites than wood does', () => {
+    const cut = (material: 'plywood' | 'glass' | 'stone' | 'ceramic') =>
+      planToolpath(
+        doc([layer('etch', 'etch', { zDepth: 1 })], [rect('r', 'etch')], {
+          material,
+          stockThickness: 6,
+        })
+      ).segments[0];
+
+    const ply = cut('plywood');
+    for (const material of ['glass', 'stone', 'ceramic'] as const) {
+      expect(cut(material).passes, material).toBeGreaterThan(ply.passes);
+    }
+  });
+});
+
 describe('entering the material', () => {
   /**
    * A cutter is at its weakest driven straight down, and a bit that snaps almost
@@ -296,10 +345,175 @@ describe('the laser is left as it was', () => {
     expect(generateGCode(twoShapes)).toContain('M5 ; Laser OFF for rapid');
   });
 
-  it('obeys the layer pass count, which is all a laser has', () => {
+  /**
+   * The pass count is a floor now, not an instruction — the same asymmetry the
+   * router has. Asking for more than the beam needs is a slower job, which is
+   * the user's to choose; asking for fewer is a cut that does not go through.
+   */
+  it('honours a pass count higher than the beam needs', () => {
     const { segments } = planToolpath(
-      doc([layer('cut', 'cut', { passes: 3 })], [rect('r', 'cut')], { machine: 'laser' })
+      doc([layer('cut', 'cut', { passes: 9 })], [rect('r', 'cut')], {
+        machine: 'laser',
+        stockThickness: 3,
+      }),
+      { laser: { id: '40w-co2', kind: 'co2', watts: 40 } }
     );
-    expect(segments[0].passes).toBe(3);
+    expect(segments[0].passes).toBe(9);
+  });
+
+  it('overrides one that would leave the cut unfinished', () => {
+    const { segments, notes } = planToolpath(
+      doc([layer('cut', 'cut', { passes: 1 })], [rect('r', 'cut')], {
+        machine: 'laser',
+        material: 'hardwood',
+        stockThickness: 9,
+      }),
+      { laser: { id: '5w-diode', kind: 'diode', watts: 5 } }
+    );
+    expect(segments[0].passes).toBeGreaterThan(1);
+    expect(notes.join(' ')).toMatch(/asks for 1 pass/);
+  });
+
+  /** Brittle stock is a routing problem, not a beam one. */
+  it('does not repeat the fracture warning at a beam', () => {
+    const { notes } = planToolpath(
+      doc([layer('cut', 'cut', { zDepth: 4 })], [rect('r', 'cut')], {
+        machine: 'laser',
+        material: 'glass',
+        stockThickness: 4,
+      })
+    );
+    expect(notes.join(' ')).not.toMatch(/does not part brittle stock/);
+  });
+});
+
+describe('laser speed and power come from the material', () => {
+  const laserDoc = (extra: Partial<EtchDocument> = {}, layerExtra: Partial<EtchLayer> = {}) =>
+    doc([layer('cut', 'cut', { speed: 600, power: 80, ...layerExtra })], [rect('r', 'cut')], {
+      machine: 'laser',
+      material: 'plywood',
+      stockThickness: 3,
+      ...extra,
+    });
+
+  /**
+   * The headline case, and the laser twin of the router's pass-count override:
+   * 600 mm/min at 80% was never a considered choice, it is what the layer was
+   * initialised to. What the job runs at now comes from 3 mm of ply under a
+   * 40 W tube.
+   */
+  it('ignores the speed the layer happened to be initialised with', () => {
+    const { segments } = planToolpath(laserDoc(), { laser: { kind: 'co2', watts: 40 } });
+    expect(segments[0].speed).not.toBe(600);
+    expect(segments[0].speed).toBeGreaterThan(300);
+    expect(segments[0].speed).toBeLessThan(900);
+  });
+
+  it('gives a smaller tube a slower job on the same drawing', () => {
+    const big = planToolpath(laserDoc(), { laser: { kind: 'co2', watts: 60 } }).segments[0];
+    const small = planToolpath(laserDoc(), { laser: { kind: 'co2', watts: 20 } }).segments[0];
+    expect(small.speed * small.passes).toBeLessThan(big.speed * big.passes);
+  });
+
+  it('obeys an override exactly, including a hopeless one', () => {
+    const { segments } = planToolpath(
+      laserDoc({}, { speedOverride: 9999, powerOverride: 3 }),
+      { laser: { kind: 'co2', watts: 40 } }
+    );
+    expect(segments[0].speed).toBe(9999);
+    expect(segments[0].power).toBe(3);
+  });
+
+  it('falls back to the layer when the beam cannot be told what to do', () => {
+    // A diode at clear glass: no recipe exists, so the stored numbers stand and
+    // the job says why rather than inventing a speed.
+    const { segments, notes } = planToolpath(
+      laserDoc({ material: 'glass' }, { operation: 'etch', zDepth: 0 }),
+      { laser: { kind: 'diode', watts: 10 } }
+    );
+    expect(segments[0].speed).toBe(600);
+    expect(notes.join(' ')).toMatch(/wavelength/);
+  });
+
+  it('writes the tube into the header, since the numbers came from it', () => {
+    const gcode = generateGCode(laserDoc(), { laser: { kind: 'diode', watts: 10 } });
+    expect(gcode).toMatch(/; Laser: 10 W diode/);
+  });
+
+  it('still emits a real S-word for the derived power', () => {
+    const gcode = generateGCode(laserDoc(), { laser: { kind: 'co2', watts: 40 } });
+    const s = Number(/M3 S(\d+)/.exec(gcode)![1]);
+    // Scaled onto the controller's PWM ceiling, which defaults to 1000.
+    expect(s).toBeGreaterThan(0);
+    expect(s).toBeLessThanOrEqual(1000);
+  });
+});
+
+describe('a laser has no tools', () => {
+  /**
+   * Laser layers can still carry a T-number: the document may have been drawn
+   * for a router, or predate the lens catalogue being removed. It must not turn
+   * into a pause the operator has to dismiss on a machine with one head.
+   */
+  it('never pauses for a tool change, whatever the layers say', () => {
+    const gcode = generateGCode(
+      doc(
+        [layer('a', 'etch', { tool: 1, zDepth: 0 }), layer('b', 'etch', { tool: 3, zDepth: 0 })],
+        [rect('r1', 'a'), rect('r2', 'b', { id: 'r2', x: 150 })],
+        { machine: 'laser' }
+      )
+    );
+    expect(gcode).not.toMatch(/Tool change/);
+    expect(gcode).not.toMatch(/M0 /);
+  });
+
+  it('does not name a tool in the header', () => {
+    const gcode = generateGCode(
+      doc([layer('cut', 'cut')], [rect('r', 'cut')], { machine: 'laser' })
+    );
+    expect(gcode).not.toMatch(/; Tool/);
+    expect(gcode).not.toMatch(/uncatalogued/);
+  });
+
+  it('still names the cutter on a router', () => {
+    expect(generateGCode(doc([layer('cut', 'cut')], [rect('r', 'cut')]))).toMatch(/; Tool: T1/);
+  });
+});
+
+describe('stock a beam will not mark', () => {
+  const etchDoc = (material: EtchDocument['material']) =>
+    doc([layer('etch', 'etch', { zDepth: 0 })], [rect('r', 'etch')], {
+      machine: 'laser',
+      material,
+    });
+
+  /**
+   * The failure mode this exists for: an underpowered job and a job on stock the
+   * beam cannot touch look identical at the machine, so the instinct is to run
+   * it again harder rather than to go and coat the workpiece.
+   */
+  it('says what has to be done to the surface first', () => {
+    for (const material of ['glass', 'ceramic', 'aluminium'] as const) {
+      const { notes } = planToolpath(etchDoc(material));
+      expect(notes.join(' '), material).toMatch(/diode|coating|titanium-dioxide|marking spray/);
+    }
+  });
+
+  it('says nothing about stock that marks as it is', () => {
+    for (const material of ['hardwood', 'mdf', 'stone'] as const) {
+      const { notes } = planToolpath(etchDoc(material));
+      expect(notes.join(' '), material).not.toMatch(/diode|coating/);
+    }
+  });
+
+  /**
+   * The fallback material is an assumption, not a statement about the bed, and
+   * warning on an assumption is how people learn to skip the warnings.
+   */
+  it('stays quiet when the document never named its stock', () => {
+    // Feeds are still derived from the fallback material — that is what makes a
+    // job runnable at all. What is withheld is the claim about the *bed*.
+    const { notes } = planToolpath(etchDoc(undefined));
+    expect(notes.join(' ')).not.toMatch(/diode|coating|marking spray/);
   });
 });

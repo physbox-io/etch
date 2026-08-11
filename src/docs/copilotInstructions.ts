@@ -120,21 +120,19 @@ function describeElement(el: EtchElement): string {
 }
 
 export function describeDocument(doc: EtchDocument, selectedIds: string[]): string {
+  const machine = (doc.machine ?? 'laser') as MachineKind;
   const layers = doc.layers
-    .map(
-      (l) =>
-        // Speed, power and pass count are the laser's controls. On a router
-        // they are derived, so reporting the stored values would describe a job
-        // that is not the one about to run.
-        `- ${l.id} "${l.name}" (${l.operation}, ${
-          (doc.machine ?? 'laser') === 'laser'
-            ? `${l.speed}mm/min, ${l.power}% power, ${l.passes}× pass`
-            : 'feeds derived from material'
-        }, Z ${l.zDepth}mm, ${describeTool(
-          (doc.machine ?? 'laser') as MachineKind,
-          l.tool ?? DEFAULT_TOOL
-        )})`
-    )
+    .map((l) => {
+      // Speed, power, feeds and depths are all derived now, on either machine —
+      // from the material and the cutter on a router, and from the material and
+      // the tube on a laser. Reporting the values stored on the layer would
+      // describe a job that is not the one about to run.
+      const parts = [l.operation, 'settings derived from material'];
+      if (machine === 'cnc') {
+        parts.push(`Z ${l.zDepth}mm`, describeTool(machine, l.tool ?? DEFAULT_TOOL));
+      }
+      return `- ${l.id} "${l.name}" (${parts.join(', ')})`;
+    })
     .join('\n');
 
   // Large documents are summarized rather than listed in full: a thousand-element
@@ -151,11 +149,13 @@ export function describeDocument(doc: EtchDocument, selectedIds: string[]): stri
     : 'Nothing is selected — the user means the document as a whole.';
 
   return [
+    // The material matters on a laser too — it decides whether the artwork can
+    // be marked at all — but the thickness only means something to a machine
+    // with a Z axis.
     `Stock: ${doc.width}×${doc.height} mm, grid ${doc.gridSize} mm, origin ${doc.origin}.` +
+      (doc.material ? ` Material: ${findMaterial(doc.material).name}.` : '') +
       ((doc.machine ?? 'laser') === 'cnc'
-        ? ` Material: ${findMaterial(doc.material).name}, ${
-            doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM
-          } mm thick.`
+        ? ` Stock is ${doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM} mm thick.`
         : ''),
     `Layers:\n${layers}`,
     `Elements (${elements.length} total):\n${elementLines}` +
