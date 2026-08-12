@@ -13,7 +13,7 @@ import {
   pivotAnchoredPosition,
 } from '../utils/geom';
 import { hasFreshOutline } from '../utils/textVectorizer';
-import { computeResize, resizeSeed } from '../utils/resizeElement';
+import { computeResize, resizeSeed, clampScale } from '../utils/resizeElement';
 import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
 import {
   nodesToPath,
@@ -47,12 +47,25 @@ interface TransformStart {
   elRy: number;
   /** Mouse angle around the pivot at grab time, degrees. */
   grabAngle: number;
+  /** Initial multi-element bounding box if >1 elements selected */
+  multiBox?: {
+    minX: number;
+    minY: number;
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+  };
   /**
-   * Every element a 'move' drags, with its position at grab time. Deltas are
-   * applied to these seeds rather than accumulated frame to frame, so a
-   * multi-element move cannot drift apart.
+   * Every element a drag affects, with its initial state at grab time.
    */
-  moves: Array<{ id: string; x: number; y: number }>;
+  moves: Array<{
+    id: string;
+    x: number;
+    y: number;
+    initialEl: EtchElement;
+    pivotBed: { x: number; y: number };
+  }>;
 }
 
 /** What the node editor is currently dragging on the selected path. */
@@ -578,38 +591,103 @@ export const EtchCanvas: React.FC = () => {
       return;
     }
 
-    if (isTransforming === 'move' && transformStart) {
-      const dx = coords.x - transformStart.mouseX;
-      const dy = coords.y - transformStart.mouseY;
-      for (const m of transformStart.moves) {
-        updateElement(m.id, { x: m.x + dx, y: m.y + dy }, true);
+    if (isTransforming && transformStart) {
+      if (isTransforming === 'move') {
+        const dx = coords.x - transformStart.mouseX;
+        const dy = coords.y - transformStart.mouseY;
+        for (const m of transformStart.moves) {
+          updateElement(m.id, { x: m.x + dx, y: m.y + dy }, true);
+        }
+        return;
       }
-      return;
-    }
 
-    if (isTransforming && transformStart && selectedIds.length === 1) {
-      const el = document.elements.find((it) => it.id === selectedIds[0]);
-      if (!el || el.locked) return;
-
-      // Moves snap to the grid (see the branch above); resizing does not.
-      // Snapping the *pointer* while resizing quantized the drag to whole grid
-      // cells, so any drag shorter than half a cell produced a delta of exactly
-      // zero — which on a small element (a line of text is tens of mm) meant
-      // the handle appeared dead until you dragged most of a cell. Size is a
-      // dimension, not a position: it wants the real pointer.
       const dx = rawCoords.x - transformStart.mouseX;
       const dy = rawCoords.y - transformStart.mouseY;
 
-      if (isTransforming === 'resize-se') {
-        updateElement(el.id, computeResize(el, transformStart, dx, dy), true);
-      } else if (isTransforming === 'rotate') {
-        const pivot = getPivotInBed(el);
-        const angle = (Math.atan2(rawCoords.y - pivot.y, rawCoords.x - pivot.x) * 180) / Math.PI;
-        // Rotate relative to where the handle was grabbed, so the shape does
-        // not jump to the cursor's absolute angle the instant the drag starts.
-        let next = transformStart.elRot + (angle - transformStart.grabAngle);
-        if (e.shiftKey) next = Math.round(next / 15) * 15; // Shift = 15° steps
-        updateElement(el.id, { rotation: normalizeAngle(next) }, true);
+      if (selectedIds.length === 1 || !transformStart.multiBox) {
+        // The element the drag started on, not `selectedIds[0]`: a selection
+        // whose only unlocked member is not the first one transforms without a
+        // box, and reading the selection back would move the wrong shape.
+        const el = document.elements.find(
+          (it) => it.id === (transformStart.moves[0]?.id ?? selectedIds[0])
+        );
+        if (!el || el.locked) return;
+
+        if (isTransforming === 'resize-se') {
+          updateElement(el.id, computeResize(el, transformStart, dx, dy), true);
+        } else if (isTransforming === 'rotate') {
+          const pivot = getPivotInBed(el);
+          const angle = (Math.atan2(rawCoords.y - pivot.y, rawCoords.x - pivot.x) * 180) / Math.PI;
+          let next = transformStart.elRot + (angle - transformStart.grabAngle);
+          if (e.shiftKey) next = Math.round(next / 15) * 15;
+          updateElement(el.id, { rotation: normalizeAngle(next) }, true);
+        }
+      } else if (selectedIds.length > 1 && transformStart.multiBox) {
+        const mb = transformStart.multiBox;
+
+        if (isTransforming === 'rotate') {
+          const angle = (Math.atan2(rawCoords.y - mb.centerY, rawCoords.x - mb.centerX) * 180) / Math.PI;
+          let dAngle = angle - transformStart.grabAngle;
+          if (e.shiftKey) dAngle = Math.round(dAngle / 15) * 15;
+          const rad = (dAngle * Math.PI) / 180;
+          const cos = Math.cos(rad);
+          const sin = Math.sin(rad);
+
+          for (const m of transformStart.moves) {
+            const p0 = m.pivotBed;
+            const dx0 = p0.x - mb.centerX;
+            const dy0 = p0.y - mb.centerY;
+            const p1x = mb.centerX + dx0 * cos - dy0 * sin;
+            const p1y = mb.centerY + dx0 * sin + dy0 * cos;
+            const newRot = normalizeAngle((m.initialEl.rotation || 0) + dAngle);
+            const tempEl = { ...m.initialEl, rotation: newRot };
+            const localBox = getLocalBBox(tempEl);
+            const newX = p1x - (tempEl.scaleX ?? 1) * localBox.centerX;
+            const newY = p1y - (tempEl.scaleY ?? 1) * localBox.centerY;
+            updateElement(m.id, { x: newX, y: newY, rotation: newRot }, true);
+          }
+        } else if (isTransforming === 'resize-se') {
+          const newW = Math.max(1, mb.width + dx);
+          const newH = Math.max(1, mb.height + dy);
+          let sxRatio = newW / mb.width;
+          let syRatio = newH / mb.height;
+          if (e.shiftKey) {
+            const sRatio = Math.max(sxRatio, syRatio);
+            sxRatio = syRatio = sRatio;
+          }
+
+          for (const m of transformStart.moves) {
+            const el0 = m.initialEl;
+            const p0 = m.pivotBed;
+            const relX = p0.x - mb.minX;
+            const relY = p0.y - mb.minY;
+            const p1x = mb.minX + relX * sxRatio;
+            const p1y = mb.minY + relY * syRatio;
+
+            const updates: Partial<EtchElement> = {};
+            if (el0.type === 'rect') {
+              updates.w = Math.max(0.5, (el0.w ?? 40) * sxRatio);
+              updates.h = Math.max(0.5, (el0.h ?? 25) * syRatio);
+            } else if (el0.type === 'circle') {
+              updates.r = Math.max(0.5, (el0.r ?? 20) * ((sxRatio + syRatio) / 2));
+            } else if (el0.type === 'ellipse') {
+              updates.rx2 = Math.max(0.5, (el0.rx2 ?? 30) * sxRatio);
+              updates.ry2 = Math.max(0.5, (el0.ry2 ?? 20) * syRatio);
+            } else if (el0.type === 'line') {
+              updates.x2 = (el0.x2 ?? 40) * sxRatio;
+              updates.y2 = (el0.y2 ?? 0) * syRatio;
+            } else {
+              updates.scaleX = clampScale((el0.scaleX ?? 1) * sxRatio);
+              updates.scaleY = clampScale((el0.scaleY ?? 1) * syRatio);
+            }
+
+            const tempEl = { ...el0, ...updates };
+            const localBox = getLocalBBox(tempEl);
+            const newX = p1x - (tempEl.scaleX ?? 1) * localBox.centerX;
+            const newY = p1y - (tempEl.scaleY ?? 1) * localBox.centerY;
+            updateElement(m.id, { ...updates, x: newX, y: newY }, true);
+          }
+        }
       }
     }
   };
@@ -732,20 +810,48 @@ export const EtchCanvas: React.FC = () => {
     moving: EtchElement[] = [el]
   ) => {
     const pivot = getPivotInBed(el);
+    const isMulti = moving.length > 1;
+
+    let mbInfo: TransformStart['multiBox'] = undefined;
+    if (isMulti) {
+      const multiBox = moving.reduce(
+        (acc, m) => {
+          const b = getBedBBox(m);
+          return {
+            minX: Math.min(acc.minX, b.minX),
+            minY: Math.min(acc.minY, b.minY),
+            maxX: Math.max(acc.maxX, b.minX + b.width),
+            maxY: Math.max(acc.maxY, b.minY + b.height),
+          };
+        },
+        { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+      );
+      const width = Math.max(0.001, multiBox.maxX - multiBox.minX);
+      const height = Math.max(0.001, multiBox.maxY - multiBox.minY);
+      const centerX = multiBox.minX + width / 2;
+      const centerY = multiBox.minY + height / 2;
+      mbInfo = { minX: multiBox.minX, minY: multiBox.minY, width, height, centerX, centerY };
+    }
+
+    const pivotPoint = mbInfo ? { x: mbInfo.centerX, y: mbInfo.centerY } : pivot;
+
     setIsTransforming(mode);
     setTransformStart({
       mouseX: at.x,
       mouseY: at.y,
-      moves: moving.map((m) => ({ id: m.id, x: m.x, y: m.y })),
+      moves: moving.map((m) => ({
+        id: m.id,
+        x: m.x,
+        y: m.y,
+        initialEl: { ...m },
+        pivotBed: getPivotInBed(m),
+      })),
+      multiBox: mbInfo,
       elX: el.x,
       elY: el.y,
-      // For scale-driven shapes the resize handler reads elW/elH back as the
-      // *current on-screen* size, so seed them with the scaled extent. Seeding
-      // the unscaled bbox (or a stale el.w) made the first drag snap the
-      // element to a different size before it started tracking the pointer.
       ...resizeSeed(el),
       elRot: el.rotation || 0,
-      grabAngle: (Math.atan2(at.y - pivot.y, at.x - pivot.x) * 180) / Math.PI,
+      grabAngle: (Math.atan2(at.y - pivotPoint.y, at.x - pivotPoint.x) * 180) / Math.PI,
     });
   };
 
@@ -763,14 +869,21 @@ export const EtchCanvas: React.FC = () => {
     : undefined;
 
   // Multi-selection: one axis-aligned box around everything, plus a thin
-  // outline per member so you can see exactly what is in the set. Resize and
-  // rotate handles stay a single-element affair — a group transform would have
-  // to rewrite every member's geometry, which this document model does not do.
+  // outline per member so you can see exactly what is in the set, and rotate
+  // and resize handles that rewrite every member's geometry about the box.
   const selectedElements =
     selectedIds.length > 1 ? document.elements.filter((el) => selectedIds.includes(el.id)) : [];
-  const multiBox =
-    selectedElements.length > 1
-      ? selectedElements.reduce(
+  /**
+   * What a group transform is allowed to touch.
+   *
+   * A locked element still draws inside the box — it is genuinely selected —
+   * but rotating or scaling the group leaves it exactly where it is, which is
+   * the rule a group drag already follows (see `movable` above).
+   */
+  const movableSelected = selectedElements.filter((el) => !el.locked);
+  const bedBoxOf = (els: EtchElement[]) =>
+    els.length > 0
+      ? els.reduce(
           (acc, el) => {
             const b = getBedBBox(el);
             return {
@@ -783,6 +896,17 @@ export const EtchCanvas: React.FC = () => {
           { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
         )
       : null;
+
+  const multiBox = selectedElements.length > 1 ? bedBoxOf(selectedElements) : null;
+  /**
+   * Where the handles sit.
+   *
+   * The dashed outline frames everything selected, but the handles have to
+   * frame only what will actually move: `beginTransform` anchors the group
+   * transform to the movable box, so a handle drawn on the full box would not
+   * track the cursor once a locked element widened it.
+   */
+  const handleBox = (multiBox && bedBoxOf(movableSelected)) || multiBox;
 
   // Handle geometry is in bed mm; dividing by zoom keeps it a constant
   // on-screen size instead of ballooning as you zoom in.
@@ -1263,11 +1387,11 @@ export const EtchCanvas: React.FC = () => {
 
         {/* Multi-selection overlay */}
         {multiBox && activeTool === 'select' && (
-          <g id="multi-selection-box" style={{ pointerEvents: 'none' }}>
+          <g id="multi-selection-box">
             {selectedElements.map((el) => {
               const l = scaleBox(getLocalBBox(el), el.scaleX, el.scaleY);
               return (
-                <g key={el.id} transform={getElementTransform(el)}>
+                <g key={el.id} transform={getElementTransform(el)} style={{ pointerEvents: 'none' }}>
                   <g transform={`scale(${1 / safeScale(el.scaleX)}, ${1 / safeScale(el.scaleY)})`}>
                     <rect
                       x={l.minX}
@@ -1292,7 +1416,89 @@ export const EtchCanvas: React.FC = () => {
               stroke="#f59e0b"
               strokeWidth={0.7 * hs}
               strokeDasharray={`${3 * hs},${2 * hs}`}
+              style={{ pointerEvents: 'none' }}
             />
+
+            {/* Multi-selection pivot marker & rotate/resize handles */}
+            {(() => {
+              // Nothing unlocked in the set means nothing to grab.
+              if (!handleBox || movableSelected.length === 0) return null;
+              const mbCx = (handleBox.minX + handleBox.maxX) / 2;
+              const mbCy = (handleBox.minY + handleBox.maxY) / 2;
+              return (
+                <>
+                  {/* Pivot marker */}
+                  <g style={{ pointerEvents: 'none' }} stroke="#f59e0b" fill="none">
+                    <circle cx={mbCx} cy={mbCy} r={1.2 * hs} strokeWidth={0.4 * hs} />
+                    <line
+                      x1={mbCx - 2.5 * hs}
+                      y1={mbCy}
+                      x2={mbCx + 2.5 * hs}
+                      y2={mbCy}
+                      strokeWidth={0.3 * hs}
+                    />
+                    <line
+                      x1={mbCx}
+                      y1={mbCy - 2.5 * hs}
+                      x2={mbCx}
+                      y2={mbCy + 2.5 * hs}
+                      strokeWidth={0.3 * hs}
+                    />
+                  </g>
+
+                  {/* Multi-selection Rotation Handle */}
+                  <line
+                    x1={mbCx}
+                    y1={handleBox.minY - hs}
+                    x2={mbCx}
+                    y2={handleBox.minY - 12 * hs}
+                    stroke="#f59e0b"
+                    strokeWidth={0.6 * hs}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <g
+                    className="cursor-grab active:cursor-grabbing"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      if (movableSelected.length === 0) return;
+                      beginTransform(movableSelected[0], 'rotate', toBed(e), movableSelected);
+                    }}
+                  >
+                    <circle
+                      cx={mbCx}
+                      cy={handleBox.minY - 14 * hs}
+                      r={5 * hs}
+                      fill="transparent"
+                    />
+                    <circle
+                      cx={mbCx}
+                      cy={handleBox.minY - 14 * hs}
+                      r={2.2 * hs}
+                      fill="#f59e0b"
+                      stroke="#ffffff"
+                      strokeWidth={0.4 * hs}
+                    />
+                  </g>
+
+                  {/* Multi-selection SE Resize Handle */}
+                  <rect
+                    x={handleBox.maxX - 1.5 * hs}
+                    y={handleBox.maxY - 1.5 * hs}
+                    width={3 * hs}
+                    height={3 * hs}
+                    fill="#f59e0b"
+                    stroke="#ffffff"
+                    strokeWidth={0.3 * hs}
+                    className="cursor-nwse-resize"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      if (movableSelected.length === 0) return;
+                      beginTransform(movableSelected[0], 'resize-se', toBed(e), movableSelected);
+                    }}
+                  />
+                </>
+              );
+            })()}
           </g>
         )}
 

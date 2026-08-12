@@ -1003,9 +1003,19 @@ export function planToolChanges(segments: GCodeSegment[]): ToolChange[] {
  */
 const SPINDLE_SPINUP_SECONDS = 2;
 
-export function generateGCode(doc: EtchDocument, opts: Partial<GCodeOptions> = {}): string {
+export interface ToolpathPlan {
+  segments: GCodeSegment[];
+  skipped: string[];
+  notes: string[];
+}
+
+export function generateGCode(
+  doc: EtchDocument,
+  opts: Partial<GCodeOptions> = {},
+  precomputedPlan?: ToolpathPlan
+): string {
   const options = resolveOptions(doc, opts);
-  const { segments, skipped, notes } = planToolpath(doc, opts);
+  const { segments, skipped, notes } = precomputedPlan ?? planToolpath(doc, opts);
   const machineKind: MachineKind = options.laserMode ? 'laser' : 'cnc';
 
   // No catalogue means nothing to change to, so a laser job never pauses for a

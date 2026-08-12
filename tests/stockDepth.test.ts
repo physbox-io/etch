@@ -91,6 +91,32 @@ describe('setStockThickness', () => {
     expect(after.zDepth).toBe(4);
   });
 
+  it('costs one undo per number typed, not one per digit', () => {
+    const depth = () => useStore.getState().history.length;
+    const start = depth();
+
+    // What the thickness box does while "12.5" is being typed.
+    useStore.getState().setStockThickness(1, true);
+    useStore.getState().setStockThickness(12, true);
+    useStore.getState().setStockThickness(12.5, true);
+
+    expect(useStore.getState().document.stockThickness).toBe(12.5);
+    expect(depth()).toBe(start);
+
+    // And what it does when the field is left.
+    useStore.getState().commitHistory();
+    expect(depth()).toBe(start + 1);
+
+    useStore.getState().undo();
+    expect(useStore.getState().document.stockThickness).not.toBe(12.5);
+  });
+
+  it('still pushes history on its own when nobody asks for transient', () => {
+    const before = useStore.getState().history.length;
+    useStore.getState().setStockThickness(9);
+    expect(useStore.getState().history.length).toBe(before + 1);
+  });
+
   it('refuses a thickness that is not a thickness', () => {
     useStore.getState().setStockThickness(-5);
     expect(useStore.getState().document.stockThickness).toBeGreaterThan(0);

@@ -57,13 +57,19 @@ export const App: React.FC = () => {
         if (selectedIds.length > 0) {
           deleteElements(selectedIds);
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         undo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         redo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        useStore.getState().copySelected();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        useStore.getState().pasteClipboard();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
         e.preventDefault();
         setSelectedIds(document.elements.map((el) => el.id));
       }

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
 import { FontPicker } from './FontPicker';
+import { NumberInput } from './NumberInput';
 import type { LayerOperation, EtchLayer } from '../types/etch';
 import {
   SlidersHorizontal,
@@ -16,6 +17,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
+import { InfoTooltip } from './InfoTooltip';
 import {
   DEFAULT_TOOL,
   toolCatalog,
@@ -124,56 +126,47 @@ const LaserLayerCutting: React.FC<{
           </p>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className={SMALL_LABEL}>Speed (mm/min)</label>
-              <input
-                type="number"
+              <label className={SMALL_LABEL}>
+                Speed (mm/min) <InfoTooltip text="Laser traverse speed. Higher speed cuts shallower and reduces thermal charring." />
+              </label>
+              <NumberInput
                 step="50"
-                min="1"
+                min={1}
+                allowEmpty
                 placeholder={String(recipe?.speed ?? '')}
-                value={layer.speedOverride ?? ''}
-                onChange={(e) =>
-                  update(
-                    { speedOverride: e.target.value === '' ? undefined : Math.max(1, parseFloat(e.target.value) || 1) },
-                    true
-                  )
-                }
-                onBlur={commit}
+                value={layer.speedOverride}
+                onChange={(val) => update({ speedOverride: val }, true)}
+                onCommit={commit}
                 className={SMALL_INPUT}
               />
             </div>
             <div>
-              <label className={SMALL_LABEL}>Power (%)</label>
-              <input
-                type="number"
+              <label className={SMALL_LABEL}>
+                Power (%) <InfoTooltip text="Laser diode/tube output power (0–100%). Higher power burns deeper into stock." />
+              </label>
+              <NumberInput
                 step="5"
-                min="0"
-                max="100"
+                min={0}
+                max={100}
+                allowEmpty
                 placeholder={String(recipe?.power ?? '')}
-                value={layer.powerOverride ?? ''}
-                onChange={(e) =>
-                  update(
-                    {
-                      powerOverride:
-                        e.target.value === ''
-                          ? undefined
-                          : Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)),
-                    },
-                    true
-                  )
-                }
-                onBlur={commit}
+                value={layer.powerOverride}
+                onChange={(val) => update({ powerOverride: val }, true)}
+                onCommit={commit}
                 className={SMALL_INPUT}
               />
             </div>
             <div>
-              <label className={SMALL_LABEL}>Passes</label>
-              <input
-                type="number"
+              <label className={SMALL_LABEL}>
+                Passes <InfoTooltip text="Number of repeated laser passes over the vector path to achieve full cut depth." />
+              </label>
+              <NumberInput
                 step="1"
-                min="1"
+                min={1}
+                fallbackOnBlur={1}
                 value={layer.passes ?? 1}
-                onChange={(e) => update({ passes: Math.max(1, parseInt(e.target.value) || 1) }, true)}
-                onBlur={commit}
+                onChange={(val) => update({ passes: val ?? 1 }, true)}
+                onCommit={commit}
                 className={SMALL_INPUT}
               />
             </div>
@@ -230,7 +223,9 @@ const CncLayerCutting: React.FC<{
     >
       <div>
         <div className="flex items-center justify-between">
-          <label className={SMALL_LABEL}>Depth / Z (mm)</label>
+          <label className={SMALL_LABEL}>
+            Depth / Z (mm) <InfoTooltip text="Total Z cut depth into material. Split into passes based on Stepdown." />
+          </label>
           {/* "Through" is the depth people actually want and the one they get
               wrong: it is the stock thickness plus enough to not leave a fringe
               of uncut fuzz holding the part in. */}
@@ -247,13 +242,13 @@ const CncLayerCutting: React.FC<{
             </button>
           )}
         </div>
-        <input
-          type="number"
+        <NumberInput
           step="0.1"
-          min="0"
+          min={0}
+          fallbackOnBlur={1}
           value={layer.zDepth ?? 1}
-          onChange={(e) => update({ zDepth: Math.max(0, parseFloat(e.target.value) || 0) }, true)}
-          onBlur={commit}
+          onChange={(val) => update({ zDepth: val ?? 0 }, true)}
+          onCommit={commit}
           className={SMALL_INPUT}
         />
       </div>
@@ -297,6 +292,7 @@ const CncLayerCutting: React.FC<{
             className="cursor-pointer"
           />
           <span>Holding tabs — leave the part attached until you snap it out</span>
+          <InfoTooltip text="Uncut bridges left around perimeter to hold part in place until manually snapped out." />
         </label>
       )}
 
@@ -315,61 +311,54 @@ const CncLayerCutting: React.FC<{
           </p>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className={SMALL_LABEL}>Feed (mm/min)</label>
-              <input
-                type="number"
+              <label className={SMALL_LABEL}>
+                Feed (mm/min) <InfoTooltip text="Horizontal cutting speed through material. Leave blank to use derived tool & material feeds." />
+              </label>
+              <NumberInput
                 step="50"
-                min="1"
+                min={1}
+                allowEmpty
                 placeholder={String(recipe?.feed ?? '')}
-                value={layer.feedOverride ?? ''}
-                onChange={(e) =>
-                  update(
-                    { feedOverride: e.target.value === '' ? undefined : Math.max(1, parseFloat(e.target.value) || 1) },
-                    true
-                  )
-                }
-                onBlur={commit}
+                value={layer.feedOverride}
+                onChange={(val) => update({ feedOverride: val }, true)}
+                onCommit={commit}
                 className={SMALL_INPUT}
               />
             </div>
             <div>
-              <label className={SMALL_LABEL}>Spindle (RPM)</label>
-              <input
-                type="number"
+              <label className={SMALL_LABEL}>
+                Spindle (RPM) <InfoTooltip text="Rotational speed of cutter spindle in RPM. Calculated from material surface speed and tool diameter." />
+              </label>
+              <NumberInput
                 step="1000"
-                min="1000"
+                min={1000}
+                allowEmpty
                 placeholder={String(recipe?.rpm ?? '')}
-                value={layer.rpmOverride ?? ''}
-                onChange={(e) =>
-                  update(
-                    { rpmOverride: e.target.value === '' ? undefined : Math.max(1000, parseFloat(e.target.value) || 1000) },
-                    true
-                  )
-                }
-                onBlur={commit}
+                value={layer.rpmOverride}
+                onChange={(val) => update({ rpmOverride: val }, true)}
+                onCommit={commit}
                 className={SMALL_INPUT}
               />
             </div>
             <div>
-              <label className={SMALL_LABEL}>Stepdown (mm)</label>
-              <input
-                type="number"
+              <label className={SMALL_LABEL}>
+                Stepdown (mm) <InfoTooltip text="Maximum depth cut in a single pass (mm/pass). Total depth divided by stepdown determines the number of passes calculated for this layer." />
+              </label>
+              <NumberInput
                 step="0.1"
-                min="0.05"
+                min={0.05}
+                allowEmpty
                 placeholder={String(recipe?.stepdown ?? '')}
-                value={layer.stepdownOverride ?? ''}
-                onChange={(e) =>
-                  update(
-                    { stepdownOverride: e.target.value === '' ? undefined : Math.max(0.05, parseFloat(e.target.value) || 0.05) },
-                    true
-                  )
-                }
-                onBlur={commit}
+                value={layer.stepdownOverride}
+                onChange={(val) => update({ stepdownOverride: val }, true)}
+                onCommit={commit}
                 className={SMALL_INPUT}
               />
             </div>
             <div>
-              <label className={SMALL_LABEL}>Cutter offset</label>
+              <label className={SMALL_LABEL}>
+                Cutter offset <InfoTooltip text="Shifts toolpath outside, inside, or directly on drawn geometry to compensate for tool kerf width." />
+              </label>
               <select
                 value={layer.cutSide ?? 'auto'}
                 onChange={(e) => update({ cutSide: e.target.value as EtchLayer['cutSide'] })}
@@ -471,29 +460,28 @@ export const PropertiesSidebar: React.FC = () => {
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">X Position (mm)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={round1(selectedElement.x)}
-                onChange={(e) => updateElement(selectedElement.id, { x: parseFloat(e.target.value) || 0 })}
+                onChange={(val) => updateElement(selectedElement.id, { x: val ?? 0 })}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Y Position (mm)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={round1(selectedElement.y)}
-                onChange={(e) => updateElement(selectedElement.id, { y: parseFloat(e.target.value) || 0 })}
+                onChange={(val) => updateElement(selectedElement.id, { y: val ?? 0 })}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
             {selectedElement.w !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Width (mm)</label>
-                <input
-                  type="number"
+                <NumberInput
+                  min={0.1}
+                  fallbackOnBlur={5}
                   value={round1(selectedElement.w)}
-                  onChange={(e) => updateElement(selectedElement.id, { w: parseFloat(e.target.value) || 5 })}
+                  onChange={(val) => updateElement(selectedElement.id, { w: val ?? 5 })}
                   className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
                 />
               </div>
@@ -501,10 +489,11 @@ export const PropertiesSidebar: React.FC = () => {
             {selectedElement.h !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Height (mm)</label>
-                <input
-                  type="number"
+                <NumberInput
+                  min={0.1}
+                  fallbackOnBlur={5}
                   value={round1(selectedElement.h)}
-                  onChange={(e) => updateElement(selectedElement.id, { h: parseFloat(e.target.value) || 5 })}
+                  onChange={(val) => updateElement(selectedElement.id, { h: val ?? 5 })}
                   className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
                 />
               </div>
@@ -517,11 +506,12 @@ export const PropertiesSidebar: React.FC = () => {
             {selectedElement.r !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius (mm)</label>
-                <input
-                  type="number"
+                <NumberInput
                   step="0.5"
+                  min={0.1}
+                  fallbackOnBlur={0.1}
                   value={round1(selectedElement.r)}
-                  onChange={(e) => updateElement(selectedElement.id, { r: Math.max(0.1, parseFloat(e.target.value) || 0.1) })}
+                  onChange={(val) => updateElement(selectedElement.id, { r: val ?? 0.1 })}
                   className={NUM_INPUT}
                 />
               </div>
@@ -529,12 +519,12 @@ export const PropertiesSidebar: React.FC = () => {
             {selectedElement.sides !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Sides</label>
-                <input
-                  type="number"
-                  min="3"
-                  max="64"
+                <NumberInput
+                  min={3}
+                  max={64}
+                  fallbackOnBlur={3}
                   value={selectedElement.sides}
-                  onChange={(e) => updateElement(selectedElement.id, { sides: Math.max(3, Math.round(parseFloat(e.target.value) || 3)) })}
+                  onChange={(val) => updateElement(selectedElement.id, { sides: val ? Math.round(val) : 3 })}
                   className={NUM_INPUT}
                 />
               </div>
@@ -542,11 +532,12 @@ export const PropertiesSidebar: React.FC = () => {
             {selectedElement.rx2 !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius X (mm)</label>
-                <input
-                  type="number"
+                <NumberInput
                   step="0.5"
+                  min={0.1}
+                  fallbackOnBlur={0.1}
                   value={round1(selectedElement.rx2)}
-                  onChange={(e) => updateElement(selectedElement.id, { rx2: Math.max(0.1, parseFloat(e.target.value) || 0.1) })}
+                  onChange={(val) => updateElement(selectedElement.id, { rx2: val ?? 0.1 })}
                   className={NUM_INPUT}
                 />
               </div>
@@ -554,24 +545,27 @@ export const PropertiesSidebar: React.FC = () => {
             {selectedElement.ry2 !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius Y (mm)</label>
-                <input
-                  type="number"
+                <NumberInput
                   step="0.5"
+                  min={0.1}
+                  fallbackOnBlur={0.1}
                   value={round1(selectedElement.ry2)}
-                  onChange={(e) => updateElement(selectedElement.id, { ry2: Math.max(0.1, parseFloat(e.target.value) || 0.1) })}
+                  onChange={(val) => updateElement(selectedElement.id, { ry2: val ?? 0.1 })}
                   className={NUM_INPUT}
                 />
               </div>
             )}
             {selectedElement.type === 'rect' && (
               <div>
-                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Corner Radius</label>
-                <input
-                  type="number"
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                  Corner Radius <InfoTooltip text="Rounds rectangle corners to specified radius (mm)." />
+                </label>
+                <NumberInput
                   step="0.5"
-                  min="0"
+                  min={0}
+                  fallbackOnBlur={0}
                   value={round1(selectedElement.rx || 0)}
-                  onChange={(e) => updateElement(selectedElement.id, { rx: Math.max(0, parseFloat(e.target.value) || 0) })}
+                  onChange={(val) => updateElement(selectedElement.id, { rx: val ?? 0 })}
                   className={NUM_INPUT}
                 />
               </div>
@@ -579,12 +573,12 @@ export const PropertiesSidebar: React.FC = () => {
             {selectedElement.type === 'text' && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Font Size (mm)</label>
-                <input
-                  type="number"
+                <NumberInput
                   step="1"
-                  min="1"
+                  min={1}
+                  fallbackOnBlur={14}
                   value={round1(selectedElement.fontSize || 14)}
-                  onChange={(e) => updateElement(selectedElement.id, { fontSize: Math.max(1, parseFloat(e.target.value) || 1) })}
+                  onChange={(val) => updateElement(selectedElement.id, { fontSize: val ?? 1 })}
                   className={NUM_INPUT}
                 />
               </div>
@@ -612,21 +606,22 @@ export const PropertiesSidebar: React.FC = () => {
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rotation (deg)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={selectedElement.rotation}
-                onChange={(e) => updateElement(selectedElement.id, { rotation: parseFloat(e.target.value) || 0 })}
+                onChange={(val) => updateElement(selectedElement.id, { rotation: val ?? 0 })}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
             <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Line Thickness (mm)</label>
-              <input
-                type="number"
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                Line Thickness (mm) <InfoTooltip text="Visual stroke width on canvas. Tool diameter determines physical cut width." />
+              </label>
+              <NumberInput
                 step="0.1"
-                min="0.1"
+                min={0.1}
+                fallbackOnBlur={0.1}
                 value={selectedElement.strokeWidth}
-                onChange={(e) => updateElement(selectedElement.id, { strokeWidth: parseFloat(e.target.value) || 0.1 })}
+                onChange={(val) => updateElement(selectedElement.id, { strokeWidth: val ?? 0.1 })}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
@@ -757,15 +752,14 @@ export const PropertiesSidebar: React.FC = () => {
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                        Hatch Angle
+                        Hatch Angle <InfoTooltip text="Scanline angle (in degrees) used for raster engrave fill paths." />
                       </label>
-                      <input
-                        type="number"
+                      <NumberInput
                         step="5"
                         value={selectedElement.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE}
-                        onChange={(e) =>
+                        onChange={(val) =>
                           updateElement(selectedElement.id, {
-                            hatchAngle: parseFloat(e.target.value) || 0,
+                            hatchAngle: val ?? 0,
                           })
                         }
                         className={NUM_INPUT}
@@ -773,16 +767,16 @@ export const PropertiesSidebar: React.FC = () => {
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                        Spacing (mm)
+                        Spacing (mm) <InfoTooltip text="Distance between parallel raster passes. Match tool/beam diameter for 100% overlap coverage." />
                       </label>
-                      <input
-                        type="number"
+                      <NumberInput
                         step="0.05"
-                        min="0.02"
+                        min={0.02}
+                        fallbackOnBlur={0.02}
                         value={selectedElement.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING}
-                        onChange={(e) =>
+                        onChange={(val) =>
                           updateElement(selectedElement.id, {
-                            hatchSpacing: Math.max(0.02, parseFloat(e.target.value) || 0.02),
+                            hatchSpacing: val ?? 0.02,
                           })
                         }
                         className={NUM_INPUT}

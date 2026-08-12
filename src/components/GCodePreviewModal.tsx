@@ -17,6 +17,7 @@ import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { warpGcode, getGridStats } from '../utils/bedLeveler';
 import { DocsInfoButton } from './DocsModal';
+import { InfoTooltip } from './InfoTooltip';
 
 export const GCodePreviewModal: React.FC = () => {
   const {
@@ -55,10 +56,24 @@ export const GCodePreviewModal: React.FC = () => {
   // A laser toolpath has no Z to warp, so levelling only applies to CNC output.
   const levelling = !laserMode && applyLevelling ? bedProbeGrid : null;
 
+  /**
+   * The one set of options both the plan and the export are built from.
+   *
+   * They have to be the same object: the plan below is handed to the exporter
+   * rather than re-derived, so anything the planner reads has to be in here.
+   * The tool rack in particular decides feeds, speeds and depth per pass, and
+   * planning without it falls back to whatever the browser last stored — which
+   * is exactly the copy the operator may have just edited away from.
+   */
+  const exportOpts = useMemo(
+    () => ({ laserMode, innerContourFirst, travelSpeed, customCncTools: cncTools }),
+    [laserMode, innerContourFirst, travelSpeed, cncTools]
+  );
+
   const plan = useMemo(
-    () => (isGCodeModalOpen ? planToolpath(document, { laserMode, innerContourFirst })
+    () => (isGCodeModalOpen ? planToolpath(document, exportOpts)
         : { segments: [], skipped: [], notes: [] }),
-    [isGCodeModalOpen, document, laserMode, innerContourFirst]
+    [isGCodeModalOpen, document, exportOpts]
   );
 
   // A laser has no tools to change between, so it never lists any — the same
@@ -100,14 +115,9 @@ export const GCodePreviewModal: React.FC = () => {
     // The rack is passed explicitly rather than left to the exporter's storage
     // fallback: the store is what the operator edited, and it is the only copy
     // guaranteed to exist if the browser refused to save it.
-    const raw = generateGCode(document, {
-      laserMode,
-      innerContourFirst,
-      travelSpeed,
-      customCncTools: cncTools,
-    });
+    const raw = generateGCode(document, exportOpts, plan);
     return levelling ? warpGcode(raw, levelling) : raw;
-  }, [isGCodeModalOpen, document, laserMode, innerContourFirst, travelSpeed, levelling, cncTools]);
+  }, [isGCodeModalOpen, document, exportOpts, levelling, plan]);
 
   if (!isGCodeModalOpen) return null;
 
@@ -209,7 +219,7 @@ export const GCodePreviewModal: React.FC = () => {
                     shows up on asymmetric geometry like text. */}
                 <div>
                   <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                    Work Origin (machine X0 Y0)
+                    Work Origin (machine X0 Y0) <InfoTooltip text="Maps document vector coordinates to machine zero position. Select Front-Left or Centre to match stock setup." />
                   </label>
                   <select
                     value={document.origin}
@@ -241,7 +251,9 @@ export const GCodePreviewModal: React.FC = () => {
 
                 {/* Travel Speed */}
                 <div>
-                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rapid Travel Speed (mm/min)</label>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Rapid Travel Speed (mm/min) <InfoTooltip text="G0 rapid traverse speed between cut contours while cutter is lifted in Safe Z height." />
+                  </label>
                   <input
                     type="number"
                     value={travelSpeed}

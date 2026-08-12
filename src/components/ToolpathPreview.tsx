@@ -3,6 +3,7 @@ import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { EtchDocument } from '../types/etch';
 import type { GCodeSegment } from '../utils/gcodeExporter';
 import { buildTimeline, sampleAt, type ToolMove } from '../utils/toolpathTimeline';
+import { buildChunks } from '../utils/toolpathChunks';
 
 /**
  * Draws — and now runs — the toolpath the machine will actually follow.
@@ -88,6 +89,19 @@ export const ToolpathPreview: React.FC<{
 
   const travels = useMemo(() => timeline.moves.filter((m) => m.kind === 'travel'), [timeline]);
 
+  const travelPathD = useMemo(() => {
+    if (!showTravel || !travels.length) return '';
+    return travels
+      .map((t) => `M${t.x1.toFixed(2)} ${t.y1.toFixed(2)} L${t.x2.toFixed(2)} ${t.y2.toFixed(2)}`)
+      .join(' ');
+  }, [showTravel, travels]);
+
+  /** The revealed path, batched into a bounded number of <path> elements. */
+  const { chunks, chunkOfSegment } = useMemo(
+    () => buildChunks(segments, segLengths, colourFor),
+    [segments, segLengths, colourFor]
+  );
+
   /**
    * The depth strip: the job's Z (or, on a laser, its power) against time.
    * Sampled at fixed intervals rather than per move, so a fill with 40 000
@@ -119,9 +133,9 @@ export const ToolpathPreview: React.FC<{
   const depthTextRef = useRef<HTMLSpanElement | null>(null);
   const timeTextRef = useRef<HTMLSpanElement | null>(null);
   const clockRef = useRef(0);
-  const prevSegRef = useRef(-1);
+  const prevChunkRef = useRef(-1);
 
-  const setReveal = (i: number, frac: number) => {
+  const setChunkReveal = (i: number, frac: number) => {
     const el = revealRefs.current[i];
     if (el) el.setAttribute('stroke-dasharray', `${frac} 1`);
   };
@@ -135,19 +149,31 @@ export const ToolpathPreview: React.FC<{
       const move: ToolMove | null = done ? moves[moves.length - 1] ?? null : s.move;
 
       // Reveal the drawing up to the tool, and un-reveal on a backward seek or
-      // a loop wrap. Only the segments that changed state are touched.
+      // a loop wrap. Only the chunks that changed state are touched.
       const segIdx = done ? segments.length - 1 : move?.segIndex ?? -1;
-      const prev = prevSegRef.current;
-      if (segIdx < prev) {
-        for (let k = segIdx + 1; k <= prev; k++) setReveal(k, 0);
+      const targetChunkIdx = segIdx < 0 ? -1 : chunkOfSegment[segIdx] ?? -1;
+      const prevChunk = prevChunkRef.current;
+
+      if (targetChunkIdx < prevChunk) {
+        for (let k = targetChunkIdx + 1; k <= prevChunk; k++) setChunkReveal(k, 0);
       } else {
-        for (let k = prev + 1; k < segIdx; k++) setReveal(k, 1);
+        for (let k = prevChunk + 1; k < targetChunkIdx; k++) setChunkReveal(k, 1);
       }
-      if (segIdx >= 0) {
-        const len = segLengths[segIdx] || 0;
-        setReveal(segIdx, done ? 1 : len > 0 ? clamp01(s.along / len) : 0);
+
+      if (targetChunkIdx >= 0) {
+        const chunk = chunks[targetChunkIdx];
+        if (chunk) {
+          const segOffset = segIdx - chunk.startIndex;
+          const priorLen = segOffset > 0 ? chunk.cumLens[segOffset - 1] : 0;
+          const currLen =
+            priorLen + Math.min(segLengths[segIdx] || 0, Math.max(0, s.along));
+          setChunkReveal(
+            targetChunkIdx,
+            done ? 1 : chunk.totalLen > 0 ? clamp01(currLen / chunk.totalLen) : 0
+          );
+        }
       }
-      prevSegRef.current = segIdx;
+      prevChunkRef.current = targetChunkIdx;
 
       // The move in flight, drawn ahead of the revealed path so a rapid reads
       // as a rapid while it is happening.
@@ -188,17 +214,17 @@ export const ToolpathPreview: React.FC<{
         timeTextRef.current.textContent = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}${passNote}`;
       }
     },
-    [timeline, segLengths, segments.length, laserMode]
+    [timeline, segLengths, segments.length, chunks, chunkOfSegment, laserMode]
   );
 
   // A new toolpath starts from the top: stale reveal state would leave paths
   // drawn for geometry that no longer exists.
   useEffect(() => {
-    revealRefs.current.length = segments.length;
+    revealRefs.current.length = chunks.length;
     clockRef.current = 0;
-    prevSegRef.current = segments.length - 1; // force a full un-reveal on the first frame
+    prevChunkRef.current = chunks.length - 1; // force a full un-reveal on the first frame
     applyFrame(0);
-  }, [applyFrame, segments.length]);
+  }, [applyFrame, chunks.length]);
 
   useEffect(() => {
     if (!playing || timeline.minutes <= 0) return;
@@ -260,20 +286,16 @@ export const ToolpathPreview: React.FC<{
             strokeWidth={0.4}
           />
 
-          {showTravel &&
-            travels.map((t, i) => (
-              <line
-                key={`t${i}`}
-                x1={t.x1}
-                y1={t.y1}
-                x2={t.x2}
-                y2={t.y2}
-                stroke="#94a3b8"
-                strokeWidth={0.25}
-                strokeDasharray="1.5,1.5"
-                opacity={0.75}
-              />
-            ))}
+          {showTravel && travelPathD && (
+            <path
+              d={travelPathD}
+              stroke="#94a3b8"
+              strokeWidth={0.25}
+              strokeDasharray="1.5,1.5"
+              opacity={0.75}
+              fill="none"
+            />
+          )}
 
           {/* Where the tool has not been yet */}
           {ghosts.map(([colour, d]) => (
@@ -290,21 +312,21 @@ export const ToolpathPreview: React.FC<{
           ))}
 
           {/* Where it has. Revealed by arc length via a normalised dash. */}
-          {segments.map((seg, i) => (
+          {chunks.map((chunk, cIdx) => (
             <path
-              key={i}
+              key={cIdx}
               ref={(el) => {
-                revealRefs.current[i] = el;
+                revealRefs.current[cIdx] = el;
               }}
-              d={pathFor(seg)}
+              d={chunk.d}
               pathLength={1}
               strokeDasharray="0 1"
               fill="none"
-              stroke={colourFor(seg)}
-              strokeWidth={seg.type === 'cut' ? 0.6 : 0.4}
+              stroke={chunk.colour}
+              strokeWidth={chunk.type === 'cut' ? 0.6 : 0.4}
               strokeLinecap="round"
               strokeLinejoin="round"
-              opacity={seg.type === 'cut' ? 1 : 0.85}
+              opacity={chunk.type === 'cut' ? 1 : 0.85}
             />
           ))}
 

@@ -21,6 +21,7 @@ import {
   Square,
 } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
+import { InfoTooltip } from './InfoTooltip';
 import { getGridStats, suggestGridCounts } from '../utils/bedLeveler';
 import {
   readShimThickness,
@@ -489,7 +490,9 @@ export const MachineWorkOriginPanel: React.FC<{
             </span>
             <div className="flex items-end gap-2 max-w-md">
               <div className="shrink-0">
-                <span className={`${fieldLabel} mb-1`}>Plate (mm)</span>
+                <span className={`${fieldLabel} mb-1`}>
+                  Plate (mm) <InfoTooltip text="Thickness of touch plate used for Z zero probe. Work Z0 is placed this far below the plate's top face." />
+                </span>
                 <input
                   type="number"
                   min={0}

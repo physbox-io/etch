@@ -10,8 +10,15 @@ import {
   suggestTool,
   DEFAULT_CNC_TOOLS,
   COMMON_TOOL_PRESETS,
+  CNC_TOOLS_KEY,
+  CNC_TOOLS_VERSION,
+  MAX_TIP_ANGLE_DEG,
+  cutWidthAtDepth,
+  defaultFeedDiameter,
+  toolRackLabel,
   type ToolProfile,
 } from '../src/utils/tooling';
+import { deriveFeeds } from '../src/utils/feeds';
 
 describe('Custom CNC Tool Library', () => {
   beforeEach(() => {
@@ -178,6 +185,18 @@ describe('Custom CNC Tool Library', () => {
     expect(gcode).toMatch(/Custom 20° Precision V-Bit/);
     // And the stock rack it would have fallen back to is nowhere in the file.
     expect(gcode).not.toMatch(/flat end mill/);
+
+    // A caller may hand generateGCode a plan it already built — the preview
+    // panel does, so the panel and the file agree. That plan has to come from
+    // the SAME options: planToolpath resolves feeds, speeds and depth per pass
+    // from the rack, so planning without it silently exports the fallback's
+    // numbers under the custom tool's name.
+    const { planToolpath } = await import('../src/utils/gcodeExporter');
+    const opts = { laserMode: false, customCncTools: customTools };
+    expect(generateGCode(testDoc, opts, planToolpath(testDoc, opts))).toBe(gcode);
+    expect(generateGCode(testDoc, opts, planToolpath(testDoc, { laserMode: false }))).not.toBe(
+      gcode
+    );
   });
 
   it('reports whether the library actually reached storage', () => {

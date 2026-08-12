@@ -62,6 +62,24 @@ describe('hatchContours', () => {
   it('returns nothing for a shape thinner than one pitch', () => {
     expect(hatchContours([square(0.1)], 0, 1)).toHaveLength(0);
   });
+
+  it('runs sub-second on a complex multi-vertex contour with fine pitch', () => {
+    // Generate a complex star polygon with 500 vertices
+    const numPoints = 500;
+    const star: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < numPoints; i++) {
+      const angle = (i * 2 * Math.PI) / numPoints;
+      const r = i % 2 === 0 ? 100 : 50;
+      star.push({ x: 100 + r * Math.cos(angle), y: 100 + r * Math.sin(angle) });
+    }
+    const t0 = performance.now();
+    const lines = hatchContours([star], 45, 0.2); // ~1000 scanlines across 500 vertices
+    const duration = performance.now() - t0;
+
+    expect(lines.length).toBeGreaterThan(500);
+    // Should complete in under 200ms with sweep-line optimization
+    expect(duration).toBeLessThan(200);
+  });
 });
 
 // --- G-code integration ------------------------------------------------------

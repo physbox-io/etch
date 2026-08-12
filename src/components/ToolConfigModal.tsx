@@ -12,6 +12,8 @@ import {
   type ToolProfile,
 } from '../utils/tooling';
 import { Wrench, Plus, Trash2, RotateCcw, X, Check, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { InfoTooltip } from './InfoTooltip';
+import { NumberInput } from './NumberInput';
 
 export const ToolConfigModal: React.FC = () => {
   const {
@@ -31,6 +33,14 @@ export const ToolConfigModal: React.FC = () => {
   const [pendingReset, setPendingReset] = useState(false);
 
   if (!isToolConfigModalOpen) return null;
+
+  /** Closing drops any half-answered confirm, so reopening starts clean. */
+  const handleClose = () => {
+    setPendingDelete(null);
+    setPendingReset(false);
+    setShowPresetDropdown(false);
+    closeToolConfigModal();
+  };
 
   /** Layers cut with a given T-number, so a delete can say what it will orphan. */
   const layersUsing = (id: number) =>
@@ -169,7 +179,7 @@ export const ToolConfigModal: React.FC = () => {
             </div>
           </div>
           <button
-            onClick={closeToolConfigModal}
+            onClick={handleClose}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
             title="Close"
           >
@@ -376,15 +386,15 @@ export const ToolConfigModal: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Cutter Diameter (mm)
+                      Cutter Diameter (mm) <InfoTooltip text="Outer kerf width of tool. Used for kerf offset & feed rate physics." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="0.05"
-                      min="0.05"
+                      min={0.05}
+                      fallbackOnBlur={3.175}
                       value={selectedTool.diameter ?? 3.175}
-                      onChange={(e) => {
-                        const d = Math.max(0.05, parseFloat(e.target.value) || 0.05);
+                      onChange={(val) => {
+                        const d = val ?? 0.05;
                         updateSelectedTool({
                           diameter: d,
                           minDetailMm: selectedTool.tipAngleDeg ? selectedTool.minDetailMm : d,
@@ -398,27 +408,19 @@ export const ToolConfigModal: React.FC = () => {
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Tip Angle (deg) <span className="text-slate-400 font-normal">(V-Bit)</span>
+                      Tip Angle (deg) <span className="text-slate-400 font-normal">(V-Bit)</span> <InfoTooltip text="V-carving taper angle. 0° is flat endmill; 30°/60°/90° V-bits widen kerf dynamically with depth." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="5"
-                      min="0"
+                      min={0}
                       max={MAX_TIP_ANGLE_DEG}
+                      allowEmpty
                       placeholder="Parallel (0°)"
-                      value={selectedTool.tipAngleDeg ?? ''}
-                      onChange={(e) => {
-                        // Changing the taper invalidates any engaged width that
-                        // came with a preset: a 90° bit re-cut as 30° must not
-                        // keep being fed as if 3 mm of it were in the work.
-                        const val = clampTipAngle(
-                          e.target.value === '' ? undefined : parseFloat(e.target.value)
-                        );
-                        // One patch, not two: each update is built from the rack
-                        // captured in this render, so a second call would drop
-                        // the first one's change.
+                      value={selectedTool.tipAngleDeg}
+                      onChange={(val) => {
+                        const clamped = clampTipAngle(val);
                         updateSelectedTool({
-                          tipAngleDeg: val,
+                          tipAngleDeg: clamped,
                           cutting: selectedTool.cutting
                             ? { ...selectedTool.cutting, feedDiameter: undefined }
                             : undefined,
@@ -430,15 +432,15 @@ export const ToolConfigModal: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Minimum Detail (mm)
+                      Minimum Detail (mm) <InfoTooltip text="Smallest inner corner radius or narrow slot this tool can carve without over-cutting." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="0.05"
-                      min="0.01"
+                      min={0.01}
+                      fallbackOnBlur={0.01}
                       value={selectedTool.minDetailMm}
-                      onChange={(e) =>
-                        updateSelectedTool({ minDetailMm: Math.max(0.01, parseFloat(e.target.value) || 0.01) })
+                      onChange={(val) =>
+                        updateSelectedTool({ minDetailMm: val ?? 0.01 })
                       }
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
                     />
@@ -486,7 +488,7 @@ export const ToolConfigModal: React.FC = () => {
                 <div className="grid grid-cols-4 gap-4">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Flute Count
+                      Flute Count <InfoTooltip text="Number of cutting edges on bit. Multiplies chip load to determine overall feed rate." />
                     </label>
                     <input
                       type="number"
@@ -500,7 +502,7 @@ export const ToolConfigModal: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Center Cutting?
+                      Center Cutting? <InfoTooltip text="Center-cutting bits can plunge vertically straight into stock; non-center cutting bits require ramping." />
                     </label>
                     <label className="flex items-center gap-2 pt-1.5 cursor-pointer text-xs font-medium">
                       <input
@@ -515,16 +517,16 @@ export const ToolConfigModal: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Max Stepdown (× Dia)
+                      Max Stepdown (× Dia) <InfoTooltip text="Max pass depth as a factor of tool diameter (e.g. 1.0 = 1x diameter depth per pass)." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="0.1"
-                      min="0.1"
-                      max="3.0"
+                      min={0.1}
+                      max={3.0}
+                      fallbackOnBlur={1.0}
                       value={selectedTool.cutting?.maxStepdownRatio ?? 1.0}
-                      onChange={(e) =>
-                        updateCuttingSpec({ maxStepdownRatio: Math.max(0.1, parseFloat(e.target.value) || 0.1) })
+                      onChange={(val) =>
+                        updateCuttingSpec({ maxStepdownRatio: val ?? 0.1 })
                       }
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
                     />
@@ -532,16 +534,16 @@ export const ToolConfigModal: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Max Plunge (mm/min)
+                      Max Plunge (mm/min) <InfoTooltip text="Maximum Z-axis downward feed rate when entering material vertically." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="50"
-                      min="10"
-                      max="2000"
+                      min={10}
+                      max={2000}
+                      fallbackOnBlur={300}
                       value={selectedTool.cutting?.maxPlungeRate ?? 300}
-                      onChange={(e) =>
-                        updateCuttingSpec({ maxPlungeRate: Math.max(10, parseFloat(e.target.value) || 10) })
+                      onChange={(val) =>
+                        updateCuttingSpec({ maxPlungeRate: val ?? 10 })
                       }
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
                     />
@@ -551,16 +553,16 @@ export const ToolConfigModal: React.FC = () => {
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Max Stepover Ratio (Pocket Clearing)
+                      Max Stepover Ratio (Pocket Clearing) <InfoTooltip text="Sideways tool overlap between adjacent passes during pocket clearing (0.45 = 45% tool diameter)." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="0.05"
-                      min="0.05"
-                      max="0.9"
+                      min={0.05}
+                      max={0.9}
+                      fallbackOnBlur={0.45}
                       value={selectedTool.cutting?.maxStepoverRatio ?? 0.45}
-                      onChange={(e) =>
-                        updateCuttingSpec({ maxStepoverRatio: Math.max(0.05, parseFloat(e.target.value) || 0.05) })
+                      onChange={(val) =>
+                        updateCuttingSpec({ maxStepoverRatio: val ?? 0.05 })
                       }
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
                     />
@@ -568,16 +570,15 @@ export const ToolConfigModal: React.FC = () => {
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Max Pass Depth (Absolute mm Cap)
+                      Max Pass Depth (Absolute mm Cap) <InfoTooltip text="Absolute millimeter upper limit on depth per pass regardless of cutter diameter ratio." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="0.5"
-                      min="0.1"
+                      min={0.1}
+                      allowEmpty
                       placeholder="No hard cap"
-                      value={selectedTool.cutting?.maxStepdownMm ?? ''}
-                      onChange={(e) => {
-                        const val = e.target.value === '' ? undefined : Math.max(0.1, parseFloat(e.target.value) || 0.1);
+                      value={selectedTool.cutting?.maxStepdownMm}
+                      onChange={(val) => {
                         updateCuttingSpec({ maxStepdownMm: val });
                       }}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
@@ -590,23 +591,19 @@ export const ToolConfigModal: React.FC = () => {
                       instead of ten minutes of cutting. */}
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      Engaged Width for Feeds (mm)
+                      Engaged Width for Feeds (mm) <InfoTooltip text="Effective cutting width used to calculate chip load & feeds. Essential for tapered V-bits where width changes with depth." />
                     </label>
-                    <input
-                      type="number"
+                    <NumberInput
                       step="0.1"
-                      min="0.05"
+                      min={0.05}
+                      allowEmpty
                       placeholder={
                         derivedFeedDiameter !== undefined
                           ? `Auto — ${derivedFeedDiameter.toFixed(2)} mm`
                           : 'Auto'
                       }
-                      value={selectedTool.cutting?.feedDiameter ?? ''}
-                      onChange={(e) => {
-                        const val =
-                          e.target.value === ''
-                            ? undefined
-                            : Math.max(0.05, parseFloat(e.target.value) || 0.05);
+                      value={selectedTool.cutting?.feedDiameter}
+                      onChange={(val) => {
                         updateCuttingSpec({ feedDiameter: val });
                       }}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
@@ -676,7 +673,7 @@ export const ToolConfigModal: React.FC = () => {
           )}
 
           <button
-            onClick={closeToolConfigModal}
+            onClick={handleClose}
             className="px-5 py-2 font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5"
           >
             <Check className="w-4 h-4" />

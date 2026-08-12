@@ -156,7 +156,7 @@ interface EtchStore {
    */
   shimThickness: number;
   setShimThickness: (mm: number) => void;
-  setStockThickness: (mm: number) => void;
+  setStockThickness: (mm: number, transient?: boolean) => void;
   setThickTabs: (on: boolean) => void;
   setShallowEtch: (on: boolean) => void;
   setDocumentOrigin: (origin: EtchDocument['origin']) => void;
@@ -172,6 +172,9 @@ interface EtchStore {
   isVectorizing: boolean;
 
   // Element Manipulation
+  clipboard: EtchElement[] | null;
+  copySelected: () => void;
+  pasteClipboard: () => void;
   addElement: (el: EtchElement) => void;
   updateElement: (id: string, updates: Partial<EtchElement>, transient?: boolean) => void;
   commitHistory: () => void;
@@ -200,6 +203,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   activeTool: 'select',
   activeLayerId: 'cut',
   selectedIds: [],
+  clipboard: null,
   history: [defaultDoc],
   historyIndex: 0,
   zoom: 1.0,
@@ -477,7 +481,7 @@ export const useStore = create<EtchStore>((set, get) => ({
    * retargets them again, which is the predictable behaviour: a cut layer at
    * anything other than through-depth is unusual enough to be worth re-stating.
    */
-  setStockThickness: (mm) => {
+  setStockThickness: (mm, transient) => {
     const { document, history, historyIndex } = get();
     const stockThickness = Math.max(0.1, Math.min(200, mm));
     const throughDepth = Math.round((stockThickness + THROUGH_CUT_OVERCUT_MM) * 10) / 10;
@@ -492,6 +496,15 @@ export const useStore = create<EtchStore>((set, get) => ({
     // Unlike the grid and the zoom, this is a document edit and not a view
     // setting: it rewrites every cut depth in the job. Undo has to be able to
     // put them back, so it pushes history like any other change to the drawing.
+    //
+    // Transiently while the number is still being typed, though: every keystroke
+    // in the thickness box is a call, and a job typed as "12.5" would otherwise
+    // leave undo standing at 1, then 12, before it reached the value the
+    // operator meant. The caller commits once the field is done with.
+    if (transient) {
+      set({ document: newDoc });
+      return;
+    }
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
     set({ document: newDoc, history: newHistory, historyIndex: newHistory.length - 1 });
@@ -564,6 +577,59 @@ export const useStore = create<EtchStore>((set, get) => ({
       history: newHistory,
       historyIndex: newHistory.length - 1,
       selectedIds: [],
+    });
+  },
+
+  copySelected: () => {
+    const { document, selectedIds } = get();
+    if (selectedIds.length === 0) return;
+    const selected = document.elements.filter((el) => selectedIds.includes(el.id));
+    if (selected.length === 0) return;
+    set({ clipboard: JSON.parse(JSON.stringify(selected)) });
+  },
+
+  pasteClipboard: () => {
+    const { document, clipboard, history, historyIndex } = get();
+    if (!clipboard || clipboard.length === 0) return;
+
+    const newIds: string[] = [];
+    const updatedClipboard: EtchElement[] = [];
+
+    const pastedElements: EtchElement[] = clipboard.map((el, i) => {
+      const newId = `el_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+      newIds.push(newId);
+
+      const offsetEl: EtchElement = {
+        ...JSON.parse(JSON.stringify(el)),
+        id: newId,
+        name: el.name.endsWith('Copy') ? el.name : `${el.name} Copy`,
+        x: el.x + 5,
+        y: el.y + 5,
+      };
+
+      // Keep clipboard shifted so subsequent pastes offset progressively
+      updatedClipboard.push({
+        ...JSON.parse(JSON.stringify(el)),
+        x: el.x + 5,
+        y: el.y + 5,
+      });
+
+      return offsetEl;
+    });
+
+    const newDoc = {
+      ...document,
+      elements: [...document.elements, ...pastedElements],
+    };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: newIds,
+      clipboard: updatedClipboard,
     });
   },
 

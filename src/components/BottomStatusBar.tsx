@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { NumberInput } from './NumberInput';
 import { LASER_SOURCES, describeLaserSource } from '../utils/machineSettings';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
@@ -31,6 +32,7 @@ export const BottomStatusBar: React.FC = () => {
     setMachineTarget,
     setMaterial,
     setStockThickness,
+    commitHistory,
     laserSource,
     setLaserSource,
     cncTools,
@@ -48,54 +50,78 @@ export const BottomStatusBar: React.FC = () => {
 
   return (
     <footer className="h-8 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors">
-      {/* Stock Size, Element Count & Live Cursor Position */}
+      {/* Stock Size, Material Type & Live Cursor Position */}
       <div className="flex items-center gap-4">
-        {/* The material, not the machine. This is the rectangle the canvas
-            draws, the area framing traces and probing covers, and the corner
-            the work origin is measured from — so it has to be editable where
-            it is visible, rather than being a fixed property of a template. */}
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
           <RectangleHorizontal className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
           <label htmlFor="stock-width" className="text-slate-500 dark:text-slate-400">
             Stock
           </label>
-          <input
+          <NumberInput
             id="stock-width"
-            type="number"
             min={10}
             max={2000}
             step={10}
+            fallbackOnBlur={100}
             value={document.width}
-            onChange={(e) => setDocumentSize({ width: parseFloat(e.target.value) })}
+            onChange={(val) => {
+              if (val !== undefined && Number.isFinite(val)) setDocumentSize({ width: val });
+            }}
             className="w-16 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
             title="Stock width in millimetres"
           />
           <span className="text-slate-400">×</span>
-          <input
+          <NumberInput
             id="stock-height"
-            type="number"
             min={10}
             max={2000}
             step={10}
+            fallbackOnBlur={100}
             value={document.height}
-            onChange={(e) => setDocumentSize({ height: parseFloat(e.target.value) })}
+            onChange={(val) => {
+              if (val !== undefined && Number.isFinite(val)) setDocumentSize({ height: val });
+            }}
             className="w-16 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
             title="Stock height in millimetres"
           />
+          <span className="text-slate-400">×</span>
+          <NumberInput
+            id="stock-thickness"
+            min={0.1}
+            max={200}
+            step={0.5}
+            fallbackOnBlur={DEFAULT_STOCK_THICKNESS_MM}
+            value={document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM}
+            onChange={(val) => {
+              // Transient while typing, committed on blur: this rewrites every
+              // cut layer's depth, so one undo has to step back over the whole
+              // number rather than over each digit of it.
+              if (val !== undefined && Number.isFinite(val)) setStockThickness(val, true);
+            }}
+            onCommit={commitHistory}
+            className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
+            title="Stock thickness in millimetres — what 'cut through' has to get through"
+          />
           <span className="text-slate-400">mm</span>
+          <div className="w-px h-3 bg-slate-200 dark:bg-slate-800 mx-0.5" />
+          <Layers2 className="w-3.5 h-3.5 text-emerald-500" />
+          <select
+            value={document.material ?? DEFAULT_MATERIAL}
+            onChange={(e) => setMaterial(e.target.value as MaterialId)}
+            title={materialNote(findMaterial(document.material), machineKind)}
+            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+          >
+            {materialCatalog().map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
         <div>
           X: <span className="text-slate-800 dark:text-slate-200">{cursor.x.toFixed(1)}</span>{' '}
           Y: <span className="text-slate-800 dark:text-slate-200">{cursor.y.toFixed(1)}</span> mm
-        </div>
-        <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
-        <div>
-          Elements: <span className="text-slate-800 dark:text-slate-200">{document.elements.length}</span>
-        </div>
-        <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
-        <div>
-          Selected: <span className="text-amber-600 dark:text-amber-400">{selectedIds.length}</span>
         </div>
       </div>
 
@@ -150,11 +176,11 @@ export const BottomStatusBar: React.FC = () => {
           <Magnet className="w-3.5 h-3.5" />
           <span>Snap {document.snapToGrid ? 'On' : 'Off'}</span>
         </button>
+      </div>
 
-        <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
-
-        {/* Target machine. It decides whether Z means anything, so it belongs
-            where it is always visible rather than only inside the export panel. */}
+      {/* Machine Type, Status & Zoom */}
+      <div className="flex items-center gap-4">
+        {/* Target machine dropdowns */}
         <div className="flex items-center gap-1.5">
           <Cpu className="w-3.5 h-3.5 text-amber-500" />
           <select
@@ -167,15 +193,6 @@ export const BottomStatusBar: React.FC = () => {
             <option value="cnc">CNC Router</option>
           </select>
 
-          {/*
-            Which laser, immediately next to the fact that it is one.
-
-            Speed and power are derived from the tube the same way a router's
-            feed is derived from the cutter, so this belongs beside the machine
-            picker rather than buried in a layer's advanced settings: it is one
-            fact about the bench, not a per-layer choice, and it is the single
-            input that decides whether "60% power" means anything at all.
-          */}
           {machineKind === 'laser' && (
             <select
               value={laserSource.id}
@@ -228,56 +245,8 @@ export const BottomStatusBar: React.FC = () => {
           )}
         </div>
 
-        {/*
-          The stock.
-
-          Half of every derivation in the app, on either machine: the router
-          gets its feed, spindle speed and depth per pass from it, and the laser
-          gets its speed and power from it and the tube next door. So it shows
-          on both. Only the thickness is router-only — it is what "cut through"
-          has to get through, and a laser document has no Z to measure it
-          against.
-        */}
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
-        <div className="flex items-center gap-1.5">
-          <Layers2 className="w-3.5 h-3.5 text-emerald-500" />
-          <select
-            value={document.material ?? DEFAULT_MATERIAL}
-            onChange={(e) => setMaterial(e.target.value as MaterialId)}
-            title={materialNote(findMaterial(document.material), machineKind)}
-            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
-          >
-            {materialCatalog().map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        </div>
 
-        {(document.machine ?? 'laser') === 'cnc' && (
-          <>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="0.1"
-                step="0.5"
-                value={document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (Number.isFinite(v)) setStockThickness(v);
-                }}
-                title="Stock thickness in millimetres — what 'cut through' has to get through"
-                className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
-              />
-              <span className="text-slate-400">mm</span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Machine Status & Zoom */}
-      <div className="flex items-center gap-4">
         <div className="flex items-center gap-1.5">
           <span
             className={`w-2 h-2 rounded-full ${
