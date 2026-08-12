@@ -8,7 +8,9 @@
  * had to be re-entered — or, more often, silently wasn't.
  */
 
-const PLATE_THICKNESS_KEY = 'etch_touch_plate_thickness_mm';
+import { syncCloudParameters } from './apiClient';
+
+const PLATE_THICKNESS_KEY = 'etch_touch_sensor_height_mm';
 
 /**
  * Thickness of the touch plate, in mm, used when no value has been stored.
@@ -43,6 +45,7 @@ export function writePlateThickness(value: number): number {
   const clamped = clampPlateThickness(value);
   try {
     localStorage.setItem(PLATE_THICKNESS_KEY, String(clamped));
+    syncCloudParameters('etch', { etch_touch_sensor_height_mm: clamped });
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }

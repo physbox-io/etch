@@ -10,7 +10,8 @@ import {
   Hexagon,
   Star,
   Type,
-  Image,
+  Image as ImageIcon,
+  Shapes,
   Sun,
   Trash2,
   Copy,
@@ -24,6 +25,7 @@ export const LeftToolbar: React.FC = () => {
     activeTool,
     setToolMode,
     toggleClipArtModal,
+    openImageImport,
     duplicateSelected,
     deleteElements,
     selectedIds,
@@ -67,13 +69,35 @@ export const LeftToolbar: React.FC = () => {
 
       <div className="w-full h-px bg-slate-200 dark:bg-slate-800 my-1" />
 
+      {/* Import Image (PNG, JPG, WebP, Vector Trace) */}
+      <label
+        className="w-9 h-9 rounded-lg flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 transition-colors cursor-pointer"
+        title="Import Image (PNG, JPG, WebP) & Vectorize"
+      >
+        <ImageIcon className="w-4 h-4" />
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              openImageImport(file);
+            } else {
+              openImageImport();
+            }
+            e.target.value = '';
+          }}
+          className="hidden"
+        />
+      </label>
+
       {/* Clip Art Library Button */}
       <button
         onClick={toggleClipArtModal}
         className="w-9 h-9 rounded-lg flex items-center justify-center text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-950/60 transition-colors cursor-pointer"
         title="Clip Art & Symbol Gallery"
       >
-        <Image className="w-4 h-4" />
+        <Shapes className="w-4 h-4" />
       </button>
 
       {/* Duplicate Selected */}

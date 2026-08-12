@@ -38,9 +38,12 @@ const read = (key: string): string => {
   }
 };
 
+import { syncCloudParameters } from './apiClient';
+
 const write = (key: string, value: string) => {
   try {
     localStorage.setItem(key, value);
+    syncCloudParameters('global', { [key]: value });
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }

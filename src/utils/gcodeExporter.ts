@@ -2,7 +2,7 @@ import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
 import { localToBed } from './geom';
 import { flattenPath, type Pt } from './pathFlatten';
 import { hasFreshOutline } from './textVectorizer';
-import { hatchContours, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
+import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
 import { docToMachine, describeOrigin } from './machineCoords';
 import {
   DEFAULT_TOOL,
@@ -10,6 +10,7 @@ import {
   describeTool,
   findTool,
   hasToolCatalog,
+  isFlatBottomed,
   type MachineKind,
   type ToolProfile,
 } from './tooling';
@@ -258,12 +259,38 @@ export interface GCodeSegment {
   /**
    * How far the tool may travel to the next segment while staying engaged.
    *
-   * Non-zero only for hatch fill, where consecutive scanlines are one pitch
-   * apart and the hop between them runs *inside* the region being engraved.
-   * Retracting and plunging for a 0.2 mm hop is what made engraved text spend
-   * its time bobbing up and down instead of cutting.
+   * Non-zero only for hatch fill, where the hop to the next scanline runs
+   * *inside* the region being engraved. Retracting and plunging for a 0.2 mm
+   * hop is what made engraved text spend its time bobbing up and down instead
+   * of cutting.
+   *
+   * Whether a hop is inside the region is `linkFrom`'s job, not this one — a
+   * distance never could decide it, which is why a tolerance wide enough for an
+   * ordinary zig-zag turn was also wide enough to cut straight through the
+   * counter of an 'o'. What is left here is a time limit: a link is cut at
+   * feed, so past some length lifting and rapiding across gets there sooner.
    */
   linkTolerance: number;
+  /**
+   * The point the tool must already be standing at for this segment to be
+   * reached without lifting, or null if it has to be approached from clearance.
+   *
+   * Set by the hatcher, the only thing that knows the region a hop would cross.
+   * Checked rather than trusted: segments are regrouped by tool after this is
+   * set, and a link acted on after a regroup would be a cut across the work
+   * from wherever the tool really was.
+   */
+  linkFrom: Pt | null;
+  /**
+   * Which element's fill this scanline belongs to, or -1 if it is not one.
+   *
+   * Lets the planner tell a hop that stays within one shape from one that
+   * crosses the job. The first can be made a millimetre off the stock, because
+   * the ground it crosses is ground the tool is in the middle of cutting and so
+   * has nothing standing on it; the second has to clear whatever is clamped to
+   * the bed.
+   */
+  fillGroup: number;
 }
 
 /** Machining order by operation, regardless of where the layer sits in the list. */
@@ -271,6 +298,43 @@ const OPERATION_ORDER: Record<GCodeSegment['type'], number> = { fill: 0, etch: 1
 
 /** Clearance height for rapids, in mm. */
 export const SAFE_Z = 5;
+
+/**
+ * Longest hop the tool will make while staying down in the work, in mm.
+ *
+ * Not a safety limit — `linkFrom` has already established that a hop this far
+ * stays inside the region, and every pass is planned at a depth this tool may
+ * cut a full-width slot at, which is the most a link through uncleared material
+ * can amount to. It is a time limit. A link is cut at feed and a lift is rapid,
+ * so beyond some distance the retract, the traverse and the entry together cost
+ * less than cutting the whole way there. This is roughly where the two meet at
+ * ordinary feeds, and the exact figure matters little: hops in a hatch are a
+ * pitch or two long, and the ones anywhere near the limit are rare.
+ */
+const MAX_LINK_MM = 25;
+
+/**
+ * Fill pitch when nothing has asked for one, in mm.
+ *
+ * The stored default suits a laser, whose pitch is only how dark the engraving
+ * comes out. A router leaves a floor, and how good that floor is depends on the
+ * shape of the tool's end:
+ *
+ *   - a flat end mill leaves a flat one. Passes closer together than its
+ *     stepover re-cut ground already cut to the same depth, so the stepover is
+ *     both the coarsest pitch that leaves no ridge and much the fastest — eight
+ *     times the pitch on a 1/8" cutter, for an identical floor.
+ *   - a V-bit or a ball nose leaves a scalloped one, and the pitch is what sets
+ *     how tall the scallops are. There is no free coarsening to be had there,
+ *     so they keep the fine default and pay for it in time.
+ *
+ * A tool that has not said which it is keeps the fine default too: an unknown
+ * end shape gets the answer that is never wrong, only slow.
+ */
+function defaultPitch(cut: LayerCutting, laserMode: boolean): number {
+  if (laserMode || !cut.flatBottomed || cut.stepover <= 0) return DEFAULT_HATCH_SPACING;
+  return Math.max(DEFAULT_HATCH_SPACING, cut.stepover);
+}
 
 /**
  * Builds the ordered toolpath for a document, without serialising it.
@@ -288,6 +352,14 @@ export function planToolpath(
   const segments: GCodeSegment[] = [];
   const skipped: string[] = [];
   const notes: string[] = [];
+  /**
+   * Which fill is being hatched, counted across the whole job.
+   *
+   * One number per filled element rather than per layer: "inside the shape the
+   * tool is working on" is what makes a low hop safe, and two shapes on one
+   * layer can have anything at all between them.
+   */
+  let fillGroup = -1;
   const machineKind: MachineKind = options.laserMode ? 'laser' : 'cnc';
   const material = findMaterial(doc.material);
   const stock: StockSettings = {
@@ -416,7 +488,8 @@ export function planToolpath(
          * A laser has no such limit: its "cutter" is a beam, and the pitch is
          * purely how dark the engraving comes out.
          */
-        let pitch = el.hatchSpacing ?? doc.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING;
+        let pitch =
+          el.hatchSpacing ?? doc.defaultHatchSpacing ?? defaultPitch(cut, options.laserMode);
         if (!options.laserMode && cut.stepover > 0 && pitch > cut.stepover) {
           notes.push(
             `Fill pitch on layer "${layer.name}" reduced from ${pitch} mm to ${cut.stepover} mm — ` +
@@ -442,24 +515,52 @@ export function planToolpath(
             ? contours
             : offsetContours(contours, cut.grooveRadius, 'inside').contours;
 
-        const hatch = hatchContours(
+        const hatch = hatchRegion(
           region,
           el.hatchAngle ?? doc.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
           pitch
         );
+        fillGroup++;
         for (const line of hatch) {
           segments.push(
             makeSegment(layer, cut, options, {
-              points: line,
+              points: line.points,
               isClosed: false,
               // Hatch lines must stay in engraving order, so they all share a
               // sort key and never get interleaved by inner-contour sorting.
               bBoxArea: -1,
-              // A gap of about one pitch is the next scanline; anything wider is
-              // a jump to a separate span (the counters of a 'B') and must lift.
-              linkTolerance: pitch * 1.6,
+              linkTolerance: MAX_LINK_MM,
+              linkFrom: line.linkFrom,
+              fillGroup,
             })
           );
+        }
+
+        /**
+         * A fill that came to nothing, said rather than left to be discovered.
+         *
+         * The region is the shape inset by half the groove, so a shape finer
+         * than the cutter insets to nothing and hatches to nothing. With the
+         * outline off that is the whole element, and it used to leave the job
+         * silently — the header warned that the detail was finer than the
+         * groove, which reads as "this will come out mushy" rather than "this is
+         * not in the file". The keychain preset's lettering is exactly this case
+         * on the default end mill.
+         */
+        if (hatch.length === 0 && contours.length > 0 && cut.grooveRadius > 0) {
+          const groove = (cut.grooveRadius * 2).toFixed(2);
+          if (el.hatchOutline === false) {
+            skipped.push(
+              `${el.name} (filled, but a ${cut.toolName} leaves a ${groove} mm groove and nothing ` +
+                `of the shape is left once it is inset by half of that — so it has no toolpath at ` +
+                `all. Use a finer tool, cut it shallower, or turn its outline back on)`
+            );
+          } else {
+            notes.push(
+              `"${el.name}" has no fill in it: a ${cut.toolName} leaves a ${groove} mm groove, and ` +
+                `nothing of the shape survives being inset by half of that. Only its outline is cut.`
+            );
+          }
         }
         if (el.hatchOutline === false) continue;
       }
@@ -582,6 +683,12 @@ interface LayerCutting {
    * is a groove this wide, and detail finer than the groove does not survive.
    */
   grooveRadius: number;
+  /**
+   * Whether this tool leaves a flat floor, so a fill may be spaced out to its
+   * full stepover without leaving ridges between the passes. False for a laser,
+   * and for any tool that has not said what shape its end is.
+   */
+  flatBottomed: boolean;
   side: OffsetSide;
   tabs: boolean;
   tabHeight: number;
@@ -657,6 +764,7 @@ function resolveLayerCutting(
       stepover: 0,
       radius: 0,
       grooveRadius: 0,
+      flatBottomed: false,
       side: 'on',
       tabs: false,
       tabHeight: 0,
@@ -767,6 +875,7 @@ function resolveLayerCutting(
     stepover: recipe?.stepover ?? 0,
     radius: (profile?.diameter ?? 0) / 2,
     grooveRadius: cutWidthAtDepth(profile, zDepth) / 2,
+    flatBottomed: isFlatBottomed(profile),
     side: resolveCutSide(layer),
     tabs,
     tabHeight,
@@ -799,6 +908,8 @@ function makeSegment(
     isClosed: boolean;
     bBoxArea: number;
     linkTolerance: number;
+    linkFrom?: Pt | null;
+    fillGroup?: number;
     tabs?: TabSpan[];
   }
 ): GCodeSegment {
@@ -820,6 +931,8 @@ function makeSegment(
     isClosed: geom.isClosed,
     bBoxArea: geom.bBoxArea,
     linkTolerance: geom.linkTolerance,
+    linkFrom: geom.linkFrom ?? null,
+    fillGroup: geom.fillGroup ?? -1,
     points: geom.points,
   };
 }

@@ -20,10 +20,15 @@ const CURVE_STEPS = 24;
  * app plus whatever comes in through SVG import: M/L/H/V/C/S/Q/T/A/Z, absolute
  * and relative.
  */
-export function flattenPath(d: string): SubPath[] {
-  const subPaths: SubPath[] = [];
-  if (!d) return subPaths;
+const flattenCache = new Map<string, SubPath[]>();
+const MAX_FLATTEN_CACHE_SIZE = 200;
 
+export function flattenPath(d: string): SubPath[] {
+  if (!d) return [];
+  const hit = flattenCache.get(d);
+  if (hit) return hit;
+
+  const subPaths: SubPath[] = [];
   const tokens = d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g);
   if (!tokens) return subPaths;
 
@@ -211,7 +216,13 @@ export function flattenPath(d: string): SubPath[] {
     }
   }
 
-  return subPaths.filter((sp) => sp.points.length > 0);
+  const res = subPaths.filter((sp) => sp.points.length > 0);
+  if (flattenCache.size >= MAX_FLATTEN_CACHE_SIZE) {
+    const firstKey = flattenCache.keys().next().value;
+    if (firstKey) flattenCache.delete(firstKey);
+  }
+  flattenCache.set(d, res);
+  return res;
 }
 
 /** All points of a path, flattened into one list (subpath boundaries dropped). */

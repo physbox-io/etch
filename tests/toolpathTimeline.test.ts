@@ -20,6 +20,8 @@ function seg(over: Partial<GCodeSegment> = {}): GCodeSegment {
     isClosed: false,
     bBoxArea: 100,
     linkTolerance: 0,
+    linkFrom: null,
+    fillGroup: -1,
     points: [
       { x: 0, y: 0 },
       { x: 60, y: 0 },
@@ -77,16 +79,25 @@ describe('buildTimeline', () => {
     expect(travelLength).toBeCloseTo(Math.hypot(60, 40), 6);
   });
 
+  const fill = {
+    type: 'fill' as const,
+    zDepth: 0.5,
+    depths: [-0.5],
+    linkTolerance: 25,
+    bBoxArea: -1,
+    fillGroup: 0,
+  };
+
   it('cuts across a fill link instead of rapiding it', () => {
-    const common = {
-      type: 'fill' as const,
-      zDepth: 0.5,
-      depths: [-0.5],
-      linkTolerance: 0.32,
-      bBoxArea: -1,
-    };
-    const a = seg({ ...common, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }] });
-    const b = seg({ ...common, points: [{ x: 10, y: 0.2 }, { x: 0, y: 0.2 }] });
+    const a = seg({ ...fill, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }] });
+    // The hatcher established that the hop from where the first line ends to
+    // where this one starts stays inside the region, and says so by naming the
+    // point it measured from.
+    const b = seg({
+      ...fill,
+      points: [{ x: 10, y: 0.2 }, { x: 0, y: 0.2 }],
+      linkFrom: { x: 10, y: 0 },
+    });
     const { moves, travelLength } = buildTimeline([a, b], { travelSpeed: 3000, laserMode: false });
 
     // The hop from the end of the first scanline to the start of the second is
@@ -97,6 +108,36 @@ describe('buildTimeline', () => {
     expect(hop?.kind).toBe('cut');
     expect(hop?.z1).toBeCloseTo(-0.5, 6);
     expect(travelLength).toBe(0);
+  });
+
+  it('lifts for a hop the hatcher did not vouch for', () => {
+    // Same two scanlines, a fifth of a millimetre apart — but with no
+    // `linkFrom`, which is how the hatcher reports that the ground between them
+    // is outside the shape. Distance alone used to decide this, and a counter
+    // narrower than the tolerance was cut straight through.
+    const a = seg({ ...fill, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }] });
+    const b = seg({ ...fill, points: [{ x: 10, y: 0.2 }, { x: 0, y: 0.2 }] });
+    const { moves } = buildTimeline([a, b], { travelSpeed: 3000, laserMode: false });
+    expect(moves.map((m) => m.kind)).toContain('retract');
+  });
+
+  it('hops within one fill just clear of the stock rather than to full height', () => {
+    const a = seg({ ...fill, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }] });
+    const b = seg({ ...fill, points: [{ x: 10, y: 0.2 }, { x: 0, y: 0.2 }] });
+    const { moves } = buildTimeline([a, b], { travelSpeed: 3000, laserMode: false });
+    const retract = moves.find((m) => m.kind === 'retract');
+    // Clear of the surface, but nowhere near the 5 mm reserved for crossing a
+    // bed that may have clamps on it.
+    expect(retract?.z1).toBe(1);
+
+    // A hop to a different shape gets the full height back.
+    const far = seg({
+      ...fill,
+      fillGroup: 1,
+      points: [{ x: 40, y: 20 }, { x: 50, y: 20 }],
+    });
+    const other = buildTimeline([a, far], { travelSpeed: 3000, laserMode: false });
+    expect(other.moves.find((m) => m.kind === 'retract')?.z1).toBe(5);
   });
 
   it('samples position and depth part-way through a move', () => {

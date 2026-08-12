@@ -8,6 +8,7 @@ import type {
   BedProbeGrid,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
+import { syncCloudPreset, deleteCloudPreset } from '../utils/apiClient';
 import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
 import {
   readLaserSource,
@@ -82,6 +83,8 @@ interface EtchStore {
   isGCodeModalOpen: boolean;
   isMachineModalOpen: boolean;
   isClipArtModalOpen: boolean;
+  isImageImportOpen: boolean;
+  imageImportFile: File | null;
   isSettingsOpen: boolean;
   isDocsOpen: boolean;
   isToolConfigModalOpen: boolean;
@@ -121,6 +124,8 @@ interface EtchStore {
   toggleGCodeModal: () => void;
   toggleMachineModal: () => void;
   toggleClipArtModal: () => void;
+  openImageImport: (file?: File) => void;
+  closeImageImport: () => void;
   toggleSettings: () => void;
   toggleToolConfigModal: () => void;
   openToolConfigModal: () => void;
@@ -223,6 +228,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   isGCodeModalOpen: false,
   isMachineModalOpen: false,
   isClipArtModalOpen: false,
+  isImageImportOpen: false,
+  imageImportFile: null,
   isSettingsOpen: false,
   isDocsOpen: false,
   isToolConfigModalOpen: false,
@@ -329,8 +336,10 @@ export const useStore = create<EtchStore>((set, get) => ({
     try {
       const { document } = get();
       const presets = readUserPresets();
-      presets[trimmed] = cloneDoc({ ...document, name: trimmed });
+      const newDoc = cloneDoc({ ...document, name: trimmed });
+      presets[trimmed] = newDoc;
       writeUserPresets(presets);
+      syncCloudPreset('etch', trimmed, newDoc);
       set({
         activePreset: `user:${trimmed}`,
         userPresetNames: Object.keys(presets).sort(),
@@ -346,6 +355,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const presets = readUserPresets();
       delete presets[name];
       writeUserPresets(presets);
+      deleteCloudPreset(`user:${name}`);
       set({ userPresetNames: Object.keys(presets).sort() });
       if (get().activePreset === `user:${name}`) {
         get().loadPreset(DEFAULT_PRESET_ID);
@@ -417,6 +427,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleGCodeModal: () => set((state) => ({ isGCodeModalOpen: !state.isGCodeModalOpen })),
   toggleMachineModal: () => set((state) => ({ isMachineModalOpen: !state.isMachineModalOpen })),
   toggleClipArtModal: () => set((state) => ({ isClipArtModalOpen: !state.isClipArtModalOpen })),
+  openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
+  closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
 
   openDocs: (tab) => set((state) => ({ isDocsOpen: true, docsTab: tab ?? state.docsTab })),

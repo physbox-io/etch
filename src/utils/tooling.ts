@@ -34,6 +34,21 @@ export interface ToolProfile {
    * geometry was planned as if the tool were a hair, and cut as if it were not.
    */
   tipAngleDeg?: number;
+  /**
+   * The shape of the tool's end, where that decides the shape of the floor it
+   * leaves rather than the width of the groove.
+   *
+   * Only 'flat' means anything on its own: a flat end leaves a flat floor, so
+   * passes spaced a full stepover apart meet at the same depth and leave no
+   * ridge between them, and a fill has nothing to gain from going finer. A ball
+   * nose leaves scallops and a V-bit leaves ridges, and for both the pitch is
+   * what sets how tall they are.
+   *
+   * Absent means unknown, which is not the same as flat — a tool someone
+   * defined themselves may be any of the three, so it gets the fine pitch that
+   * is never wrong rather than the fast one that sometimes is.
+   */
+  tipShape?: 'flat' | 'ball';
   /** Operations this tool does well. Anything else earns a warning. */
   bestFor: LayerOperation[];
   /** One line, written for someone deciding which number to put on a layer. */
@@ -125,6 +140,7 @@ export const DEFAULT_CNC_TOOLS: ToolProfile[] = [
     id: 1,
     name: '3.175 mm (1/8") flat end mill',
     diameter: 3.175,
+    tipShape: 'flat',
     bestFor: ['cut', 'fill'],
     guidance: 'The general-purpose cutter. Through-cuts and pocket clearing in wood, ply and acrylic.',
     minDetailMm: 3.175,
@@ -140,6 +156,7 @@ export const DEFAULT_CNC_TOOLS: ToolProfile[] = [
     id: 2,
     name: '1.5 mm flat end mill',
     diameter: 1.5,
+    tipShape: 'flat',
     bestFor: ['cut', 'etch', 'fill'],
     guidance: 'Small inside corners and narrow slots. Feed it gently — it snaps in a full-depth pass.',
     minDetailMm: 1.5,
@@ -191,6 +208,7 @@ export const DEFAULT_CNC_TOOLS: ToolProfile[] = [
     id: 5,
     name: '3.175 mm ball nose',
     diameter: 3.175,
+    tipShape: 'ball',
     bestFor: ['fill'],
     guidance: 'Smooth engraved floors and contoured relief. A poor through-cutter: it leaves a rounded, ragged edge.',
     minDetailMm: 3.175,
@@ -206,6 +224,7 @@ export const DEFAULT_CNC_TOOLS: ToolProfile[] = [
     id: 6,
     name: '6 mm (1/4") flat end mill',
     diameter: 6,
+    tipShape: 'flat',
     bestFor: ['cut'],
     guidance: 'Thick stock, fast. Rigid enough for deep passes, too coarse for anything under about 8 mm across.',
     minDetailMm: 6,
@@ -232,6 +251,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '3.175 mm (1/8") flat end mill',
       diameter: 3.175,
+      tipShape: 'flat',
       bestFor: ['cut', 'fill'],
       guidance: 'The general-purpose cutter. Through-cuts and pocket clearing in wood, ply and acrylic.',
       minDetailMm: 3.175,
@@ -244,6 +264,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '1.5 mm flat end mill',
       diameter: 1.5,
+      tipShape: 'flat',
       bestFor: ['cut', 'etch', 'fill'],
       guidance: 'Small inside corners and narrow slots. Feed it gently — it snaps in a full-depth pass.',
       minDetailMm: 1.5,
@@ -256,6 +277,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '6 mm (1/4") flat end mill',
       diameter: 6.35,
+      tipShape: 'flat',
       bestFor: ['cut'],
       guidance: 'Thick stock, fast. Rigid enough for deep passes, too coarse for anything under about 8 mm across.',
       minDetailMm: 6.35,
@@ -320,6 +342,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '3.175 mm ball nose',
       diameter: 3.175,
+      tipShape: 'ball',
       bestFor: ['fill'],
       guidance: 'Smooth engraved floors and contoured relief. A poor through-cutter: it leaves a rounded, ragged edge.',
       minDetailMm: 3.175,
@@ -332,6 +355,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '6.35 mm ball nose',
       diameter: 6.35,
+      tipShape: 'ball',
       bestFor: ['fill'],
       guidance: 'Large smooth pockets, 3D relief finishing and dish carving.',
       minDetailMm: 6.35,
@@ -344,6 +368,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '3.175 mm single flute O-flute',
       diameter: 3.175,
+      tipShape: 'flat',
       bestFor: ['cut', 'fill'],
       guidance: 'Single O-flute bit for clean chip evacuation in plastics, acrylic, and aluminum without melting.',
       minDetailMm: 3.175,
@@ -442,6 +467,7 @@ function sanitizeStoredTool(raw: unknown): ToolProfile | null {
     name,
     diameter: diameter !== undefined && diameter > 0 ? diameter : undefined,
     tipAngleDeg: clampTipAngle(num(t.tipAngleDeg)),
+    tipShape: t.tipShape === 'flat' || t.tipShape === 'ball' ? t.tipShape : undefined,
     bestFor,
     guidance: typeof t.guidance === 'string' ? t.guidance : '',
     minDetailMm,
@@ -563,6 +589,20 @@ export const MAX_TIP_ANGLE_DEG = 179;
 export function clampTipAngle(angle: number | undefined): number | undefined {
   if (angle === undefined || !Number.isFinite(angle) || angle <= 0) return undefined;
   return Math.min(angle, MAX_TIP_ANGLE_DEG);
+}
+
+/**
+ * Whether this tool leaves a flat floor behind it.
+ *
+ * Both halves are needed. A tapered tool never does, whatever its entry says —
+ * a V-bit cuts a V. And a tool that has not declared its end shape is not
+ * assumed to be flat, because being wrong about that leaves ridges standing in
+ * a floor someone wanted flat, while being wrong the other way only costs time.
+ */
+export function isFlatBottomed(profile: ToolProfile | undefined): boolean {
+  if (!profile) return false;
+  if (clampTipAngle(profile.tipAngleDeg)) return false;
+  return profile.tipShape === 'flat';
 }
 
 /**

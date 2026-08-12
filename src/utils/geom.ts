@@ -20,7 +20,22 @@ export interface BBox {
  * Mixing local and bed coordinates is what previously let a rotated shape
  * drift away from its own selection box.
  */
+const bboxCache = new Map<string, { key: string; bbox: BBox }>();
+
+export function clearGeomBBoxCache(): void {
+  bboxCache.clear();
+}
+
 export function getLocalBBox(el: EtchElement): BBox {
+  const pathD = el.d || el.outlineD || '';
+  if (pathD) {
+    const key = `${el.id}:${pathD}:${el.w || 0}:${el.h || 0}:${el.text || ''}`;
+    const cached = bboxCache.get(el.id);
+    if (cached && cached.key === key) {
+      return cached.bbox;
+    }
+  }
+
   let minX = 0;
   let minY = 0;
   let width = el.w || 40;
@@ -107,7 +122,7 @@ export function getLocalBBox(el: EtchElement): BBox {
   width = Math.max(width, 0.001);
   height = Math.max(height, 0.001);
 
-  return {
+  const res: BBox = {
     minX,
     minY,
     width,
@@ -115,6 +130,13 @@ export function getLocalBBox(el: EtchElement): BBox {
     centerX: minX + width / 2,
     centerY: minY + height / 2,
   };
+
+  if (pathD) {
+    const key = `${el.id}:${pathD}:${el.w || 0}:${el.h || 0}:${el.text || ''}`;
+    bboxCache.set(el.id, { key, bbox: res });
+  }
+
+  return res;
 }
 
 function boundsOf(pts: Pt[]): { minX: number; minY: number; width: number; height: number } {

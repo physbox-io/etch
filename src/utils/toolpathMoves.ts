@@ -102,6 +102,26 @@ const TAB_EXIT_RAMP_MM = 2;
  */
 const APPROACH_CLEARANCE_MM = 0.5;
 
+/**
+ * Clearance for a hop between two scanlines of one fill, in mm above the stock.
+ *
+ * The full safe height clears what stands *above* the work: clamps, screw
+ * heads, the dog-ears of parts already cut free. None of those can be inside
+ * the outline of a shape the tool is in the middle of engraving — the tool is
+ * cutting there — so a hop that stays within one element's own fill has nothing
+ * to climb over but the stock surface at Z0, and a millimetre is enough for the
+ * chips lying on it.
+ *
+ * Worth having because of how little each hop crosses and how many of them
+ * there are: a 0.5 mm deep engraving used to lift 5.5 mm and come back down for
+ * every scanline it could not link to, which on a few lines of small text is
+ * minutes of the job spent going up and down.
+ */
+const FILL_HOP_CLEARANCE_MM = 1;
+
+/** Shortest path there is room to descend along, in mm. */
+const MIN_RAMP_PATH_MM = 1.5;
+
 export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): PlannedProgram {
   const moves: PlannedMove[] = [];
   const toolChanges: PlannedToolChange[] = [];
@@ -113,6 +133,17 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
   /** Current Z, or null when parked at clearance with nothing engaged. */
   let engaged: number | null = null;
   let repositionNeeded = false;
+  /**
+   * The height the tool is parked at while disengaged.
+   *
+   * Tracked rather than assumed to be the safe height, because a hop inside one
+   * fill parks a millimetre up instead of five, and everything downstream — how
+   * far the descent has to come back down, whether it is needed at all — has to
+   * be measured from where the tool actually is.
+   */
+  let parkedZ = opts.safeZ;
+  /** Short paths entered straight down, counted per layer for one note each. */
+  const plunged = new Map<string, { count: number; longest: number }>();
 
   const clearanceZ = opts.laserMode ? 0 : opts.safeZ;
 
@@ -146,6 +177,7 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
           along0: 0, along1: 0,
         });
         engaged = null;
+        parkedZ = opts.safeZ;
       }
       toolChanges.push({ ...change, segIndex: sIdx, moveIndex: moves.length });
       repositionNeeded = true;
@@ -168,11 +200,20 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       const gap = started ? Math.hypot(cx - first.x, cy - first.y) : Infinity;
 
       /**
-       * A hop short enough to make inside the material: the next scanline of
-       * the same fill, at the same depth, one pitch away. Retracting for a
-       * 0.2 mm hop is what made engraved text spend its time bobbing up and
-       * down instead of cutting.
+       * A hop the tool can make without leaving the work: the next scanline of
+       * the same fill, at the same depth, across ground that is inside the
+       * region being cleared. Retracting five millimetres and coming back down
+       * for it is what made engraved text spend its time bobbing up and down
+       * instead of cutting.
+       *
+       * Whether the ground between is inside the region was settled by the
+       * hatcher, the only thing that knew — `linkFrom` is the point it settled
+       * it *from*. Checked against where the tool actually is rather than taken
+       * on trust, because segments are regrouped by tool in between: a link
+       * honoured after a regroup would be a cut across the work from wherever
+       * the previous group happened to finish.
        */
+      const linksFrom = started && sameSpot(seg.linkFrom, { x: cx, y: cy });
       const isLink =
         prev !== null &&
         !repositionNeeded &&
@@ -183,6 +224,7 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         prev.linkTolerance > 0 &&
         seg.layerId === prev.layerId &&
         seg.power === prev.power &&
+        linksFrom &&
         gap <= seg.linkTolerance &&
         (opts.laserMode || engaged === z);
 
@@ -201,28 +243,66 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         cy = first.y;
       } else {
         if (gap > 0.01 || repositionNeeded) {
+          /**
+           * How high this hop has to go.
+           *
+           * Full clearance for anything that leaves the shape being worked on,
+           * and the low one for a hop from one scanline of a fill to another of
+           * the same fill — those two are inside one element's outline, which is
+           * ground the tool is in the middle of cutting and so ground nothing
+           * can be standing on. A hop that failed the link test still failed it
+           * and still lifts; it just no longer lifts five millimetres to cross
+           * the counter of an 'o'.
+           */
+          const inSameFill =
+            !opts.laserMode &&
+            prev !== null &&
+            !repositionNeeded &&
+            seg.fillGroup >= 0 &&
+            seg.fillGroup === prev.fillGroup &&
+            pass === 1 &&
+            seg.depths.length === 1 &&
+            prev.depths.length === 1;
+          const hopZ = inSameFill ? Math.min(opts.safeZ, FILL_HOP_CLEARANCE_MM) : opts.safeZ;
+
           if (!opts.laserMode && engaged !== null) {
             moves.push({
               ...common,
               kind: 'retract',
               x1: cx, y1: cy, z1: engaged,
-              x2: cx, y2: cy, z2: opts.safeZ,
+              x2: cx, y2: cy, z2: hopZ,
               feed: opts.travelSpeed,
               beamOn: false,
               along0: 0, along1: 0,
             });
             engaged = null;
+            parkedZ = hopZ;
+          } else if (!opts.laserMode && parkedZ > hopZ) {
+            // Already clear of the work and higher than this hop needs. Coming
+            // down now is a move the descent below would have made anyway, and
+            // it keeps the traverse honest about the height it happens at.
+            moves.push({
+              ...common,
+              kind: 'travel',
+              x1: cx, y1: cy, z1: parkedZ,
+              x2: cx, y2: cy, z2: hopZ,
+              feed: opts.travelSpeed,
+              beamOn: false,
+              along0: 0, along1: 0,
+            });
+            parkedZ = hopZ;
           }
           // A rapid to where the tool already is is not a move. It matters
           // because the first segment of a job reports an infinite gap so that
           // the program always begins by going to a known point, and that point
           // is often exactly where the machine is parked.
           if (Math.hypot(cx - first.x, cy - first.y) > 1e-9) {
+            const travelZ = opts.laserMode ? clearanceZ : parkedZ;
             moves.push({
               ...common,
               kind: 'travel',
-              x1: cx, y1: cy, z1: clearanceZ,
-              x2: first.x, y2: first.y, z2: clearanceZ,
+              x1: cx, y1: cy, z1: travelZ,
+              x2: first.x, y2: first.y, z2: travelZ,
               feed: opts.travelSpeed,
               beamOn: false,
               along0: 0, along1: 0,
@@ -260,12 +340,28 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
            * pass cut spends most of its time re-cutting air it already cleared.
            */
           const alreadyCut = passIdx > 0 ? seg.depths[passIdx - 1] : 0;
-          const approachZ = Math.min(opts.safeZ, alreadyCut + APPROACH_CLEARANCE_MM);
-          if (opts.safeZ > approachZ) {
+          /**
+           * On the second and later passes the rapid runs all the way down to
+           * the floor the previous pass left, not to a clearance above it.
+           *
+           * The clearance is there for the first pass, where "the top of the
+           * material" is a number typed into the machine rather than something
+           * measured, and half a millimetre of margin means an uneven surface is
+           * met by a shallow ramp instead of by the end of the tool. On later
+           * passes there is nothing left to be uncertain about: this pass starts
+           * at the same XY the last one did, and the last one went round the
+           * whole path at that depth. Ramping down through it again at half feed
+           * was re-cutting a hole that was already there.
+           */
+          const approachZ = Math.min(
+            parkedZ,
+            passIdx > 0 ? alreadyCut : alreadyCut + APPROACH_CLEARANCE_MM
+          );
+          if (parkedZ > approachZ) {
             moves.push({
               ...common,
               kind: 'travel',
-              x1: cx, y1: cy, z1: opts.safeZ,
+              x1: cx, y1: cy, z1: parkedZ,
               x2: cx, y2: cy, z2: approachZ,
               feed: opts.travelSpeed,
               beamOn: false,
@@ -277,7 +373,13 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
 
         const entry = planEntry(seg, geom, from, z);
         if (entry.kind === 'plunge') {
-          notes.push(entry.note!);
+          const seen = plunged.get(seg.layerId);
+          if (seen) {
+            seen.count++;
+            seen.longest = Math.max(seen.longest, geom.length);
+          } else {
+            plunged.set(seg.layerId, { count: 1, longest: geom.length });
+          }
           moves.push({
             ...common,
             kind: 'plunge',
@@ -361,7 +463,33 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
     }
   }
 
+  for (const [layerId, { count, longest }] of plunged) {
+    notes.push(
+      count === 1
+        ? `A path on layer "${layerId}" is under ${MIN_RAMP_PATH_MM} mm long — too short to ramp ` +
+            `into, so the tool enters it straight down. Small features are where bits break; ` +
+            `consider a smaller cutter.`
+        : `${count} paths on layer "${layerId}" are under ${MIN_RAMP_PATH_MM} mm long, the longest ` +
+            `${longest.toFixed(1)} mm, so the tool enters each of them straight down rather than ` +
+            `ramping. Small features are where bits break; consider a smaller cutter.`
+    );
+  }
+
   return { moves, toolChanges, notes: [...new Set(notes)] };
+}
+
+/**
+ * Whether the tool is standing on the point a link was measured from.
+ *
+ * A tight tolerance on purpose: these are the same number arriving by two
+ * routes — the hatcher's record of where a line ended, and the planner's own
+ * running position — rather than two measurements that have to agree to within
+ * something. Anything further apart is a different point, and the link is not
+ * the one that was proved safe.
+ */
+function sameSpot(a: Pt | null, b: Pt | null): boolean {
+  if (!a || !b) return false;
+  return Math.abs(a.x - b.x) < 1e-7 && Math.abs(a.y - b.y) < 1e-7;
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +589,6 @@ interface EntryPlan {
   samples: Sample[];
   /** Distance along the path at which the ramp finishes. */
   endAlong: number;
-  note?: string;
 }
 
 /**
@@ -488,18 +615,12 @@ function planEntry(seg: GCodeSegment, geom: PathGeom, fromZ: number, toZ: number
   const tan = Math.tan((seg.rampAngleDeg * Math.PI) / 180);
   const rampDistance = tan > 1e-9 ? drop / tan : Infinity;
 
-  // Below this there is not enough path to descend along at any sane angle.
-  const MIN_RAMP_PATH_MM = 1.5;
+  // Below this there is not enough path to descend along at any sane angle. The
+  // caller counts these and says so once per layer: a fine hatch produces
+  // hundreds, and each said separately is a header of near-identical lines
+  // differing only in a length nobody can act on.
   if (geom.length < MIN_RAMP_PATH_MM || !Number.isFinite(rampDistance)) {
-    return {
-      kind: 'plunge',
-      samples: [],
-      endAlong: 0,
-      note:
-        `A path on layer "${seg.layerId}" is only ${geom.length.toFixed(1)} mm long — too short to ` +
-        `ramp into, so the tool enters it straight down. Small features are where bits break; ` +
-        `consider a smaller cutter.`,
-    };
+    return { kind: 'plunge', samples: [], endAlong: 0 };
   }
 
   if (geom.closed) {

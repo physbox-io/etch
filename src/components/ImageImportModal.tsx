@@ -1,0 +1,584 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { useStore } from '../store/useStore';
+import {
+  loadImageElement,
+  processImageCanvas,
+  traceMarchingSquares,
+  generateHalftoneCompoundPath,
+  generateScanlinePaths,
+  DEFAULT_IMAGE_OPTIONS,
+  type ImageProcessOptions,
+} from '../utils/imageProcessor';
+import type { EtchElement } from '../types/etch';
+import {
+  X,
+  Upload,
+  Sliders,
+  Sparkles,
+  Layers,
+  Check,
+  RefreshCw,
+  Grid,
+  AlignJustify,
+  Image as ImageIcon,
+} from 'lucide-react';
+
+export const ImageImportModal: React.FC = () => {
+  const {
+    isImageImportOpen,
+    imageImportFile,
+    closeImageImport,
+    document: doc,
+    activeLayerId,
+    setDocument,
+  } = useStore();
+
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [loadedImg, setLoadedImg] = useState<HTMLImageElement | null>(null);
+  const [options, setOptions] = useState<ImageProcessOptions>(DEFAULT_IMAGE_OPTIONS);
+  const [lockAspect, setLockAspect] = useState<boolean>(true);
+  const [aspectRatio, setAspectRatio] = useState<number>(1);
+  const [targetLayerId, setTargetLayerId] = useState<string>(activeLayerId || doc.layers[0]?.id || 'cut');
+  const [previewStats, setPreviewStats] = useState<{ elementCount: number; detailCount: number }>({
+    elementCount: 1,
+    detailCount: 0,
+  });
+
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Load image when file or modal state changes
+  useEffect(() => {
+    if (!isImageImportOpen) return;
+
+    if (imageImportFile) {
+      const url = URL.createObjectURL(imageImportFile);
+      setImageSrc(url);
+      loadImageElement(url)
+        .then((img) => {
+          setLoadedImg(img);
+          const ratio = (img.naturalWidth || img.width || 100) / (img.naturalHeight || img.height || 100);
+          setAspectRatio(ratio);
+          const w = Math.min(doc.width * 0.6, 100);
+          const h = Math.round(w / ratio);
+          setOptions((prev) => ({ ...prev, targetWidth: Math.round(w), targetHeight: Math.round(h) }));
+        })
+        .catch((err) => console.error('Failed to load image:', err));
+    } else {
+      setImageSrc(null);
+      setLoadedImg(null);
+    }
+  }, [isImageImportOpen, imageImportFile, doc.width]);
+
+  // Handle local file selection
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setImageSrc(url);
+    loadImageElement(url)
+      .then((img) => {
+        setLoadedImg(img);
+        const ratio = (img.naturalWidth || img.width || 100) / (img.naturalHeight || img.height || 100);
+        setAspectRatio(ratio);
+        const w = Math.min(doc.width * 0.6, 100);
+        const h = Math.round(w / ratio);
+        setOptions((prev) => ({ ...prev, targetWidth: Math.round(w), targetHeight: Math.round(h) }));
+      })
+      .catch((err) => console.error('Failed to load image:', err));
+  };
+
+  // Re-draw preview on canvas asynchronously to ensure UI thread never freezes
+  useEffect(() => {
+    if (!loadedImg || !previewCanvasRef.current) return;
+
+    const timer = setTimeout(() => {
+      try {
+        const { imageData } = processImageCanvas(loadedImg, options, 300);
+        const canvas = previewCanvasRef.current;
+        if (!canvas) return;
+
+        canvas.width = imageData.width;
+        canvas.height = imageData.height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Draw background processed image
+        ctx.putImageData(imageData, 0, 0);
+
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 1.5;
+        ctx.fillStyle = 'rgba(0, 229, 255, 0.6)';
+
+        if (options.mode === 'vector') {
+          const paths = traceMarchingSquares(imageData, options, 1, 1);
+          setPreviewStats({ elementCount: 1, detailCount: paths.length });
+
+          const compoundD = paths.join(' ');
+          if (compoundD) {
+            const path2D = new Path2D(compoundD);
+            ctx.stroke(path2D);
+          }
+        } else if (options.mode === 'halftone') {
+          const { pathD, dotCount } = generateHalftoneCompoundPath(imageData, options, 1, 1);
+          setPreviewStats({ elementCount: 1, detailCount: dotCount });
+
+          if (pathD) {
+            const path2D = new Path2D(pathD);
+            ctx.fillStyle = '#00e5ff';
+            ctx.fill(path2D);
+          }
+        } else if (options.mode === 'scanline') {
+          const lines = generateScanlinePaths(imageData, options, 1, 1);
+          setPreviewStats({ elementCount: 1, detailCount: lines.length });
+
+          const compoundD = lines.join(' ');
+          if (compoundD) {
+            const path2D = new Path2D(compoundD);
+            ctx.stroke(path2D);
+          }
+        }
+      } catch (err) {
+        console.error('Error rendering image preview:', err);
+      }
+    }, 30);
+
+    return () => clearTimeout(timer);
+  }, [loadedImg, options, targetLayerId]);
+
+  if (!isImageImportOpen) return null;
+
+  const handleWidthChange = (val: number) => {
+    const w = Math.max(1, val);
+    if (lockAspect && aspectRatio) {
+      setOptions({ ...options, targetWidth: w, targetHeight: Math.round(w / aspectRatio) });
+    } else {
+      setOptions({ ...options, targetWidth: w });
+    }
+  };
+
+  const handleHeightChange = (val: number) => {
+    const h = Math.max(1, val);
+    if (lockAspect && aspectRatio) {
+      setOptions({ ...options, targetHeight: h, targetWidth: Math.round(h * aspectRatio) });
+    } else {
+      setOptions({ ...options, targetHeight: h });
+    }
+  };
+
+  const handleImport = () => {
+    if (!loadedImg) return;
+
+    try {
+      const { imageData } = processImageCanvas(loadedImg, options, 300);
+      const scaleX = options.targetWidth / imageData.width;
+      const scaleY = options.targetHeight / imageData.height;
+
+      // Position in center of bed
+      const startX = Math.max(0, (doc.width - options.targetWidth) / 2);
+      const startY = Math.max(0, (doc.height - options.targetHeight) / 2);
+
+      const timestamp = Date.now();
+      let importedElement: EtchElement | null = null;
+
+      if (options.mode === 'vector') {
+        const paths = traceMarchingSquares(imageData, options, scaleX, scaleY);
+        const compoundD = paths.join(' ');
+        if (compoundD) {
+          importedElement = {
+            id: `img_vector_${timestamp}`,
+            name: `Image Vector Trace`,
+            type: 'path',
+            layerId: targetLayerId,
+            x: startX,
+            y: startY,
+            d: compoundD,
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            opacity: 1,
+            strokeWidth: 0.2,
+            strokeColor: '#000000',
+            fillColor: 'none',
+            machining: 'outline',
+            visible: true,
+            locked: false,
+          };
+        }
+      } else if (options.mode === 'halftone') {
+        const { pathD } = generateHalftoneCompoundPath(imageData, options, scaleX, scaleY);
+        if (pathD) {
+          importedElement = {
+            id: `img_halftone_${timestamp}`,
+            name: `Image Halftone Grid`,
+            type: 'path',
+            layerId: targetLayerId,
+            x: startX,
+            y: startY,
+            d: pathD,
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            opacity: 1,
+            strokeWidth: 0.2,
+            strokeColor: '#000000',
+            fillColor: '#000000',
+            machining: 'filled',
+            visible: true,
+            locked: false,
+          };
+        }
+      } else if (options.mode === 'scanline') {
+        const lines = generateScanlinePaths(imageData, options, scaleX, scaleY);
+        const compoundD = lines.join(' ');
+        if (compoundD) {
+          importedElement = {
+            id: `img_scanline_${timestamp}`,
+            name: `Image Engrave Scanlines`,
+            type: 'path',
+            layerId: targetLayerId,
+            x: startX,
+            y: startY,
+            d: compoundD,
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            opacity: 1,
+            strokeWidth: 0.2,
+            strokeColor: '#000000',
+            fillColor: 'none',
+            machining: 'outline',
+            visible: true,
+            locked: false,
+          };
+        }
+      }
+
+      if (importedElement) {
+        setDocument({
+          ...doc,
+          elements: [...doc.elements, importedElement],
+          selectedIds: [importedElement.id],
+        });
+      }
+
+      closeImageImport();
+    } catch (err) {
+      console.error('Failed to import image elements:', err);
+      alert('Failed to process and import image elements.');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 select-none">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden text-slate-800 dark:text-slate-100">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-500 flex items-center justify-center text-white shadow-md">
+              <ImageIcon className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold">Import & Vectorize Image</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Convert raster images into vector traces, halftone grids, or engrave paths
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={closeImageImport}
+            className="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Content Body */}
+        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-12 gap-6">
+          {/* Controls Column (5 cols) */}
+          <div className="md:col-span-5 flex flex-col gap-5 border-r border-slate-200 dark:border-slate-800 pr-0 md:pr-6">
+            {!loadedImg ? (
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-cyan-500 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors text-center bg-slate-50/50 dark:bg-slate-850/50"
+              >
+                <Upload className="w-10 h-10 text-slate-400 mb-3" />
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                  Click to select an image
+                </p>
+                <p className="text-xs text-slate-400 mt-1">PNG, JPG, WebP, SVG, BMP</p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </div>
+            ) : (
+              <>
+                {/* Processing Mode Selection */}
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 block">
+                    Processing Mode
+                  </label>
+                  <div className="grid grid-cols-3 gap-2 bg-slate-100 dark:bg-slate-800/70 p-1 rounded-xl">
+                    <button
+                      onClick={() => setOptions({ ...options, mode: 'vector' })}
+                      className={`py-2 px-2 text-xs font-semibold rounded-lg flex flex-col items-center gap-1 transition-all ${
+                        options.mode === 'vector'
+                          ? 'bg-white dark:bg-slate-700 text-cyan-600 dark:text-cyan-400 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      Vector Trace
+                    </button>
+                    <button
+                      onClick={() => setOptions({ ...options, mode: 'halftone' })}
+                      className={`py-2 px-2 text-xs font-semibold rounded-lg flex flex-col items-center gap-1 transition-all ${
+                        options.mode === 'halftone'
+                          ? 'bg-white dark:bg-slate-700 text-cyan-600 dark:text-cyan-400 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      <Grid className="w-4 h-4" />
+                      Halftone Grid
+                    </button>
+                    <button
+                      onClick={() => setOptions({ ...options, mode: 'scanline' })}
+                      className={`py-2 px-2 text-xs font-semibold rounded-lg flex flex-col items-center gap-1 transition-all ${
+                        options.mode === 'scanline'
+                          ? 'bg-white dark:bg-slate-700 text-cyan-600 dark:text-cyan-400 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      <AlignJustify className="w-4 h-4" />
+                      Engrave Lines
+                    </button>
+                  </div>
+                </div>
+
+                {/* Adjustments: Threshold, Contrast, Brightness */}
+                <div className="space-y-4 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      Threshold / Binarization
+                    </span>
+                    <span className="text-xs font-mono text-cyan-500">{options.threshold}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="255"
+                    value={options.threshold}
+                    onChange={(e) => setOptions({ ...options, threshold: Number(e.target.value) })}
+                    className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  />
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      Brightness
+                    </span>
+                    <span className="text-xs font-mono text-cyan-500">{options.brightness}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-100"
+                    max="100"
+                    value={options.brightness}
+                    onChange={(e) => setOptions({ ...options, brightness: Number(e.target.value) })}
+                    className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  />
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      Contrast
+                    </span>
+                    <span className="text-xs font-mono text-cyan-500">{options.contrast}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-100"
+                    max="100"
+                    value={options.contrast}
+                    onChange={(e) => setOptions({ ...options, contrast: Number(e.target.value) })}
+                    className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  />
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={options.invert}
+                        onChange={(e) => setOptions({ ...options, invert: e.target.checked })}
+                        className="rounded border-slate-300 dark:border-slate-700 text-cyan-500 focus:ring-cyan-500"
+                      />
+                      Invert Light / Dark
+                    </label>
+                  </div>
+                </div>
+
+                {/* Mode Specific Options */}
+                {options.mode === 'halftone' && (
+                  <div className="space-y-3 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                        Dot Spacing (mm)
+                      </span>
+                      <span className="text-xs font-mono text-cyan-500">
+                        {options.halftoneSpacing} mm
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="5.0"
+                      step="0.1"
+                      value={options.halftoneSpacing}
+                      onChange={(e) =>
+                        setOptions({ ...options, halftoneSpacing: Number(e.target.value) })
+                      }
+                      className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {options.mode === 'scanline' && (
+                  <div className="space-y-3 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                        Line Pitch / Spacing (mm)
+                      </span>
+                      <span className="text-xs font-mono text-cyan-500">
+                        {options.scanlineSpacing} mm
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.2"
+                      max="3.0"
+                      step="0.1"
+                      value={options.scanlineSpacing}
+                      onChange={(e) =>
+                        setOptions({ ...options, scanlineSpacing: Number(e.target.value) })
+                      }
+                      className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {/* Target Size & Layer */}
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 block mb-1">
+                        Width (mm)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={options.targetWidth}
+                        onChange={(e) => handleWidthChange(Number(e.target.value))}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 block mb-1">
+                        Height (mm)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={options.targetHeight}
+                        onChange={(e) => handleHeightChange(Number(e.target.value))}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 block mb-1">
+                      Target Layer
+                    </label>
+                    <select
+                      value={targetLayerId}
+                      onChange={(e) => setTargetLayerId(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    >
+                      {doc.layers.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.name} ({l.operation})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Canvas Preview Column (7 cols) */}
+          <div className="md:col-span-7 flex flex-col items-center justify-center bg-slate-950/80 rounded-2xl p-4 border border-slate-800 relative min-h-[320px]">
+            {loadedImg ? (
+              <div className="relative max-w-full max-h-[450px] flex items-center justify-center overflow-hidden rounded-xl">
+                <canvas
+                  ref={previewCanvasRef}
+                  className="max-w-full max-h-[420px] object-contain border border-slate-700/50 shadow-2xl rounded-lg"
+                />
+                <div className="absolute top-3 right-3 bg-slate-900/80 backdrop-blur-md border border-slate-700 px-3 py-1.5 rounded-lg text-[11px] font-mono text-cyan-400 flex items-center gap-2">
+                  <span>
+                    Size: {options.targetWidth} × {options.targetHeight} mm
+                  </span>
+                  <span>|</span>
+                  <span>Compound Element (1)</span>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center text-slate-500">
+                <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-40" />
+                <p className="text-xs">No image loaded yet</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/50">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Change Image
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </button>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={closeImageImport}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 rounded-xl transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              disabled={!loadedImg}
+              onClick={handleImport}
+              className="px-5 py-2 text-xs font-bold bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 rounded-xl shadow-md transition-all flex items-center gap-1.5"
+            >
+              <Check className="w-4 h-4" />
+              Import to Canvas
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

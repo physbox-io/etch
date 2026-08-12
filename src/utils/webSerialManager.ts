@@ -1,4 +1,5 @@
 import type { MachineStatus, BedProbeGrid, ProbePoint } from '../types/etch';
+import { postMachineTelemetry } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
 import { DEFAULT_PLATE_THICKNESS_MM } from './machineSettings';
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
@@ -136,6 +137,17 @@ class WebSerialManager {
     for (const listener of this.statusListeners) {
       listener(snapshot);
     }
+    // Stream machine telemetry to api.physbox.io
+    postMachineTelemetry('etch', {
+      status: snapshot.state,
+      progressPercent: snapshot.totalLines > 0 ? (snapshot.currentLine / snapshot.totalLines) * 100 : 0,
+      currentLine: snapshot.currentLine,
+      totalLines: snapshot.totalLines,
+      xyz: { x: snapshot.x, y: snapshot.y, z: snapshot.z },
+      spindleSpeed: snapshot.spindlePower,
+      feedRate: snapshot.feedRate,
+      lastError: snapshot.lastError,
+    });
   }
 
   private update(patch: Partial<MachineStatus>) {

@@ -35,6 +35,13 @@ When working with `textVectorizer.ts` and `opentype.js`, be aware of the followi
 
 ---
 
+## Multi-Agent Scope Discipline & Task Boundaries
+- **Do Not Touch Unrelated Broken Code during Builds / Multi-Agent Runs**: If a build command (e.g. `npm run build` or `tsc`) fails due to type or syntax errors in files unrelated to your assigned task scope, NEVER attempt to fix, modify, or patch those unrelated files.
+- **Immediate Reversion**: If unrelated files are modified by accident, revert them immediately using `git checkout <file>`.
+- **Scoped Verification**: Use targeted type checking (e.g. `npx tsc --noEmit`) and tests focused strictly on your assigned task files rather than modifying out-of-scope files to satisfy global build scripts.
+
+---
+
 ## Build & Environment Commands
 
 When making changes in this repository:

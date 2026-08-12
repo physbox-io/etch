@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hatchContours } from '../src/utils/hatchFill';
+import { hatchContours, hatchRegion } from '../src/utils/hatchFill';
 import { generateGCode } from '../src/utils/gcodeExporter';
 import type { EtchDocument, EtchElement, EtchLayer } from '../src/types/etch';
 import { outlineSignature } from '../src/utils/textVectorizer';
@@ -57,6 +57,39 @@ describe('hatchContours', () => {
     // Consecutive rows run in opposite directions.
     const dir = (l: { x: number }[]) => Math.sign(l[1].x - l[0].x);
     expect(dir(lines[0])).toBe(-dir(lines[1]));
+  });
+
+  it('never links a hop that would cross a counter', () => {
+    // A ring: the hop from the end of a scanline's left span to the start of
+    // its right span is short, and runs straight across the hole. Distance
+    // alone said "one pitch away, stay down" and the tool cut through the
+    // middle of the 'o'.
+    const outer = square(20);
+    const hole = square(4, 8);
+    const lines = hatchRegion([outer, hole], 0, 1);
+
+    const crossers = lines.filter((l) => {
+      const from = l.linkFrom;
+      if (!from) return false;
+      const to = l.points[0];
+      const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+      return mid.x > 8 && mid.x < 12 && mid.y > 8 && mid.y < 12;
+    });
+    expect(crossers).toEqual([]);
+  });
+
+  it('links the turn from one scanline to the next inside a solid shape', () => {
+    const lines = hatchRegion([square(10)], 0, 1);
+    // Every row but the first is reachable from the end of the row before it,
+    // because a square has nothing in the way.
+    expect(lines[0].linkFrom).toBeNull();
+    expect(lines.slice(1).every((l) => l.linkFrom !== null)).toBe(true);
+    // And the point named is where the previous line actually ended.
+    for (let i = 1; i < lines.length; i++) {
+      const prevEnd = lines[i - 1].points[lines[i - 1].points.length - 1];
+      expect(lines[i].linkFrom!.x).toBeCloseTo(prevEnd.x, 9);
+      expect(lines[i].linkFrom!.y).toBeCloseTo(prevEnd.y, 9);
+    }
   });
 
   it('returns nothing for a shape thinner than one pitch', () => {

@@ -5,6 +5,7 @@ import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
+import { UserProfileButton } from './UserProfileButton';
 import {
   Scissors,
   Sparkles,
@@ -23,6 +24,7 @@ import {
   FolderInput,
   Info,
   Settings,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -52,6 +54,7 @@ export const TopNavbar: React.FC = () => {
     saveUserPresetByName,
     deleteUserPreset,
     openDocs,
+    openImageImport,
   } = useStore();
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
@@ -387,6 +390,9 @@ export const TopNavbar: React.FC = () => {
         >
           <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-300 animate-pulse" />
         </button>
+
+        {/* User Account Profile & Cloud Sync */}
+        <UserProfileButton />
 
         {/* GitHub Repository Link */}
         <a
