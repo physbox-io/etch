@@ -81,7 +81,7 @@ export const App: React.FC = () => {
   }, [selectedIds, document.elements, deleteElements, undo, redo, setSelectedIds]);
 
   return (
-    <div className="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden select-none font-sans">
+    <div className="w-screen h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden select-none font-sans transition-colors duration-200">
       {/* Top Navbar */}
       <TopNavbar />
 

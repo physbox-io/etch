@@ -193,30 +193,28 @@ export const TopNavbar: React.FC = () => {
 
   return (
     <header className="h-14 w-full bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between z-30 select-none transition-colors">
-      {/* Brand & Logo */}
+      {/* Brand & Logo + Preset Selector */}
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 via-amber-500 to-cyan-500 flex items-center justify-center shadow-md">
-          <Scissors className="w-5 h-5 text-white" />
-        </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white font-sans">
-              Physbox <span className="text-red-500 dark:text-red-400 font-normal">Etch</span>
-            </h1>
-            <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/80 border border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-300">
-              2D Studio
-            </span>
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 via-amber-500 to-cyan-500 flex items-center justify-center shadow-md">
+            <Scissors className="w-5 h-5 text-white" />
           </div>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400">Laser Cut &amp; CNC Milling Studio</p>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white font-sans">
+                Physbox <span className="text-red-500 dark:text-red-400 font-normal">Etch</span>
+              </h1>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/80 border border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-300">
+                2D Studio
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400">Laser Cut &amp; CNC Milling Studio</p>
+          </div>
         </div>
-      </div>
 
-      {/* Preset Selector & Quick Action Bar */}
-      <div className="flex items-center gap-2">
-        {/* Document selector + Save / Save As / Delete.
-            The select never *holds* the active document: its value is always
-            the placeholder, so re-picking the entry already loaded is still a
-            real change event and reloads it. */}
+        <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
+
+        {/* Preset Selector Pill */}
         <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <select
             value=""
@@ -246,9 +244,54 @@ export const TopNavbar: React.FC = () => {
             )}
           </select>
 
+          {isUserPreset && (
+            <>
+              <button
+                onClick={handleSave}
+                className="flex items-center justify-center p-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                title={`Update document "${userPresetName}" (Ctrl+S)`}
+              >
+                <Save className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={handleDelete}
+                className="flex items-center justify-center p-1 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
+                title={`Delete saved document "${userPresetName}"`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Center/Right: Machine Toolbar & Files */}
+      <div className="flex items-center gap-2 md:gap-3">
+        {/* Machine Control Island */}
+        <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+          <button
+            onClick={toggleGCodeModal}
+            className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-100 transition-all cursor-pointer"
+            title="Preview and cut G-code"
+          >
+            <Play className="w-3 h-3 text-emerald-500 dark:text-emerald-400 fill-current" />
+            <span className="hidden md:inline">Run</span>
+          </button>
+          <button
+            onClick={toggleMachineModal}
+            className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
+            title="Direct Machine Connect (Web Serial)"
+          >
+            <Cpu className="w-3 h-3 text-amber-500 dark:text-amber-400" />
+            <span className="hidden md:inline">Connect</span>
+          </button>
+        </div>
+
+        {/* Files & Actions Segmented Group */}
+        <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <button
             onClick={handleSave}
-            className="flex items-center justify-center p-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
             title={isUserPreset ? `Save "${userPresetName}" (Ctrl+S)` : 'Save document (Ctrl+S)'}
           >
             <Save className="w-3.5 h-3.5" />
@@ -256,154 +299,119 @@ export const TopNavbar: React.FC = () => {
 
           <button
             onClick={handleSaveAs}
-            className="flex items-center justify-center p-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
             title="Save As… (Ctrl+Shift+S)"
           >
             <SaveAll className="w-3.5 h-3.5" />
           </button>
 
-          {isUserPreset && (
-            <button
-              onClick={handleDelete}
-              className="flex items-center justify-center p-1 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
-              title={`Delete saved document "${userPresetName}"`}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+          <button
+            onClick={handleExportJson}
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
+            title="JSON (.json)"
+          >
+            <FileJson className="w-3.5 h-3.5" />
+          </button>
 
-        {/* Undo / Redo */}
-        <div className="flex items-center bg-slate-100 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-700/50 p-0.5">
+          <label
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-cyan-600 dark:text-cyan-400 transition-colors cursor-pointer"
+            title="Import SVG"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <input type="file" accept=".svg" onChange={handleImportSvg} className="hidden" />
+          </label>
+
+          <label
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
+            title="Open Etch document (.json)"
+          >
+            <FolderInput className="w-3.5 h-3.5" />
+            <input type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
+          </label>
+
+          <button
+            onClick={handleExportSvg}
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer"
+            title="SVG"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </button>
+
           <button
             onClick={undo}
             disabled={historyIndex === 0}
-            className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
             title="Undo (Ctrl+Z)"
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
+
           <button
             onClick={redo}
             disabled={historyIndex >= history.length - 1}
-            className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 transition-colors cursor-pointer"
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
             title="Redo (Ctrl+Y)"
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
         </div>
-      </div>
 
-      {/* Circle Icon Buttons at Top Right (matching Mesh conventions) */}
-      <div className="flex items-center gap-2">
-        {/* Settings */}
-        <button
-          onClick={toggleSettings}
-          className={`flex items-center justify-center w-8 h-8 rounded-full border transition-colors cursor-pointer shadow-xs ${
-            isSettingsOpen
-              ? 'bg-blue-100 border-blue-400 text-blue-700 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-400'
-              : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800'
-          }`}
-          title="Global Settings"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
+        {/* Right Utilities (Dark Mode, Docs, Settings, Copilot, User Profile, GitHub) matching ~/physics */}
+        <div className="flex items-center gap-1.5">
+          {/* Dark Mode Toggle */}
+          <button
+            onClick={toggleDarkMode}
+            className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
+            title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          >
+            {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />}
+          </button>
 
-        {/* Reference Guide */}
-        <button
-          onClick={() => openDocs()}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title="Reference Guide"
-        >
-          <Info className="w-4 h-4 text-amber-500" />
-        </button>
+          {/* Reference Guide (Docs) */}
+          <button
+            onClick={() => openDocs()}
+            className="flex items-center justify-center w-8 h-8 rounded-full border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors cursor-pointer shadow-xs"
+            title="Reference Guide"
+          >
+            <Info className="w-4 h-4" />
+          </button>
 
-        {/* Dark Mode Toggle */}
-        <button
-          onClick={toggleDarkMode}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-        >
-          {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />}
-        </button>
+          {/* Settings */}
+          <button
+            onClick={toggleSettings}
+            className={`flex items-center justify-center w-8 h-8 rounded-full border transition-colors cursor-pointer shadow-xs ${
+              isSettingsOpen
+                ? 'bg-blue-100 border-blue-400 text-blue-700 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-400'
+                : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+            title="Global Settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
 
-        {/* Import SVG */}
-        <label
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title="Import SVG"
-        >
-          <Upload className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-          <input type="file" accept=".svg" onChange={handleImportSvg} className="hidden" />
-        </label>
+          {/* Sparkles AI Sidebar Toggle */}
+          <button
+            onClick={toggleAiPanel}
+            className="flex items-center justify-center w-8 h-8 rounded-full border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 transition-colors cursor-pointer shadow-xs"
+            title="Sparkles AI Copilot"
+          >
+            <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-300 animate-pulse" />
+          </button>
 
-        {/* Import Etch JSON document */}
-        <label
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title="Open Etch document (.json)"
-        >
-          <FolderInput className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-          <input type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
-        </label>
+          {/* User Account Profile & Cloud Sync */}
+          <UserProfileButton />
 
-        {/* Export Etch JSON document */}
-        <button
-          onClick={handleExportJson}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title="Export Etch document (.json)"
-        >
-          <FileJson className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-        </button>
-
-        {/* Export SVG */}
-        <button
-          onClick={handleExportSvg}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title="Export SVG"
-        >
-          <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-        </button>
-
-        {/* Run the job. This is the button someone reaches for when the drawing
-            is finished, so it reads as one — not as a file format. */}
-        <button
-          onClick={toggleGCodeModal}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors cursor-pointer shadow-xs"
-          title="Preview and cut"
-        >
-          <Play className="w-4 h-4 fill-current" />
-        </button>
-
-        {/* Machine Connect */}
-        <button
-          onClick={toggleMachineModal}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors cursor-pointer shadow-xs"
-          title="Direct Machine Connect (Web Serial)"
-        >
-          <Cpu className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-        </button>
-
-        {/* Sparkles AI Sidebar Toggle */}
-        <button
-          onClick={toggleAiPanel}
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 transition-colors cursor-pointer shadow-xs"
-          title="Sparkles AI Copilot"
-        >
-          <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-300 animate-pulse" />
-        </button>
-
-        {/* User Account Profile & Cloud Sync */}
-        <UserProfileButton />
-
-        {/* GitHub Repository Link */}
-        <a
-          href="https://github.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          title="Physbox GitHub Repository"
-        >
-          <GithubIcon className="w-4 h-4" />
-        </a>
+          {/* GitHub Repository Link */}
+          <a
+            href="https://github.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
+            title="Physbox GitHub Repository"
+          >
+            <GithubIcon className="w-4 h-4" />
+          </a>
+        </div>
       </div>
 
       {/* SVG import report — unit assumptions and skipped content matter on a
