@@ -34,17 +34,24 @@ Open [http://localhost:5176](http://localhost:5176).
 
 WebSerial machine control requires a Chromium-based browser (Chrome, Edge, Opera) and a GRBL-compatible controller.
 
-### Account sign-in (optional)
+### Account sign-in
 
 Everything in the app works signed out, entirely in the browser. Signing in adds cloud sync of machine settings, copilot keys and saved presets, plus remote telemetry.
 
-Sign-in uses Google Identity Services and needs an OAuth 2.0 **Web application** client id from the [Google Cloud console](https://console.cloud.google.com/apis/credentials), with your origin (`http://localhost:5176` for dev) listed under *Authorised JavaScript origins*:
+Sign-in uses Google Identity Services, and **needs no setup for a normal checkout** — the OAuth client id is committed in `src/utils/googleAuth.ts`. There is no `.env` to create; `.env` and `.env.*` are gitignored precisely so nothing that *is* secret gets committed by habit.
 
-```bash
-echo 'VITE_GOOGLE_CLIENT_ID=<your-id>.apps.googleusercontent.com' > .env.local
-```
+The id is public by construction: Vite substitutes it into the shipped bundle, so it is readable by anyone who loads the page. It identifies the application rather than authenticating it. What actually constrains it is the authorised-origins list on the Google side, plus the API verifying the audience of every credential it receives.
 
-The value is public — it identifies the app rather than authenticating it — but it must be the **same** id the API runs with as `GOOGLE_CLIENT_ID`, because the server verifies that each credential was minted for that audience. Without it the sign-in dialog says so plainly rather than pretending to sign you in.
+**It is baked in at build time, not read at runtime.** Setting `VITE_GOOGLE_CLIENT_ID` on the `etch` Cloud Run service does nothing at all — that service is nginx serving static files, and by then the value is already compiled into the JavaScript. Changing client id means editing the constant and rebuilding.
+
+| Where | Value | Set in |
+| --- | --- | --- |
+| Frontend | `DEFAULT_GOOGLE_CLIENT_ID` | `src/utils/googleAuth.ts` (committed) — override for a local build with `VITE_GOOGLE_CLIENT_ID` |
+| API | `GOOGLE_CLIENT_ID` | Cloud Run env var on the `api` service — see that repo's README |
+
+**These two must be identical.** If they drift, every sign-in fails as a wrong-audience error, which reads as a generic `401 Invalid Google credential` and tells you nothing about the real cause.
+
+Changing the client id, or adding a new origin (each origin is matched exactly — `https://etch.physbox.io` does not cover `https://etch-…run.app`), is done under *Authorised JavaScript origins* in the [Google Cloud console](https://console.cloud.google.com/apis/credentials). The client type must be **Web application**, and *Authorized redirect URIs* stays empty — Identity Services hands the token to a JavaScript callback and never redirects.
 
 > **Note:** copilot API keys entered in Settings are synced to your PhysBox account so they carry across browsers. They are stored on the server as well as in localStorage.
 

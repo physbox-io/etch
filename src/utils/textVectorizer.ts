@@ -1,4 +1,7 @@
 import type { EtchElement } from '../types/etch';
+import { PathArcLookup } from './pathArcLookup';
+import { localToBed, bedToLocal } from './geom';
+import { nodesToPath } from './bezierNodes';
 
 /**
  * Converts text elements into real vector outlines so they can be cut or
@@ -251,7 +254,16 @@ function isPathDataValid(d: string): boolean {
  * The canvas draws text with dominant-baseline="hanging", so local y=0 is the
  * top of the em box; the baseline is placed at the font's ascender to match.
  */
-export async function textToOutlineD(el: EtchElement): Promise<string> {
+function getElementPathD(targetPathEl: EtchElement): string {
+  if (targetPathEl.d) return targetPathEl.d;
+  if (targetPathEl.bezierNodes && targetPathEl.bezierNodes.length > 1) {
+    const closed = /z\s*$/i.test((targetPathEl.d || '').trim());
+    return nodesToPath(targetPathEl.bezierNodes, closed);
+  }
+  return '';
+}
+
+export async function textToOutlineD(el: EtchElement, targetPathEl?: EtchElement): Promise<string> {
   const text = el.text ?? '';
   if (!text.trim()) return '';
 
@@ -261,6 +273,14 @@ export async function textToOutlineD(el: EtchElement): Promise<string> {
   const scale = size / font.unitsPerEm;
   const baselineY = font.ascender * scale;
   const tracking = el.letterSpacing || 0;
+
+  const targetD = targetPathEl ? getElementPathD(targetPathEl) : '';
+  if (el.textPathId && targetD) {
+    const pathLookup = new PathArcLookup(targetD);
+    if (pathLookup.totalLength > 0) {
+      return layoutGlyphsOnPath(font, text, size, baselineY, scale, tracking, pathLookup, el, targetPathEl);
+    }
+  }
 
   // font.getPath() gives the best typography (ligatures, shaping), but it runs
   // the font's GSUB tables and opentype.js throws or outputs NaNs on lookup formats
@@ -323,13 +343,135 @@ function layoutGlyphs(
   return parts.join(' ');
 }
 
+function layoutGlyphsOnPath(
+  font: OpenTypeFont,
+  text: string,
+  size: number,
+  baselineY: number,
+  scale: number,
+  tracking: number,
+  pathLookup: PathArcLookup,
+  el: EtchElement,
+  targetPathEl?: EtchElement
+): string {
+  const chars = [...text];
+
+  let totalTextWidth = 0;
+  for (let i = 0; i < chars.length; i++) {
+    const glyph = font.charToGlyph(chars[i]);
+    totalTextWidth += glyph.advanceWidth * scale + tracking;
+    const next = chars[i + 1];
+    if (next && typeof font.getKerningValue === 'function') {
+      try {
+        const kern = font.getKerningValue(glyph, font.charToGlyph(next));
+        if (typeof kern === 'number' && !Number.isNaN(kern)) {
+          totalTextWidth += kern * scale;
+        }
+      } catch {}
+    }
+  }
+
+  let alignOffset = 0;
+  const align = el.textPathAlign || 'left';
+  if (align === 'center') {
+    alignOffset = (pathLookup.totalLength - totalTextWidth) / 2;
+  } else if (align === 'right') {
+    alignOffset = pathLookup.totalLength - totalTextWidth;
+  }
+
+  const startDistance = (el.textPathOffset || 0) + alignOffset;
+  const parts: string[] = [];
+  let currentAdvance = 0;
+
+  for (let i = 0; i < chars.length; i++) {
+    const glyph = font.charToGlyph(chars[i]);
+    const gPath = glyph.getPath(currentAdvance, baselineY, size);
+
+    for (const cmd of gPath.commands) {
+      if (!cmd) continue;
+      if ('x' in cmd && 'y' in cmd && typeof cmd.x === 'number' && typeof cmd.y === 'number') {
+        const pt = warpPoint(cmd.x, cmd.y, baselineY, startDistance, pathLookup, el, targetPathEl);
+        cmd.x = pt.x;
+        cmd.y = pt.y;
+      }
+      if ('x1' in cmd && 'y1' in cmd && typeof cmd.x1 === 'number' && typeof cmd.y1 === 'number') {
+        const pt1 = warpPoint(cmd.x1, cmd.y1, baselineY, startDistance, pathLookup, el, targetPathEl);
+        cmd.x1 = pt1.x;
+        cmd.y1 = pt1.y;
+      }
+      if ('x2' in cmd && 'y2' in cmd && typeof cmd.x2 === 'number' && typeof cmd.y2 === 'number') {
+        const pt2 = warpPoint(cmd.x2, cmd.y2, baselineY, startDistance, pathLookup, el, targetPathEl);
+        cmd.x2 = pt2.x;
+        cmd.y2 = pt2.y;
+      }
+    }
+
+    gPath.commands = sanitizePathCommands(gPath.commands, 4);
+    const d = gPath.toPathData(4);
+    if (d && isPathDataValid(d)) parts.push(d);
+
+    currentAdvance += glyph.advanceWidth * scale + tracking;
+    const next = chars[i + 1];
+    if (next && typeof font.getKerningValue === 'function') {
+      try {
+        const kern = font.getKerningValue(glyph, font.charToGlyph(next));
+        if (typeof kern === 'number' && !Number.isNaN(kern)) {
+          currentAdvance += kern * scale;
+        }
+      } catch {}
+    }
+  }
+
+  return parts.join(' ');
+}
+
+function warpPoint(
+  x: number,
+  y: number,
+  baselineY: number,
+  startDist: number,
+  pathLookup: PathArcLookup,
+  el: EtchElement,
+  targetPathEl?: EtchElement
+): { x: number; y: number } {
+  const s = x + startDist;
+  const h = y - baselineY;
+  const sample = pathLookup.getPointAtDistance(s);
+  const sideMult = el.textPathSide === 'below' ? -1 : 1;
+  const targetLocalX = sample.x + h * sample.nx * sideMult;
+  const targetLocalY = sample.y + h * sample.ny * sideMult;
+
+  if (!targetPathEl) {
+    return { x: targetLocalX, y: targetLocalY };
+  }
+
+  const bedPt = localToBed(targetPathEl, targetLocalX, targetLocalY);
+  return bedToLocal(el, bedPt.x, bedPt.y);
+}
+
 /**
  * Properties that invalidate a cached outline when they change. The separator
  * stops neighbouring fields running together, so "ab"+"c" and "a"+"bc" cannot
  * collide into the same signature.
  */
-export function outlineSignature(el: EtchElement): string {
-  return [el.text, el.fontFamily, el.fontWeight, el.fontSize, el.letterSpacing].join('');
+export function outlineSignature(el: EtchElement, targetPathEl?: EtchElement): string {
+  const baseSig = [el.text, el.fontFamily, el.fontWeight, el.fontSize, el.letterSpacing].join(' ');
+  if (!el.textPathId) return baseSig;
+  const targetD = targetPathEl ? getElementPathD(targetPathEl) : '';
+  const targetTransform = targetPathEl
+    ? `${targetPathEl.x}:${targetPathEl.y}:${targetPathEl.rotation}:${targetPathEl.scaleX}:${targetPathEl.scaleY}`
+    : '';
+  const textTransform = `${el.x}:${el.y}:${el.rotation}:${el.scaleX}:${el.scaleY}`;
+  return [
+    baseSig,
+    el.textPathId,
+    el.textPathOffset || 0,
+    el.textPathAlign || 'left',
+    el.textPathSide || 'above',
+    targetD,
+    targetTransform,
+    textTransform,
+  ].join(' ');
 }
 
 /**
@@ -338,6 +480,10 @@ export function outlineSignature(el: EtchElement): string {
  * G-code — trusts the outline only when this holds, so an edited string can
  * never be machined as the shape it used to be.
  */
-export function hasFreshOutline(el: EtchElement): boolean {
-  return !!el.outlineD && el.outlineSig === outlineSignature(el);
+export function hasFreshOutline(el: EtchElement, targetPathEl?: EtchElement): boolean {
+  if (!el.outlineD || !el.outlineSig) return false;
+  if (!el.textPathId || targetPathEl) {
+    return el.outlineSig === outlineSignature(el, targetPathEl);
+  }
+  return true;
 }

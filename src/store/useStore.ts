@@ -406,11 +406,13 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   vectorizeText: async (ids) => {
     const { textToOutlineD, outlineSignature } = await import('../utils/textVectorizer');
-    const targets = get()
-      .document.elements.filter(
-        (el) => el.type === 'text' && (!ids || ids.includes(el.id))
-      )
-      .filter((el) => el.outlineSig !== outlineSignature(el) || !el.outlineD);
+    const allElements = get().document.elements;
+    const findTarget = (el: EtchElement) =>
+      el.textPathId ? allElements.find((e) => e.id === el.textPathId) : undefined;
+
+    const targets = allElements
+      .filter((el) => el.type === 'text' && (!ids || ids.includes(el.id)))
+      .filter((el) => el.outlineSig !== outlineSignature(el, findTarget(el)) || !el.outlineD);
 
     if (targets.length === 0) return { done: 0, failed: [] };
 
@@ -420,16 +422,15 @@ export const useStore = create<EtchStore>((set, get) => ({
 
     for (const el of targets) {
       try {
-        const d = await textToOutlineD(el);
-        const sig = outlineSignature(el);
+        const currentElements = get().document.elements;
+        const targetPathEl = el.textPathId ? currentElements.find((e) => e.id === el.textPathId) : undefined;
+        const d = await textToOutlineD(el, targetPathEl);
+        const sig = outlineSignature(el, targetPathEl);
         set((state) => ({
           document: {
             ...state.document,
             elements: state.document.elements.map((it) =>
-              // Re-check the signature: the text may have been edited while the
-              // font was downloading, in which case this outline is already out
-              // of date and must not be written.
-              it.id === el.id && outlineSignature(it) === sig
+              it.id === el.id && outlineSignature(it, targetPathEl) === sig
                 ? { ...it, outlineD: d, outlineSig: sig }
                 : it
             ),

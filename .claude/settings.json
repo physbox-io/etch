@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gcloud run deploy *)",
+      "Bash(gcloud run services update *)",
+      "Bash(gcloud run services describe *)",
+      "Bash(gcloud run services list*)",
+      "Bash(gcloud run revisions list*)",
+      "Bash(gcloud run revisions describe *)",
+      "Bash(gcloud secrets create *)",
+      "Bash(gcloud secrets describe *)",
+      "Bash(gcloud secrets list*)",
+      "Bash(gcloud secrets versions add *)",
+      "Bash(gcloud secrets add-iam-policy-binding *)",
+      "Bash(gcloud services enable *)",
+      "Bash(gcloud sql instances describe *)",
+      "Bash(gcloud sql instances list*)",
+      "Bash(gcloud sql databases list*)",
+      "Bash(gcloud logging read *)"
+    ],
+    "ask": [
+      "Bash(gcloud run services delete *)",
+      "Bash(gcloud run revisions delete *)",
+      "Bash(gcloud secrets delete *)",
+      "Bash(gcloud secrets versions destroy *)",
+      "Bash(gcloud secrets remove-iam-policy-binding *)",
+      "Bash(gcloud sql instances delete *)",
+      "Bash(gcloud sql instances patch *)",
+      "Bash(gcloud sql databases delete *)",
+      "Bash(gcloud projects delete *)",
+      "Bash(gcloud services disable *)"
+    ]
+  }
+}

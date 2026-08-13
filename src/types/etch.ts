@@ -151,6 +151,10 @@ export interface EtchElement {
   fontSize?: number;
   fontWeight?: string;
   letterSpacing?: number;
+  textPathId?: string;
+  textPathOffset?: number;
+  textPathAlign?: 'left' | 'center' | 'right';
+  textPathSide?: 'above' | 'below';
   // symbol
   symbolId?: string;
   // bezier / freehand / path

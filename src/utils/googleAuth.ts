@@ -45,16 +45,32 @@ declare global {
 }
 
 /**
- * The OAuth Web client id, baked in at build time.
+ * The OAuth Web client id for `etch.physbox.io`.
  *
- * This is public by design — it identifies the application, it is not a secret,
- * and the API independently verifies that every credential it receives was
- * minted for this same id. It must match the `GOOGLE_CLIENT_ID` the API runs
- * with, or every sign-in will be rejected as having the wrong audience.
+ * Deliberately committed to source rather than kept in a `.env`. It is public
+ * by construction — Vite substitutes it into the shipped JavaScript, so anyone
+ * can read it out of the bundle — and it *identifies* the application rather
+ * than authenticating it; the security comes from the authorised-origins list
+ * on the Google side and from the API verifying the audience on every
+ * credential. Holding it here means a fresh checkout builds a working sign-in
+ * with no untracked setup step, and leaves `.env` gitignored and free for
+ * things that genuinely are secret.
+ *
+ * It must stay identical to the `GOOGLE_CLIENT_ID` the API runs with. If the
+ * two ever drift, every sign-in fails as a wrong-audience error.
+ */
+const DEFAULT_GOOGLE_CLIENT_ID = '454740079598-5kjau5ikk21c0touvj83qpunnonao4vp.apps.googleusercontent.com';
+
+/**
+ * The client id this build signs in against.
+ *
+ * `VITE_GOOGLE_CLIENT_ID` overrides the default, for pointing a local build or
+ * a fork at a different OAuth client without editing source.
  */
 export function getGoogleClientId(): string {
-  const raw = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-  return typeof raw === 'string' ? raw.trim() : '';
+  const override = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+  if (typeof override === 'string' && override.trim()) return override.trim();
+  return DEFAULT_GOOGLE_CLIENT_ID.trim();
 }
 
 export function isGoogleSignInConfigured(): boolean {

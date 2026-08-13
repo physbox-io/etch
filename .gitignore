@@ -13,6 +13,12 @@ dist-ssr
 *.local
 scratch
 
+# Never commit env files — the one build-time value this app needs (the public
+# Google OAuth client id) lives in src/utils/googleAuth.ts, so anything landing
+# here is by definition something that should not be in the repository.
+.env
+.env.*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

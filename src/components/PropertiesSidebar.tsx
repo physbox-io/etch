@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Loader2,
   Upload,
+  Route,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -647,6 +648,89 @@ export const PropertiesSidebar: React.FC = () => {
                 />
               </div>
             </>
+          )}
+
+          {/* Text on Path options */}
+          {selectedElement.type === 'text' && (
+            <div className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold flex items-center gap-1">
+                  <Route className="w-3.5 h-3.5 text-cyan-500" />
+                  <span>Text on Path</span>
+                </label>
+                {selectedElement.textPathId && (
+                  <button
+                    onClick={() => updateElement(selectedElement.id, { textPathId: undefined, textPathOffset: 0 })}
+                    className="text-[10px] text-red-500 hover:text-red-600 font-semibold cursor-pointer"
+                  >
+                    Detach
+                  </button>
+                )}
+              </div>
+
+              <div>
+                <select
+                  value={selectedElement.textPathId || ''}
+                  onChange={(e) => updateElement(selectedElement.id, { textPathId: e.target.value || undefined })}
+                  className="w-full px-2 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-xs cursor-pointer"
+                >
+                  <option value="">None (Straight line)</option>
+                  {document.elements
+                    .filter((e) => ['bezier', 'path', 'freehand', 'line', 'polygon', 'star'].includes(e.type) && e.id !== selectedElement.id)
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.name} ({e.type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {selectedElement.textPathId && (
+                <div className="space-y-2 pt-1 border-t border-slate-200 dark:border-slate-700/60">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Start Offset (mm)</label>
+                      <NumberInput
+                        step="1"
+                        value={selectedElement.textPathOffset || 0}
+                        onChange={(val) => updateElement(selectedElement.id, { textPathOffset: val ?? 0 })}
+                        className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Side</label>
+                      <select
+                        value={selectedElement.textPathSide || 'above'}
+                        onChange={(e) => updateElement(selectedElement.id, { textPathSide: e.target.value as 'above' | 'below' })}
+                        className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-xs cursor-pointer"
+                      >
+                        <option value="above">Above Path</option>
+                        <option value="below">Below Path</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Alignment</label>
+                    <div className="grid grid-cols-3 gap-1 mt-1">
+                      {(['left', 'center', 'right'] as const).map((align) => (
+                        <button
+                          key={align}
+                          onClick={() => updateElement(selectedElement.id, { textPathAlign: align })}
+                          className={`py-1 text-[10px] font-semibold capitalize rounded border cursor-pointer ${
+                            (selectedElement.textPathAlign || 'left') === align
+                              ? 'bg-cyan-500/20 border-cyan-500 text-cyan-600 dark:text-cyan-400'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                          }`}
+                        >
+                          {align}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* Machinability of text: outlines are what actually gets cut. */}
