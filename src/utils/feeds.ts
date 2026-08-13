@@ -303,22 +303,28 @@ export function deriveLaserFeeds(
      * would put the same energy in, but all at once and all in one place, which
      * is how stock catches fire and how an engrave ends up a charred trench.
      */
-    passes = Math.ceil(MIN_LASER_SPEED_MM_MIN / speed);
-    if (passes > MAX_LASER_PASSES) {
-      notes.push(
-        `A ${describeLaserSource(source)} would need ${passes} passes to ${
-          cutting ? `cut ${stockThicknessMm} mm of ` : 'mark '
-        }${material.name}, which is past the point of being worth setting up. ` +
-          `Capped at ${MAX_LASER_PASSES} — expect it not to go through.`
-      );
-      passes = MAX_LASER_PASSES;
+    if (speed >= MIN_LASER_SPEED_MM_MIN * 0.95 || Math.round(speed) >= MIN_LASER_SPEED_MM_MIN) {
+      // Within 5% of the floor (or rounds to min speed): clamp to min speed in 1 pass
+      // rather than doubling the pass count for a fractional mm/min shortfall.
+      speed = MIN_LASER_SPEED_MM_MIN;
     } else {
-      notes.push(
-        `One pass would need ${Math.round(speed)} mm/min, slow enough to char and to risk a flare-up. ` +
-          `Split into ${passes} passes at ${MIN_LASER_SPEED_MM_MIN} mm/min instead.`
-      );
+      passes = Math.ceil(MIN_LASER_SPEED_MM_MIN / speed);
+      if (passes > MAX_LASER_PASSES) {
+        notes.push(
+          `A ${describeLaserSource(source)} would need ${passes} passes to ${
+            cutting ? `cut ${stockThicknessMm} mm of ` : 'mark '
+          }${material.name}, which is past the point of being worth setting up. ` +
+            `Capped at ${MAX_LASER_PASSES} — expect it not to go through.`
+        );
+        passes = MAX_LASER_PASSES;
+      } else {
+        notes.push(
+          `One pass would need ${Math.round(speed)} mm/min, slow enough to char and to risk a flare-up. ` +
+            `Split into ${passes} passes at ${MIN_LASER_SPEED_MM_MIN} mm/min instead.`
+        );
+      }
+      speed = MIN_LASER_SPEED_MM_MIN;
     }
-    speed = MIN_LASER_SPEED_MM_MIN;
   }
 
   const power = Math.max(MIN_LASER_POWER_PERCENT, Math.min(100, Math.round(powerFraction * 100)));

@@ -8,7 +8,7 @@ import type {
   BedProbeGrid,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
-import { syncCloudPreset, deleteCloudPreset } from '../utils/apiClient';
+import { saveCloudPreset, removeCloudPreset } from '../utils/cloudSync';
 import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
 import {
   readLaserSource,
@@ -170,6 +170,8 @@ interface EtchStore {
   userPresetNames: string[];
   saveUserPresetByName: (name: string) => void;
   deleteUserPreset: (name: string) => void;
+  /** Adds presets pulled from the signed-in account. Existing names win. */
+  mergeCloudPresets: (incoming: Record<string, EtchDocument>) => number;
 
   /** Text outline vectorization (so text can actually be machined). */
   vectorizeText: (ids?: string[]) => Promise<{ done: number; failed: string[] }>;
@@ -339,7 +341,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const newDoc = cloneDoc({ ...document, name: trimmed });
       presets[trimmed] = newDoc;
       writeUserPresets(presets);
-      syncCloudPreset('etch', trimmed, newDoc);
+      saveCloudPreset(trimmed, newDoc);
       set({
         activePreset: `user:${trimmed}`,
         userPresetNames: Object.keys(presets).sort(),
@@ -350,12 +352,40 @@ export const useStore = create<EtchStore>((set, get) => ({
     }
   },
 
+  /**
+   * Folds presets from the account into the local set after sign-in.
+   *
+   * Runs every incoming document through `sanitizeDoc`, because a preset saved
+   * by an older build of any Physbox app is exactly the stale shape that repair
+   * exists for, and it arrives here without having passed through the loader.
+   */
+  mergeCloudPresets: (incoming) => {
+    const names = Object.keys(incoming);
+    if (names.length === 0) return 0;
+    try {
+      const presets = readUserPresets();
+      let added = 0;
+      for (const name of names) {
+        if (presets[name]) continue;
+        presets[name] = cloneDoc({ ...incoming[name], name });
+        added += 1;
+      }
+      if (added === 0) return 0;
+      writeUserPresets(presets);
+      set({ userPresetNames: Object.keys(presets).sort() });
+      return added;
+    } catch (e) {
+      console.error('Failed to merge cloud presets', e);
+      return 0;
+    }
+  },
+
   deleteUserPreset: (name) => {
     try {
       const presets = readUserPresets();
       delete presets[name];
       writeUserPresets(presets);
-      deleteCloudPreset(`user:${name}`);
+      removeCloudPreset(name);
       set({ userPresetNames: Object.keys(presets).sort() });
       if (get().activePreset === `user:${name}`) {
         get().loadPreset(DEFAULT_PRESET_ID);

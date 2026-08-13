@@ -34,6 +34,20 @@ Open [http://localhost:5176](http://localhost:5176).
 
 WebSerial machine control requires a Chromium-based browser (Chrome, Edge, Opera) and a GRBL-compatible controller.
 
+### Account sign-in (optional)
+
+Everything in the app works signed out, entirely in the browser. Signing in adds cloud sync of machine settings, copilot keys and saved presets, plus remote telemetry.
+
+Sign-in uses Google Identity Services and needs an OAuth 2.0 **Web application** client id from the [Google Cloud console](https://console.cloud.google.com/apis/credentials), with your origin (`http://localhost:5176` for dev) listed under *Authorised JavaScript origins*:
+
+```bash
+echo 'VITE_GOOGLE_CLIENT_ID=<your-id>.apps.googleusercontent.com' > .env.local
+```
+
+The value is public — it identifies the app rather than authenticating it — but it must be the **same** id the API runs with as `GOOGLE_CLIENT_ID`, because the server verifies that each credential was minted for that audience. Without it the sign-in dialog says so plainly rather than pretending to sign you in.
+
+> **Note:** copilot API keys entered in Settings are synced to your PhysBox account so they carry across browsers. They are stored on the server as well as in localStorage.
+
 ---
 
 ## 🎯 Setting Up a Machine

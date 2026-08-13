@@ -39,13 +39,58 @@ function depthColor(f: number): string {
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
+/**
+ * Where the machine actually is, while it is running this job.
+ *
+ * Position is in document space — the caller maps the controller's work
+ * coordinates back through the document's origin, which is the only place that
+ * knows which way round the bed is. `progress` is how much of the streamed
+ * program has been sent, used only to say roughly where in the program to look;
+ * the position itself decides what has been cut.
+ */
+export interface LiveToolPosition {
+  x: number;
+  y: number;
+  z: number;
+  /** Fraction of the program streamed so far, 0–1. */
+  progress: number;
+  /**
+   * Whether the program on the machine is this toolpath.
+   *
+   * False during a dry run, which traces boundaries and so is not this path at
+   * all: the head still follows the machine, but nothing is marked as cut.
+   */
+  followsPath: boolean;
+  paused: boolean;
+}
+
+/** How far either side of the streamed position to look for the move in flight. */
+const LIVE_SEARCH_WINDOW = 96;
+/** Per-frame easing toward the machine's last reported position. */
+const LIVE_EASE = 0.22;
+
+/** Closest point on segment ab to p, as a fraction along ab. */
+function projectFraction(
+  ax: number, ay: number, bx: number, by: number, px: number, py: number
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 <= 1e-12) return 0;
+  return clamp01(((px - ax) * dx + (py - ay) * dy) / len2);
+}
+
 export const ToolpathPreview: React.FC<{
   doc: EtchDocument;
   segments: GCodeSegment[];
   travelSpeed: number;
   showTravel: boolean;
   laserMode: boolean;
-}> = ({ doc, segments, travelSpeed, showTravel, laserMode }) => {
+  /** Non-null while a job is on the machine; the animation then follows it. */
+  live?: LiveToolPosition | null;
+  /** Outlines a dry run will trace, drawn over the path when one is in view. */
+  boundaries?: Array<{ x: number; y: number }[]> | null;
+}> = ({ doc, segments, travelSpeed, showTravel, laserMode, live = null, boundaries = null }) => {
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
 
@@ -140,9 +185,16 @@ export const ToolpathPreview: React.FC<{
     if (el) el.setAttribute('stroke-dasharray', `${frac} 1`);
   };
 
-  /** Paints the whole preview for one instant of job time. */
+  /**
+   * Paints the whole preview for one instant of job time.
+   *
+   * `head` overrides where the tool is drawn and how deep it reads. It is set
+   * only when a machine is running the job and reporting its own position:
+   * everything else on screen is still derived from `t`, but the tool itself is
+   * then the machine's, not the simulation's.
+   */
   const applyFrame = useCallback(
-    (t: number) => {
+    (t: number, head?: { x: number; y: number; z: number } | null) => {
       const { moves, minutes } = timeline;
       const done = minutes <= 0 || t >= minutes;
       const s = sampleAt(moves, Math.min(t, minutes));
@@ -186,14 +238,17 @@ export const ToolpathPreview: React.FC<{
         l.setAttribute('opacity', done || move.kind === 'cut' || move.kind === 'ramp' ? '0' : '0.9');
       }
 
+      // The machine's own Z when it is reporting one: a tool sitting at +25 mm
+      // on a dry run must not be drawn as if it were buried in the stock.
+      const z = head ? head.z : s.z;
       const depthFrac = laserMode
         ? (move && (move.kind === 'cut' || move.kind === 'ramp') ? move.power / 100 : 0)
         : timeline.deepestZ < 0
-          ? clamp01(Math.abs(s.z) / Math.abs(timeline.deepestZ))
+          ? clamp01(Math.max(0, -z) / Math.abs(timeline.deepestZ))
           : 0;
 
       if (headRef.current) {
-        headRef.current.setAttribute('transform', `translate(${s.x} ${s.y})`);
+        headRef.current.setAttribute('transform', `translate(${head ? head.x : s.x} ${head ? head.y : s.y})`);
         headRef.current.setAttribute('opacity', minutes > 0 ? '1' : '0');
       }
       if (headDotRef.current) {
@@ -206,7 +261,7 @@ export const ToolpathPreview: React.FC<{
       if (depthTextRef.current) {
         depthTextRef.current.textContent = laserMode
           ? `S ${Math.round((move && (move.kind === 'cut' || move.kind === 'ramp') ? move.power : 0))}%`
-          : `Z ${s.z.toFixed(2)} mm`;
+          : `Z ${z.toFixed(2)} mm`;
       }
       if (timeTextRef.current) {
         const secs = Math.min(t, minutes) * 60;
@@ -226,8 +281,92 @@ export const ToolpathPreview: React.FC<{
     applyFrame(0);
   }, [applyFrame, chunks.length]);
 
+  /**
+   * Job time at a reported machine position.
+   *
+   * The controller reports where the tool is, not which line it is on, so the
+   * program position is found by looking for the move the tool is standing on.
+   * The stream index says roughly where in the program to look — a job crosses
+   * the same point many times, and only "and it is about here in the program"
+   * tells one crossing from another — and the position decides the rest,
+   * including how far along that move the tool has got.
+   */
+  const clockAtPosition = useCallback(
+    (x: number, y: number, progress: number) => {
+      const { moves, minutes } = timeline;
+      if (!moves.length) return 0;
+      const anchor = Math.min(moves.length - 1, Math.max(0, Math.round(progress * (moves.length - 1))));
+      const from = Math.max(0, anchor - LIVE_SEARCH_WINDOW);
+      const to = Math.min(moves.length - 1, anchor + LIVE_SEARCH_WINDOW);
+      let best = anchor;
+      let bestF = 0;
+      let bestD = Infinity;
+      for (let i = from; i <= to; i++) {
+        const m = moves[i];
+        const f = projectFraction(m.x1, m.y1, m.x2, m.y2, x, y);
+        const d = Math.hypot(m.x1 + (m.x2 - m.x1) * f - x, m.y1 + (m.y2 - m.y1) * f - y);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+          bestF = f;
+        }
+      }
+      const m = moves[best];
+      return Math.min(minutes, m.t0 + (m.t1 - m.t0) * bestF);
+    },
+    [timeline]
+  );
+
+  /**
+   * Follow the machine.
+   *
+   * The preview used to keep looping its own animation while the job ran, which
+   * put a tool on screen that had nothing to do with the one in the room. Here
+   * the position comes from the controller's status reports, and the reveal
+   * follows the tool rather than a clock — so what is drawn as cut is what has
+   * been cut. Reports arrive a few times a second, so the drawn head eases
+   * toward the last one instead of stepping.
+   */
+  const isLive = !!live;
+  const liveRefValue = useRef<LiveToolPosition | null>(live);
+  const smoothedRef = useRef<{ x: number; y: number; z: number } | null>(null);
+
+  // The frame loop reads the machine's last report through a ref, so a status
+  // arriving three times a second does not restart the animation each time.
   useEffect(() => {
-    if (!playing || timeline.minutes <= 0) return;
+    liveRefValue.current = live;
+  }, [live]);
+
+  useEffect(() => {
+    if (!isLive) {
+      smoothedRef.current = null;
+      return;
+    }
+    let raf = 0;
+    const step = () => {
+      const target = liveRefValue.current;
+      if (target) {
+        const s = smoothedRef.current ?? { x: target.x, y: target.y, z: target.z };
+        s.x += (target.x - s.x) * LIVE_EASE;
+        s.y += (target.y - s.y) * LIVE_EASE;
+        s.z += (target.z - s.z) * LIVE_EASE;
+        smoothedRef.current = s;
+        // A dry run is not this toolpath, so nothing is marked as cut: the head
+        // follows the machine over an un-revealed drawing.
+        const t = target.followsPath ? clockAtPosition(s.x, s.y, target.progress) : 0;
+        clockRef.current = t;
+        applyFrame(t, s);
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+    // `live` identity changes every status report; only its presence matters
+    // here, since the loop reads the latest value through a ref.
+  }, [isLive, clockAtPosition, applyFrame]);
+
+  useEffect(() => {
+    if (isLive || !playing || timeline.minutes <= 0) return;
     const duration = LOOP_SECONDS / speed;
     const holdUnits = timeline.minutes * (HOLD_SECONDS / duration);
     let last = 0;
@@ -242,10 +381,13 @@ export const ToolpathPreview: React.FC<{
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, timeline, applyFrame]);
+  }, [isLive, playing, speed, timeline, applyFrame]);
 
   /** Scrubbing the depth strip seeks the animation; it is the job's timeline. */
   const seekTo = (e: React.PointerEvent<HTMLDivElement>) => {
+    // While the machine is running, the playhead is the machine's — dragging it
+    // somewhere else would draw a job that is not the one happening.
+    if (live) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
     clockRef.current = clamp01((e.clientX - rect.left) / rect.width) * timeline.minutes;
@@ -264,6 +406,20 @@ export const ToolpathPreview: React.FC<{
       <div className="flex-1 min-h-0 bg-slate-100 dark:bg-slate-950 p-3 relative">
         {/* Live readout — the numbers that change as the tool moves. */}
         <div className="absolute top-4 right-4 z-10 flex items-center gap-2 px-2 py-1 rounded-md bg-white/85 dark:bg-slate-900/85 border border-slate-200 dark:border-slate-700 font-mono text-[11px] pointer-events-none">
+          {live && (
+            <span
+              className={`flex items-center gap-1 font-sans font-bold uppercase tracking-wider ${
+                live.paused ? 'text-amber-500' : 'text-emerald-500'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  live.paused ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'
+                }`}
+              />
+              {live.paused ? 'Held' : 'Live'}
+            </span>
+          )}
           <span ref={timeTextRef} className="text-slate-500 dark:text-slate-400">0:00</span>
           <span ref={depthTextRef} className="font-bold text-slate-800 dark:text-slate-100">
             {laserMode ? 'S 0%' : 'Z 0.00 mm'}
@@ -330,6 +486,23 @@ export const ToolpathPreview: React.FC<{
             />
           ))}
 
+          {/* What a dry run will actually trace: the outlines, not the fills. */}
+          {boundaries && boundaries.length > 0 && (
+            <path
+              d={boundaries
+                .map((c) =>
+                  c.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ')
+                )
+                .join(' ')}
+              fill="none"
+              stroke="#0ea5e9"
+              strokeWidth={0.7}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.95}
+            />
+          )}
+
           {/* The rapid or plunge currently under way */}
           <line
             ref={liveRef}
@@ -383,7 +556,7 @@ export const ToolpathPreview: React.FC<{
         <div className="flex items-center gap-2 px-3 py-1 text-[10px] text-slate-500 dark:text-slate-400">
           <button
             onClick={() => setPlaying((p) => !p)}
-            disabled={timeline.minutes <= 0}
+            disabled={timeline.minutes <= 0 || !!live}
             className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-40 cursor-pointer"
             title={playing ? 'Pause' : 'Play'}
           >
@@ -394,7 +567,7 @@ export const ToolpathPreview: React.FC<{
               clockRef.current = 0;
               applyFrame(0);
             }}
-            disabled={timeline.minutes <= 0}
+            disabled={timeline.minutes <= 0 || !!live}
             className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-40 cursor-pointer"
             title="Back to start"
           >
@@ -411,24 +584,32 @@ export const ToolpathPreview: React.FC<{
                 : 'no Z depth set'}
           </span>
           <div className="ml-auto flex items-center gap-1">
-            {[0.5, 1, 2, 4].map((s) => (
-              <button
-                key={s}
-                onClick={() => setSpeed(s)}
-                className={`px-1.5 py-0.5 rounded font-mono cursor-pointer ${
-                  speed === s
-                    ? 'bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900'
-                    : 'hover:bg-slate-100 dark:hover:bg-slate-800'
-                }`}
-              >
-                {s}×
-              </button>
-            ))}
+            {/* Playback speed belongs to the simulation. While the machine is
+                running, the speed is the machine's. */}
+            {live ? (
+              <span className="font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                {live.followsPath ? 'Following the machine' : 'Dry run — tracing boundaries'}
+              </span>
+            ) : (
+              [0.5, 1, 2, 4].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSpeed(s)}
+                  className={`px-1.5 py-0.5 rounded font-mono cursor-pointer ${
+                    speed === s
+                      ? 'bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900'
+                      : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {s}×
+                </button>
+              ))
+            )}
           </div>
         </div>
 
         <div
-          className="h-12 px-3 pb-1.5 cursor-ew-resize select-none touch-none"
+          className={`h-12 px-3 pb-1.5 select-none touch-none ${live ? '' : 'cursor-ew-resize'}`}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
             seekTo(e);

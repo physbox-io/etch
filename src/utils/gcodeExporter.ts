@@ -1424,46 +1424,188 @@ function extractElementContours(el: EtchElement): Pt[][] {
   return [];
 }
 
+/** One contour of a dry run: the outline of something the job cuts. */
+export interface AirCutBoundary {
+  points: Pt[];
+  layerId: string;
+  /** Feed to trace it at — the speed the real segment would have been cut at. */
+  speed: number;
+  /** True when this is a stand-in box for a fill that has no outline of its own. */
+  isBox: boolean;
+}
+
+/** Axis-aligned bounds of a run of points, or null for an empty run. */
+function boundsOf(pts: Pt[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (!pts.length) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 /**
- * Transforms a G-code program into an Air Cut dry run program.
+ * The outlines a dry run should trace, in machining order.
  *
- * In CNC mode: Shifts all Z-axis depth moves by `zOffsetMm` (default +20 mm), so the
- * cutter operates safely elevated in thin air above stock and clamps.
- * In Laser mode: Overrides laser power (S-values) to 0 (or guide dot) so the machine
- * executes the full job trajectory without firing the laser beam, and elevates Z if present.
+ * A dry run answers three questions: is the work origin where I think it is,
+ * does the job fit on the stock, and will the gantry hit a clamp. All three are
+ * answered by the *edges* of the job — so this keeps the outlines and drops
+ * everything that only happens inside them:
+ *
+ *  - hatch fills, which are thousands of scanlines that never leave the outline
+ *    already being traced. Running them turned a thirty-second check into the
+ *    length of the job itself, which is why nobody ran one twice.
+ *  - repeated passes, since each is the same contour at a deeper Z, and depth
+ *    is the one thing a run in thin air cannot check.
+ *
+ * A fill whose element has its outline switched off has no boundary segment to
+ * keep, so it gets the box it occupies instead — the tool still shows the
+ * operator the ground that fill will cover. That box is dropped again if some
+ * real outline on the same layer already encloses it, which is the ordinary
+ * case of a filled shape that is also cut round.
+ */
+export function planAirCutBoundaries(segments: GCodeSegment[]): AirCutBoundary[] {
+  const outlines: AirCutBoundary[] = [];
+  /** Fill boxes, held back until the outlines that may cover them are all known. */
+  const boxes: Array<{ at: number; box: AirCutBoundary; bounds: NonNullable<ReturnType<typeof boundsOf>> }> = [];
+
+  let group: { fillGroup: number; layerId: string; speed: number; pts: Pt[] } | null = null;
+
+  const flushGroup = () => {
+    if (!group) return;
+    const b = boundsOf(group.pts);
+    const current = group;
+    group = null;
+    if (!b || b.maxX - b.minX < 1e-6 || b.maxY - b.minY < 1e-6) return;
+    boxes.push({
+      at: outlines.length,
+      bounds: b,
+      box: {
+        layerId: current.layerId,
+        speed: current.speed,
+        isBox: true,
+        points: [
+          { x: b.minX, y: b.minY },
+          { x: b.maxX, y: b.minY },
+          { x: b.maxX, y: b.maxY },
+          { x: b.minX, y: b.maxY },
+          { x: b.minX, y: b.minY },
+        ],
+      },
+    });
+  };
+
+  for (const seg of segments) {
+    // A hatch scanline is one with a fill group, not one on a layer whose
+    // operation happens to be called "fill": an unfilled element on a fill
+    // layer is an outline like any other, and is exactly what a dry run traces.
+    if (seg.fillGroup >= 0) {
+      if (group && group.fillGroup !== seg.fillGroup) flushGroup();
+      if (!group) {
+        group = { fillGroup: seg.fillGroup, layerId: seg.layerId, speed: seg.speed, pts: [] };
+      }
+      group.pts.push(...seg.points);
+      continue;
+    }
+    flushGroup();
+    if (seg.points.length < 2) continue;
+    outlines.push({
+      points: seg.points,
+      layerId: seg.layerId,
+      speed: seg.speed,
+      isBox: false,
+    });
+  }
+  flushGroup();
+
+  const outlineBounds = outlines
+    .map((o) => ({ layerId: o.layerId, b: boundsOf(o.points) }))
+    .filter((o): o is { layerId: string; b: NonNullable<ReturnType<typeof boundsOf>> } => o.b !== null);
+
+  const kept = boxes.filter(
+    ({ bounds, box }) =>
+      !outlineBounds.some(
+        (o) =>
+          o.layerId === box.layerId &&
+          o.b.minX <= bounds.minX + 0.01 &&
+          o.b.minY <= bounds.minY + 0.01 &&
+          o.b.maxX >= bounds.maxX - 0.01 &&
+          o.b.maxY >= bounds.maxY - 0.01
+      )
+  );
+
+  // Re-insert each surviving box where its fill sat in the machining order, so
+  // the dry run visits the job in the order the job does.
+  const out = [...outlines];
+  for (let i = kept.length - 1; i >= 0; i--) out.splice(kept[i].at, 0, kept[i].box);
+  return out;
+}
+
+/**
+ * A dry run of a job: its outlines, traced once, well clear of the stock.
+ *
+ * Built from the plan rather than by rewriting the cutting program, because the
+ * two are not the same shape. Shifting every Z in the real program upward runs
+ * every fill scanline and every pass in mid-air — the same hours of motion,
+ * with nothing to show for them. This emits only what a dry run is for: the
+ * boundary of each shape, at one height, once. See `planAirCutBoundaries` for
+ * what counts as a boundary.
+ *
+ * On a router the trace runs `zOffsetMm` above the work surface. A laser has no
+ * Z to lift, so its beam is simply never switched on — the head traces the
+ * outlines with `M5` in force and `S0` set, and nothing is emitted that could
+ * turn it back on.
  */
 export function generateAirCutGCode(
-  gcode: string,
-  opts: { laserMode?: boolean; zOffsetMm?: number } = {}
+  doc: EtchDocument,
+  opts: Partial<GCodeOptions> & { zOffsetMm?: number } = {},
+  precomputedPlan?: ToolpathPlan
 ): string {
-  const zOffset = opts.zOffsetMm ?? 20;
-  const isLaser = opts.laserMode ?? false;
+  const options = resolveOptions(doc, opts);
+  const zOffset = Math.max(1, opts.zOffsetMm ?? 20);
+  const { segments } = precomputedPlan ?? planToolpath(doc, opts);
+  const boundaries = planAirCutBoundaries(segments);
+  const traceZ = SAFE_Z + zOffset;
 
-  const lines = gcode.split('\n');
-  const transformed = lines.map((line) => {
-    const commentIdx = line.indexOf(';');
-    const codePart = commentIdx !== -1 ? line.slice(0, commentIdx) : line;
-    const commentPart = commentIdx !== -1 ? line.slice(commentIdx) : '';
+  let gcode = `; --- AIR CUT DRY RUN — BOUNDARY TRACE ---\n`;
+  gcode += `; Document: ${doc.name} (${doc.width}x${doc.height} mm)\n`;
+  gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
+  gcode += options.laserMode
+    ? `; Beam off throughout (M5, S0). Traces the outline of each shape once.\n`
+    : `; Traced ${traceZ} mm above the work surface. Outline of each shape, once.\n`;
+  gcode += `; Fills, extra passes and cut depth are NOT run — this checks origin,\n`;
+  gcode += `; extents, travel and clamps, not the cut.\n`;
+  gcode += `; Boundaries: ${boundaries.length} of ${segments.length} planned segments\n`;
+  gcode += `G90 ; Absolute positioning\n`;
+  gcode += `G21 ; Millimeter units\n`;
+  gcode += `M5 ; ${options.laserMode ? 'Laser off — it stays off for the whole dry run' : 'Spindle off — nothing is being cut'}\n`;
+  if (options.laserMode) gcode += `S0 ; No beam power, whatever the last job left set\n`;
+  else gcode += `G0 Z${traceZ.toFixed(3)} ; Up into thin air, clear of stock and clamps\n`;
 
-    let transformedCode = codePart;
-
-    // Shift Z coordinates by zOffset
-    transformedCode = transformedCode.replace(/\bZ(-?\d+(?:\.\d+)?)\b/gi, (_, zVal) => {
-      const z = parseFloat(zVal);
-      const newZ = z + zOffset;
-      return `Z${newZ.toFixed(3)}`;
-    });
-
-    // In laser mode, disable cutting laser power by replacing positive S-values with S0
-    if (isLaser) {
-      transformedCode = transformedCode.replace(/\bS([1-9]\d*|0\.\d+)\b/gi, 'S0');
+  for (let i = 0; i < boundaries.length; i++) {
+    const b = boundaries[i];
+    const feed = Math.max(1, Math.round(b.speed));
+    const start = docToMachine(doc, b.points[0].x, b.points[0].y);
+    gcode += `\n; --- Boundary ${i + 1}/${boundaries.length}${b.isBox ? ' (fill extents)' : ''} --- Layer: ${b.layerId} ---\n`;
+    gcode += `G0 X${start.x.toFixed(3)} Y${start.y.toFixed(3)}\n`;
+    let lastFeed: number | null = null;
+    for (let p = 1; p < b.points.length; p++) {
+      const to = docToMachine(doc, b.points[p].x, b.points[p].y);
+      const fWord = feed !== lastFeed ? ` F${feed}` : '';
+      gcode += `G1 X${to.x.toFixed(3)} Y${to.y.toFixed(3)}${fWord}\n`;
+      lastFeed = feed;
     }
+  }
 
-    return transformedCode + commentPart;
-  });
-
-  const header = `; --- AIR CUT DRY RUN PROGRAM (+${zOffset}mm Z-Offset) ---\n`;
-  return header + transformed.join('\n');
+  gcode += `\n; --- Dry run complete ---\n`;
+  if (!options.laserMode) gcode += `G0 Z${traceZ.toFixed(3)} ; still clear of the work\n`;
+  gcode += `M5 ; Spindle/laser off\n`;
+  gcode += `G0 X0 Y0 F${options.travelSpeed} ; Back to the work origin\n`;
+  gcode += `M30 ; End of program\n`;
+  return gcode;
 }
 
 

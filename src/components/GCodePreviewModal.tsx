@@ -3,11 +3,13 @@ import { useStore } from '../store/useStore';
 import {
   generateGCode,
   generateAirCutGCode,
+  planAirCutBoundaries,
   planToolpath,
   planToolChanges,
   scoreLineRisk,
   tabHoldingMm,
 } from '../utils/gcodeExporter';
+import { machineToDoc } from '../utils/machineCoords';
 import { describeTool } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
 import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind } from 'lucide-react';
@@ -41,6 +43,13 @@ export const GCodePreviewModal: React.FC = () => {
   const [confirmAirCut, setConfirmAirCut] = useState(false);
   const [airCutZOffset, setAirCutZOffset] = useState(20);
   const [runNote, setRunNote] = useState<string | null>(null);
+  /**
+   * Which program is on the machine.
+   *
+   * A dry run traces boundaries, so it is not the toolpath drawn in the
+   * preview: the head can follow the machine, but nothing may be marked as cut.
+   */
+  const [runKind, setRunKind] = useState<'job' | 'aircut' | null>(null);
   const [showTravel, setShowTravel] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -118,6 +127,46 @@ export const GCodePreviewModal: React.FC = () => {
     const raw = generateGCode(document, exportOpts, plan);
     return levelling ? warpGcode(raw, levelling) : raw;
   }, [isGCodeModalOpen, document, exportOpts, levelling, plan]);
+
+  /**
+   * The outlines a dry run traces, shown while one is being considered or run.
+   *
+   * Drawn over the toolpath rather than described, because "boundaries only" is
+   * a claim about this job's geometry and the drawing is where it can be
+   * checked before the machine starts moving.
+   */
+  // `runKind` is only meaningful while something is actually running: a job
+  // that has finished leaves no dry run on screen.
+  const activeRun = machine.jobRunning ? runKind : null;
+
+  const airCutBoundaries = useMemo(
+    () =>
+      confirmAirCut || activeRun === 'aircut'
+        ? planAirCutBoundaries(plan.segments).map((b) => b.points)
+        : null,
+    [confirmAirCut, activeRun, plan.segments]
+  );
+
+  /**
+   * Where the machine is, in document space, while it is running.
+   *
+   * The preview follows this instead of replaying its own animation: the work
+   * coordinates come back through the document's origin, which is the only
+   * thing that knows which way round the bed is.
+   */
+  const live = useMemo(() => {
+    if (!machine.jobRunning) return null;
+    const at = machineToDoc(document, machine.wx, machine.wy);
+    return {
+      x: at.x,
+      y: at.y,
+      z: machine.wz,
+      progress: machine.totalLines > 0 ? machine.currentLine / machine.totalLines : 0,
+      followsPath: activeRun !== 'aircut',
+      paused: machine.jobPaused,
+    };
+  }, [machine.jobRunning, machine.jobPaused, machine.wx, machine.wy, machine.wz,
+      machine.currentLine, machine.totalLines, activeRun, document]);
 
   if (!isGCodeModalOpen) return null;
 
@@ -470,7 +519,7 @@ export const GCodePreviewModal: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-sky-800 dark:text-sky-300 font-semibold text-xs">
                       <Wind className="w-4 h-4 text-sky-500 shrink-0" />
-                      <span>Air Cut Dry Run (+{airCutZOffset}mm Z)</span>
+                      <span>Air Cut Dry Run — Boundary Trace</span>
                     </div>
                     <div className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
                       <label htmlFor="air-cut-z-offset" className="font-medium">Offset:</label>
@@ -487,9 +536,14 @@ export const GCodePreviewModal: React.FC = () => {
                     </div>
                   </div>
                   <p className="text-[10px] text-sky-800 dark:text-sky-300/90 leading-snug">
+                    Traces the outline of each shape once
                     {laserMode
-                      ? `Runs complete path with laser power disabled (S0). Safe dry run to verify path and origin.`
-                      : `Shifts all Z cuts upward by +${airCutZOffset} mm into thin air. Safe dry run to check motion and clamps without touching stock.`}
+                      ? ', with the beam off throughout (M5, S0)'
+                      : `, ${airCutZOffset} mm above the work in thin air`}
+                    {' '}— the paths highlighted in blue on the right
+                    {airCutBoundaries ? ` (${airCutBoundaries.length})` : ''}. Fills, extra passes
+                    and cut depth are not run: this checks the origin, the extents, the travel and
+                    the clamps, not the cut.
                   </p>
                   {!machine.connected && (
                     <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
@@ -504,13 +558,15 @@ export const GCodePreviewModal: React.FC = () => {
                           toggleMachineModal();
                           return;
                         }
-                        const airCutGCode = generateAirCutGCode(gcodeStr, {
-                          laserMode,
-                          zOffsetMm: airCutZOffset,
-                        });
+                        const airCutGCode = generateAirCutGCode(
+                          document,
+                          { ...exportOpts, zOffsetMm: airCutZOffset },
+                          plan
+                        );
                         const result = webSerialManager.startJob(airCutGCode, {
                           machine: laserMode ? 'laser' : 'cnc',
                         });
+                        if (result.started) setRunKind('aircut');
                         setRunNote(`[Air Cut] ${result.message}`);
                         setConfirmAirCut(false);
                       }}
@@ -565,6 +621,7 @@ export const GCodePreviewModal: React.FC = () => {
                         const result = webSerialManager.startJob(gcodeStr, {
                           machine: laserMode ? 'laser' : 'cnc',
                         });
+                        if (result.started) setRunKind('job');
                         setRunNote(result.message);
                         setConfirmRun(false);
                       }}
@@ -600,7 +657,7 @@ export const GCodePreviewModal: React.FC = () => {
                         setConfirmAirCut(true);
                       }}
                       className="py-2 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 transition-all cursor-pointer text-xs shrink-0"
-                      title="Run dry run elevated above stock (+20mm Z)"
+                      title="Trace the job's outlines in thin air, clear of the stock"
                     >
                       <Wind className="w-4 h-4" />
                       <span>Air Cut</span>
@@ -660,6 +717,8 @@ export const GCodePreviewModal: React.FC = () => {
                 travelSpeed={travelSpeed}
                 showTravel={showTravel}
                 laserMode={laserMode}
+                live={live}
+                boundaries={airCutBoundaries}
               />
             )}
           </div>

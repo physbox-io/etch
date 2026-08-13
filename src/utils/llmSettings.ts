@@ -2,10 +2,12 @@
  * Copilot settings, stored in localStorage under the same keys Mesh uses, so a
  * key entered in one Physbox app works in the others on the same browser.
  *
- * Keys live in the browser and are sent straight from it to the provider. That
- * is the only option for a static build with no backend, and it means the key
- * never reaches a Physbox server — but it also means anything with access to
- * this origin's localStorage can read it. Use a key scoped to this purpose.
+ * Keys live in the browser and are sent straight from it to the provider when
+ * making a request. They are *also* synced to your PhysBox account under the
+ * `global` app id when you are signed in, so a key entered in one browser is
+ * available in the others — which means the key is stored on the PhysBox server
+ * as well as locally, and anything with access to either this origin's
+ * localStorage or that account can read it. Use a key scoped to this purpose.
  */
 
 export const GEMINI_KEY = 'gemini_api_key';
@@ -28,6 +30,20 @@ export const FALLBACK_MODELS: { id: string; name: string }[] = [
 ];
 
 export const isClaudeModel = (model: string) => model.startsWith('claude');
+
+/**
+ * The copilot settings that follow the account, under the `global` app id.
+ *
+ * An allowlist for the same reason as the machine one: what comes back from the
+ * server is only ever written to these keys, never to whatever key name the
+ * response happens to carry.
+ */
+export const SYNCED_LLM_PARAMETER_KEYS: readonly string[] = [
+  GEMINI_KEY,
+  ANTHROPIC_KEY,
+  MODEL_KEY,
+  MAX_TOKENS_KEY,
+];
 
 const read = (key: string): string => {
   try {

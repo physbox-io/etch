@@ -74,6 +74,14 @@ describe('when the machine runs out of speed', () => {
     expect(r.notes.join(' ')).toMatch(/passes/);
   });
 
+  it('clamps to min speed in 1 pass when speed is within 5% of floor (e.g. 119 mm/min)', () => {
+    // 3mm plywood cut on 10W diode calculates ideal speed ~119.05 mm/min
+    const r = derive('plywood', 'cut', DIODE_10W, 3)!;
+    expect(r.passes).toBe(1);
+    expect(r.speed).toBe(MIN_LASER_SPEED_MM_MIN);
+    expect(r.notes.length).toBe(0);
+  });
+
   it('never emits a speed outside what the machine will hold', () => {
     for (const material of materialCatalog()) {
       for (const source of [CO2_40W, DIODE_10W, { kind: 'co2' as const, watts: 150 }]) {

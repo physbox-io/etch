@@ -34,6 +34,27 @@ export function docToMachine(doc: EtchDocument, x: number, y: number): Pt {
 }
 
 /**
+ * Machine space → document space.
+ *
+ * The inverse of `docToMachine`, and it exists for one job: putting the
+ * machine's *reported* position back on the drawing. The preview animation
+ * follows the real toolhead while a job runs, and a controller reports work
+ * coordinates — feeding those straight to the drawing would mirror the tool
+ * about the bed for exactly the documents `docToMachine` flips.
+ */
+export function machineToDoc(doc: EtchDocument, x: number, y: number): Pt {
+  switch (doc.origin) {
+    case 'bottom-left':
+      return { x, y };
+    case 'center':
+      return { x: x + doc.width / 2, y: doc.height / 2 - y };
+    case 'top-left':
+    default:
+      return { x, y: doc.height - y };
+  }
+}
+
+/**
  * Maps an axis-aligned box into machine space.
  *
  * Flipping Y swaps which edge is the minimum, so the corners are re-derived

@@ -55,6 +55,25 @@ export function writePlateThickness(value: number): number {
 const SHIM_THICKNESS_KEY = 'etch_manual_z_shim_thickness_mm';
 
 /**
+ * The shop settings that follow the account rather than the browser.
+ *
+ * Every one of these describes the machine on the bench, so a user who signs in
+ * on a second computer should not have to measure their touch plate again. The
+ * list is an allowlist on purpose: pulling arbitrary server-supplied keys into
+ * localStorage would let the sync overwrite unrelated state, saved documents
+ * included. Values are not validated on the way in — each reader above clamps
+ * or falls back on read, which is the same protection they give a hand-edited
+ * localStorage.
+ */
+export const SYNCED_MACHINE_PARAMETER_KEYS: readonly string[] = [
+  PLATE_THICKNESS_KEY,
+  SHIM_THICKNESS_KEY,
+  'etch_spindle_min_rpm',
+  'etch_spindle_max_rpm',
+  'etch_laser_source',
+];
+
+/**
  * Thickness of whatever is slid under the tool when zeroing Z by hand.
  *
  * 0.1 mm is ordinary copier paper, which is what the trick is usually done
@@ -87,6 +106,7 @@ export function writeShimThickness(value: number): number {
   const clamped = clampShimThickness(value);
   try {
     localStorage.setItem(SHIM_THICKNESS_KEY, String(clamped));
+    syncCloudParameters('etch', { [SHIM_THICKNESS_KEY]: clamped });
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }
@@ -218,6 +238,7 @@ export function writeLaserSource(id: string): LaserSource {
   const source = findLaserSource(id);
   try {
     localStorage.setItem(LASER_SOURCE_KEY, source.id);
+    syncCloudParameters('etch', { [LASER_SOURCE_KEY]: source.id });
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }
@@ -238,6 +259,7 @@ export function writeSpindleRange(min: number, max: number): { min: number; max:
   try {
     localStorage.setItem(SPINDLE_MIN_KEY, String(ordered.min));
     localStorage.setItem(SPINDLE_MAX_KEY, String(ordered.max));
+    syncCloudParameters('etch', { [SPINDLE_MIN_KEY]: ordered.min, [SPINDLE_MAX_KEY]: ordered.max });
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }

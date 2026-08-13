@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { generateGCode, planToolpath, generateAirCutGCode } from '../src/utils/gcodeExporter';
+import {
+  generateGCode,
+  planToolpath,
+  generateAirCutGCode,
+  planAirCutBoundaries,
+} from '../src/utils/gcodeExporter';
 import { outlineSignature } from '../src/utils/textVectorizer';
 import type { EtchDocument, EtchElement, EtchLayer, LayerOperation } from '../src/types/etch';
 
@@ -292,27 +297,76 @@ describe('glyph counters survive engraving', () => {
   });
 });
 
-describe('generateAirCutGCode', () => {
-  it('offsets CNC Z coordinates by +20mm default', () => {
-    const rawGCode = `G90\nG0 Z5.000\nG1 X10.0 Y20.0 Z-2.500 F600 ; cut move`;
-    const airCut = generateAirCutGCode(rawGCode, { laserMode: false });
-    expect(airCut).toContain('G0 Z25.000');
-    expect(airCut).toContain('G1 X10.0 Y20.0 Z17.500 F600 ; cut move');
-    expect(airCut).toContain('AIR CUT DRY RUN PROGRAM (+20mm Z-Offset)');
+describe('air cut dry run', () => {
+  /** A filled rect: hatch scanlines inside, plus the outline of the shape. */
+  const filledDoc = () =>
+    doc(
+      [layer('fill', 'fill')],
+      [rect('f1', 'fill', { machining: 'filled', hatchSpacing: 1 })],
+      'cnc'
+    );
+
+  it('traces the outline of a filled shape and none of its scanlines', () => {
+    const { segments } = planToolpath(filledDoc());
+    expect(segments.some((s) => s.fillGroup >= 0)).toBe(true);
+
+    const boundaries = planAirCutBoundaries(segments);
+    expect(boundaries.length).toBeGreaterThan(0);
+    // Every boundary is a real planned outline, and no scanline survived.
+    expect(boundaries.every((b) => !b.isBox)).toBe(true);
+    expect(boundaries.length).toBe(segments.filter((s) => s.fillGroup < 0).length);
   });
 
-  it('respects custom zOffsetMm', () => {
-    const rawGCode = `G0 Z5.000\nG1 Z-1.000`;
-    const airCut = generateAirCutGCode(rawGCode, { laserMode: false, zOffsetMm: 15 });
-    expect(airCut).toContain('G0 Z20.000');
-    expect(airCut).toContain('G1 Z14.000');
+  it('stands a box in for a fill that has no outline of its own', () => {
+    const d = doc(
+      [layer('fill', 'fill')],
+      [rect('f1', 'fill', { machining: 'filled', hatchOutline: false, hatchSpacing: 1 })],
+      'cnc'
+    );
+    const boundaries = planAirCutBoundaries(planToolpath(d).segments);
+    expect(boundaries).toHaveLength(1);
+    expect(boundaries[0].isBox).toBe(true);
+    // The rect is 40x30 at (20,20), so the box around its hatch is within it.
+    const xs = boundaries[0].points.map((p) => p.x);
+    const ys = boundaries[0].points.map((p) => p.y);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(20);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(60);
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(20);
+    expect(Math.max(...ys)).toBeLessThanOrEqual(50);
   });
 
-  it('disables laser cutting power in laser mode', () => {
-    const rawGCode = `G1 X10 Y10 S800 F1500 ; laser cut`;
-    const airCut = generateAirCutGCode(rawGCode, { laserMode: true });
-    expect(airCut).toContain('G1 X10 Y10 S0 F1500 ; laser cut');
-    expect(airCut).not.toContain('S800');
+  it('runs the trace in thin air, at one height, with the spindle off', () => {
+    const d = filledDoc();
+    const gcode = generateAirCutGCode(d, {}, planToolpath(d));
+    expect(gcode).toContain('BOUNDARY TRACE');
+    expect(gcode).toContain('M5');
+    // One trace height, above the stock — no cutting Z anywhere in the program.
+    expect(gcode).toContain('G0 Z25.000');
+    expect(/Z-\d/.test(gcode)).toBe(false);
+  });
+
+  it('is far shorter than the job it is a dry run for', () => {
+    const d = filledDoc();
+    const plan = planToolpath(d);
+    const job = generateGCode(d, {}, plan).split('\n').length;
+    const dry = generateAirCutGCode(d, {}, plan).split('\n').length;
+    expect(dry).toBeLessThan(job / 2);
+  });
+
+  it('never turns the beam on in laser mode', () => {
+    const d = doc([layer('fill', 'fill')], [rect('f1', 'fill', { machining: 'filled', hatchSpacing: 1 })], 'laser');
+    const gcode = generateAirCutGCode(d, {}, planToolpath(d));
+    expect(gcode).toContain('S0');
+    expect(/S[1-9]/.test(gcode)).toBe(false);
+    expect(gcode).not.toMatch(/^M3\b/m);
+    // A laser has no Z to lift, so none is commanded.
+    expect(/\bZ/.test(gcode)).toBe(false);
+  });
+
+  it('respects a custom offset', () => {
+    const d = filledDoc();
+    const gcode = generateAirCutGCode(d, { zOffsetMm: 15 }, planToolpath(d));
+    expect(gcode).toContain('G0 Z20.000');
   });
 });
 
