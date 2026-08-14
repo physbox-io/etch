@@ -25,6 +25,7 @@ import {
   Info,
   Settings,
   Image as ImageIcon,
+  PanelRight,
 } from 'lucide-react';
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -55,6 +56,8 @@ export const TopNavbar: React.FC = () => {
     deleteUserPreset,
     openDocs,
     openImageImport,
+    isPropertiesOpen,
+    setPropertiesOpen,
   } = useStore();
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
@@ -192,14 +195,16 @@ export const TopNavbar: React.FC = () => {
   };
 
   return (
-    <header className="h-14 w-full bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between z-30 select-none transition-colors">
+    <header className="h-14 shrink-0 w-full bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between z-30 select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1.5 max-lg:gap-x-2 max-lg:gap-y-1.5">
       {/* Brand & Logo + Preset Selector */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 via-amber-500 to-cyan-500 flex items-center justify-center shadow-md">
+      <div className="flex items-center gap-3 min-w-0 max-lg:flex-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-8 h-8 shrink-0 rounded-lg bg-gradient-to-br from-red-500 via-amber-500 to-cyan-500 flex items-center justify-center shadow-md">
             <Scissors className="w-5 h-5 text-white" />
           </div>
-          <div>
+          {/* The mark alone identifies the app on a phone; the wordmark and
+              tagline are the first thing to give up the width. */}
+          <div className="hidden md:block">
             <div className="flex items-center gap-2">
               <h1 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white font-sans">
                 Physbox <span className="text-red-500 dark:text-red-400 font-normal">Etch</span>
@@ -215,13 +220,13 @@ export const TopNavbar: React.FC = () => {
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
 
         {/* Preset Selector Pill */}
-        <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+        <div className="flex items-center min-w-0 max-lg:flex-1 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <select
             value=""
             onChange={(e) => {
               if (e.target.value) loadPreset(e.target.value);
             }}
-            className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem]"
+            className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem] max-lg:flex-1 max-lg:min-w-0 max-lg:max-w-none"
           >
             <option value="" disabled hidden>
               {activePresetLabel}
@@ -265,10 +270,30 @@ export const TopNavbar: React.FC = () => {
         </div>
       </div>
 
-      {/* Center/Right: Machine Toolbar & Files */}
-      <div className="flex items-center gap-2 md:gap-3">
+      {/* Properties inspector — a permanent column at `lg`, a drawer below it.
+          A direct child of the header rather than part of the cluster below, so
+          that when the bar wraps it stays on the first row, opposite the preset
+          name it acts on. */}
+      <button
+        onClick={() => setPropertiesOpen(!isPropertiesOpen)}
+        className="lg:hidden shrink-0 flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 cursor-pointer"
+        title="Properties & Layers"
+      >
+        <PanelRight className="w-4 h-4" />
+      </button>
+
+      {/*
+        Center/Right: Machine Toolbar & Files.
+
+        Below `lg` this takes a row of its own and wraps within it, rather than
+        dropping buttons. Everything in here is either a file operation or a
+        machine control, and deciding on the operator's behalf that they will
+        not want to export G-code on a phone is how a mobile layout ends up
+        being a demo of the app rather than the app.
+      */}
+      <div className="flex items-center gap-2 md:gap-3 min-w-0 max-lg:w-full max-lg:flex-wrap max-lg:justify-between max-lg:gap-y-1.5">
         {/* Machine Control Island */}
-        <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+        <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <button
             onClick={toggleGCodeModal}
             className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-100 transition-all cursor-pointer"
@@ -288,7 +313,7 @@ export const TopNavbar: React.FC = () => {
         </div>
 
         {/* Files & Actions Segmented Group */}
-        <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+        <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <button
             onClick={handleSave}
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
@@ -357,11 +382,11 @@ export const TopNavbar: React.FC = () => {
         </div>
 
         {/* Right Utilities (Dark Mode, Docs, Settings, Copilot, User Profile, GitHub) matching ~/physics */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 max-lg:shrink-0">
           {/* Dark Mode Toggle */}
           <button
             onClick={toggleDarkMode}
-            className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
+            className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
             title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           >
             {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />}
@@ -370,7 +395,7 @@ export const TopNavbar: React.FC = () => {
           {/* Reference Guide (Docs) */}
           <button
             onClick={() => openDocs()}
-            className="flex items-center justify-center w-8 h-8 rounded-full border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors cursor-pointer shadow-xs"
+            className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors cursor-pointer shadow-xs"
             title="Reference Guide"
           >
             <Info className="w-4 h-4" />
@@ -379,7 +404,7 @@ export const TopNavbar: React.FC = () => {
           {/* Settings */}
           <button
             onClick={toggleSettings}
-            className={`flex items-center justify-center w-8 h-8 rounded-full border transition-colors cursor-pointer shadow-xs ${
+            className={`flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border transition-colors cursor-pointer shadow-xs ${
               isSettingsOpen
                 ? 'bg-blue-100 border-blue-400 text-blue-700 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-400'
                 : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -392,7 +417,7 @@ export const TopNavbar: React.FC = () => {
           {/* Sparkles AI Sidebar Toggle */}
           <button
             onClick={toggleAiPanel}
-            className="flex items-center justify-center w-8 h-8 rounded-full border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 transition-colors cursor-pointer shadow-xs"
+            className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 transition-colors cursor-pointer shadow-xs"
             title="Sparkles AI Copilot"
           >
             <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-300 animate-pulse" />
@@ -406,7 +431,7 @@ export const TopNavbar: React.FC = () => {
             href="https://github.com"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
+            className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
             title="Physbox GitHub Repository"
           >
             <GithubIcon className="w-4 h-4" />
@@ -417,7 +442,7 @@ export const TopNavbar: React.FC = () => {
       {/* SVG import report — unit assumptions and skipped content matter on a
           machine, so they are surfaced rather than swallowed. */}
       {importReport && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 max-lg:fixed max-lg:top-1/2 max-lg:-translate-y-1/2 z-40 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="font-bold text-slate-800 dark:text-slate-100">

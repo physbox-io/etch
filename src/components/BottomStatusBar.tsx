@@ -50,9 +50,15 @@ export const BottomStatusBar: React.FC = () => {
   const words = machineWords(machineKind);
 
   return (
-    <footer className="h-8 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors">
+    /*
+      Below `lg` the bar scrolls sideways instead of squeezing. Stock size,
+      material and thickness are what the feeds are derived from, and a running
+      job's stop button lives out here on purpose — none of it is something to
+      drop on a narrow screen, so all of it stays reachable by scrolling.
+    */
+    <footer className="h-8 shrink-0 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1 max-lg:gap-x-3 max-lg:gap-y-1">
       {/* Stock Size, Material Type & Live Cursor Position */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 max-lg:shrink-0">
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
           <RectangleHorizontal className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
           <label htmlFor="stock-width" className="text-slate-500 dark:text-slate-400">
@@ -124,14 +130,21 @@ export const BottomStatusBar: React.FC = () => {
           </select>
         </div>
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
+        {/*
+          Fixed-width, right-aligned readouts. The bar is `justify-between`, so
+          a cursor crossing 100 mm gains a digit, widens this group and shoves
+          the whole Grid section sideways — on every mouse move. Wide enough for
+          a signed four-figure reading ("-1000.0"), which is what a centre
+          origin on the largest stock produces.
+        */}
         <div>
-          X: <span className="text-slate-800 dark:text-slate-200">{cursor.x.toFixed(1)}</span>{' '}
-          Y: <span className="text-slate-800 dark:text-slate-200">{cursor.y.toFixed(1)}</span> mm
+          X: <span className="inline-block w-12 text-right text-slate-800 dark:text-slate-200">{cursor.x.toFixed(1)}</span>{' '}
+          Y: <span className="inline-block w-12 text-right text-slate-800 dark:text-slate-200">{cursor.y.toFixed(1)}</span> mm
         </div>
       </div>
 
       {/* Grid Spacing & Snap — the grid drawn on the canvas is exactly this pitch */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 max-lg:shrink-0">
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
           <Grid3x3 className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
           <label htmlFor="grid-size" className="text-slate-500 dark:text-slate-400">
@@ -184,7 +197,7 @@ export const BottomStatusBar: React.FC = () => {
       </div>
 
       {/* Machine Type, Status & Zoom */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 max-lg:shrink-0">
         {/* Target machine dropdowns */}
         <div className="flex items-center gap-1.5">
           <Cpu className="w-3.5 h-3.5 text-amber-500" />

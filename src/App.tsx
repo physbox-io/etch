@@ -20,8 +20,17 @@ export const App: React.FC = () => {
   // Connect to WebSocket MCP bridge
   useMCPBridge();
 
-  const { deleteElements, selectedIds, undo, redo, document, setSelectedIds, vectorizeText } =
-    useStore();
+  const {
+    deleteElements,
+    selectedIds,
+    undo,
+    redo,
+    document,
+    setSelectedIds,
+    vectorizeText,
+    isPropertiesOpen,
+    setPropertiesOpen,
+  } = useStore();
 
   /**
    * Keep text outlines up to date automatically. Text is not machineable as a
@@ -81,7 +90,13 @@ export const App: React.FC = () => {
   }, [selectedIds, document.elements, deleteElements, undo, redo, setSelectedIds]);
 
   return (
-    <div className="w-screen h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden select-none font-sans transition-colors duration-200">
+    /*
+      `h-dvh`, not `h-screen`: on a phone `100vh` is the viewport with the URL
+      bar hidden, so the status bar — stock size, material, the job's stop
+      button — sat underneath the browser chrome and could not be reached. On a
+      desktop the two are the same number.
+    */
+    <div className="w-screen h-dvh flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden select-none font-sans transition-colors duration-200">
       {/* Top Navbar */}
       <TopNavbar />
 
@@ -94,6 +109,15 @@ export const App: React.FC = () => {
         <div className="flex-1 h-full relative">
           <EtchCanvas />
         </div>
+
+        {/* Dimmer behind the inspector drawer. Only exists below `lg`, where
+            the inspector is an overlay; tapping the drawing puts it away. */}
+        {isPropertiesOpen && (
+          <div
+            className="lg:hidden absolute inset-0 z-30 bg-slate-950/40"
+            onClick={() => setPropertiesOpen(false)}
+          />
+        )}
 
         {/* Right Properties Inspector & Layer Manager */}
         <PropertiesSidebar />

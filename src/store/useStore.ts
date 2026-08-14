@@ -86,6 +86,14 @@ interface EtchStore {
   isImageImportOpen: boolean;
   imageImportFile: File | null;
   isSettingsOpen: boolean;
+  /**
+   * Whether the properties inspector is showing as an overlay drawer.
+   *
+   * Only consulted below the `lg` breakpoint — on a desktop the inspector is a
+   * permanent column and this is ignored, so nothing here can change the
+   * desktop layout.
+   */
+  isPropertiesOpen: boolean;
   isDocsOpen: boolean;
   isToolConfigModalOpen: boolean;
   docsTab: DocsTabId;
@@ -127,6 +135,7 @@ interface EtchStore {
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
+  setPropertiesOpen: (open: boolean) => void;
   toggleToolConfigModal: () => void;
   openToolConfigModal: () => void;
   closeToolConfigModal: () => void;
@@ -233,6 +242,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
+  isPropertiesOpen: false,
   isDocsOpen: false,
   isToolConfigModalOpen: false,
   docsTab: 'toolpaths',
@@ -477,6 +487,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
+  setPropertiesOpen: (open) => set({ isPropertiesOpen: open }),
 
   openDocs: (tab) => set((state) => ({ isDocsOpen: true, docsTab: tab ?? state.docsTab })),
   closeDocs: () => set({ isDocsOpen: false }),

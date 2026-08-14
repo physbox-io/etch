@@ -78,7 +78,7 @@ export const SettingsPanel: React.FC = () => {
     'w-full px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-800 rounded bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 shadow-inner focus:outline-none focus:ring-1 focus:ring-blue-500';
 
   return (
-    <div className="fixed top-[4.5rem] right-6 w-64 rounded-lg p-4 z-40 shadow-lg border border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md text-slate-800 dark:text-slate-100">
+    <div className="fixed top-[4.5rem] right-6 w-64 max-lg:top-1/2 max-lg:-translate-y-1/2 max-lg:inset-x-2 max-lg:right-auto max-lg:w-auto rounded-lg p-4 z-40 shadow-lg border border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md text-slate-800 dark:text-slate-100">
       <h3 className="font-semibold text-sm mb-4 flex items-center justify-between text-slate-800 dark:text-slate-100">
         <span className="flex items-center gap-2">
           <Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" /> Settings

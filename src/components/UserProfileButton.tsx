@@ -155,7 +155,14 @@ export const UserProfileButton: React.FC = () => {
 
       {/* Dropdown Menu */}
       {dropdownOpen && (
-        <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 p-3 space-y-3 text-slate-800 dark:text-slate-100">
+        /*
+          Anchored to the avatar on desktop. Below `lg` the top bar wraps, so
+          the avatar can end up anywhere along a row — and `right-0` on a 18rem
+          panel then hangs it off the left edge of the screen. There is nothing
+          to measure against reliably, so on a narrow screen it stops being a
+          dropdown and becomes a centred sheet, like the settings popover.
+        */
+        <div className="absolute right-0 mt-2 w-72 max-lg:fixed max-lg:inset-x-2 max-lg:top-1/2 max-lg:mt-0 max-lg:-translate-y-1/2 max-lg:w-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 p-3 space-y-3 text-slate-800 dark:text-slate-100">
           {user ? (
             <>
               {/* Logged-In Profile Header */}

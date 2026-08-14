@@ -16,6 +16,7 @@ import {
   Loader2,
   Upload,
   Route,
+  X,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -420,6 +421,8 @@ export const PropertiesSidebar: React.FC = () => {
     laserSource,
     cncTools,
     openToolConfigModal,
+    isPropertiesOpen,
+    setPropertiesOpen,
   } = useStore();
 
   const selectedElement = document.elements.find((el) => selectedIds.includes(el.id));
@@ -436,13 +439,41 @@ export const PropertiesSidebar: React.FC = () => {
   const stockThickness = document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM;
 
   return (
-    <aside className="w-72 h-[calc(100vh-3.5rem)] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-y-auto transition-colors">
+    /*
+      Below `lg` there is not room for a permanent 18rem column beside a
+      drawing, so the inspector slides in over the canvas instead.
+
+      Written as `max-lg:` overrides rather than as a mobile base with `lg:`
+      restoring it, so that at desktop width this element carries exactly the
+      classes it always did — no stray transform, which would otherwise make
+      the aside a containing block and re-anchor the absolutely positioned
+      dropdowns inside it.
+
+      `absolute inset-y-0` against the workspace, not `fixed` at a measured
+      offset: below `lg` the top and bottom bars wrap onto as many rows as
+      their contents need, so their heights are not knowable here. Anything
+      pinned to `top-14 bottom-8` would tuck under a two-row navbar the moment
+      a preset name got longer.
+    */
+    <aside
+      className={`w-72 h-[calc(100dvh-3.5rem)] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-y-auto transition-colors max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:h-auto max-lg:w-80 max-lg:max-w-[85vw] max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200 ${
+        isPropertiesOpen ? 'max-lg:translate-x-0' : 'max-lg:translate-x-full max-lg:pointer-events-none'
+      }`}
+    >
       {/* Element Properties Header */}
-      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80">
+      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between gap-2">
         <h2 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2">
           <SlidersHorizontal className="w-3.5 h-3.5 text-red-500" />
           <span>Properties Inspector</span>
         </h2>
+        {/* The drawer covers the canvas, so it has to carry its own way out. */}
+        <button
+          onClick={() => setPropertiesOpen(false)}
+          className="lg:hidden p-1 -m-1 rounded-md text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+          title="Close the properties inspector"
+        >
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
       {selectedElement ? (

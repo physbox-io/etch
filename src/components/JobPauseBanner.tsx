@@ -43,7 +43,7 @@ export const JobPauseBanner: React.FC = () => {
   if (!paused || isMachineModalOpen || dismissedLine === status.currentLine) return null;
 
   return (
-    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[55] w-full max-w-xl px-4 pointer-events-none">
+    <div className="fixed top-20 left-1/2 -translate-x-1/2 max-lg:top-1/2 max-lg:-translate-y-1/2 z-[55] w-full max-w-xl px-4 pointer-events-none">
       <div className="pointer-events-auto rounded-2xl border border-amber-400/80 dark:border-amber-600/70 bg-amber-50 dark:bg-amber-950/90 backdrop-blur-md shadow-2xl shadow-amber-900/20 p-4 space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2">

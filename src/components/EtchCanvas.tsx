@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store/useStore';
+import { useCoarsePointer } from '../hooks/useCoarsePointer';
 import type { EtchElement, BezierNode } from '../types/etch';
 import { ensureGoogleFont } from '../utils/googleFonts';
 import {
@@ -82,6 +83,13 @@ interface NodeDrag {
 /** How close (mm on screen) a click must land to count as "on the path". */
 const NODE_GRAB_PX = 6;
 
+/**
+ * How much bigger the selection handles and grab tolerances are on a touch
+ * screen. A fingertip contact patch is several millimetres wide and, unlike a
+ * cursor, the finger hides the thing it is aiming at.
+ */
+const TOUCH_HANDLE_SCALE = 1.8;
+
 /** Marquee rectangle in bed (mm) coordinates. */
 interface Marquee {
   x0: number;
@@ -110,10 +118,37 @@ export const EtchCanvas: React.FC = () => {
   } = useStore();
 
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const coarsePointer = useCoarsePointer();
 
   // Viewport Panning
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+
+  /**
+   * Touch gesture tracking.
+   *
+   * Every handler below is written against pointer events, not mouse events, so
+   * a finger and a stylus drive the tools through exactly the same code path as
+   * a mouse — the canvas used to listen for mouse events only, which left a
+   * phone with no way to draw anything at all.
+   *
+   * The one thing a finger needs that a mouse does not is a way to move the
+   * view, having no wheel and no middle button. A second finger going down
+   * means the operator wants to move the paper rather than cut it, so whatever
+   * the first finger had started is abandoned and both fingers drive pan+zoom.
+   */
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ dist: number; cx: number; cy: number } | null>(null);
+
+  /** Span and midpoint of the first two fingers down, in screen pixels. */
+  const pinchState = () => {
+    const [a, b] = [...pointers.current.values()];
+    return {
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+      cx: (a.x + b.x) / 2,
+      cy: (a.y + b.y) / 2,
+    };
+  };
 
   // Cursor tracking & Freehand
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
@@ -408,9 +443,59 @@ export const EtchCanvas: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [activeTool, editPath, activeIdx, applyNodePath]);
 
-  // ------------------------------------------------------------ Mouse down
+  // ---------------------------------------------------------- Pointer down
 
-  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+  /**
+   * Drop whatever gesture is in flight without treating it as finished.
+   *
+   * A second finger landing mid-stroke is not the operator finishing the
+   * stroke, so nothing here builds an element or extends a selection. A
+   * transform is the exception: it has already been written to the document
+   * transiently, so it still needs its one history entry.
+   */
+  const abandonGesture = () => {
+    setIsPanning(false);
+    setIsDraggingHandle(false);
+    setIsFreehandDrawing(false);
+    setFreehandPoints([]);
+    setIsCreatingShape(false);
+    setShapeStart(null);
+    setShapeCurrent(null);
+    setMarquee(null);
+    setMarqueeAdditive(false);
+    setNodeDrag(null);
+    if (isTransforming) {
+      setIsTransforming(null);
+      setTransformStart(null);
+      commitHistory();
+    }
+  };
+
+  /**
+   * Counts the fingers down and starts the pinch, in the capture phase.
+   *
+   * Capture rather than bubble because the selection and node handles claim
+   * their own pointerdown and stop it propagating. Counting fingers on the way
+   * down means a second finger landing while the first is dragging a resize
+   * knob still turns into a pan/zoom, instead of being swallowed by the handle
+   * and leaving the operator resizing the shape with one finger and nothing
+   * happening with the other.
+   */
+  const handlePointerDownCapture = (e: React.PointerEvent<SVGSVGElement>) => {
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.current.size < 2) return;
+    if (pointers.current.size === 2) {
+      abandonGesture();
+      pinch.current = pinchState();
+    }
+    // Keep it away from the tools entirely: this finger is part of a view
+    // gesture, not a second drawing gesture.
+    e.stopPropagation();
+  };
+
+  const handleMouseDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (pinch.current) return;
+
     if (e.button === 1) {
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -484,7 +569,9 @@ export const EtchCanvas: React.FC = () => {
         // outline harder to hit. hit.dist is in the element's local units,
         // which its scale shrinks — without dividing that out, a 5x-scaled
         // path grabbed clicks from 5x further away than the 6px it looks.
-        const grab = NODE_GRAB_PX / (zoom * elementScale(selectedElement));
+        const grab =
+          (NODE_GRAB_PX * (coarsePointer ? TOUCH_HANDLE_SCALE : 1)) /
+          (zoom * elementScale(selectedElement));
         if (hit && hit.dist <= grab) {
           const next = insertNode(editPath, hit.segIndex, hit.t);
           applyNodePath(next, true);
@@ -528,9 +615,39 @@ export const EtchCanvas: React.FC = () => {
     }
   };
 
-  // ------------------------------------------------------------ Mouse move
+  // ---------------------------------------------------------- Pointer move
 
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (pointers.current.has(e.pointerId)) {
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // Two fingers: zoom about the point between them, and let that point carry
+    // the drawing with it, so the bed stays pinned under the fingers holding
+    // it. Reads pan/zoom from the store rather than the render closure because
+    // several pointermove events can arrive before React re-renders, and a
+    // stale zoom makes the pinch stutter.
+    if (pinch.current) {
+      const prev = pinch.current;
+      const next = pinchState();
+      pinch.current = next;
+      const host = e.currentTarget.parentElement as HTMLElement | null;
+      if (host && prev.dist > 0 && next.dist > 0) {
+        const { zoom: z, pan: p } = useStore.getState();
+        const target = Math.max(0.2, Math.min(z * (next.dist / prev.dist), 5.0));
+        const applied = target / z;
+        const rect = host.getBoundingClientRect();
+        const mx = prev.cx - rect.left;
+        const my = prev.cy - rect.top;
+        setPan({
+          x: mx - (mx - p.x) * applied + (next.cx - prev.cx),
+          y: my - (my - p.y) * applied + (next.cy - prev.cy),
+        });
+        setZoom(target);
+      }
+      return;
+    }
+
     const coords = toBedSnapped(e);
     const rawCoords = toBed(e);
     setCursorPos(coords);
@@ -694,9 +811,20 @@ export const EtchCanvas: React.FC = () => {
     }
   };
 
-  // -------------------------------------------------------------- Mouse up
+  // ------------------------------------------------------------ Pointer up
 
-  const handleMouseUp = (e: React.MouseEvent<SVGSVGElement>) => {
+  const handleMouseUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    pointers.current.delete(e.pointerId);
+
+    // Lifting one finger out of a pinch ends the view gesture outright. Handing
+    // the tools the finger that is still down would draw a stroke the operator
+    // never started.
+    if (pinch.current) {
+      if (pointers.current.size < 2) pinch.current = null;
+      else pinch.current = pinchState();
+      return;
+    }
+
     if (isPanning) setIsPanning(false);
     if (isDraggingHandle) setIsDraggingHandle(false);
 
@@ -798,11 +926,25 @@ export const EtchCanvas: React.FC = () => {
     }
   };
 
-  const handleMouseLeave = (e: React.MouseEvent<SVGSVGElement>) => {
+  const handleMouseLeave = (e: React.PointerEvent<SVGSVGElement>) => {
+    // Touch pointers are implicitly captured, so they only ever "leave" as part
+    // of being lifted — which handleMouseUp has already dealt with one event
+    // earlier. Running it again here would finish the gesture twice.
+    if (e.pointerType !== 'mouse') return;
     // Releasing outside the canvas used to leave the app stuck mid-drag.
     if (isPanning || isFreehandDrawing || isCreatingShape || isTransforming || marquee || nodeDrag) {
       handleMouseUp(e);
     }
+  };
+
+  /**
+   * The OS taking the gesture away (a system edge-swipe, a call coming in).
+   * Without this the canvas keeps a stroke open that will never be finished.
+   */
+  const handlePointerCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    pointers.current.delete(e.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    abandonGesture();
   };
 
   const beginTransform = (
@@ -897,8 +1039,10 @@ export const EtchCanvas: React.FC = () => {
   const handleBox = (multiBox && bedBoxOf(movableSelected)) || multiBox;
 
   // Handle geometry is in bed mm; dividing by zoom keeps it a constant
-  // on-screen size instead of ballooning as you zoom in.
-  const hs = 1 / zoom;
+  // on-screen size instead of ballooning as you zoom in. On a touch screen the
+  // whole overlay is drawn larger, because a rotate knob sized for a mouse
+  // cursor is smaller than the fingertip trying to grab it.
+  const hs = (coarsePointer ? TOUCH_HANDLE_SCALE : 1) / zoom;
 
   const bedW = document.width;
   const bedH = document.height;
@@ -958,10 +1102,12 @@ export const EtchCanvas: React.FC = () => {
           transformOrigin: 'top left',
         }}
         onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseLeave}
+        onPointerDownCapture={handlePointerDownCapture}
+        onPointerDown={handleMouseDown}
+        onPointerMove={handleMouseMove}
+        onPointerUp={handleMouseUp}
+        onPointerCancel={handlePointerCancel}
+        onPointerLeave={handleMouseLeave}
         onDoubleClick={(e) => {
           if (activeTool === 'bezier') {
             finishBezier(false);
@@ -1358,7 +1504,7 @@ export const EtchCanvas: React.FC = () => {
                         <g
                           key={k}
                           className="cursor-grab active:cursor-grabbing"
-                          onMouseDown={(e) => {
+                          onPointerDown={(e) => {
                             e.stopPropagation();
                             setActiveNode(idx);
                             // Alt breaks the node, so the two sides can point
@@ -1391,7 +1537,7 @@ export const EtchCanvas: React.FC = () => {
 
                     <g
                       className="cursor-pointer"
-                      onMouseDown={(e) => {
+                      onPointerDown={(e) => {
                         e.stopPropagation();
                         setActiveNode(idx);
                         setNodeDrag({ index: idx, kind: 'node', mirror: false });
@@ -1510,7 +1656,7 @@ export const EtchCanvas: React.FC = () => {
                   />
                   <g
                     className="cursor-grab active:cursor-grabbing"
-                    onMouseDown={(e) => {
+                    onPointerDown={(e) => {
                       e.stopPropagation();
                       if (movableSelected.length === 0) return;
                       beginTransform(movableSelected[0], 'rotate', toBed(e), movableSelected);
@@ -1542,7 +1688,7 @@ export const EtchCanvas: React.FC = () => {
                     stroke="#ffffff"
                     strokeWidth={0.3 * hs}
                     className="cursor-nwse-resize"
-                    onMouseDown={(e) => {
+                    onPointerDown={(e) => {
                       e.stopPropagation();
                       if (movableSelected.length === 0) return;
                       beginTransform(movableSelected[0], 'resize-se', toBed(e), movableSelected);
@@ -1606,7 +1752,7 @@ export const EtchCanvas: React.FC = () => {
               />
               <g
                 className="cursor-grab active:cursor-grabbing"
-                onMouseDown={(e) => {
+                onPointerDown={(e) => {
                   e.stopPropagation();
                   beginTransform(selectedElement, 'rotate', toBed(e));
                 }}
@@ -1637,7 +1783,7 @@ export const EtchCanvas: React.FC = () => {
                 stroke="#ffffff"
                 strokeWidth={0.3 * hs}
                 className="cursor-nwse-resize"
-                onMouseDown={(e) => {
+                onPointerDown={(e) => {
                   e.stopPropagation();
                   // Raw, not snapped — see the resize branch in handleMouseMove.
                   beginTransform(selectedElement, 'resize-se', toBed(e));
@@ -1650,7 +1796,7 @@ export const EtchCanvas: React.FC = () => {
 
       {/* Pen-tool hint */}
       {activeTool === 'bezier' && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
           Click to add a node · drag to curve it · click the first node or press{' '}
           <kbd className="font-mono">Enter</kbd> to finish · <kbd className="font-mono">Esc</kbd> to
           cancel
@@ -1659,7 +1805,7 @@ export const EtchCanvas: React.FC = () => {
 
       {/* Node-tool hint */}
       {activeTool === 'node-edit' && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
           {editPath
             ? 'Drag a node to move it · drag a blue handle to curve it (Alt for a corner) · click the path to add a node · double-click or Delete to remove one'
             : 'Click a path, freehand stroke or star to edit its nodes'}

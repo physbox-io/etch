@@ -12,6 +12,9 @@ html, body, #root {
   background-color: #f8fafc;
   color: #0f172a;
   overflow: hidden;
+  /* Stops a drag that starts near the top of the canvas from being taken over
+     by pull-to-refresh, which reloads the page and loses the drawing. */
+  overscroll-behavior: none;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
