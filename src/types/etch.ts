@@ -307,6 +307,16 @@ export interface MachineStatus {
   wz: number;
   feedRate: number;
   spindlePower: number;
+  /**
+   * Whether the guide spot is lit — the laser held at pointer power so the
+   * operator can see where the head actually is while zeroing XY.
+   *
+   * Tracked here rather than in the panel's own state because the beam outlives
+   * any component: it is switched off by disconnecting, by the E-stop and by
+   * starting a job, and a toggle that only knows what it last clicked would go
+   * on claiming the spot is lit after any of those.
+   */
+  guideSpot: boolean;
   lastResponse?: string;
   /** Last refusal or probe failure, for surfacing in the UI rather than the console. */
   lastError?: string;

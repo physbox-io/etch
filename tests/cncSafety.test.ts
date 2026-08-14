@@ -493,14 +493,16 @@ describe('stock a beam will not mark', () => {
    * it again harder rather than to go and coat the workpiece.
    */
   it('says what has to be done to the surface first', () => {
-    for (const material of ['glass', 'ceramic', 'aluminium'] as const) {
+    for (const material of ['glass', 'ceramic'] as const) {
       const { notes } = planToolpath(etchDoc(material));
       expect(notes.join(' '), material).toMatch(/diode|coating|titanium-dioxide|marking spray/);
     }
   });
 
+  // Aluminium is here rather than above: the entry describes anodised stock,
+  // which marks as it is. It used to warn, on the strength of bare mill-finish.
   it('says nothing about stock that marks as it is', () => {
-    for (const material of ['hardwood', 'mdf', 'stone'] as const) {
+    for (const material of ['hardwood', 'mdf', 'stone', 'aluminium'] as const) {
       const { notes } = planToolpath(etchDoc(material));
       expect(notes.join(' '), material).not.toMatch(/diode|coating/);
     }

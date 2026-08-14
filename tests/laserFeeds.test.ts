@@ -105,10 +105,28 @@ describe('wavelength, not wattage', () => {
    * panel, running the job, and finding the glass untouched — which looks
    * exactly like not enough power, so they run it again harder.
    */
-  it('refuses glass and bare metal on a diode instead of guessing', () => {
+  it('refuses clear glass on a diode instead of guessing', () => {
     expect(derive('glass', 'etch', DIODE_10W)).toBeNull();
-    expect(derive('aluminium', 'etch', DIODE_10W)).toBeNull();
     expect(laserRefusal(findMaterial('glass'), 'etch', DIODE_10W)).toMatch(/wavelength/);
+  });
+
+  /**
+   * Aluminium is deliberately *not* in that list. The entry models anodised
+   * stock, which is what people actually put under a hobby laser and which a
+   * diode marks perfectly well by ablating the dye layer. It was refused
+   * outright for a long time on the strength of bare mill-finish stock, which
+   * is the rarer case.
+   */
+  it('marks anodised aluminium on a diode rather than refusing it', () => {
+    const recipe = derive('aluminium', 'etch', DIODE_10W);
+    expect(recipe).not.toBeNull();
+    expect(recipe!.speed).toBeGreaterThan(0);
+    expect(laserRefusal(findMaterial('aluminium'), 'etch', DIODE_10W)).toBeNull();
+  });
+
+  it('still refuses to pretend a beam cuts through metal', () => {
+    expect(derive('aluminium', 'cut', DIODE_10W)).toBeNull();
+    expect(laserRefusal(findMaterial('aluminium'), 'cut', DIODE_10W)).toMatch(/does not cut/);
   });
 
   it('does the same materials happily on a CO2', () => {

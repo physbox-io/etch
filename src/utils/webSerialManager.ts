@@ -1,7 +1,7 @@
 import type { MachineStatus, BedProbeGrid, ProbePoint } from '../types/etch';
 import { postMachineTelemetry } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
-import { DEFAULT_PLATE_THICKNESS_MM } from './machineSettings';
+import { DEFAULT_PLATE_THICKNESS_MM, clampGuidePower, readGuidePower } from './machineSettings';
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
 
 type StatusListener = (status: MachineStatus) => void;
@@ -36,6 +36,15 @@ export interface ProbeGridOptions {
   onPointReady?: (point: AssistedProbePoint) => Promise<AssistedProbeAction>;
 }
 
+/**
+ * How long the guide spot stays lit before switching itself off.
+ *
+ * Long enough to jog a head across the bed and line it up on a corner; short
+ * enough that a browser tab closed, a modal dismissed or an operator called
+ * away does not leave a beam sitting on one spot of dry material.
+ */
+const GUIDE_SPOT_TIMEOUT_MS = 120_000;
+
 const INITIAL_STATUS: MachineStatus = {
   connected: false,
   baudRate: 115200,
@@ -48,6 +57,7 @@ const INITIAL_STATUS: MachineStatus = {
   wz: 0,
   feedRate: 0,
   spindlePower: 0,
+  guideSpot: false,
   jobRunning: false,
   jobPaused: false,
   currentLine: 0,
@@ -129,6 +139,9 @@ class WebSerialManager {
    * only a correction if it reads zero at the point the datum was taken from.
    */
   private zDatumMachineXY: { x: number; y: number } | null = null;
+
+  /** Deadline for the guide spot, so a lit beam cannot be walked away from. */
+  private guideSpotTimer: ReturnType<typeof setTimeout> | null = null;
 
   public subscribe(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
@@ -228,6 +241,10 @@ class WebSerialManager {
     this.stopStatusPolling();
     this.isReading = false;
     this.failPendingWaiters();
+    // Ordered before the port is torn down so the M5 actually reaches the
+    // controller: a guide spot lit when the browser lets go of the port would
+    // otherwise stay lit, with nothing left able to command it out.
+    await this.guideSpotOff();
 
     // Each step is guarded separately. On an unplug the piped streams have
     // already errored, so `writer.close()` rejects — and sharing one try block
@@ -312,6 +329,75 @@ class WebSerialManager {
   /** Cancels an in-flight jog (GRBL real-time 0x85) without disturbing modal state. */
   public async jogCancel() {
     await this.writeRealtime('\x85');
+  }
+
+  /**
+   * Lights the laser at pointer power, so the operator can see where the head
+   * is standing and jog the *beam* — not the gantry, not a crosshair — onto the
+   * corner of the stock before zeroing.
+   *
+   * Without this there is no way to set XY zero on a laser accurately. You jog
+   * by eye against the head, or against a red pointer diode that is mounted a
+   * few millimetres off the optical axis, and the whole job comes out shifted by
+   * that offset — the same amount, in the same direction, every time.
+   *
+   * `M3` and not `M4`: in GRBL's laser mode `M4` is dynamic power, which scales
+   * with feed and is therefore *off* on a stationary head — exactly the case
+   * here. `M3` is constant power and fires immediately at idle, which is why
+   * `frameJob` uses it too.
+   *
+   * The beam is left burning at the operator's discretion, on a head that is not
+   * moving, so it carries its own deadline: `GUIDE_SPOT_TIMEOUT_MS` after being
+   * lit it goes out on its own. Every other exit from this state — disconnect,
+   * E-stop, starting a job — kills it too, via `guideSpotOff`.
+   */
+  public async guideSpotOn(power: number = readGuidePower()) {
+    if (!this.status.connected) {
+      this.update({ lastError: 'Not connected to a machine.' });
+      return;
+    }
+    // Firing into a running job would fight the program's own S words, and the
+    // spot would be indistinguishable from the cut anyway.
+    if (this.status.jobRunning) {
+      this.update({ lastError: 'Cannot light the guide spot while a job is running.' });
+      return;
+    }
+    // Clamped here as well as in the UI: this is a public method, and the cap is
+    // a safety property of the beam rather than of the number box.
+    await this.sendCommand(`M3 S${clampGuidePower(power)}`);
+    this.update({ guideSpot: true });
+    this.armGuideSpotTimeout();
+  }
+
+  /** Puts the guide spot out. Safe to call when it was never lit. */
+  public async guideSpotOff() {
+    this.clearGuideSpotTimeout();
+    if (!this.status.connected) {
+      // Nothing to send to, but the flag must not survive: the beam is out
+      // because the machine is gone.
+      if (this.status.guideSpot) this.update({ guideSpot: false });
+      return;
+    }
+    await this.sendCommand('M5');
+    // S0 as well as M5, so the next `M3` in a hand-typed command or a program
+    // header does not inherit the pointer's S word and fire at it.
+    await this.sendCommand('S0');
+    this.update({ guideSpot: false });
+  }
+
+  private armGuideSpotTimeout() {
+    this.clearGuideSpotTimeout();
+    this.guideSpotTimer = setTimeout(() => {
+      this.guideSpotTimer = null;
+      void this.guideSpotOff();
+    }, GUIDE_SPOT_TIMEOUT_MS);
+  }
+
+  private clearGuideSpotTimeout() {
+    if (this.guideSpotTimer) {
+      clearTimeout(this.guideSpotTimer);
+      this.guideSpotTimer = null;
+    }
   }
 
   /**
@@ -411,10 +497,18 @@ class WebSerialManager {
     // would keep feeding lines into a controller that has just been reset.
     this.gcodeQueue = [];
     this.queueIndex = 0;
+    this.clearGuideSpotTimeout();
     await this.writeRealtime('\x18'); // Ctrl-X soft reset, acted on immediately
     await this.sendCommand('M5');
     this.failPendingWaiters();
-    this.update({ state: 'Hold', jobRunning: false, jobPaused: false, pauseMessage: undefined });
+    this.update({
+      state: 'Hold',
+      jobRunning: false,
+      jobPaused: false,
+      pauseMessage: undefined,
+      // The M5 above put the guide spot out along with everything else.
+      guideSpot: false,
+    });
   }
 
   /**
@@ -434,7 +528,10 @@ class WebSerialManager {
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     opts: { laserMode?: boolean; guidePower?: number; safeZ?: number } = {}
   ) {
-    const { laserMode = true, guidePower = 5, safeZ = 5 } = opts;
+    // The framing power and the guide spot's are the same setting: both are the
+    // beam being used as a pointer, and a machine whose diode needs S12 to show
+    // a visible dot needs it for both. It used to be a hardcoded 5 here.
+    const { laserMode = true, guidePower = readGuidePower(), safeZ = 5 } = opts;
     const { minX, minY, maxX, maxY } = bounds;
     const corners: Array<[number, number]> = [
       [maxX, minY],
@@ -442,6 +539,12 @@ class WebSerialManager {
       [minX, maxY],
       [minX, minY],
     ];
+
+    // Framing drives the head, and it commands its own beam state at its own
+    // power. Putting a lit guide spot out first means the flag matches the
+    // machine afterwards rather than claiming a beam this method has since
+    // switched off.
+    if (this.status.guideSpot) await this.guideSpotOff();
 
     await this.sendCommand('G21 G90');
     if (!laserMode) await this.sendCommand(`G0 Z${safeZ.toFixed(3)}`);
@@ -501,6 +604,14 @@ class WebSerialManager {
 
     this.gcodeQueue = lines;
     this.queueIndex = 0;
+    // A guide spot left lit would be a beam already firing as the program's
+    // first rapid runs, dragging a burn across the stock on the way to the
+    // start point. `M5` is sent directly rather than through `guideSpotOff`
+    // because that one sends a second line after an await, and it would land in
+    // the middle of the job's opening lines — including on top of the header's
+    // own power word.
+    this.clearGuideSpotTimeout();
+    if (this.status.guideSpot) this.sendCommand('M5');
     // Kept for the tool-change prompt: a T-number alone tells the operator
     // nothing about which bit to reach for, and only the document knows what T3
     // is. Laser jobs never raise one — that machine has no tools to change.
@@ -508,6 +619,7 @@ class WebSerialManager {
     this.update({
       jobRunning: true,
       jobPaused: false,
+      guideSpot: false,
       currentLine: 0,
       totalLines: lines.length,
       pauseMessage: undefined,

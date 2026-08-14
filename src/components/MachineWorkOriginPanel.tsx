@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
 import {
   ArrowUp,
@@ -15,6 +15,7 @@ import {
   Octagon,
   Info,
   Check,
+  Lightbulb,
   Grid3x3,
   PauseCircle,
   Play,
@@ -27,6 +28,9 @@ import {
   readShimThickness,
   writeShimThickness,
   MAX_SHIM_THICKNESS_MM,
+  readGuidePower,
+  writeGuidePower,
+  MAX_GUIDE_POWER_S,
 } from '../utils/machineSettings';
 import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
@@ -100,6 +104,7 @@ export const MachineWorkOriginPanel: React.FC<{
   } | null>(null);
   const [showManualZ, setShowManualZ] = useState(false);
   const [shimThickness, setShimThickness] = useState(readShimThickness);
+  const [guidePower, setGuidePower] = useState(readGuidePower);
   // Homing is the real first step: until the machine has found its limit
   // switches, machine coordinates are wherever it happened to be switched on,
   // and nothing below can be repeated tomorrow.
@@ -132,6 +137,25 @@ export const MachineWorkOriginPanel: React.FC<{
   // about the offset, not about where the tool happens to be parked.
   const jog = (x: number, y: number, z: number) =>
     webSerialManager.jog({ x: x * step, y: y * step, z: z * step }, feedRate);
+
+  // Closing the panel is the operator walking away from it, and the beam does
+  // not close with the modal. The manager's own timeout would catch this
+  // eventually; putting the spot out here means it happens the moment the
+  // window they were sighting through goes away.
+  //
+  // Read live rather than from this render's `status`: an unconditional M5
+  // would stop a *spindle* if the panel unmounted mid-job.
+  useEffect(
+    () => () => {
+      if (webSerialManager.getStatus().guideSpot) void webSerialManager.guideSpotOff();
+    },
+    []
+  );
+
+  const handleGuideSpot = () => {
+    if (status.guideSpot) webSerialManager.guideSpotOff();
+    else webSerialManager.guideSpotOn(guidePower);
+  };
 
   const handleHome = async () => {
     setIsHoming(true);
@@ -499,6 +523,65 @@ export const MachineWorkOriginPanel: React.FC<{
               <span>Go To Zero</span>
             </button>
           </div>
+          {/* The guide spot. A laser has nothing to sight along: the head is a
+              box, and the pointer diode some machines carry is mounted off the
+              optical axis, so jogging by eye against either sets zero a fixed
+              distance from where the beam actually lands — and every job then
+              cuts that far off, in the same direction, every time. Lighting the
+              real beam at pointer power is the only way to see the origin you
+              are setting. */}
+          {isLaser && (
+            <div className="flex items-center gap-2 flex-wrap pt-0.5 max-w-md">
+              <button
+                onClick={handleGuideSpot}
+                disabled={!status.connected || status.jobRunning}
+                title={
+                  status.guideSpot
+                    ? 'Switch the beam off'
+                    : 'Fire the beam at pointer power so you can see exactly where the origin will be'
+                }
+                className={
+                  status.guideSpot
+                    ? 'flex-1 py-2 px-2.5 bg-amber-500 hover:bg-amber-600 border border-amber-500 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors'
+                    : actionBtn
+                }
+              >
+                <Lightbulb className={`w-3.5 h-3.5 ${status.guideSpot ? '' : 'text-amber-500'}`} />
+                <span>{status.guideSpot ? 'Guide Spot On — Switch Off' : 'Guide Spot'}</span>
+              </button>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_GUIDE_POWER_S}
+                  step={1}
+                  value={guidePower}
+                  onChange={(e) => {
+                    const next = writeGuidePower(parseFloat(e.target.value) || 0);
+                    setGuidePower(next);
+                    // Re-fire at the new power while it is lit, so "raise it
+                    // until you can see the dot" is one number box rather than
+                    // a toggle-off-edit-toggle-on cycle.
+                    if (status.guideSpot) webSerialManager.guideSpotOn(next);
+                  }}
+                  title={`Pointer power as an S word, capped at ${MAX_GUIDE_POWER_S}. Full scale is whatever $30 says — usually 1000, sometimes 255 — so raise this until the dot is visible on scrap. Also used for Frame Job. Remembered between sessions.`}
+                  className={`w-16 ${numInput}`}
+                />
+                <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">
+                  S power
+                </span>
+              </div>
+            </div>
+          )}
+          {isLaser && (
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug max-w-md">
+              Wear your glasses, put scrap under the head, and jog the <em>dot</em> onto the corner of
+              the stock before zeroing — not the head, and not a red pointer diode, which sits off to
+              one side of the beam. Raise the power until you can see it; it goes out on its own after
+              two minutes.
+            </p>
+          )}
+
           {xyZeroed && (
             <p className={doneNote}>
               Work X0 Y0 is at machine X:{xyZeroed.x.toFixed(2)} Y:{xyZeroed.y.toFixed(2)}

@@ -354,6 +354,17 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           red ⏹ button cancels a jog in flight. Then press <strong>Set XY Zero</strong>, and{' '}
           <strong>Go To Zero</strong> to confirm it landed where you meant.
         </Step>
+        <Step title="2️⃣ On a laser, sight with the guide spot">
+          There is nothing to sight down on a laser — the head is a box, and the red pointer diode
+          some machines carry is mounted off to one side of the actual beam, so zeroing to the
+          pointer puts every job out by that offset, the same amount in the same direction every
+          time. Press <strong>Guide Spot</strong> to fire the real beam at pointer power, put scrap
+          under the head, and jog the <em>dot</em> onto the corner of your stock before zeroing.
+          Raise the S power beside the button until the dot is visible — full scale is whatever your
+          controller's <code>$30</code> is, so the same number is dim on one machine and clear on
+          another. It switches itself off after two minutes, and whenever a job starts. Wear your
+          glasses: it is a low power, not a safe one.
+        </Step>
         <Step title="3️⃣ Zero Z with the touch plate">
           Clip the probe lead to the tool, sit the plate on the stock's top face, park the tool a few
           mm above it, enter your plate's real thickness, and press <strong>Probe Z Zero</strong>.

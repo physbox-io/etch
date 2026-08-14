@@ -68,6 +68,9 @@ const SHIM_THICKNESS_KEY = 'etch_manual_z_shim_thickness_mm';
 export const SYNCED_MACHINE_PARAMETER_KEYS: readonly string[] = [
   PLATE_THICKNESS_KEY,
   SHIM_THICKNESS_KEY,
+  // Literals from here down: these keys are declared further down the file, and
+  // naming the consts would read them in their temporal dead zone.
+  'etch_laser_guide_power_s',
   'etch_spindle_min_rpm',
   'etch_spindle_max_rpm',
   'etch_laser_source',
@@ -107,6 +110,59 @@ export function writeShimThickness(value: number): number {
   try {
     localStorage.setItem(SHIM_THICKNESS_KEY, String(clamped));
     syncCloudParameters('etch', { [SHIM_THICKNESS_KEY]: clamped });
+  } catch {
+    // Non-fatal: the setting just won't survive a reload.
+  }
+  return clamped;
+}
+
+const GUIDE_POWER_KEY = 'etch_laser_guide_power_s';
+
+/**
+ * S-word the laser is fired at when it is being used as a pointer rather than
+ * a cutter — framing the job, or lighting the spot to set XY zero against.
+ *
+ * There is no percentage to state it as: `$30` decides what full scale means,
+ * and it is 1000 on a stock GRBL build and 255 on plenty of shipped diode
+ * controllers. S5 is a quarter of a percent on the first and two percent on the
+ * second, which is why this is adjustable at all — on a machine whose diode
+ * does not reach threshold until a few percent, the spot at the default is
+ * simply invisible, and an operator who cannot see the dot cannot zero to it.
+ *
+ * Start low and come up. A dot you can see on white card is nowhere near a dot
+ * that marks it.
+ */
+export const DEFAULT_GUIDE_POWER_S = 5;
+
+/**
+ * The ceiling on that. This is a pointer, not a cut: the beam is parked in one
+ * place with nothing moving, which is the one condition under which even a
+ * modest diode sets scrap alight. The cap is what stops "I could not see it"
+ * ending at S200 on a stationary head.
+ */
+export const MAX_GUIDE_POWER_S = 30;
+
+export function clampGuidePower(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_GUIDE_POWER_S;
+  return Math.min(MAX_GUIDE_POWER_S, Math.round(value));
+}
+
+export function readGuidePower(): number {
+  try {
+    const raw = localStorage.getItem(GUIDE_POWER_KEY);
+    if (raw === null) return DEFAULT_GUIDE_POWER_S;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? clampGuidePower(parsed) : DEFAULT_GUIDE_POWER_S;
+  } catch {
+    return DEFAULT_GUIDE_POWER_S;
+  }
+}
+
+export function writeGuidePower(value: number): number {
+  const clamped = clampGuidePower(value);
+  try {
+    localStorage.setItem(GUIDE_POWER_KEY, String(clamped));
+    syncCloudParameters('etch', { [GUIDE_POWER_KEY]: clamped });
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }

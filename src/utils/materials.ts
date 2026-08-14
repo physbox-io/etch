@@ -98,10 +98,10 @@ export interface LaserMaterial {
   /**
    * Why the beam will not mark this stock as it is, when that is the case.
    *
-   * Not a matter of dialling the power up: bare aluminium reflects a CO2 and
-   * ignores a diode, clear glass and clear acrylic pass a diode beam straight
-   * through, and a tile glaze mostly just crazes. Each needs something done to
-   * the surface first, and the failure looks identical to a job that simply ran
+   * Not a matter of dialling the power up: clear glass and clear acrylic pass a
+   * diode beam straight through, and a tile glaze mostly just crazes. Each needs
+   * something done to the surface first, and the failure looks identical to a
+   * job that simply ran
    * at too low a power — which is how an afternoon goes into re-running it.
    */
   warning?: string;
@@ -246,16 +246,26 @@ const MATERIALS: MaterialProfile[] = [
     stepdownRatio: 0.15,
     note: 'Shallow steps only, and it needs lubricant. A hobby router is at its limit here.',
     laser: {
-      note: 'Marks through a coating rather than into the metal, so the mark is as durable as what is sprayed on.',
-      warning:
-        'Bare aluminium reflects a CO2 beam and shrugs off a diode — neither will mark it, at any power. ' +
-        'It takes a marking spray (CerMark, moly lube) fused onto the surface, or a fibre laser.',
-      // Fusing a marking compound onto metal is the most energy-hungry thing on
-      // this list: the substrate carries heat away as fast as the beam adds it.
-      etchDoseJPerMm: 6.0,
+      note: 'Ablates the anodised layer to expose the metal under it, so the mark is white and permanent. Bare mill-finish stock needs a marking spray instead.',
+      /**
+       * No warning, and no diode refusal.
+       *
+       * This entry used to model bare mill-finish stock: `diodeFactor: null`
+       * refused diode jobs outright and the warning told everyone to go and buy
+       * CerMark. Almost nobody puts raw aluminium under a hobby laser — they put
+       * anodised stock under it, which is the standard thing to mark and takes a
+       * diode perfectly well. Refusing the common case to warn about the rare one
+       * is the wrong way round.
+       */
+      // Ablating an anodised layer is a surface job, not the heat-sinked fusing
+      // of a compound onto bare metal that the old 6.0 described — but the
+      // substrate still pulls heat away far faster than any of the woods do.
+      etchDoseJPerMm: 1.2,
       cutDoseJPerMm2: null,
       maxPowerFraction: 1,
-      diodeFactor: null,
+      // Blue is absorbed well by the dye in a dark anodised finish; a silver or
+      // clear finish takes noticeably more, which is what the margin here is.
+      diodeFactor: 1.4,
     },
   },
   /**
