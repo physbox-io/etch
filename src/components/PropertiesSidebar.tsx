@@ -26,6 +26,7 @@ import {
   toolWarning,
   suggestTool,
   hasToolCatalog,
+  machineKind as machineKindOf,
   type ToolProfile,
 } from '../utils/tooling';
 import { deriveFeeds, deriveLaserFeeds, laserRefusal, planPasses, formatRpm } from '../utils/feeds';
@@ -424,8 +425,8 @@ export const PropertiesSidebar: React.FC = () => {
   const selectedElement = document.elements.find((el) => selectedIds.includes(el.id));
   // Laser is the default target — most Etch documents are cut on one, and the
   // exporter treats an unset machine as a laser too.
-  const isLaser = (document.machine ?? 'laser') === 'laser';
-  const machineKind = isLaser ? 'laser' : 'cnc';
+  const machineKind = machineKindOf(document);
+  const isLaser = machineKind === 'laser';
   const tools = toolCatalog(machineKind, cncTools);
   // How many tools this job actually calls for. One means the machine never
   // stops; two or more means the operator is standing there for each change,
@@ -933,7 +934,11 @@ export const PropertiesSidebar: React.FC = () => {
           </button>
         </div>
 
-        {distinctTools > 1 && (
+        {/* Gated on the machine as well as the count: a laser has no tool
+            catalogue and never stops to swap, but a document cut on a router
+            first still carries its layers' T-numbers, so the count alone
+            promised laser users a tool change that will never happen. */}
+        {distinctTools > 1 && !isLaser && (
           <p className="mb-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
             {distinctTools} tools in this job — it runs one tool at a time and stops for you to swap,
             fill and etch first, cuts last.

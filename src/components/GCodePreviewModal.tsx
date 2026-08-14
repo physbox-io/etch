@@ -10,7 +10,7 @@ import {
   tabHoldingMm,
 } from '../utils/gcodeExporter';
 import { machineToDoc } from '../utils/machineCoords';
-import { describeTool } from '../utils/tooling';
+import { describeTool, machineKind, machineWords } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
 import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
@@ -34,7 +34,8 @@ export const GCodePreviewModal: React.FC = () => {
 
   // Lives on the document, not in this modal: the layer inspector needs to know
   // too, so it can stop offering a cut depth on a machine that has no Z.
-  const laserMode = (document.machine ?? 'laser') === 'laser';
+  const laserMode = machineKind(document) === 'laser';
+  const words = machineWords(machineKind(document));
   const [innerContourFirst, setInnerContourFirst] = useState(true);
   const [travelSpeed, setTravelSpeed] = useState(3000);
   const [applyLevelling, setApplyLevelling] = useState(true);
@@ -178,7 +179,7 @@ export const GCodePreviewModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <FileCode className="w-5 h-5 text-red-500" />
             <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-              Run Job &amp; Toolpath Preview
+              Run Job &amp; {laserMode ? 'Cut' : 'Toolpath'} Preview
             </h2>
           </div>
           <button
@@ -198,7 +199,7 @@ export const GCodePreviewModal: React.FC = () => {
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
             <h3 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
               <Settings className="w-3.5 h-3.5 text-slate-500" />
-              <span>Toolpath Options</span>
+              <span>{laserMode ? 'Cut Options' : 'Toolpath Options'}</span>
             </h3>
 
             {/* Machine Mode */}
@@ -301,7 +302,14 @@ export const GCodePreviewModal: React.FC = () => {
                 {/* Travel Speed */}
                 <div>
                   <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                    Rapid Travel Speed (mm/min) <InfoTooltip text="G0 rapid traverse speed between cut contours while cutter is lifted in Safe Z height." />
+                    Rapid Travel Speed (mm/min){' '}
+                    <InfoTooltip
+                      text={
+                        laserMode
+                          ? 'G0 rapid traverse speed between cut contours, with the beam off.'
+                          : 'G0 rapid traverse speed between cut contours while the cutter is lifted to Safe Z height.'
+                      }
+                    />
                   </label>
                   <input
                     type="number"
@@ -343,7 +351,7 @@ export const GCodePreviewModal: React.FC = () => {
                     </div>
                   </div>
                   <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                    Match spacing to your beam or bit width. Elements with their own
+                    Match spacing to your {words.cutter} width. Elements with their own
                     setting keep it.
                   </p>
                 </div>
@@ -586,7 +594,7 @@ export const GCodePreviewModal: React.FC = () => {
               ) : confirmRun ? (
                 <div className="p-2.5 rounded-lg border border-amber-400/70 bg-amber-50 dark:bg-amber-950/40 space-y-2">
                   <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                    Is the work origin set and the stock clamped? This starts cutting immediately.
+                    Is the work origin set and the stock {laserMode ? 'squared up' : 'clamped'}? This starts cutting immediately.
                   </p>
                   {!machine.connected && (
                     <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1">

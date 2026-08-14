@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Play, Square, Crosshair, X, PauseCircle } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import { machineKind } from '../utils/tooling';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
 
@@ -19,7 +20,7 @@ import type { MachineStatus } from '../types/etch';
 export const JobPauseBanner: React.FC = () => {
   const isMachineModalOpen = useStore((s) => s.isMachineModalOpen);
   const toggleMachineModal = useStore((s) => s.toggleMachineModal);
-  const isLaser = useStore((s) => (s.document.machine ?? 'laser') === 'laser');
+  const isLaser = useStore((s) => machineKind(s.document) === 'laser');
 
   const [status, setStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
   useEffect(() => webSerialManager.subscribe(setStatus), []);

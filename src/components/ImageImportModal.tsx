@@ -88,7 +88,21 @@ export const ImageImportModal: React.FC = () => {
       .catch((err) => console.error('Failed to load image:', err));
   };
 
-  // Re-draw preview on canvas asynchronously to ensure UI thread never freezes
+  /**
+   * Re-draws the preview off the back of a debounce.
+   *
+   * 30 ms was not a debounce so much as a yield: the work is synchronous and
+   * costs far more than that, so dragging a slider queued a full re-trace per
+   * pixel of travel and each one ran to completion. 180 ms is long enough that a
+   * drag produces one render at the end of it rather than a hundred during it.
+   *
+   * The generators are also given the *real* mm-per-pixel scale, the same one
+   * `handleImport` uses, and the canvas is scaled back to pixels to draw the
+   * result. They previously got 1:1, which made the preview a different picture
+   * from the import — halftone stepped every 2 px instead of every 12, so the
+   * preview showed 36x the dots it was about to place and did 36x the work to
+   * be wrong.
+   */
   useEffect(() => {
     if (!loadedImg || !previewCanvasRef.current) return;
 
@@ -104,15 +118,21 @@ export const ImageImportModal: React.FC = () => {
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
+        const scaleX = options.targetWidth / imageData.width;
+        const scaleY = options.targetHeight / imageData.height;
+
         // Draw background processed image
         ctx.putImageData(imageData, 0, 0);
 
+        ctx.save();
+        // Geometry arrives in mm; the canvas is in source pixels.
+        ctx.scale(1 / scaleX, 1 / scaleY);
         ctx.strokeStyle = '#00e5ff';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.5 * Math.min(scaleX, scaleY);
         ctx.fillStyle = 'rgba(0, 229, 255, 0.6)';
 
         if (options.mode === 'vector') {
-          const paths = traceMarchingSquares(imageData, options, 1, 1);
+          const paths = traceMarchingSquares(imageData, options, scaleX, scaleY);
           setPreviewStats({ elementCount: 1, detailCount: paths.length });
 
           const compoundD = paths.join(' ');
@@ -121,7 +141,7 @@ export const ImageImportModal: React.FC = () => {
             ctx.stroke(path2D);
           }
         } else if (options.mode === 'halftone') {
-          const { pathD, dotCount } = generateHalftoneCompoundPath(imageData, options, 1, 1);
+          const { pathD, dotCount } = generateHalftoneCompoundPath(imageData, options, scaleX, scaleY);
           setPreviewStats({ elementCount: 1, detailCount: dotCount });
 
           if (pathD) {
@@ -130,7 +150,7 @@ export const ImageImportModal: React.FC = () => {
             ctx.fill(path2D);
           }
         } else if (options.mode === 'scanline') {
-          const lines = generateScanlinePaths(imageData, options, 1, 1);
+          const lines = generateScanlinePaths(imageData, options, scaleX, scaleY);
           setPreviewStats({ elementCount: 1, detailCount: lines.length });
 
           const compoundD = lines.join(' ');
@@ -139,10 +159,11 @@ export const ImageImportModal: React.FC = () => {
             ctx.stroke(path2D);
           }
         }
+        ctx.restore();
       } catch (err) {
         console.error('Error rendering image preview:', err);
       }
-    }, 30);
+    }, 180);
 
     return () => clearTimeout(timer);
   }, [loadedImg, options, targetLayerId]);

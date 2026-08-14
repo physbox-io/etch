@@ -702,6 +702,77 @@ export function hasToolCatalog(machine: MachineKind, customCncTools?: ToolProfil
   return toolCatalog(machine, customCncTools).length > 0;
 }
 
+/**
+ * What this document is cut on.
+ *
+ * Six components were each writing `(document.machine ?? 'laser') === 'laser'`
+ * inline, which is six chances for the default to drift — and it had: the job
+ * streamer defaulted the other way, to `'cnc'`, so a job started without an
+ * explicit machine narrated tool changes at a laser.
+ */
+export function machineKind(doc: { machine?: MachineKind }): MachineKind {
+  return doc.machine ?? 'laser';
+}
+
+/**
+ * What the machine's business end is called, for prose.
+ *
+ * A router has a tool in a spindle, which retracts and plunges; a laser has a
+ * head firing a beam, which has no Z at all. Copy written for one reads as
+ * nonsense on the other — "touch off Z", "re-zero after the tool change", "while
+ * the cutter is lifted to safe Z" — and a beginner following instructions for a
+ * machine they do not own is exactly who this app is for.
+ *
+ * A table rather than scattered ternaries so the two vocabularies stay complete
+ * and consistent, in the spirit of `materialNote`'s per-machine prose.
+ */
+export interface MachineWords {
+  /** What moves: "tool" / "laser head". */
+  head: string;
+  /** What does the cutting: "cutter" / "beam". */
+  cutter: string;
+  /** The power control: "spindle" / "laser". */
+  power: string;
+  /** Proper name for the machine itself. */
+  machine: string;
+  /** What a layer's intensity setting is: "cut depth" / "power". */
+  intensity: string;
+}
+
+const LASER_WORDS: MachineWords = {
+  head: 'laser head',
+  cutter: 'beam',
+  power: 'laser',
+  machine: 'laser cutter',
+  intensity: 'power',
+};
+
+const CNC_WORDS: MachineWords = {
+  head: 'tool',
+  cutter: 'cutter',
+  power: 'spindle',
+  machine: 'CNC router',
+  intensity: 'cut depth',
+};
+
+export function machineWords(machine: MachineKind): MachineWords {
+  return machine === 'laser' ? LASER_WORDS : CNC_WORDS;
+}
+
+/**
+ * Does this machine have a Z axis the job drives?
+ *
+ * The one capability that decides most of the UI: touch plates, bed heightmaps,
+ * safe-Z retracts, depth per pass and holding tabs all exist because the tool
+ * goes *into* the material. A laser's focus is set once by hand and never moves
+ * during a job, so none of it applies — yet `MachineWorkOriginPanel` shipped
+ * with a `showZProbe` prop that nothing ever passed, so every one of those
+ * controls was on screen for laser users.
+ */
+export function hasJobZAxis(machine: MachineKind): boolean {
+  return machine === 'cnc';
+}
+
 /** Reads a T-number out of a G-code line, e.g. "M6 T3" or "T03 M06". */
 export function parseToolNumber(line: string): number | null {
   const m = /\bT0*(\d+)\b/i.exec(line);

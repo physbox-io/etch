@@ -128,8 +128,10 @@ export function useMCPBridge() {
             name: el.name || 'Agent Element',
             type: el.type || 'rect',
             layerId: el.layerId || 'cut',
-            x: el.x ?? 100,
-            y: el.y ?? 100,
+            // Centre of the stock, not a fixed 100,100 — which is off the
+            // material entirely on anything smaller than the default bed.
+            x: el.x ?? store.document.width / 2,
+            y: el.y ?? store.document.height / 2,
             rotation: el.rotation ?? 0,
             scaleX: el.scaleX ?? 1,
             scaleY: el.scaleY ?? 1,

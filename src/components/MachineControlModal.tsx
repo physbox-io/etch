@@ -3,6 +3,7 @@ import { useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
 import { getBedBBox } from '../utils/geom';
 import { boundsToMachine } from '../utils/machineCoords';
+import { machineKind, machineWords } from '../utils/tooling';
 import type { MachineStatus } from '../types/etch';
 import { X, Cpu, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
@@ -41,7 +42,8 @@ export const MachineControlModal: React.FC = () => {
     useStore();
   // Decides what framing and probing mean: a laser holds one height and has no
   // touch plate, a router plunges and does.
-  const isLaser = (document.machine ?? 'laser') === 'laser';
+  const isLaser = machineKind(document) === 'laser';
+  const words = machineWords(machineKind(document));
   const [status, setStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
   const [consoleInput, setConsoleInput] = useState('');
   const [log, setLog] = useState<string[]>([]);
@@ -90,7 +92,7 @@ export const MachineControlModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <Cpu className="w-5 h-5 text-amber-500" />
             <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-              Direct Laser &amp; CNC Machine Control (Web Serial)
+              Direct {isLaser ? 'Laser Cutter' : 'CNC Router'} Control (Web Serial)
             </h2>
             <DocsInfoButton tab="zeroing" size="w-4 h-4" />
           </div>
@@ -135,8 +137,9 @@ export const MachineControlModal: React.FC = () => {
 
             {!status.connected && (
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                Connect a GRBL 1.1 / FluidNC / grblHAL controller over USB to jog, zero and probe.
-                Requires a Chromium-based browser.{' '}
+                Connect a GRBL 1.1 / FluidNC / grblHAL controller over USB to jog and zero your{' '}
+                {words.machine}
+                {isLaser ? '' : ', and to probe Z'}. Requires a Chromium-based browser.{' '}
                 <button
                   onClick={() => openDocs('zeroing')}
                   className="text-amber-600 dark:text-amber-400 hover:underline underline-offset-2 cursor-pointer"
@@ -191,6 +194,12 @@ export const MachineControlModal: React.FC = () => {
                 and down over points no cut ever visits. */}
             <MachineWorkOriginPanel
               status={status}
+              // The panel has always had this prop and nobody ever passed it, so
+              // its `= true` default won and laser users were shown a touch
+              // plate, a shim, and a bed heightmap for an axis their job never
+              // moves.
+              showZProbe={!isLaser}
+              machine={isLaser ? 'laser' : 'cnc'}
               bedBounds={jobBounds ?? undefined}
               probeGrid={bedProbeGrid}
               onProbeGrid={setBedProbeGrid}

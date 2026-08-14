@@ -28,6 +28,7 @@ import {
   writeShimThickness,
   MAX_SHIM_THICKNESS_MM,
 } from '../utils/machineSettings';
+import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
 
@@ -49,14 +50,18 @@ export const MachineWorkOriginPanel: React.FC<{
   status: MachineStatus;
   /** A laser has no touch plate or Z toolpath, so its Z section is hidden. */
   showZProbe?: boolean;
+  /** Decides the vocabulary: a laser has a head and a beam, a router a tool. */
+  machine?: MachineKind;
   /** Bed bounds to probe, in mm. Omitted when there is nothing to level. */
   bedBounds?: { minX: number; minY: number; maxX: number; maxY: number };
   probeGrid?: BedProbeGrid | null;
   onProbeGrid?: (grid: BedProbeGrid | null) => void;
   /** Deep-links to the zeroing walkthrough in the Reference Guide. */
   onOpenDocs?: () => void;
-}> = ({ status, showZProbe = true, bedBounds, probeGrid, onProbeGrid, onOpenDocs }) => {
+}> = ({ status, showZProbe = true, machine = 'cnc', bedBounds, probeGrid, onProbeGrid, onOpenDocs }) => {
   const { touchPlateThickness, setTouchPlateThickness } = useStore();
+  const words = machineWords(machine);
+  const isLaser = machine === 'laser';
   const [step, setStep] = useState(1);
   const [feedRate, setFeedRate] = useState(1000);
   const [isProbingZ, setIsProbingZ] = useState(false);
@@ -357,7 +362,7 @@ export const MachineWorkOriginPanel: React.FC<{
             <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug max-w-md">
               {isHomed
                 ? 'Machine coordinates are established. Jog to your stock next.'
-                : 'Runs to the limit switches to establish machine zero. Do this after every power-up or alarm. No limit switches? Skip it — zeroing below still works, it just will not survive a power cycle.'}
+                : `Runs the ${words.head} to the limit switches to establish machine zero. Do this after every power-up or alarm. No limit switches? Skip it — zeroing below still works, it just will not survive a power cycle.`}
             </p>
           </div>
           <button
@@ -410,12 +415,27 @@ export const MachineWorkOriginPanel: React.FC<{
                 <span />
               </div>
 
+              {/* Z stays on a laser — a diode head still focuses by height —
+                  but it is labelled for what it does there, which is set focus
+                  once, not plunge into the work. */}
               <div className="grid grid-cols-1 gap-1.5 w-11">
-                <button disabled={jogDisabled} onClick={() => jog(0, 0, 1)} title={`Z +${step} mm`} className={jogBtn}>
+                <button
+                  disabled={jogDisabled}
+                  onClick={() => jog(0, 0, 1)}
+                  title={isLaser ? `Raise head ${step} mm` : `Z +${step} mm`}
+                  className={jogBtn}
+                >
                   <ChevronsUp className="w-3.5 h-3.5" />
                 </button>
-                <span className="text-[9px] text-center text-slate-400 dark:text-slate-500 font-bold leading-9">Z</span>
-                <button disabled={jogDisabled} onClick={() => jog(0, 0, -1)} title={`Z -${step} mm`} className={jogBtn}>
+                <span className="text-[9px] text-center text-slate-400 dark:text-slate-500 font-bold leading-9">
+                  {isLaser ? 'FOC' : 'Z'}
+                </span>
+                <button
+                  disabled={jogDisabled}
+                  onClick={() => jog(0, 0, -1)}
+                  title={isLaser ? `Lower head ${step} mm` : `Z -${step} mm`}
+                  className={jogBtn}
+                >
                   <ChevronsDown className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -468,7 +488,11 @@ export const MachineWorkOriginPanel: React.FC<{
             <button
               onClick={() => webSerialManager.gotoWorkOrigin()}
               disabled={busy}
-              title="Retract and drive to the work origin to check where it landed"
+              title={
+                isLaser
+                  ? 'Drive to the work origin to check where it landed'
+                  : 'Retract and drive to the work origin to check where it landed'
+              }
               className={actionBtn}
             >
               <Navigation className="w-3.5 h-3.5 text-cyan-500" />
@@ -746,7 +770,8 @@ export const MachineWorkOriginPanel: React.FC<{
       )}
 
       <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-        Jog the tool over the corner of your stock where the job's origin should sit, then set XY zero.
+        Jog the {words.head} over the corner of your stock where the job's origin should sit, then set
+        XY zero.
         {showZProbe &&
           ' For Z, clip the probe lead to the tool, sit the plate on the stock, park the tool a few mm above it, and probe.'}
         {onOpenDocs && (

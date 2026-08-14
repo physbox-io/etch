@@ -13,7 +13,7 @@ import {
   DEFAULT_STOCK_THICKNESS_MM,
   type MaterialId,
 } from '../utils/materials';
-import { toolRackLabel } from '../utils/tooling';
+import { toolRackLabel, machineKind as machineKindOf, machineWords } from '../utils/tooling';
 
 /** Common machining grid pitches, in mm. */
 const GRID_PRESETS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -46,7 +46,8 @@ export const BottomStatusBar: React.FC = () => {
   useEffect(() => webSerialManager.subscribe(setMachineStatus), []);
 
   const gridSize = document.gridSize || 10;
-  const machineKind = (document.machine ?? 'laser') === 'cnc' ? 'cnc' : 'laser';
+  const machineKind = machineKindOf(document);
+  const words = machineWords(machineKind);
 
   return (
     <footer className="h-8 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors">
@@ -100,7 +101,11 @@ export const BottomStatusBar: React.FC = () => {
             }}
             onCommit={commitHistory}
             className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
-            title="Stock thickness in millimetres — what 'cut through' has to get through"
+            title={
+              machineKind === 'laser'
+                ? `Stock thickness in millimetres — how many passes the ${words.cutter} needs to get through, and how much power`
+                : "Stock thickness in millimetres — what 'cut through' has to get through"
+            }
           />
           <span className="text-slate-400">mm</span>
           <div className="w-px h-3 bg-slate-200 dark:bg-slate-800 mx-0.5" />

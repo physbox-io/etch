@@ -11,6 +11,8 @@ import {
   snapPoint,
   bedToLocal,
   pivotAnchoredPosition,
+  bedBoxOfAll,
+  isOutsideStock,
 } from '../utils/geom';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { computeResize, resizeSeed, clampScale } from '../utils/resizeElement';
@@ -881,21 +883,7 @@ export const EtchCanvas: React.FC = () => {
    * the rule a group drag already follows (see `movable` above).
    */
   const movableSelected = selectedElements.filter((el) => !el.locked);
-  const bedBoxOf = (els: EtchElement[]) =>
-    els.length > 0
-      ? els.reduce(
-          (acc, el) => {
-            const b = getBedBBox(el);
-            return {
-              minX: Math.min(acc.minX, b.minX),
-              minY: Math.min(acc.minY, b.minY),
-              maxX: Math.max(acc.maxX, b.minX + b.width),
-              maxY: Math.max(acc.maxY, b.minY + b.height),
-            };
-          },
-          { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
-        )
-      : null;
+  const bedBoxOf = bedBoxOfAll;
 
   const multiBox = selectedElements.length > 1 ? bedBoxOf(selectedElements) : null;
   /**
@@ -915,6 +903,48 @@ export const EtchCanvas: React.FC = () => {
   const bedW = document.width;
   const bedH = document.height;
 
+  /**
+   * The visible window, in bed millimetres.
+   *
+   * It used to be the stock plus a fixed margin, which quietly made the canvas a
+   * lie: an SVG root clips to its viewBox, so anything outside the stock was in
+   * the document, in the DOM, and in the exported G-code — but not on screen.
+   * Shrinking the stock to a business card was enough to hide a whole preset,
+   * and the first anyone knew of it was the machine cutting it 150 mm away.
+   *
+   * So the window is the union of the stock and everything drawn on it. Off-stock
+   * geometry pulls the view out to include itself, which is the behaviour the
+   * warning outline below depends on: you cannot fix what you cannot see.
+   */
+  const contentBox = useMemo(
+    () => bedBoxOfAll(document.elements.filter((el) => el.visible !== false)),
+    [document.elements]
+  );
+  const viewMinX = Math.min(0, contentBox?.minX ?? 0) - BED_MARGIN;
+  const viewMinY = Math.min(0, contentBox?.minY ?? 0) - BED_MARGIN;
+  const viewMaxX = Math.max(bedW, contentBox?.maxX ?? bedW) + BED_MARGIN;
+  const viewMaxY = Math.max(bedH, contentBox?.maxY ?? bedH) + BED_MARGIN;
+  const viewW = viewMaxX - viewMinX;
+  const viewH = viewMaxY - viewMinY;
+
+  /** Boxes for the elements that have ended up off the material. */
+  const offStockBoxes = useMemo(
+    () =>
+      document.elements
+        .filter((el) => el.visible !== false && isOutsideStock(el, bedW, bedH))
+        .map((el) => {
+          const b = getBedBBox(el);
+          return {
+            id: el.id,
+            minX: b.minX,
+            minY: b.minY,
+            maxX: b.minX + b.width,
+            maxY: b.minY + b.height,
+          };
+        }),
+    [document.elements, bedW, bedH]
+  );
+
   return (
     <div className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors">
       <svg
@@ -922,7 +952,7 @@ export const EtchCanvas: React.FC = () => {
         className={`w-full h-full touch-none select-none ${
           activeTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
         }`}
-        viewBox={`${-BED_MARGIN} ${-BED_MARGIN} ${bedW + 2 * BED_MARGIN} ${bedH + 2 * BED_MARGIN}`}
+        viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
         style={{
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           transformOrigin: 'top left',
@@ -998,7 +1028,10 @@ export const EtchCanvas: React.FC = () => {
 
         {/* Bed surface + grid */}
         <rect x="0" y="0" width={bedW} height={bedH} className="fill-white dark:fill-slate-900" />
-        <rect x={-gridSize} y={-gridSize} width={bedW + 2 * gridSize} height={bedH + 2 * gridSize} fill="url(#etch-grid-major)" />
+        {/* Grid spans the whole visible window, not just the stock: once the
+            view widens to reach off-stock geometry, a grid that stopped at the
+            stock edge would leave that geometry floating on nothing. */}
+        <rect x={viewMinX} y={viewMinY} width={viewW} height={viewH} fill="url(#etch-grid-major)" />
 
         {/* Machine Bed Boundary Overlay */}
         <rect
@@ -1212,6 +1245,25 @@ export const EtchCanvas: React.FC = () => {
             style={{ pointerEvents: 'none' }}
           />
         )}
+
+        {/* Off-stock warning boxes.
+            Drawn over the art rather than as part of it so nothing about the
+            element's own styling changes: this is a fact about where it sits,
+            not about what it is. It exports either way — that is the point. */}
+        {offStockBoxes.map((b) => (
+          <rect
+            key={b.id}
+            x={b.minX}
+            y={b.minY}
+            width={Math.max(b.maxX - b.minX, 0.5)}
+            height={Math.max(b.maxY - b.minY, 0.5)}
+            fill="none"
+            stroke="#f43f5e"
+            strokeWidth={0.6 / zoom}
+            strokeDasharray={`${2 / zoom},${1.5 / zoom}`}
+            style={{ pointerEvents: 'none' }}
+          />
+        ))}
 
         {/* Live Drag-to-Draw Shape Preview */}
         {isCreatingShape && shapeStart && shapeCurrent && (

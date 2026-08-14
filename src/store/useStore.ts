@@ -268,15 +268,22 @@ export const useStore = create<EtchStore>((set, get) => ({
     // Imported JSON and MCP-supplied documents come through here too, so the
     // repair runs on every entry point rather than only on preset loads.
     doc = sanitizeDoc(doc);
-    set({
+    set((state) => ({
       document: doc,
       history: [doc],
       historyIndex: 0,
       selectedIds: [],
       activeLayerId: doc.layers[0]?.id || 'cut',
+      // A new document is a new piece of stock, so the symmetry pivot re-centres
+      // on it rather than staying at the last one's middle.
+      mandalaSettings: {
+        ...state.mandalaSettings,
+        centerX: doc.width / 2,
+        centerY: doc.height / 2,
+      },
       // Callers that are loading a named preset re-set this straight after.
       activePreset: '',
-    });
+    }));
   },
 
   setToolMode: (tool) => set({ activeTool: tool }),
@@ -306,11 +313,20 @@ export const useStore = create<EtchStore>((set, get) => ({
   setDocumentSize: ({ width, height }) =>
     set((state) => {
       const clamp = (v: number) => Math.max(10, Math.min(2000, v));
+      const document = {
+        ...state.document,
+        ...(width !== undefined && Number.isFinite(width) ? { width: clamp(width) } : {}),
+        ...(height !== undefined && Number.isFinite(height) ? { height: clamp(height) } : {}),
+      };
+      // The symmetry pivot is a position on the stock, so it follows the stock.
+      // Left where it was, shrinking the bed put the mandala centre off the
+      // material and every array built from it with it.
       return {
-        document: {
-          ...state.document,
-          ...(width !== undefined && Number.isFinite(width) ? { width: clamp(width) } : {}),
-          ...(height !== undefined && Number.isFinite(height) ? { height: clamp(height) } : {}),
+        document,
+        mandalaSettings: {
+          ...state.mandalaSettings,
+          centerX: document.width / 2,
+          centerY: document.height / 2,
         },
       };
     }),

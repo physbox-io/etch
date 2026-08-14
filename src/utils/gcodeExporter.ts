@@ -1,5 +1,5 @@
 import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
-import { localToBed } from './geom';
+import { localToBed, isOutsideStock, bedBoxOfAll } from './geom';
 import { flattenPath, type Pt } from './pathFlatten';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
@@ -402,6 +402,32 @@ export function planToolpath(
    */
   if (options.laserMode && doc.material && material.laser.warning) {
     notes.push(`${material.name}: ${material.laser.warning}`);
+  }
+
+  /**
+   * Art that has ended up off the material, said before anything is cut.
+   *
+   * This is the failure that costs a workpiece. Every coordinate below is
+   * emitted whether or not there is stock under it, so a document whose stock
+   * was resized after it was drawn — a 300x200 preset taken down to a business
+   * card, say — runs perfectly and cuts empty air, or the bed, 150 mm from where
+   * the operator is watching. Stated with the extent, because "outside" is only
+   * actionable if you know by how much and in which direction.
+   */
+  const strays = doc.elements.filter(
+    (el) => el.visible !== false && isOutsideStock(el, doc.width, doc.height)
+  );
+  if (strays.length) {
+    const box = bedBoxOfAll(strays)!;
+    notes.push(
+      `${strays.length} element${strays.length === 1 ? '' : 's'} lie${strays.length === 1 ? 's' : ''} ` +
+        `outside the ${doc.width}x${doc.height} mm stock ` +
+        `(${strays.slice(0, 3).map((e) => `"${e.name}"`).join(', ')}` +
+        `${strays.length > 3 ? `, +${strays.length - 3} more` : ''}). ` +
+        `They span X ${box.minX.toFixed(1)}…${box.maxX.toFixed(1)}, ` +
+        `Y ${box.minY.toFixed(1)}…${box.maxY.toFixed(1)} mm and are still in this job — ` +
+        `the machine will drive there. Move them onto the stock, or resize it to fit.`
+    );
   }
 
   // Extract path points from all visible elements across layers

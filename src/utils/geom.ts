@@ -20,7 +20,20 @@ export interface BBox {
  * Mixing local and bed coordinates is what previously let a rotated shape
  * drift away from its own selection box.
  */
-const bboxCache = new Map<string, { key: string; bbox: BBox }>();
+/**
+ * Cached boxes, keyed by element id.
+ *
+ * The identity fields are held separately rather than concatenated into one
+ * key string. Building `${el.id}:${pathD}:…` copied the whole path — megabytes,
+ * for a traced image — on every call *including cache hits*, and this is called
+ * per element on every render and every mouse move over the canvas. Comparing
+ * the fields individually costs a pointer compare in the common case, because
+ * an unedited element hands back the very same string object.
+ */
+const bboxCache = new Map<
+  string,
+  { d: string; w: number; h: number; text: string; bbox: BBox }
+>();
 
 export function clearGeomBBoxCache(): void {
   bboxCache.clear();
@@ -29,9 +42,14 @@ export function clearGeomBBoxCache(): void {
 export function getLocalBBox(el: EtchElement): BBox {
   const pathD = el.d || el.outlineD || '';
   if (pathD) {
-    const key = `${el.id}:${pathD}:${el.w || 0}:${el.h || 0}:${el.text || ''}`;
     const cached = bboxCache.get(el.id);
-    if (cached && cached.key === key) {
+    if (
+      cached &&
+      cached.d === pathD &&
+      cached.w === (el.w || 0) &&
+      cached.h === (el.h || 0) &&
+      cached.text === (el.text || '')
+    ) {
       return cached.bbox;
     }
   }
@@ -132,8 +150,13 @@ export function getLocalBBox(el: EtchElement): BBox {
   };
 
   if (pathD) {
-    const key = `${el.id}:${pathD}:${el.w || 0}:${el.h || 0}:${el.text || ''}`;
-    bboxCache.set(el.id, { key, bbox: res });
+    bboxCache.set(el.id, {
+      d: pathD,
+      w: el.w || 0,
+      h: el.h || 0,
+      text: el.text || '',
+      bbox: res,
+    });
   }
 
   return res;
@@ -269,6 +292,53 @@ export function getBedBBox(el: EtchElement): BBox {
   ];
   const b = boundsOf(corners);
   return { ...b, centerX: b.minX + b.width / 2, centerY: b.minY + b.height / 2 };
+}
+
+/**
+ * Union of several elements' bed boxes, or null if there are none.
+ *
+ * Two callers need the same number for different reasons — the selection
+ * overlay frames what you picked, and the canvas has to widen its viewBox far
+ * enough to show geometry that has ended up off the stock — and they must agree,
+ * or the handles are drawn somewhere the view never scrolls to.
+ */
+export function bedBoxOfAll(
+  els: EtchElement[]
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (els.length === 0) return null;
+  return els.reduce(
+    (acc, el) => {
+      const b = getBedBBox(el);
+      return {
+        minX: Math.min(acc.minX, b.minX),
+        minY: Math.min(acc.minY, b.minY),
+        maxX: Math.max(acc.maxX, b.minX + b.width),
+        maxY: Math.max(acc.maxY, b.minY + b.height),
+      };
+    },
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  );
+}
+
+/**
+ * Is any part of this element off the stock?
+ *
+ * The canvas draws these with a warning outline and the G-code panel refuses to
+ * be quiet about them: geometry outside the stock is still exported, and a job
+ * whose art sits beyond the material is the one failure the operator cannot see
+ * coming — the machine happily drives to coordinates there is nothing under.
+ */
+export function isOutsideStock(el: EtchElement, width: number, height: number): boolean {
+  const b = getBedBBox(el);
+  // A hair of tolerance: a shape drawn exactly on the edge is on the stock, and
+  // floating point from a rotation should not make it a warning.
+  const eps = 1e-6;
+  return (
+    b.minX < -eps ||
+    b.minY < -eps ||
+    b.minX + b.width > width + eps ||
+    b.minY + b.height > height + eps
+  );
 }
 
 /**

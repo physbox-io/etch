@@ -99,8 +99,14 @@ class WebSerialManager {
   private isReading = false;
   private statusPollTimer: ReturnType<typeof setInterval> | null = null;
   private status: MachineStatus = { ...INITIAL_STATUS };
-  /** What the running job is cut on, so a T-number can be named at the pause. */
-  private jobMachine: MachineKind = 'cnc';
+  /**
+   * What the running job is cut on, so a T-number can be named at the pause.
+   *
+   * Defaults to a laser, matching the document default and every UI component
+   * that reads it. It used to default to 'cnc', so a job started without an
+   * explicit machine narrated its pauses in router vocabulary at a laser.
+   */
+  private jobMachine: MachineKind = 'laser';
 
   /**
    * Waiters for a single command's reply. A queue rather than one slot because
@@ -498,7 +504,7 @@ class WebSerialManager {
     // Kept for the tool-change prompt: a T-number alone tells the operator
     // nothing about which bit to reach for, and only the document knows what T3
     // is. Laser jobs never raise one — that machine has no tools to change.
-    this.jobMachine = opts.machine ?? 'cnc';
+    this.jobMachine = opts.machine ?? 'laser';
     this.update({
       jobRunning: true,
       jobPaused: false,
