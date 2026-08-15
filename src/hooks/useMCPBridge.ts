@@ -71,6 +71,20 @@ export function useMCPBridge() {
             elementCount: store.document.elements.length,
           };
 
+        case 'etch_set_document':
+        case 'SET_DOCUMENT': {
+          const doc = msg.document;
+          if (!doc || typeof doc !== 'object') return { ok: false, error: 'document is required' };
+
+          // Merged onto the current document rather than replacing it outright:
+          // an agent that only wants to resize the stock or switch machine sends
+          // those fields alone, and dropping the layers it left out would leave
+          // nothing to cut. sanitizeDoc in the store repairs whatever is left.
+          store.setDocument({ ...store.document, ...doc });
+          const next = useStore.getState().document;
+          return { ok: true, elementCount: next.elements.length, document: next };
+        }
+
         case 'etch_set_svg':
         case 'SET_SVG': {
           const svgContent = msg.svg || msg.svgContent;
