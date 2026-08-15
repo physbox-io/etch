@@ -673,7 +673,10 @@ export function toolWarning(
   const profile = findTool(machine, tool, customCncTools);
   if (!profile) return null;
 
-  if (!profile.bestFor.includes(layer.operation)) {
+  // Shading is surface work — the tools that suit etching suit it, and the
+  // catalogue has no separate entry for carving a photograph.
+  const bestForOp = layer.operation === 'shade' ? 'etch' : layer.operation;
+  if (!profile.bestFor.includes(bestForOp)) {
     return `${profile.name} is not suited to ${layer.operation}. ${profile.guidance}`;
   }
 
@@ -691,7 +694,9 @@ export function toolWarning(
 
 /** The catalogued tool that best fits an operation, for sensible new layers. */
 export function suggestTool(machine: MachineKind, operation: LayerOperation, customCncTools?: ToolProfile[]): number {
-  const match = toolCatalog(machine, customCncTools).find((t) => t.bestFor[0] === operation);
+  const match = toolCatalog(machine, customCncTools).find(
+    (t) => t.bestFor[0] === (operation === 'shade' ? 'etch' : operation)
+  );
   return match?.id ?? DEFAULT_TOOL;
 }
 

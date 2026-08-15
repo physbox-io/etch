@@ -1,6 +1,15 @@
 import type { MaterialId } from '../utils/materials';
 
-export type LayerOperation = 'cut' | 'etch' | 'fill';
+/**
+ * What a layer does to the material.
+ *
+ * `shade` is the odd one: the others machine geometry at settings the layer
+ * carries, while a shade layer machines an *image*, and the layer's power and
+ * depth are what black comes out at rather than what everything comes out at.
+ * Grey lands proportionally between that and nothing — a photo engraved as
+ * tone, or carved as a relief on a router.
+ */
+export type LayerOperation = 'cut' | 'etch' | 'fill' | 'shade';
 
 export interface EtchLayer {
   id: string;
@@ -99,7 +108,9 @@ export type ElementType =
   | 'symbol'
   | 'bezier'
   | 'freehand'
-  | 'path';
+  | 'path'
+  /** A greyscale raster, machined as tone rather than as outlines. */
+  | 'image';
 
 export interface BezierNode {
   x: number;
@@ -180,6 +191,28 @@ export interface EtchElement {
   hatchSpacing?: number;
   /** Whether a filled element also cuts its outline. */
   hatchOutline?: boolean;
+
+  /**
+   * The greyscale samples of an `image` element: one byte per pixel, row-major,
+   * 0 black and 255 white, base64-encoded. `imgW`/`imgH` are the grid; `w`/`h`
+   * are how big it is on the material, in mm.
+   *
+   * The pixels are kept rather than the toolpath they produce, which is the
+   * whole point of the element: pitch, angle, depth, contrast and size are all
+   * still questions at export time, and baking them into a path at import would
+   * mean re-importing the photo to change any of them. It is the processed
+   * greyscale, not the original file — capped at the same 300 px the tracer
+   * uses, so a document with a photo in it stays a document rather than
+   * becoming a copy of a JPEG.
+   */
+  imageGray?: string;
+  imgW?: number;
+  imgH?: number;
+  /**
+   * The scan direction and line pitch used to machine it, reusing the hatch
+   * fields above: an image is engraved by sweeping lines across it exactly as a
+   * fill is, and the two settings mean the same thing here as they do there.
+   */
 }
 
 export interface EtchDocument {

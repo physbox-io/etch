@@ -60,8 +60,10 @@ export function getLocalBBox(el: EtchElement): BBox {
   let height = el.h || 25;
 
   switch (el.type) {
+    case 'image':
     case 'rect': {
-      // <rect> is drawn from the local origin.
+      // Both are drawn from the local origin, and an image occupies exactly the
+      // rectangle it was placed at — the picture is what is inside it.
       minX = 0;
       minY = 0;
       width = el.w || 40;

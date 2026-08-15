@@ -2,6 +2,21 @@ import { findMaterial, type LaserMaterial, type MaterialId, type MaterialProfile
 import { describeLaserSource, type LaserSource } from './machineSettings';
 import { DEFAULT_HATCH_SPACING } from './hatchFill';
 import { defaultFeedDiameter, type ToolProfile } from './tooling';
+import type { LayerOperation } from '../types/etch';
+
+/**
+ * The operation a layer's *feeds* are derived as.
+ *
+ * Shading is a fill: adjacent lines at a known pitch, dosing an area rather
+ * than following a line. It is a separate operation on the layer because what
+ * it does with the resulting numbers is different — they become the settings
+ * for black rather than for everything — but the numbers themselves come from
+ * the same place, and inventing a fourth recipe for it would be a second table
+ * to keep in step with the first.
+ */
+export function feedsOperation(operation: LayerOperation): 'cut' | 'etch' | 'fill' {
+  return operation === 'shade' ? 'fill' : operation;
+}
 
 /**
  * Turns "this cutter, in this material" into the numbers a toolpath needs.

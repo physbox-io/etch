@@ -183,6 +183,151 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       repositionNeeded = true;
     }
 
+    /**
+     * A sweep across a shaded image, where the tone varies along the move.
+     *
+     * Handled apart from everything below because almost none of that applies:
+     * a sweep is open, never kerf-compensated, never tabbed, and has no entry
+     * to ramp — the depth at its first point *is* how deep the picture is
+     * there, which on a photograph is usually nothing at all. What it has
+     * instead is a value per point, which becomes the beam's power or the
+     * cutter's Z as it goes.
+     */
+    if (seg.intensities && seg.intensities.length === seg.points.length) {
+      const shade = seg.intensities;
+      const pts = seg.points;
+
+      for (let passIdx = 0; passIdx < seg.depths.length; passIdx++) {
+        const common = { ...base, pass: passIdx + 1, beamOn: opts.laserMode };
+        /**
+         * The floor for this pass, and with it the whole of relief roughing.
+         *
+         * A point's depth is how dark the picture is there, but a router cannot
+         * take three millimetres in one bite whatever the picture says. Each
+         * pass therefore cuts to the shallower of "as deep as this pixel goes"
+         * and "as deep as this pass is allowed", and the passes step down until
+         * the second stops binding. On the last pass the floor is the full
+         * depth, so the surface that comes out is exactly the picture.
+         */
+        const floor = opts.laserMode ? 0 : seg.depths[passIdx];
+        const zAt = (i: number) =>
+          opts.laserMode ? 0 : Math.max(-seg.zDepth * shade[i], floor);
+
+        const first = pts[0];
+        const gap = started ? Math.hypot(cx - first.x, cy - first.y) : Infinity;
+        if (gap > 1e-9 || repositionNeeded) {
+          /**
+           * A hop from one sweep of a picture to the next stays inside the
+           * picture, which is ground the cutter is in the middle of carving, so
+           * there is nothing on it to clear. Anything else — the first sweep of
+           * the image, or a reposition after a tool change — goes up to full
+           * clearance like any other traverse.
+           */
+          const inSameImage =
+            !opts.laserMode &&
+            prev !== null &&
+            !repositionNeeded &&
+            seg.fillGroup >= 0 &&
+            seg.fillGroup === prev.fillGroup;
+          const hopZ = inSameImage ? Math.min(opts.safeZ, FILL_HOP_CLEARANCE_MM) : opts.safeZ;
+
+          if (!opts.laserMode && engaged !== null) {
+            moves.push({
+              ...common,
+              kind: 'retract',
+              x1: cx, y1: cy, z1: engaged,
+              x2: cx, y2: cy, z2: hopZ,
+              feed: opts.travelSpeed,
+              beamOn: false,
+              along0: 0, along1: 0,
+            });
+            engaged = null;
+            parkedZ = hopZ;
+          } else if (!opts.laserMode && parkedZ > hopZ) {
+            moves.push({
+              ...common,
+              kind: 'travel',
+              x1: cx, y1: cy, z1: parkedZ,
+              x2: cx, y2: cy, z2: hopZ,
+              feed: opts.travelSpeed,
+              beamOn: false,
+              along0: 0, along1: 0,
+            });
+            parkedZ = hopZ;
+          }
+          if (Math.hypot(cx - first.x, cy - first.y) > 1e-9) {
+            const travelZ = opts.laserMode ? clearanceZ : parkedZ;
+            moves.push({
+              ...common,
+              kind: 'travel',
+              x1: cx, y1: cy, z1: travelZ,
+              x2: first.x, y2: first.y, z2: travelZ,
+              feed: opts.travelSpeed,
+              beamOn: false,
+              along0: 0, along1: 0,
+            });
+          }
+          cx = first.x;
+          cy = first.y;
+          repositionNeeded = false;
+        }
+        started = true;
+
+        // Entry. There is no path to ramp along — the sweep is the picture, and
+        // starting it a few millimetres in would leave that stretch uncarved —
+        // so the tool goes straight down to where this pass starts. It is never
+        // more than one stepdown deep, because the floor above says so.
+        if (!opts.laserMode) {
+          const z0 = zAt(0);
+          const from = engaged ?? parkedZ;
+          if (Math.abs(from - z0) > 1e-6) {
+            moves.push({
+              ...common,
+              kind: from > z0 ? 'plunge' : 'retract',
+              x1: cx, y1: cy, z1: from,
+              x2: cx, y2: cy, z2: z0,
+              feed: from > z0 ? seg.plungeRate : opts.travelSpeed,
+              beamOn: false,
+              along0: 0, along1: 0,
+            });
+          }
+          engaged = z0;
+        }
+
+        let px = first.x;
+        let py = first.y;
+        let pz = zAt(0);
+        let along = 0;
+        for (let i = 1; i < pts.length; i++) {
+          const p = pts[i];
+          const step = Math.hypot(p.x - px, p.y - py);
+          if (step < 1e-9) continue;
+          const z = zAt(i);
+          moves.push({
+            ...common,
+            kind: 'cut',
+            x1: px, y1: py, z1: pz,
+            x2: p.x, y2: p.y, z2: z,
+            feed: seg.speed,
+            // The tone of the stretch being travelled, which is the one
+            // recorded at the point it starts from: the run was built by
+            // holding a shade until it changed.
+            power: opts.laserMode ? seg.power * shade[i - 1] : 0,
+            along0: along, along1: along + step,
+          });
+          px = p.x;
+          py = p.y;
+          pz = z;
+          along += step;
+        }
+
+        cx = px;
+        cy = py;
+        if (!opts.laserMode) engaged = pz;
+      }
+      continue;
+    }
+
     const geom = measurePath(seg.points, seg.isClosed);
 
     for (let passIdx = 0; passIdx < seg.depths.length; passIdx++) {

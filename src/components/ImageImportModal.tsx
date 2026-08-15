@@ -6,10 +6,13 @@ import {
   traceMarchingSquares,
   generateHalftoneCompoundPath,
   generateScanlinePaths,
+  grayFromImageData,
   DEFAULT_IMAGE_OPTIONS,
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
-import type { EtchElement } from '../types/etch';
+import type { EtchElement, EtchLayer } from '../types/etch';
+import { encodeGray } from '../utils/rasterImage';
+import { machineKind, suggestTool } from '../utils/tooling';
 import {
   X,
   Upload,
@@ -21,6 +24,7 @@ import {
   Grid,
   AlignJustify,
   Image as ImageIcon,
+  Sun,
 } from 'lucide-react';
 
 export const ImageImportModal: React.FC = () => {
@@ -31,7 +35,10 @@ export const ImageImportModal: React.FC = () => {
     document: doc,
     activeLayerId,
     setDocument,
+    cncTools,
   } = useStore();
+
+  const laserMode = machineKind(doc) === 'laser';
 
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [loadedImg, setLoadedImg] = useState<HTMLImageElement | null>(null);
@@ -44,6 +51,24 @@ export const ImageImportModal: React.FC = () => {
     elementCount: 1,
     detailCount: 0,
   });
+
+  /**
+   * The layers a shaded image may land on, and the one it will.
+   *
+   * An image on a cut or etch layer is skipped by the planner, so the dialog
+   * refuses to aim there rather than letting the import look like it worked.
+   * The picked layer is honoured when it is a shade layer — a document may have
+   * more than one — and otherwise the first one, or a new one.
+   */
+  const shadeLayers = doc.layers.filter((l) => l.operation === 'shade');
+  const shadeTargetId =
+    shadeLayers.find((l) => l.id === targetLayerId)?.id ?? shadeLayers[0]?.id ?? '';
+
+  /** Sweeps the pitch slider is about to ask for, so its cost is on screen. */
+  const shadeSweepEstimate = Math.max(
+    1,
+    Math.round(options.targetHeight / Math.max(0.05, options.shadePitch))
+  );
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -182,6 +207,15 @@ export const ImageImportModal: React.FC = () => {
             const path2D = new Path2D(compoundD);
             ctx.stroke(path2D);
           }
+        } else if (options.mode === 'shade') {
+          // Nothing is drawn over the picture, because the picture *is* the
+          // toolpath: the greys already on the canvas are the depths, or the
+          // powers, that will be machined. Overlaying sweep lines would hide
+          // the one thing worth checking before importing it.
+          setPreviewStats({
+            elementCount: 1,
+            detailCount: Math.max(1, Math.round(options.targetHeight / Math.max(0.05, options.shadePitch))),
+          });
         }
         ctx.restore();
       } catch (err) {
@@ -243,6 +277,37 @@ export const ImageImportModal: React.FC = () => {
         return;
       }
 
+      /**
+       * A shaded image needs a shade layer, and makes one if the document has
+       * none.
+       *
+       * Not a nicety: the planner refuses to machine an image on any other kind
+       * of layer, because "cut this photograph out" and "engrave it as tone"
+       * are different jobs and only one of them is ever meant. The alternative
+       * to creating it is an import that lands somewhere the toolpath never
+       * looks — which is exactly the failure the target-layer code above exists
+       * to prevent.
+       */
+      const existingShade = doc.layers.find((l) => l.id === shadeTargetId);
+      const shadeLayer: EtchLayer =
+        existingShade ?? {
+          id: `layer_shade_${timestamp}`,
+          name: laserMode ? 'Photo Tone' : 'Carved Relief',
+          color: '#a855f7',
+          operation: 'shade',
+          visible: true,
+          locked: false,
+          // What black comes out at. The laser's numbers are re-derived from
+          // the material and the pitch at export; the depth is the one a router
+          // has no way to derive, so it is a shallow default rather than a
+          // guess at how deep this particular picture wants to be.
+          speed: 1500,
+          power: 80,
+          passes: 1,
+          zDepth: 1.5,
+          tool: suggestTool(machineKind(doc), 'etch', cncTools),
+        };
+
       if (options.mode === 'vector') {
         const paths = traceMarchingSquares(imageData, options, scaleX, scaleY);
         const compoundD = paths.join(' ');
@@ -290,6 +355,39 @@ export const ImageImportModal: React.FC = () => {
             locked: false,
           };
         }
+      } else if (options.mode === 'shade') {
+        /**
+         * The pixels go in, not a path.
+         *
+         * Everything that decides how the picture is machined — pitch, angle,
+         * how deep black goes, contrast — is still a setting afterwards,
+         * because the element carries the greys rather than a toolpath baked
+         * out of them. That is the difference between this and the other three
+         * modes, and the reason the import is not the last chance to get it
+         * right.
+         */
+        importedElement = {
+          id: `img_shade_${timestamp}`,
+          name: 'Shaded Image',
+          type: 'image',
+          layerId: shadeLayer.id,
+          x: startX,
+          y: startY,
+          w: options.targetWidth,
+          h: options.targetHeight,
+          imageGray: encodeGray(grayFromImageData(imageData)),
+          imgW: imageData.width,
+          imgH: imageData.height,
+          hatchSpacing: options.shadePitch,
+          hatchAngle: 0,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          opacity: 1,
+          strokeWidth: 0,
+          visible: true,
+          locked: false,
+        };
       } else if (options.mode === 'scanline') {
         const lines = generateScanlinePaths(imageData, options, scaleX, scaleY);
         const compoundD = lines.join(' ');
@@ -334,6 +432,8 @@ export const ImageImportModal: React.FC = () => {
 
       setDocument({
         ...doc,
+        layers:
+          options.mode === 'shade' && !existingShade ? [...doc.layers, shadeLayer] : doc.layers,
         elements: [...doc.elements, importedElement],
         selectedIds: [importedElement.id],
       });
@@ -398,7 +498,7 @@ export const ImageImportModal: React.FC = () => {
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 block">
                     Processing Mode
                   </label>
-                  <div className="grid grid-cols-3 gap-2 bg-slate-100 dark:bg-slate-800/70 p-1 rounded-xl">
+                  <div className="grid grid-cols-2 gap-2 bg-slate-100 dark:bg-slate-800/70 p-1 rounded-xl">
                     <button
                       onClick={() => setOptions({ ...options, mode: 'vector' })}
                       className={`py-2 px-2 text-xs font-semibold rounded-lg flex flex-col items-center gap-1 transition-all ${
@@ -432,7 +532,25 @@ export const ImageImportModal: React.FC = () => {
                       <AlignJustify className="w-4 h-4" />
                       Engrave Lines
                     </button>
+                    <button
+                      onClick={() => setOptions({ ...options, mode: 'shade' })}
+                      className={`py-2 px-2 text-xs font-semibold rounded-lg flex flex-col items-center gap-1 transition-all ${
+                        options.mode === 'shade'
+                          ? 'bg-white dark:bg-slate-700 text-cyan-600 dark:text-cyan-400 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      <Sun className="w-4 h-4" />
+                      {laserMode ? 'Photo Tone' : 'Carved Relief'}
+                    </button>
                   </div>
+                  {options.mode === 'shade' && (
+                    <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                      {laserMode
+                        ? 'The picture goes in as greys, and the beam varies its power across it — dark burns hard, light barely at all. The layer\u2019s power is what black comes out at.'
+                        : 'The picture goes in as greys, and the cutter varies its depth across it — dark carves deep, light stays near the surface. The layer\u2019s depth is what black comes out at.'}
+                    </p>
+                  )}
                 </div>
 
                 {/* Adjustments: Threshold, Contrast, Brightness */}
@@ -573,21 +691,71 @@ export const ImageImportModal: React.FC = () => {
                     </div>
                   </div>
 
+                  {options.mode === 'shade' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-semibold text-slate-500">Line Pitch</label>
+                        <span className="text-xs font-mono text-cyan-500">{options.shadePitch} mm</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        value={options.shadePitch}
+                        onChange={(e) =>
+                          setOptions({ ...options, shadePitch: Number(e.target.value) })
+                        }
+                        className="w-full accent-cyan-500"
+                      />
+                      {/* The one setting here with a cost attached, so it says
+                          what the cost is: halving the pitch doubles both the
+                          job and the file. */}
+                      <p className="mt-1 text-[10px] text-slate-400 leading-snug">
+                        About {shadeSweepEstimate} sweeps across the picture. Finer resolves more
+                        tone and takes proportionally longer.
+                      </p>
+                    </div>
+                  )}
+
                   <div>
                     <label className="text-xs font-semibold text-slate-500 block mb-1">
                       Target Layer
                     </label>
+                    {/* In tone mode only a Shade layer is a legal target: the
+                        planner will not machine an image anywhere else, so
+                        offering the cut and etch layers was offering an import
+                        that silently does nothing. They are shown greyed rather
+                        than hidden, so the list still matches the document and
+                        it is obvious *why* they cannot be picked. */}
                     <select
-                      value={targetLayerId}
+                      value={options.mode === 'shade' ? shadeTargetId : targetLayerId}
                       onChange={(e) => setTargetLayerId(e.target.value)}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      disabled={options.mode === 'shade' && shadeLayers.length === 0}
+                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      {doc.layers.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.name} ({l.operation})
+                      {options.mode === 'shade' && shadeLayers.length === 0 && (
+                        <option value="">
+                          {laserMode ? 'Photo Tone' : 'Carved Relief'} (new shade layer)
                         </option>
-                      ))}
+                      )}
+                      {doc.layers.map((l) => {
+                        const blocked = options.mode === 'shade' && l.operation !== 'shade';
+                        return (
+                          <option key={l.id} value={l.id} disabled={blocked}>
+                            {l.name} ({l.operation})
+                            {blocked ? ' — tone needs a shade layer' : ''}
+                          </option>
+                        );
+                      })}
                     </select>
+                    {options.mode === 'shade' && shadeLayers.length === 0 && (
+                      <p className="mt-1 text-[10px] text-slate-400 leading-snug">
+                        This document has no shade layer, so the import makes one. Its power
+                        {laserMode ? '' : ' and depth'} {laserMode ? 'is' : 'are'} what black comes
+                        out at — change {laserMode ? 'it' : 'them'} in the layer inspector.
+                      </p>
+                    )}
                   </div>
                 </div>
               </>

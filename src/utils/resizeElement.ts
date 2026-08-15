@@ -19,7 +19,7 @@ export interface ResizeStart {
  * state and pushed history while the shape on screen never moved.
  */
 export function isScaleDriven(el: EtchElement): boolean {
-  return !['circle', 'ellipse', 'line', 'rect'].includes(el.type);
+  return !['circle', 'ellipse', 'line', 'rect', 'image'].includes(el.type);
 }
 
 export function clampScale(s: number): number {
@@ -79,6 +79,11 @@ export function computeResize(
     case 'line':
       return { x2: start.elW + ldx, y2: start.elH + ldy };
     case 'rect':
+    case 'image':
+      // An image is sized like a rectangle rather than scaled: the pixels are
+      // resampled onto whatever it is stretched to, so `w`/`h` are the picture
+      // on the material and a scale factor would be a second, redundant way of
+      // saying the same thing.
       return { w: Math.max(1, start.elW + ldx), h: Math.max(1, start.elH + ldy) };
     default: {
       // Path-backed shapes (star, freehand, bezier, imported paths) and text

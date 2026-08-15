@@ -1,17 +1,26 @@
 import type { EtchElement } from '../types/etch';
+import { DEFAULT_SHADE_PITCH_MM } from './rasterImage';
 
 export interface ImageProcessOptions {
   brightness: number; // -100 to 100
   contrast: number; // -100 to 100
   invert: boolean;
   threshold: number; // 0 to 255
-  mode: 'vector' | 'halftone' | 'scanline';
+  /**
+   * `shade` is the odd one out: it does not trace anything. The processed
+   * greyscale goes into the document as pixels, and darkness becomes laser
+   * power or cut depth at export. The other three decide, at import, that a
+   * pixel is either cut or not.
+   */
+  mode: 'vector' | 'halftone' | 'scanline' | 'shade';
   targetWidth: number; // in mm
   targetHeight: number; // in mm
   halftoneSpacing: number; // mm between dots (default e.g. 1.5)
   scanlineSpacing: number; // mm between lines (default e.g. 0.8)
   minHoleArea: number; // min pixel count to keep noise down
   smoothing: boolean;
+  /** Line pitch for `shade`, mm between sweeps across the picture. */
+  shadePitch: number;
 }
 
 export const DEFAULT_IMAGE_OPTIONS: ImageProcessOptions = {
@@ -26,7 +35,22 @@ export const DEFAULT_IMAGE_OPTIONS: ImageProcessOptions = {
   scanlineSpacing: 1,
   minHoleArea: 4,
   smoothing: true,
+  shadePitch: DEFAULT_SHADE_PITCH_MM,
 };
+
+/**
+ * Pulls the processed greyscale out of an ImageData as one byte per pixel.
+ *
+ * `processImageCanvas` has already flattened the three channels to the same
+ * grey and applied brightness, contrast and inversion, so this is the picture
+ * as adjusted — the one shown in the preview and the one that gets engraved.
+ */
+export function grayFromImageData(imageData: ImageData): Uint8Array {
+  const { width, height, data } = imageData;
+  const out = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i++) out[i] = data[i * 4];
+  return out;
+}
 
 /**
  * Loads an HTMLImageElement from a Blob, File, or Data URL.

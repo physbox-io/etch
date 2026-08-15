@@ -1,6 +1,13 @@
 import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
 import { localToBed, isOutsideStock, bedBoxOfAll } from './geom';
 import { flattenPath, type Pt } from './pathFlatten';
+import { clipValuedPolylineToStock, isWhollyInside } from './clipToStock';
+import {
+  DEFAULT_SHADE_PITCH_MM,
+  hasRaster,
+  planShadeRuns,
+  shadePointCount,
+} from './rasterImage';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
 import { docToMachine, describeOrigin } from './machineCoords';
@@ -17,6 +24,7 @@ import {
 import {
   deriveFeeds,
   deriveLaserFeeds,
+  feedsOperation,
   laserRefusal,
   planPasses,
   formatRpm,
@@ -223,7 +231,7 @@ function safeEtchDepth(stockThickness: number): number {
 
 export interface GCodeSegment {
   layerId: string;
-  type: 'cut' | 'etch' | 'fill';
+  type: 'cut' | 'etch' | 'fill' | 'shade';
   /** T-number from the layer. Segments only run consecutively if these match. */
   tool: number;
   /** Cutting feed along the path, mm/min — derived, or the layer's override. */
@@ -291,10 +299,22 @@ export interface GCodeSegment {
    * the bed.
    */
   fillGroup: number;
+  /**
+   * Darkness at each point of a shaded image, 0–1, parallel to `points`.
+   *
+   * Absent on everything else, and its presence is what tells the mover this
+   * segment is a sweep across a photograph rather than a path: power (laser) or
+   * cut depth (router) follows it point by point instead of being one number
+   * for the whole segment. `power` and `zDepth` on this segment are what black
+   * comes out at — the intensity scales them.
+   */
+  intensities?: number[];
 }
 
 /** Machining order by operation, regardless of where the layer sits in the list. */
-const OPERATION_ORDER: Record<GCodeSegment['type'], number> = { fill: 0, etch: 1, cut: 2 };
+// Shading runs with the fills: it is surface work, and like a fill it must
+// happen before anything releases the part from the sheet under it.
+const OPERATION_ORDER: Record<GCodeSegment['type'], number> = { shade: 0, fill: 0, etch: 1, cut: 2 };
 
 /** Clearance height for rapids, in mm. */
 export const SAFE_Z = 5;
@@ -312,6 +332,17 @@ export const SAFE_Z = 5;
  * pitch or two long, and the ones anywhere near the limit are rare.
  */
 const MAX_LINK_MM = 25;
+
+/**
+ * Move count past which a shaded image is worth warning about.
+ *
+ * There is nothing wrong with a job this size — a photograph is simply a lot of
+ * moves — but it is the difference between a two-minute engraving and a
+ * forty-minute one, and it is decided by a pitch slider that gives no hint of
+ * the cost. A hundred thousand moves is also around where a G-code file stops
+ * being something a controller streams comfortably over a serial line.
+ */
+const SHADE_BUSY_POINTS = 100_000;
 
 /**
  * Fill pitch when nothing has asked for one, in mm.
@@ -407,12 +438,13 @@ export function planToolpath(
   /**
    * Art that has ended up off the material, said before anything is cut.
    *
-   * This is the failure that costs a workpiece. Every coordinate below is
-   * emitted whether or not there is stock under it, so a document whose stock
+   * This is the failure that used to cost a workpiece: a document whose stock
    * was resized after it was drawn — a 300x200 preset taken down to a business
-   * card, say — runs perfectly and cuts empty air, or the bed, 150 mm from where
-   * the operator is watching. Stated with the extent, because "outside" is only
-   * actionable if you know by how much and in which direction.
+   * card, say — ran perfectly and cut empty air, or the bed, 150 mm from where
+   * the operator was watching. `clipSegmentsToStock` now keeps the tool over
+   * the material, so this names what will come out incomplete rather than what
+   * will be cut in the wrong place. Stated with the extent, because "outside"
+   * is only actionable if you know by how much and in which direction.
    */
   const strays = doc.elements.filter(
     (el) => el.visible !== false && isOutsideStock(el, doc.width, doc.height)
@@ -425,8 +457,8 @@ export function planToolpath(
         `(${strays.slice(0, 3).map((e) => `"${e.name}"`).join(', ')}` +
         `${strays.length > 3 ? `, +${strays.length - 3} more` : ''}). ` +
         `They span X ${box.minX.toFixed(1)}…${box.maxX.toFixed(1)}, ` +
-        `Y ${box.minY.toFixed(1)}…${box.maxY.toFixed(1)} mm and are still in this job — ` +
-        `the machine will drive there. Move them onto the stock, or resize it to fit.`
+        `Y ${box.minY.toFixed(1)}…${box.maxY.toFixed(1)} mm. Whatever hangs over the edge is ` +
+        `left uncut — move them onto the stock, or resize it to fit, if you want all of it.`
     );
   }
 
@@ -485,6 +517,33 @@ export function planToolpath(
     const pendingCuts: Pt[][] = [];
 
     for (const el of layerElements) {
+      /**
+       * A shaded image: swept as tone rather than machined as geometry.
+       *
+       * It has no contours to extract — the picture is the pixels — so it is
+       * handled here and skips everything below, including kerf compensation
+       * and hatching, neither of which means anything for a photograph.
+       */
+      if (el.type === 'image') {
+        if (layer.operation !== 'shade') {
+          skipped.push(
+            `${el.name} (an image machines as tone, which only a Shade layer knows how to run — ` +
+              `"${layer.name}" is set to ${layer.operation}. Move it to a Shade layer, or change ` +
+              `this layer's operation, in the inspector)`
+          );
+          continue;
+        }
+        if (!hasRaster(el)) {
+          skipped.push(`${el.name} (image element with no pixels in it — re-import the picture)`);
+          continue;
+        }
+        fillGroup++;
+        const shade = planShadeSegments(el, layer, cut, options, material, fillGroup);
+        segments.push(...shade.segments);
+        notes.push(...shade.notes);
+        continue;
+      }
+
       if (el.type === 'text' && !hasFreshOutline(el)) {
         // Text is a font glyph, not geometry. Once vectorized it machines like
         // any other path; until then say so in the header rather than dropping
@@ -675,7 +734,7 @@ export function planToolpath(
 
   // Machining order, most-to-least reversible:
   //
-  //   1. operation — fill, then etch, then cut. This is not the layer list's
+  //   1. operation — shading and fills, then etching, then cuts. This is not the layer list's
   //      order and must not follow it: a through-cut releases the part from the
   //      stock, so anything engraved after it is engraved on a piece that is
   //      free to shift. The default document happens to list "cut" first, which
@@ -686,6 +745,32 @@ export function planToolpath(
   //
   // Array.prototype.sort is stable, so segments equal on all three keep the
   // order they were generated in.
+  // Trimmed before the sort, because clipping changes the enclosed area a
+  // contour is ordered by — and an outline cut down to an arc no longer encloses
+  // the holes it used to be sequenced after.
+  const clip = clipSegmentsToStock(segments, doc.width, doc.height);
+  segments.length = 0;
+  segments.push(...clip.segments);
+  if (clip.trimmed > 0 || clip.dropped > 0) {
+    const parts: string[] = [];
+    if (clip.trimmed > 0) {
+      parts.push(`${clip.trimmed} path${clip.trimmed === 1 ? ' was' : 's were'} cut short at the edge`);
+    }
+    if (clip.dropped > 0) {
+      parts.push(
+        `${clip.dropped} ${clip.dropped === 1 ? 'lies' : 'lie'} entirely off it and ${
+          clip.dropped === 1 ? 'is' : 'are'
+        } not machined at all`
+      );
+    }
+    notes.push(
+      `Trimmed to the ${doc.width}x${doc.height} mm stock: ${parts.join(', and ')}. ` +
+        `Only the part of the drawing over the material is run — the rest would have been ` +
+        `cut into the bed. Nothing on the canvas has changed, so move or resize the art and ` +
+        `it comes back.`
+    );
+  }
+
   const layerOrder = new Map(doc.layers.map((l, i) => [l.id, i]));
   segments.sort((a, b) => {
     const opDelta = OPERATION_ORDER[a.type] - OPERATION_ORDER[b.type];
@@ -775,7 +860,9 @@ function laserFillCutting(
   options: GCodeOptions,
   pitch: number
 ): LayerCutting {
-  if (!options.laserMode || layer.operation !== 'fill') return cut;
+  if (!options.laserMode || (layer.operation !== 'fill' && layer.operation !== 'shade')) return cut;
+  // Shading is a fill as far as the beam is concerned: adjacent lines at a
+  // known pitch, and a dose per square millimetre that follows from both.
   const recipe = deriveLaserFeeds(material, 'fill', options.laser, 0, pitch);
   if (!recipe) return cut;
 
@@ -813,10 +900,10 @@ function resolveLayerCutting(
      * are the last resort. That last case is not dead code: it is every document
      * drawn before this existed, and every pairing the derivation refuses.
      */
-    const recipe = deriveLaserFeeds(material, layer.operation, laser, stock.thickness);
+    const recipe = deriveLaserFeeds(material, feedsOperation(layer.operation), laser, stock.thickness);
     if (recipe) notes.push(...recipe.notes);
 
-    const refusal = laserRefusal(material, layer.operation, laser);
+    const refusal = laserRefusal(material, feedsOperation(layer.operation), laser);
     if (refusal) {
       notes.push(
         `Layer "${layer.name}": ${refusal} Its speed and power are the ones stored on the layer — ` +
@@ -1003,6 +1090,7 @@ function makeSegment(
     linkFrom?: Pt | null;
     fillGroup?: number;
     tabs?: TabSpan[];
+    intensities?: number[];
   }
 ): GCodeSegment {
   const tabs = geom.tabs ?? [];
@@ -1026,7 +1114,85 @@ function makeSegment(
     linkFrom: geom.linkFrom ?? null,
     fillGroup: geom.fillGroup ?? -1,
     points: geom.points,
+    ...(geom.intensities ? { intensities: geom.intensities } : {}),
   };
+}
+
+/**
+ * Sweeps a greyscale image into segments that carry their own shading.
+ *
+ * The picture is machined at the layer's power and depth *at black*, with every
+ * lighter tone a proportion of it. Nothing here decides how that reaches the
+ * machine — `planMoves` turns the intensities into laser power or into cut
+ * depth — so the same segments preview, time and export as one thing.
+ */
+function planShadeSegments(
+  el: EtchElement,
+  layer: EtchLayer,
+  cut: LayerCutting,
+  options: GCodeOptions,
+  material: ReturnType<typeof findMaterial>,
+  fillGroup: number
+): { segments: GCodeSegment[]; notes: string[] } {
+  const notes: string[] = [];
+
+  /**
+   * Line pitch. On a laser this is how coarse the picture comes out; on a
+   * router it is also a floor set by the cutter, since sweeping finer than the
+   * stepover re-cuts ground already at depth for no extra detail.
+   */
+  const pitch = Math.max(
+    0.02,
+    el.hatchSpacing ?? (options.laserMode ? DEFAULT_SHADE_PITCH_MM : defaultPitch(cut, false))
+  );
+  const angle = el.hatchAngle ?? 0;
+
+  // A laser's dose per area depends on how close the lines are, exactly as it
+  // does for a hatch fill, so the recipe is re-derived at this pitch.
+  const shaded = laserFillCutting(cut, layer, material, options, pitch);
+
+  const runs = planShadeRuns(el, { pitch, angle });
+  if (runs.length === 0) {
+    notes.push(
+      `"${el.name}" has nothing dark enough to machine at its current settings — every sample ` +
+        `came out white. Raise the contrast, or invert it, in the image import dialog.`
+    );
+    return { segments: [], notes };
+  }
+
+  const segments = runs.map((run) =>
+    makeSegment(layer, shaded, options, {
+      points: run.points.map((p) => localToBed(el, p.x, p.y)),
+      intensities: run.intensities,
+      isClosed: false,
+      // Sorted with the fills and never kerf-compensated, so the enclosed area
+      // that orders contours has nothing to say about a sweep. -1 keeps the
+      // sweeps in the serpentine order they were planned in, which is the whole
+      // reason they are cheap to run.
+      bBoxArea: -1,
+      linkTolerance: 0,
+      fillGroup,
+    })
+  );
+
+  if (!options.laserMode && shaded.flatBottomed) {
+    notes.push(
+      `"${el.name}" is carved as a relief with a ${shaded.toolName}. A flat-ended cutter leaves ` +
+        `each sweep as a terrace with a square shoulder, so the tone comes out stepped rather ` +
+        `than modelled — a ball nose follows a slope, and is what a relief wants.`
+    );
+  }
+
+  const points = shadePointCount(runs);
+  if (points > SHADE_BUSY_POINTS) {
+    notes.push(
+      `"${el.name}" shades into about ${Math.round(points / 1000)}k moves at ${pitch} mm pitch. ` +
+        `That is a long job and a large file, and the controller has to keep up with it — ` +
+        `a coarser pitch, or a smaller picture, is the setting that answers it.`
+    );
+  }
+
+  return { segments, notes };
 }
 
 /**
@@ -1051,6 +1217,63 @@ export function planTabs(perimeter: number): TabSpan[] {
     tabs.push({ start: centre - TAB_WIDTH_MM / 2, end: centre + TAB_WIDTH_MM / 2 });
   }
   return tabs;
+}
+
+/**
+ * Keeps only the parts of the planned path that are over the material.
+ *
+ * Runs on segments rather than on elements: half an imported image is a
+ * perfectly ordinary thing to want machined, and the element is the wrong unit
+ * to answer that with — one traced photo is a single compound path, so dropping
+ * or keeping it whole is the choice this avoids having to make.
+ *
+ * A contour cut short is no longer closed, and its holding tabs are distances
+ * along a contour that no longer exists, so they are re-planned for the length
+ * that remains. A cut that now ends in mid-air still wants holding: the trimmed
+ * outline releases just as much of the part as the whole one did.
+ */
+function clipSegmentsToStock(
+  segments: GCodeSegment[],
+  width: number,
+  height: number
+): { segments: GCodeSegment[]; trimmed: number; dropped: number } {
+  const out: GCodeSegment[] = [];
+  let trimmed = 0;
+  let dropped = 0;
+
+  for (const seg of segments) {
+    if (isWhollyInside(seg.points, width, height)) {
+      out.push(seg);
+      continue;
+    }
+    // The shading travels with the geometry: a scan line cut in half keeps the
+    // tone it had where it was cut, rather than whatever the old array holds at
+    // that index.
+    const pieces = clipValuedPolylineToStock(
+      seg.points,
+      seg.intensities ?? null,
+      width,
+      height
+    );
+    if (pieces.length === 0) {
+      dropped++;
+      continue;
+    }
+    trimmed++;
+    for (const piece of pieces) {
+      const pts = piece.points;
+      out.push({
+        ...seg,
+        points: pts,
+        isClosed: isClosedContour(pts),
+        bBoxArea: seg.intensities ? seg.bBoxArea : boundingArea(pts),
+        tabs: seg.tabs.length > 0 ? planTabs(pathLength(pts)) : [],
+        ...(piece.values ? { intensities: piece.values } : {}),
+      });
+    }
+  }
+
+  return { segments: out, trimmed, dropped };
 }
 
 function isClosedContour(pts: Pt[]): boolean {
@@ -1256,6 +1479,23 @@ export function generateGCode(
   }
   gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   gcode += `; Segments: ${segments.length}\n`;
+  /**
+   * What a shaded image is being run at, said in the header.
+   *
+   * Every S word (or Z) below it is a fraction of these two numbers, so without
+   * them the file reads as a job of wildly inconsistent settings rather than as
+   * one picture. Counted per layer, since that is where the two numbers live.
+   */
+  const shadeLayers = new Set(segments.filter((sg) => sg.intensities).map((sg) => sg.layerId));
+  for (const id of shadeLayers) {
+    const seg = segments.find((sg) => sg.layerId === id && sg.intensities)!;
+    const sweeps = segments.filter((sg) => sg.layerId === id && sg.intensities).length;
+    gcode += options.laserMode
+      ? `; Shading "${doc.layers.find((l) => l.id === id)?.name ?? id}": ${sweeps} sweeps, ` +
+        `black at ${Math.round(seg.power)}% power and lighter greys proportionally less\n`
+      : `; Shading "${doc.layers.find((l) => l.id === id)?.name ?? id}": ${sweeps} sweeps, ` +
+        `black at ${seg.zDepth} mm deep and lighter greys proportionally shallower\n`;
+  }
   // A laser has no tool catalogue and nothing to change, so it gets no T-line:
   // "T1 — uncatalogued tool" in the header of every laser job was an answer to a
   // question that machine does not ask.
@@ -1295,6 +1535,10 @@ export function generateGCode(
   let lastFeed: number | null = null;
   let lastZ: number | null = null;
   let beamOn = false;
+  /** Whether the beam is in M4 (power scaled by speed) rather than M3. */
+  let dynamicPower = false;
+  /** Last S value actually emitted, so an unchanged tone costs nothing. */
+  let lastS: number | null = null;
   let lastSegIndex = -1;
   let lastKind: PlannedMove['kind'] | null = null;
   let currentRpm = toolChanges.length ? 0 : firstRpm;
@@ -1320,6 +1564,7 @@ export function generateGCode(
         gcode += `G0 Z${SAFE_Z} ; clearance height before moving\n`;
       }
       beamOn = false;
+      lastS = null;
       lastZ = SAFE_Z;
       lastFeed = null;
     }
@@ -1345,13 +1590,35 @@ export function generateGCode(
     // Laser power is a per-move state on a machine with no Z: the beam is off
     // for every rapid and on for every cut, and switching it is the only thing
     // that distinguishes the two.
+    let sWord = '';
     if (options.laserMode) {
-      if (m.beamOn && !beamOn) {
-        gcode += `M3 S${Math.round((m.power / 100) * options.spindleSpeedMax)} ; Laser ON\n`;
+      const s = Math.round((m.power / 100) * options.spindleSpeedMax);
+      /**
+       * Constant power for lines, velocity-scaled power for pictures.
+       *
+       * M3 holds S whatever the machine is doing, which is what a cut wants:
+       * one line, one burn. A photograph is thousands of short moves the
+       * machine never reaches feed on, and under M3 every one of those
+       * accelerations dwells the beam and comes out as a dark smear at the end
+       * of the line. M4 scales power with actual speed, so a slow corner burns
+       * proportionally less and the tone survives the acceleration.
+       */
+      const shading = !!segments[m.segIndex]?.intensities;
+      if (m.beamOn && (!beamOn || shading !== dynamicPower)) {
+        gcode += `${shading ? 'M4' : 'M3'} S${s} ; Laser ON${shading ? ' — dynamic power, tone follows speed' : ''}\n`;
         beamOn = true;
+        dynamicPower = shading;
+        lastS = s;
       } else if (!m.beamOn && beamOn) {
         gcode += `M5 ; Laser OFF for rapid\n`;
         beamOn = false;
+        lastS = null;
+      } else if (m.beamOn && s !== lastS) {
+        // S rides on the move itself rather than on a line of its own: a
+        // shaded sweep changes tone thousands of times, and a separate word
+        // for each would double the size of the file for no extra control.
+        sWord = ` S${s}`;
+        lastS = s;
       }
     }
 
@@ -1376,11 +1643,16 @@ export function generateGCode(
       // is; labelling all of them just makes the file harder to read.
       const label =
         m.kind === 'plunge'
-          ? ' ; plunge — no room to ramp'
+          ? segments[m.segIndex]?.intensities
+            // Not the usual "this path was too short to ramp into": a sweep
+            // starts at whatever depth the picture is at that point, and there
+            // is nowhere to ramp from without leaving that stretch uncarved.
+            ? ' ; down to the depth the picture asks for here'
+            : ' ; plunge — no room to ramp'
           : m.kind === 'ramp' && lastKind !== 'ramp'
             ? ' ; ramp in'
             : '';
-      gcode += `G1 ${axes}${fWord}${label}\n`;
+      gcode += `G1 ${axes}${fWord}${sWord}${label}\n`;
       lastFeed = feed;
     }
     lastZ = m.z2;

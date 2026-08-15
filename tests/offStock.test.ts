@@ -56,13 +56,22 @@ describe('geometry left off the stock after a resize', () => {
     expect(notes.some((n) => n.includes('outside the'))).toBe(false);
   });
 
-  it('still exports off-stock geometry at its real machine coordinates', () => {
-    // The warning is a warning, not a filter: silently dropping the operator's
-    // artwork would be a worse failure than cutting it in the wrong place.
+  it('keeps the off-stock element on the canvas, and cuts none of what hangs over', () => {
+    // The element is not dropped — it is still drawn, still selectable, and
+    // still flagged — but the toolpath stops at the edge of the material.
     clearGeomBBoxCache();
     const doc = asBusinessCard(keychain.doc);
     const stray = doc.elements.find((el) => isOutsideStock(el, doc.width, doc.height))!;
     expect(stray).toBeDefined();
+
+    const { segments } = planToolpath(doc);
+    for (const seg of segments) {
+      for (const p of seg.points) {
+        expect(p.x).toBeLessThanOrEqual(doc.width + 1e-6);
+        expect(p.y).toBeLessThanOrEqual(doc.height + 1e-6);
+      }
+    }
+
     // Machine Y flips about the (now much shorter) stock height, so art authored
     // near the top of a 200 mm document ends up above an 55 mm card.
     const p = docToMachine(doc, 150, 10);

@@ -96,6 +96,23 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
     case 'star':
       return `    <path ${transform} d="${escapeXml(el.d || '')}" ${style} />\n`;
 
+    case 'image': {
+      /**
+       * A shaded image exports as its outline, not as its pixels.
+       *
+       * SVG is the interchange format here — it goes to another CAM program, or
+       * back into this one — and there is no way to say "engrave this
+       * photograph as tone" in it. A box where the picture was is honest about
+       * that: the artwork is still in the .etch document, and an empty export
+       * would leave the operator wondering where it went.
+       */
+      return (
+        `    <rect ${transform} width="${el.w || 50}" height="${el.h || 50}" ` +
+        `stroke="${escapeXml(stroke)}" stroke-width="${strokeW}" stroke-dasharray="2,1" ` +
+        `fill="none" opacity="${opacity}" data-shaded-image="${escapeXml(el.name)}" />\n`
+      );
+    }
+
     default:
       return '';
   }

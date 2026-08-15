@@ -30,7 +30,7 @@ import {
   machineKind as machineKindOf,
   type ToolProfile,
 } from '../utils/tooling';
-import { deriveFeeds, deriveLaserFeeds, laserRefusal, planPasses, formatRpm } from '../utils/feeds';
+import { deriveFeeds, deriveLaserFeeds, feedsOperation, laserRefusal, planPasses, formatRpm } from '../utils/feeds';
 import {
   findMaterial,
   DEFAULT_STOCK_THICKNESS_MM,
@@ -39,6 +39,7 @@ import {
 } from '../utils/materials';
 import { readSpindleRange, describeLaserSource, type LaserSource } from '../utils/machineSettings';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
+import { DEFAULT_SHADE_PITCH_MM } from '../utils/rasterImage';
 import type { EtchElement } from '../types/etch';
 
 const NUM_INPUT =
@@ -76,10 +77,10 @@ const LaserLayerCutting: React.FC<{
   const [showAdvanced, setShowAdvanced] = React.useState(false);
 
   const recipe = React.useMemo(
-    () => deriveLaserFeeds(material, layer.operation, source, stockThickness),
+    () => deriveLaserFeeds(material, feedsOperation(layer.operation), source, stockThickness),
     [material, layer.operation, source, stockThickness]
   );
-  const refusal = laserRefusal(material, layer.operation, source);
+  const refusal = laserRefusal(material, feedsOperation(layer.operation), source);
 
   const speed = layer.speedOverride ?? recipe?.speed ?? layer.speed;
   const power = layer.powerOverride ?? recipe?.power ?? layer.power;
@@ -394,6 +395,9 @@ const round1 = (v: number) => Math.round(v * 10) / 10;
 
 /** Only closed geometry has an interior worth hatching. */
 function canBeFilled(el: EtchElement): boolean {
+  // An image is neither outlined nor hatched: it is swept as tone, and its own
+  // controls are the sweep's.
+  if (el.type === 'image') return false;
   if (el.type === 'text') return hasFreshOutline(el);
   if (el.type === 'line' || el.type === 'freehand') return false;
   if (el.type === 'path' || el.type === 'bezier' || el.type === 'symbol') {
@@ -830,6 +834,51 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
           )}
 
+          {/* A shaded image: the sweep, not the shape. Angle and pitch are the
+              hatch fields, because sweeping a picture and sweeping a fill are
+              the same motion — what differs is that here the tone varies along
+              the sweep instead of being one setting for all of it. */}
+          {selectedElement.type === 'image' && (
+            <div className="space-y-2">
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                Shading
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Sweep Angle <InfoTooltip text="Direction the machine sweeps across the picture, in degrees. 0 is left-to-right." />
+                  </label>
+                  <NumberInput
+                    step="5"
+                    value={selectedElement.hatchAngle ?? 0}
+                    onChange={(val) => updateElement(selectedElement.id, { hatchAngle: val ?? 0 })}
+                    className={NUM_INPUT}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Pitch (mm) <InfoTooltip text="Distance between sweeps. Finer resolves more tone and takes proportionally longer — halving it doubles the job." />
+                  </label>
+                  <NumberInput
+                    step="0.05"
+                    min={0.02}
+                    fallbackOnBlur={0.02}
+                    value={selectedElement.hatchSpacing ?? DEFAULT_SHADE_PITCH_MM}
+                    onChange={(val) =>
+                      updateElement(selectedElement.id, { hatchSpacing: val ?? DEFAULT_SHADE_PITCH_MM })
+                    }
+                    className={NUM_INPUT}
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">
+                {isLaser
+                  ? 'Black burns at the layer\u2019s power; lighter greys burn proportionally less. It needs a Shade layer — anywhere else it will not be machined.'
+                  : 'Black carves to the layer\u2019s depth; lighter greys stay nearer the surface. It needs a Shade layer — anywhere else it will not be machined.'}
+              </p>
+            </div>
+          )}
+
           {/* Machining mode: trace the edge, or engrave the interior. */}
           {canBeFilled(selectedElement) && (
             <div className="space-y-2">
@@ -1017,6 +1066,7 @@ export const PropertiesSidebar: React.FC = () => {
                       <option value="cut">Cut</option>
                       <option value="etch">Etch</option>
                       <option value="fill">Fill</option>
+                      <option value="shade">Shade</option>
                     </select>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">

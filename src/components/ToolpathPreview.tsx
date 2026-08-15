@@ -102,7 +102,13 @@ export const ToolpathPreview: React.FC<{
   const colourFor = useCallback(
     (seg: Pick<GCodeSegment, 'layerId' | 'type'>) =>
       doc.layers.find((l) => l.id === seg.layerId)?.color ||
-      (seg.type === 'cut' ? '#ef4444' : seg.type === 'etch' ? '#3b82f6' : '#22c55e'),
+      (seg.type === 'cut'
+        ? '#ef4444'
+        : seg.type === 'etch'
+          ? '#3b82f6'
+          : seg.type === 'shade'
+            ? '#a855f7'
+            : '#22c55e'),
     [doc.layers]
   );
 
@@ -179,6 +185,14 @@ export const ToolpathPreview: React.FC<{
   const timeTextRef = useRef<HTMLSpanElement | null>(null);
   const clockRef = useRef(0);
   const prevChunkRef = useRef(-1);
+  /**
+   * The running job's stopwatch: seconds since it started, less time held.
+   *
+   * Kept as an anchor rather than a per-frame accumulation because rAF stops
+   * while the tab is in the background, and a five-minute etch watched from
+   * another tab would otherwise come back reading a few seconds.
+   */
+  const elapsedRef = useRef({ secs: 0, anchorTs: 0 });
 
   const setChunkReveal = (i: number, frac: number) => {
     const el = revealRefs.current[i];
@@ -192,9 +206,16 @@ export const ToolpathPreview: React.FC<{
    * only when a machine is running the job and reporting its own position:
    * everything else on screen is still derived from `t`, but the tool itself is
    * then the machine's, not the simulation's.
+   *
+   * `elapsedSecs` likewise replaces the clock readout while a job is running.
+   * `t` is *program* time at the tool's position, and the timeline models each
+   * move as distance/feed with no acceleration — on an etch, which is thousands
+   * of short reversing scanlines the machine never gets up to feed on, that
+   * runs a long way behind the room. The readout next to "Live" is read as a
+   * stopwatch, so while the machine is running it is one.
    */
   const applyFrame = useCallback(
-    (t: number, head?: { x: number; y: number; z: number } | null) => {
+    (t: number, head?: { x: number; y: number; z: number } | null, elapsedSecs?: number | null) => {
       const { moves, minutes } = timeline;
       const done = minutes <= 0 || t >= minutes;
       const s = sampleAt(moves, Math.min(t, minutes));
@@ -264,7 +285,7 @@ export const ToolpathPreview: React.FC<{
           : `Z ${z.toFixed(2)} mm`;
       }
       if (timeTextRef.current) {
-        const secs = Math.min(t, minutes) * 60;
+        const secs = elapsedSecs != null ? elapsedSecs : Math.min(t, minutes) * 60;
         const passNote = move && move.passes > 1 ? ` · pass ${move.pass}/${move.passes}` : '';
         timeTextRef.current.textContent = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}${passNote}`;
       }
@@ -337,14 +358,31 @@ export const ToolpathPreview: React.FC<{
     liveRefValue.current = live;
   }, [live]);
 
+  // The stopwatch is zeroed only when a job starts. The frame loop below is
+  // re-created whenever the timeline changes identity, which can happen mid-job
+  // — resetting there would send the clock back to 0:00 while the machine ran.
+  useEffect(() => {
+    elapsedRef.current = { secs: 0, anchorTs: 0 };
+  }, [isLive]);
+
   useEffect(() => {
     if (!isLive) {
       smoothedRef.current = null;
       return;
     }
     let raf = 0;
-    const step = () => {
+    const step = (ts: number) => {
       const target = liveRefValue.current;
+      const clock = elapsedRef.current;
+      // A feed hold is the machine standing still, and the operator is usually
+      // away from it changing a tool or clearing smoke, so the stopwatch holds
+      // with it rather than counting how long they took.
+      if (!clock.anchorTs || !target || target.paused) {
+        clock.anchorTs = ts;
+      } else {
+        clock.secs += (ts - clock.anchorTs) / 1000;
+        clock.anchorTs = ts;
+      }
       if (target) {
         const s = smoothedRef.current ?? { x: target.x, y: target.y, z: target.z };
         s.x += (target.x - s.x) * LIVE_EASE;
@@ -355,7 +393,7 @@ export const ToolpathPreview: React.FC<{
         // follows the machine over an un-revealed drawing.
         const t = target.followsPath ? clockAtPosition(s.x, s.y, target.progress) : 0;
         clockRef.current = t;
-        applyFrame(t, s);
+        applyFrame(t, s, clock.secs);
       }
       raf = requestAnimationFrame(step);
     };

@@ -52,9 +52,8 @@ letterboxes it and the pan/zoom transform sits on top.
 is in millimetres against real material, and silently scaling a 40 mm hole
 because the board got wider would be wrong on a machine.
 
-The consequence is that shrinking the stock leaves art outside it. That art is
-still exported and the machine will still drive there. Two things guard this and
-both must keep working:
+The consequence is that shrinking the stock leaves art outside it. Three things
+guard this and all must keep working:
 
 - `EtchCanvas` sizes its viewBox to the **union of the stock and all visible
   content**, so off-stock geometry pulls the view out to include itself. An SVG
@@ -62,9 +61,15 @@ both must keep working:
   about what is in the document.
 - `isOutsideStock` / `bedBoxOfAll` (`src/utils/geom.ts`) flag strays, drawn as
   red dashed boxes on the canvas and emitted as a note by `planToolpath`.
+- `clipToStock.ts` trims the *planned path* — not the drawing — to the stock
+  rectangle at the end of `planToolpath`, so the tool only ever travels where
+  there is material. The drawing is untouched, the elements are still there, and
+  the plan says how many paths were shortened or left out entirely.
 
-It warns, it does not filter. Silently dropping the operator's artwork would be a
-worse failure than cutting it in the wrong place. See `tests/offStock.test.ts`.
+It trims and says so; it never silently drops. The unit is the path, not the
+element, because one traced image is a single compound path and "skip the
+elements that are off the stock" would throw the whole picture away. See
+`tests/clipToStock.test.ts` and `tests/offStock.test.ts`.
 
 Note that **every shipped preset is 300×200 mm**, so any hardcoded position like
 `150, 100` is "the centre of the bed" only by coincidence and is off the material
@@ -128,10 +133,13 @@ way — a preview that does its own conversion will drift from the file.
   had to compromise on, plus warnings (score-line risk, unmarkable material,
   off-stock geometry). Both surface in the G-code header comments and in the
   preview panel. Prefer adding a note over failing silently.
-- Layers carry `operation: 'cut' | 'etch' | 'fill'`, and elements carry
+- Layers carry `operation: 'cut' | 'etch' | 'fill' | 'shade'`, and elements carry
   `machining: 'outline' | 'filled'`. `fill`/`filled` routes through
   `hatchFill.ts`; cut side and kerf compensation through `contourOffset.ts`
-  (Clipper).
+  (Clipper); `shade` through `rasterImage.ts` (below). Shading sorts with the
+  fills — it is surface work, and must happen before anything releases the part.
+  For feeds it *is* a fill: `feedsOperation()` maps it, rather than adding a
+  fourth column to the material tables that would have to be kept in step.
 - Feeds/power are **derived, not stored**: `feeds.ts` has `deriveFeeds` (CNC) and
   `deriveLaserFeeds` + `laserRefusal` (laser), from the material, the stock
   thickness, and the machine. A file opened on a different machine derives that
@@ -202,6 +210,35 @@ presets, adds elements and reads the document. Dev only.
   loop counts and the runtime. Output is always one compound `path` element, and
   it is simplified with Douglas–Peucker before emission because a marching-
   squares outline is a per-pixel staircase.
+
+### Shaded images — tone, not shapes
+
+The three modes above all decide at import that a pixel is either cut or not.
+The fourth, `shade`, does not: it puts the processed greyscale into the document
+as an `image` element (base64 bytes in `imageGray`, `imgW`/`imgH` the grid,
+`w`/`h` the size on the material) and lets darkness reach the machine as
+something that varies *along* a move.
+
+- `rasterImage.ts` sweeps the pixels into `ShadeRun`s — serpentine lines at
+  `hatchSpacing` pitch and `hatchAngle`, each carrying an intensity per point.
+  Runs break where the picture goes white, and a held tone is carried until it
+  actually changes, or a photograph's sky would emit one move per sample.
+- `GCodeSegment.intensities` is what marks a segment as shading, parallel to
+  `points`. `planMoves` branches on it: laser power becomes `seg.power ×
+  intensity` per move, and a router's Z becomes `-zDepth × intensity`, clamped
+  per pass to that pass's stepdown floor — which is what roughs a deep relief in
+  stages instead of taking it in one bite.
+- The emitter uses **M4, not M3**, for shaded moves, and rides `S` on the motion
+  line. M3 holds power through the accelerations of thousands of short moves and
+  burns the ends of every line dark; M4 scales it with actual speed.
+- Anything that rewrites segment points must rewrite the intensities with them —
+  `clipValuedPolylineToStock` exists because trimming the geometry alone would
+  leave the right shape carrying the wrong photograph.
+
+The element keeps the pixels rather than a baked toolpath specifically so pitch,
+angle, depth and size stay editable after import. An image on a non-`shade`
+layer is skipped with a note: "cut this photo out" and "engrave it as tone" are
+different jobs and only one is ever meant.
 
 ## House style
 

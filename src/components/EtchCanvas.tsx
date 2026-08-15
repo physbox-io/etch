@@ -16,6 +16,7 @@ import {
   isOutsideStock,
 } from '../utils/geom';
 import { hasFreshOutline } from '../utils/textVectorizer';
+import { rasterDataURL } from '../utils/rasterPreview';
 import { computeResize, resizeSeed, clampScale } from '../utils/resizeElement';
 import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
 import {
@@ -1312,6 +1313,9 @@ export const EtchCanvas: React.FC = () => {
                   {...hit}
                 />
               )}
+              {el.type === 'image' && (
+                <rect width={el.w || 40} height={el.h || 25} fill="transparent" stroke="transparent" />
+              )}
               {el.type === 'circle' && <circle r={el.r || 20} {...hit} />}
               {el.type === 'ellipse' && <ellipse rx={el.rx2 || 30} ry={el.ry2 || 20} {...hit} />}
               {el.type === 'polygon' && <polygon points={polyPoints} {...hit} />}
@@ -1337,6 +1341,21 @@ export const EtchCanvas: React.FC = () => {
                   rx={el.rx || 0}
                   ry={el.ry ?? el.rx ?? 0}
                   {...common}
+                />
+              )}
+              {/* A shaded image draws as the picture itself, in the greys the
+                  machine will actually engrave — the whole point of the mode is
+                  that light and dark become depth, so an outline box would show
+                  none of what is about to be cut. `preserveAspectRatio="none"`
+                  because w/h are the size on the material and the operator is
+                  allowed to stretch it. */}
+              {el.type === 'image' && (
+                <image
+                  href={rasterDataURL(el) ?? undefined}
+                  width={el.w || 40}
+                  height={el.h || 25}
+                  preserveAspectRatio="none"
+                  opacity={el.opacity ?? 1}
                 />
               )}
               {el.type === 'circle' && <circle r={el.r || 20} {...common} />}

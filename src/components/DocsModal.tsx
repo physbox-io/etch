@@ -265,10 +265,20 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           afterwards. Both are per-layer settings if you want them off.
         </Step>
         <Step title="What runs first">
-          Order is by operation, not by where a layer sits in the list: fills, then etching, then
-          cuts. A through-cut releases the part from the stock, so anything engraved after it is
+          Order is by operation, not by where a layer sits in the list: shading and fills, then
+          etching, then cuts. A through-cut releases the part from the stock, so anything engraved after it is
           engraved on a piece free to shift. Within one operation the layer order stands, and
           interior holes are cut before the outline containing them for the same reason.
+        </Step>
+        <Step title="Engraving a photograph">
+          A Shade layer machines an imported image as tone rather than as a shape: the picture is
+          swept line by line, and how dark it is at each point decides how hard the beam fires — or,
+          on a router, how deep the cutter goes. The layer's power and depth are what black comes
+          out at, and every lighter grey is a proportion of it, so the way to lighten a whole
+          engraving is to turn the layer down rather than to edit the picture. Import one with the
+          Photo Tone (or Carved Relief) mode in the image dialog; the pixels stay in the document,
+          so size, sweep pitch and depth are all still adjustable afterwards. On a router, a relief
+          wants a ball nose — a flat cutter leaves each sweep as a terrace.
         </Step>
         <Step title="Reading the preview">
           The Run panel draws the real toolpath: cutting moves in their layer colours, rapids as
