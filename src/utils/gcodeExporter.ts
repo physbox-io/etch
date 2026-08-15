@@ -430,6 +430,28 @@ export function planToolpath(
     );
   }
 
+  /**
+   * Geometry whose layer is not in the document, said rather than dropped.
+   *
+   * Everything below iterates layers, so an element naming a layer that does not
+   * exist is unreachable — it has no feeds, no depth and no operation, and there
+   * is nothing to guess them from. The canvas iterates *elements*, so it draws
+   * it regardless: the artwork sits on the bed, looks machineable, and the job
+   * comes out without it. `deleteLayer` re-homes elements for exactly this
+   * reason; documents that arrive from an import or an older build have not been
+   * through it. Naming the layer is the actionable part — the fix is to move the
+   * element onto a layer that exists, in the inspector.
+   */
+  const layerIds = new Set(doc.layers.map((l) => l.id));
+  const orphans = doc.elements.filter((el) => el.visible && !layerIds.has(el.layerId));
+  for (const el of orphans) {
+    skipped.push(
+      `${el.name} (on layer "${el.layerId}", which this document does not have — it is drawn on ` +
+        `the canvas but has no cutting settings, so nothing was planned for it. Move it to a ` +
+        `layer in the inspector)`
+    );
+  }
+
   // Extract path points from all visible elements across layers
   for (const layer of doc.layers) {
     if (!layer.visible) continue;

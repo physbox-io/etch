@@ -39,6 +39,7 @@ export const ImageImportModal: React.FC = () => {
   const [lockAspect, setLockAspect] = useState<boolean>(true);
   const [aspectRatio, setAspectRatio] = useState<number>(1);
   const [targetLayerId, setTargetLayerId] = useState<string>(activeLayerId || doc.layers[0]?.id || 'cut');
+  const wasOpen = useRef(false);
   const [previewStats, setPreviewStats] = useState<{ elementCount: number; detailCount: number }>({
     elementCount: 1,
     detailCount: 0,
@@ -46,6 +47,29 @@ export const ImageImportModal: React.FC = () => {
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * The target layer is re-picked every time the dialog opens.
+   *
+   * This component is mounted for the life of the app — it renders null while
+   * closed — so the `useState` initializer above ran once, at boot, against the
+   * document that happened to be loaded then. Load an SVG or a saved file after
+   * that and its layers are named for the artwork ('svg_1', …), while this still
+   * said 'cut'. The `<select>` shows its first option when its value matches no
+   * option, so the dialog looked right and the import landed on a layer the
+   * document did not have. Such an element still draws on the canvas — the
+   * canvas iterates elements — but the toolpath planner iterates *layers*, so it
+   * was never reached: the artwork appeared on the bed and the preview said
+   * there was nothing to machine. That is what "image import will not etch" was.
+   */
+  useEffect(() => {
+    if (isImageImportOpen && !wasOpen.current) {
+      setTargetLayerId(
+        doc.layers.some((l) => l.id === activeLayerId) ? activeLayerId : doc.layers[0]?.id || ''
+      );
+    }
+    wasOpen.current = isImageImportOpen;
+  }, [isImageImportOpen, doc.layers, activeLayerId]);
 
   // Load image when file or modal state changes
   useEffect(() => {
@@ -203,6 +227,22 @@ export const ImageImportModal: React.FC = () => {
       const timestamp = Date.now();
       let importedElement: EtchElement | null = null;
 
+      /**
+       * Belt and braces on the layer the artwork lands on.
+       *
+       * The effect above keeps this in step with the document, but an element
+       * whose layer does not exist is the one failure mode here that is
+       * completely silent — it draws, it exports to SVG, and the planner never
+       * sees it — so it is worth refusing to construct one at all.
+       */
+      const layerId = doc.layers.some((l) => l.id === targetLayerId)
+        ? targetLayerId
+        : doc.layers[0]?.id;
+      if (!layerId) {
+        alert('This document has no layers to import onto. Add a layer first.');
+        return;
+      }
+
       if (options.mode === 'vector') {
         const paths = traceMarchingSquares(imageData, options, scaleX, scaleY);
         const compoundD = paths.join(' ');
@@ -211,7 +251,7 @@ export const ImageImportModal: React.FC = () => {
             id: `img_vector_${timestamp}`,
             name: `Image Vector Trace`,
             type: 'path',
-            layerId: targetLayerId,
+            layerId,
             x: startX,
             y: startY,
             d: compoundD,
@@ -234,7 +274,7 @@ export const ImageImportModal: React.FC = () => {
             id: `img_halftone_${timestamp}`,
             name: `Image Halftone Grid`,
             type: 'path',
-            layerId: targetLayerId,
+            layerId,
             x: startX,
             y: startY,
             d: pathD,
@@ -258,7 +298,7 @@ export const ImageImportModal: React.FC = () => {
             id: `img_scanline_${timestamp}`,
             name: `Image Engrave Scanlines`,
             type: 'path',
-            layerId: targetLayerId,
+            layerId,
             x: startX,
             y: startY,
             d: compoundD,
@@ -276,13 +316,27 @@ export const ImageImportModal: React.FC = () => {
         }
       }
 
-      if (importedElement) {
-        setDocument({
-          ...doc,
-          elements: [...doc.elements, importedElement],
-          selectedIds: [importedElement.id],
-        });
+      /**
+       * An image that traced to nothing closes the dialog with nothing to show
+       * for it, which is indistinguishable from an import that worked and put
+       * the artwork somewhere off screen. Say which knob answers it — the
+       * threshold is what decides whether any pixel counts as dark at all — and
+       * leave the dialog open so it can be turned.
+       */
+      if (!importedElement) {
+        alert(
+          `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
+            `Raise the threshold (or the contrast) until the preview shows the outline you want, ` +
+            `or invert it if the artwork is light on a dark background.`
+        );
+        return;
       }
+
+      setDocument({
+        ...doc,
+        elements: [...doc.elements, importedElement],
+        selectedIds: [importedElement.id],
+      });
 
       closeImageImport();
     } catch (err) {
