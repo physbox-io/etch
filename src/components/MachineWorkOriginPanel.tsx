@@ -30,6 +30,8 @@ import {
   MAX_SHIM_THICKNESS_MM,
   readGuidePower,
   writeGuidePower,
+  readGuideJiggle,
+  writeGuideJiggle,
   MAX_GUIDE_POWER_PCT,
 } from '../utils/machineSettings';
 import { machineWords, type MachineKind } from '../utils/tooling';
@@ -105,6 +107,7 @@ export const MachineWorkOriginPanel: React.FC<{
   const [showManualZ, setShowManualZ] = useState(false);
   const [shimThickness, setShimThickness] = useState(readShimThickness);
   const [guidePower, setGuidePower] = useState(readGuidePower);
+  const [guideJiggle, setGuideJiggle] = useState(readGuideJiggle);
   // Homing is the real first step: until the machine has found its limit
   // switches, machine coordinates are wherever it happened to be switched on,
   // and nothing below can be repeated tomorrow.
@@ -574,6 +577,31 @@ export const MachineWorkOriginPanel: React.FC<{
                   % power (S{webSerialManager.guidePowerAsS(guidePower)})
                 </span>
               </div>
+              {/* Some controllers gate the laser on motion below anything a `$`
+                  setting reaches, so the dot only exists while the head is
+                  moving. Nothing can detect that — it is observed once, by the
+                  person watching the dot blink out. */}
+              <label
+                title="For machines whose laser only fires while moving: traces a 0.1 mm cross around the spot to keep it lit. The cross returns to its own centre, so the point you are sighting does not move."
+                className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400 cursor-pointer select-none"
+              >
+                <input
+                  type="checkbox"
+                  checked={guideJiggle}
+                  onChange={(e) => {
+                    const next = writeGuideJiggle(e.target.checked);
+                    setGuideJiggle(next);
+                    // Applied to a spot that is already lit, so the answer to
+                    // "is this what my machine needs" is the dot in front of
+                    // them rather than a toggle cycle. Unticking needs no call:
+                    // the loop reads the setting each cycle and stops on its
+                    // own, leaving the beam commanded on.
+                    if (next && status.guideSpot) webSerialManager.guideSpotOn(guidePower);
+                  }}
+                  className="accent-amber-500 cursor-pointer"
+                />
+                <span>Jiggle to stay lit</span>
+              </label>
             </div>
           )}
           {isLaser && (

@@ -71,6 +71,7 @@ export const SYNCED_MACHINE_PARAMETER_KEYS: readonly string[] = [
   // Literals from here down: these keys are declared further down the file, and
   // naming the consts would read them in their temporal dead zone.
   'etch_laser_guide_power_pct',
+  'etch_laser_guide_jiggle',
   'etch_spindle_min_rpm',
   'etch_spindle_max_rpm',
   'etch_laser_source',
@@ -176,6 +177,39 @@ export function writeGuidePower(value: number): number {
     // Non-fatal: the setting just won't survive a reload.
   }
   return clamped;
+}
+
+const GUIDE_JIGGLE_KEY = 'etch_laser_guide_jiggle';
+
+/**
+ * Whether the guide spot has to keep moving to stay lit.
+ *
+ * `$32=0` is supposed to make a stationary beam possible, and on plenty of
+ * controllers it does. On plenty of others it does not: some diode boards gate
+ * the PWM on motion in hardware or in their own firmware, and no `$` setting
+ * reaches that. There is no way to ask a controller which kind it is — the
+ * symptom is a dot that appears while the head is jogging and vanishes the
+ * moment it stops — so this is a property of the machine that its owner
+ * observes once and ticks.
+ *
+ * A bench fact like the touch plate's thickness, so it syncs with the rest.
+ */
+export function readGuideJiggle(): boolean {
+  try {
+    return localStorage.getItem(GUIDE_JIGGLE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeGuideJiggle(enabled: boolean): boolean {
+  try {
+    localStorage.setItem(GUIDE_JIGGLE_KEY, enabled ? '1' : '0');
+    syncCloudParameters('etch', { [GUIDE_JIGGLE_KEY]: enabled ? '1' : '0' });
+  } catch {
+    // Non-fatal: the setting just won't survive a reload.
+  }
+  return enabled;
 }
 
 const LASER_MODE_BORROWED_KEY = 'etch_laser_mode_borrowed';

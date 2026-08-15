@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { GUIDE_JIGGLE_PATTERN } from '../src/utils/webSerialManager';
 import {
   clampGuidePower,
   guidePowerToS,
@@ -62,5 +63,44 @@ describe('guidePowerToS', () => {
 
   it('carries the cap through, so no percentage reaches full power', () => {
     expect(guidePowerToS(500, 1000)).toBe((MAX_GUIDE_POWER_PCT / 100) * 1000);
+  });
+});
+
+/**
+ * The jiggle exists for controllers that only fire the laser while the head is
+ * moving. It runs continuously, for as long as the operator takes to line a
+ * corner up, at the exact moment they are deciding where work zero goes — so
+ * the one thing it must not do is move the point they are sighting. A pattern
+ * that did not sum to zero would walk the origin across the bed at 0.1 mm a
+ * cycle, several times a second, and the drift would be invisible: the dot
+ * stays under the operator's eye the whole way.
+ */
+describe('the guide spot jiggle', () => {
+  it('returns to its own centre every cycle', () => {
+    const net = GUIDE_JIGGLE_PATTERN.reduce(
+      (acc, [dx, dy]) => ({ x: acc.x + dx, y: acc.y + dy }),
+      { x: 0, y: 0 }
+    );
+    expect(net).toEqual({ x: 0, y: 0 });
+  });
+
+  it('never strays more than one step from the centre', () => {
+    // Excursion, not just the endpoint: a pattern that sums to zero by way of a
+    // 5 mm detour would satisfy the test above and be a visible sweep rather
+    // than a dot.
+    let x = 0;
+    let y = 0;
+    for (const [dx, dy] of GUIDE_JIGGLE_PATTERN) {
+      x += dx;
+      y += dy;
+      expect(Math.abs(x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(y)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('is a cross: it moves on one axis at a time', () => {
+    for (const [dx, dy] of GUIDE_JIGGLE_PATTERN) {
+      expect(dx === 0 || dy === 0).toBe(true);
+    }
   });
 });

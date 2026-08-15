@@ -364,8 +364,12 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           your controller's own full scale (<code>$30</code>), and the S word it works out to is
           shown next to it. Etch turns laser mode (<code>$32</code>) off while the spot is lit and
           back on the moment it goes out, because GRBL only energises the beam during a feed move
-          and a pointer is a head standing still. The spot switches itself off after two minutes,
-          and whenever a job starts. Wear your glasses: it is a low power, not a safe one.
+          and a pointer is a head standing still. If your dot still only appears while the head is
+          moving — some controllers gate the laser on motion below anything <code>$32</code> reaches
+          — tick <strong>Jiggle to stay lit</strong>, which traces a 0.1 mm cross around the spot to
+          keep it firing. The cross returns to its own centre, so the point you are sighting does
+          not creep. The spot switches itself off after two minutes, and whenever a job starts. Wear
+          your glasses: it is a low power, not a safe one.
         </Step>
         <Step title="3️⃣ Zero Z with the touch plate">
           Clip the probe lead to the tool, sit the plate on the stock's top face, park the tool a few

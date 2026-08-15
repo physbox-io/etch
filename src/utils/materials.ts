@@ -114,6 +114,22 @@ export interface LaserMaterial {
    */
   etchDoseJPerMm: number;
   /**
+   * Energy to blacken a solid area, in joules per mm² of surface.
+   *
+   * The companion to `etchDoseJPerMm` and not a restatement of it: a scored
+   * line is one pass over a strip about as wide as the beam, and a fill is a
+   * surface covered by many, so the quantity that decides how dark a fill comes
+   * out is per-area rather than per-mm-of-travel. Quoting it that way is what
+   * lets `deriveLaserFeeds` turn hatch pitch into speed, so that changing the
+   * pitch changes the resolution of a fill and not its exposure.
+   *
+   * Roughly `etchDoseJPerMm ÷ 0.2` — the pitch these were previously run at —
+   * trimmed by a fifth, which is where measured diode settings for a solid fill
+   * actually sit. A score wants to be seen from across the room; a fill only
+   * has to be even.
+   */
+  fillDoseJPerMm2: number;
+  /**
    * Energy to cut clean through, in joules per mm of travel *per mm of
    * thickness* — so 6 mm stock costs six times what 1 mm does.
    *
@@ -164,6 +180,7 @@ const MATERIALS: MaterialProfile[] = [
     laser: {
       note: 'Engraves evenly and dark, with no grain to fight. The charred edge wipes off; the smoke needs extraction.',
       etchDoseJPerMm: 0.25,
+      fillDoseJPerMm2: 1.0,
       cutDoseJPerMm2: 1.5,
       maxPowerFraction: 1,
       diodeFactor: 1.2,
@@ -179,6 +196,7 @@ const MATERIALS: MaterialProfile[] = [
     laser: {
       note: 'Fine for line work. Glue lines take the beam differently, so a large fill can band where a ply changes.',
       etchDoseJPerMm: 0.25,
+      fillDoseJPerMm2: 1.0,
       // Glue resists the beam more than the plies do, so ply costs a little more
       // per millimetre than the solid wood it is made of.
       cutDoseJPerMm2: 1.4,
@@ -196,6 +214,7 @@ const MATERIALS: MaterialProfile[] = [
     laser: {
       note: 'High contrast for little power. Soft early grain burns deeper than the hard bands, so a photo fill comes out striped.',
       etchDoseJPerMm: 0.2,
+      fillDoseJPerMm2: 0.8,
       cutDoseJPerMm2: 1.2,
       maxPowerFraction: 1,
       diodeFactor: 1.1,
@@ -211,6 +230,7 @@ const MATERIALS: MaterialProfile[] = [
     laser: {
       note: 'The best wood here for detail and photo fills — dense, even grain and a clean dark mark.',
       etchDoseJPerMm: 0.3,
+      fillDoseJPerMm2: 1.2,
       cutDoseJPerMm2: 1.8,
       maxPowerFraction: 1,
       diodeFactor: 1.2,
@@ -229,6 +249,7 @@ const MATERIALS: MaterialProfile[] = [
         'Clear acrylic is transparent to a blue diode — the beam passes through and marks whatever is under it. ' +
         'A CO2 engraves it as it is; a diode needs the stock tinted, painted or masked.',
       etchDoseJPerMm: 0.3,
+      fillDoseJPerMm2: 1.2,
       // Acrylic vaporises rather than charring, so it parts for less energy than
       // wood of the same thickness and leaves a polished edge doing it.
       cutDoseJPerMm2: 1.0,
@@ -257,10 +278,28 @@ const MATERIALS: MaterialProfile[] = [
        * diode perfectly well. Refusing the common case to warn about the rare one
        * is the wrong way round.
        */
-      // Ablating an anodised layer is a surface job, not the heat-sinked fusing
-      // of a compound onto bare metal that the old 6.0 described — but the
-      // substrate still pulls heat away far faster than any of the woods do.
-      etchDoseJPerMm: 1.2,
+      /**
+       * Ablating an anodised layer is a surface job, not the heat-sinked fusing
+       * of a compound onto bare metal that the old 6.0 described.
+       *
+       * The first correction to that only went as far as 1.2, on the reasoning
+       * that the substrate still pulls heat away far faster than any of the
+       * woods do. That reasoning is about bulk conduction, and it is the wrong
+       * model for what is happening: the anodic layer is a few tens of microns
+       * of porous oxide, and removing it is a threshold process that is over
+       * before the metal underneath has taken the heat anywhere. The aluminium
+       * heatsink is why this stock cannot be engraved *deep* — it is not why it
+       * would cost more energy to mark.
+       *
+       * 1.2 put a 10 W diode at 357 mm/min and a 40 W tube at 2,000, against a
+       * material that in practice is one of the quickest things there is to
+       * mark. These figures put them at about 1,200 and 6,900, which is where
+       * measured settings for anodised stock actually sit. It is the largest
+       * single correction in this table and it was found the way these things
+       * are always found — a job that should have been minutes quoting 41.
+       */
+      etchDoseJPerMm: 0.35,
+      fillDoseJPerMm2: 1.8,
       cutDoseJPerMm2: null,
       maxPowerFraction: 1,
       // Blue is absorbed well by the dye in a dark anodised finish; a silver or
@@ -296,6 +335,7 @@ const MATERIALS: MaterialProfile[] = [
         'A blue diode passes straight through clear glass and does nothing to it. A CO2 frosts it directly; ' +
         'a diode only marks glass that has been painted or coated first.',
       etchDoseJPerMm: 0.25,
+      fillDoseJPerMm2: 1.0,
       cutDoseJPerMm2: null,
       /**
        * The one material here that is not run flat out.
@@ -321,6 +361,7 @@ const MATERIALS: MaterialProfile[] = [
         'Slate is about the easiest thing there is to engrave: no coating, no masking, and it marks pale grey at modest power. ' +
         'Marble is patchier — the mark follows the mineral rather than the artwork.',
       etchDoseJPerMm: 0.5,
+      fillDoseJPerMm2: 2.0,
       cutDoseJPerMm2: null,
       maxPowerFraction: 1,
       diodeFactor: 1.3,
@@ -342,6 +383,7 @@ const MATERIALS: MaterialProfile[] = [
       // Fusing titanium dioxide into a glaze is a firing, not a scorch — it
       // wants roughly four times what it takes to darken wood.
       etchDoseJPerMm: 1.0,
+      fillDoseJPerMm2: 4.0,
       cutDoseJPerMm2: null,
       maxPowerFraction: 1,
       diodeFactor: 1.5,

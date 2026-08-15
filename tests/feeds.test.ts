@@ -36,16 +36,35 @@ describe('deriveFeeds', () => {
   });
 
   it('turns the spindle down rather than starving the chip', () => {
-    // MDF with a 1/8" two-flute wants ~18,000 RPM, which at full chipload needs
-    // 3,600 mm/min — more than the gantry will hold. Feeding slower at 18,000
+    // MDF with a 6 mm two-flute wants ~13,100 RPM, which at full chipload needs
+    // ~4,360 mm/min — more than the gantry will hold. Feeding slower at 13,100
     // would thin the chip until the cutter rubs and burns, so the RPM drops
     // instead and the chipload is preserved.
-    const mdf = deriveFeeds(endMill(), 'mdf', SPINDLE)!;
-    expect(mdf.feed).toBeLessThanOrEqual(MAX_CUTTING_FEED_MM_MIN);
-    expect(mdf.rpm).toBeLessThan(18000);
+    //
+    // This was written against the 1/8" cutter, which used to saturate the cap
+    // as well. It no longer does, and that is the point of raising the cap: the
+    // commonest tool in the app should be limited by the material rather than by
+    // a number in feeds.ts. The wide cutter is the case that genuinely binds.
+    const wide = findTool('cnc', 6)!;
+    const mdf = deriveFeeds(wide, 'mdf', SPINDLE)!;
+    expect(mdf.feed).toBe(MAX_CUTTING_FEED_MM_MIN);
+    expect(mdf.rpm).toBeLessThan(13000);
 
-    const chipload = mdf.feed / (mdf.rpm * 2);
-    expect(chipload).toBeCloseTo(findMaterial('mdf').chiploadAt3mm, 2);
+    /**
+     * The chip is still the one MDF asked for.
+     *
+     * Asserted against hardwood through the same cutter, which is not clamped:
+     * if the clamp had been taken out of the feed rather than the spindle, the
+     * two chiploads would no longer stand in the ratio the two materials do.
+     * Comparing to `chiploadAt3mm` directly cannot be the test — chipload rises
+     * with diameter, and this cutter is not the reference one.
+     */
+    const oak = deriveFeeds(wide, 'hardwood', SPINDLE)!;
+    const chipload = (r: { feed: number; rpm: number }) => r.feed / (r.rpm * 2);
+    expect(chipload(mdf) / chipload(oak)).toBeCloseTo(
+      findMaterial('mdf').chiploadAt3mm / findMaterial('hardwood').chiploadAt3mm,
+      1
+    );
   });
 
   it('never plunges faster than it cuts', () => {

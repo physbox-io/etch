@@ -6,6 +6,7 @@ import {
   DEFAULT_SPINDLE_PWM_MAX,
   clampGuidePower,
   guidePowerToS,
+  readGuideJiggle,
   readGuidePower,
   readLaserModeBorrowed,
   writeLaserModeBorrowed,
@@ -52,6 +53,47 @@ export interface ProbeGridOptions {
  * away does not leave a beam sitting on one spot of dry material.
  */
 const GUIDE_SPOT_TIMEOUT_MS = 120_000;
+
+/**
+ * The jiggle that holds the spot lit on a controller that gates its laser on
+ * motion. A cross, drawn from its own centre and back, so the net movement over
+ * a cycle is zero and the origin being sighted does not creep.
+ *
+ * Half a stroke at a time: out, back through the middle to the far side, then
+ * back to the middle. Six moves, one cross, no accumulated offset.
+ */
+export const GUIDE_JIGGLE_PATTERN: ReadonlyArray<readonly [number, number]> = [
+  [1, 0],
+  [-2, 0],
+  [1, 0],
+  [0, 1],
+  [0, -2],
+  [0, 1],
+];
+
+/**
+ * How far, in mm. Deliberately at or below the spot size of a focused diode:
+ * the point is to satisfy the controller's motion check, not to draw anything,
+ * and a movement the operator can see is a movement that spoils the sighting.
+ */
+const GUIDE_JIGGLE_STEP_MM = 0.1;
+
+/**
+ * How fast, in mm/min. Slow enough that each move lasts long enough to be worth
+ * lighting — at 100 mm/min a 0.1 mm move takes 60 ms — and slow enough that the
+ * head is genuinely in motion for most of the cycle rather than spending it
+ * accelerating and stopping.
+ */
+const GUIDE_JIGGLE_FEED_MM_MIN = 100;
+
+/**
+ * How long to wait for each `ok` before giving up on it and moving on.
+ *
+ * Short, unlike the 30 s a probing cycle wants: these are 60 ms moves, so a
+ * reply that has not come in two seconds means the machine is not listening,
+ * and the loop's own exit conditions are what should be deciding this.
+ */
+const GUIDE_JIGGLE_REPLY_TIMEOUT_MS = 2000;
 
 const INITIAL_STATUS: MachineStatus = {
   connected: false,
@@ -168,6 +210,9 @@ class WebSerialManager {
    * can be switched back on afterwards and nothing else has to know.
    */
   private guideSpotRestoreLaserMode = false;
+
+  /** Guard against two jiggle loops racing each other into the same buffer. */
+  private guideJiggleRunning = false;
 
   public subscribe(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
@@ -437,6 +482,64 @@ class WebSerialManager {
     await this.sendCommand(`M3 S${s}`);
     this.update({ guideSpot: true });
     this.armGuideSpotTimeout();
+    if (readGuideJiggle()) void this.runGuideJiggle();
+  }
+
+  /**
+   * Keeps the spot lit on a machine that only fires while moving, by tracing a
+   * cross a tenth of a millimetre across, over and over, centred on the point
+   * being sighted.
+   *
+   * `$32=0` is meant to make this unnecessary, and on many controllers it does.
+   * On others the PWM is gated on motion below the level any `$` setting
+   * reaches, and the dot blinks out the instant the head stops. Motion is then
+   * the only way to hold it, so the motion is made small enough to be no motion
+   * at all: ±0.1 mm is inside the beam's own spot size, so what the operator
+   * sees is a stationary dot, and the cross returns to its own centre every
+   * cycle rather than walking the origin across the bed.
+   *
+   * `G1` and not `$J`: a jog is not a feed move, and a controller that only
+   * lights the laser during feed moves will not light it for a jog either.
+   *
+   * `G91` is restored to `G90` at the end of every cycle, not once at the end of
+   * the loop. Relative mode left set is how a later positioning move gets
+   * interpreted as an offset and walks the head off the job, and this loop can
+   * stop at a disconnect, an alarm or a timeout — none of which run cleanup.
+   */
+  private async runGuideJiggle() {
+    if (this.guideJiggleRunning) return;
+    this.guideJiggleRunning = true;
+    try {
+      while (
+        this.status.guideSpot &&
+        this.status.connected &&
+        !this.status.jobRunning &&
+        this.status.state !== 'Alarm' &&
+        // Re-read per cycle rather than captured on entry, so unticking the box
+        // stops the movement without putting the beam out — which is the answer
+        // on a machine that turns out not to need it.
+        readGuideJiggle()
+      ) {
+        await this.sendAndWait('G91', GUIDE_JIGGLE_REPLY_TIMEOUT_MS);
+        for (const [dx, dy] of GUIDE_JIGGLE_PATTERN) {
+          // Checked per move rather than per cycle: this loop shares the serial
+          // channel with everything else, so how fast it notices it should stop
+          // is how long anything else has to wait to have the channel to itself.
+          if (!this.status.guideSpot || !this.status.connected) break;
+          await this.sendAndWait(
+            `G1 X${(dx * GUIDE_JIGGLE_STEP_MM).toFixed(3)} Y${(dy * GUIDE_JIGGLE_STEP_MM).toFixed(3)} ` +
+              `F${GUIDE_JIGGLE_FEED_MM_MIN}`,
+            GUIDE_JIGGLE_REPLY_TIMEOUT_MS
+          );
+        }
+        await this.sendAndWait('G90', GUIDE_JIGGLE_REPLY_TIMEOUT_MS);
+      }
+    } finally {
+      this.guideJiggleRunning = false;
+      // Whatever ended the loop, absolute mode is not optional. Cheap to assert
+      // twice; expensive exactly once, if the cycle above was cut short.
+      if (this.status.connected) void this.sendCommand('G90');
+    }
   }
 
   /** Puts the guide spot out. Safe to call when it was never lit. */
@@ -449,6 +552,13 @@ class WebSerialManager {
       this.guideSpotRestoreLaserMode = false;
       return;
     }
+    // The flag goes down *first*, and is what the jiggle loop watches. Sending
+    // M5 while that loop is still feeding moves in would put the tail of its
+    // cross on the far side of the beam going out — and, worse, leave its `G91`
+    // and the commands after it racing whatever runs next.
+    this.update({ guideSpot: false });
+    await this.awaitJiggleStopped();
+
     await this.sendCommand('M5');
     // S0 as well as M5, so the next `M3` in a hand-typed command or a program
     // header does not inherit the pointer's S word and fire at it.
@@ -458,7 +568,21 @@ class WebSerialManager {
     // leaving it off would be a far worse bug than the one it was turned off to
     // fix.
     this.restoreLaserMode();
-    this.update({ guideSpot: false });
+  }
+
+  /**
+   * Waits for the jiggle loop to finish whatever move it is in the middle of,
+   * so the caller has the serial link to itself.
+   *
+   * Capped rather than open-ended: a controller that has stopped answering
+   * would otherwise hold up switching the beam off, which is the one thing that
+   * must not be made to wait on anything.
+   */
+  private async awaitJiggleStopped(maxWaitMs = 1500) {
+    const deadline = Date.now() + maxWaitMs;
+    while (this.guideJiggleRunning && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 30));
+    }
   }
 
   /**
@@ -717,6 +841,23 @@ class WebSerialManager {
       return {
         started: false,
         message: 'The machine is in alarm. Home it, or unlock, before running a job.',
+      };
+    }
+    /**
+     * A jiggling guide spot has moves of its own in flight on the same serial
+     * link, and they would interleave with the program's opening lines and eat
+     * the `ok`s that pace it. So the spot is put out here and the job refused
+     * *this* time: the loop unwinds within a move or two, and pressing run again
+     * starts a job with the channel to itself.
+     *
+     * Refusing rather than waiting keeps `startJob` synchronous, which is what
+     * lets every caller report the outcome without having to be async.
+     */
+    if (this.guideJiggleRunning) {
+      void this.guideSpotOff();
+      return {
+        started: false,
+        message: 'The guide spot was still lit — it has been switched off. Press run again.',
       };
     }
 

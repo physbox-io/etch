@@ -50,13 +50,17 @@ describe('dose is what is actually being held constant', () => {
 
 describe('when the machine runs out of speed', () => {
   /**
-   * The laser twin of turning the spindle down. Scoring ply barely needs a 40 W
-   * tube, and the derivation cannot answer with 9,000 mm/min on a belt machine
-   * that rounds every corner past 6,000 — so it spends less power instead and
-   * keeps the dose where the material wants it.
+   * The laser twin of turning the spindle down. Scoring softwood barely needs an
+   * 80 W tube, and the derivation cannot answer with 24,000 mm/min on a belt
+   * machine that rounds every corner past 12,000 — so it spends less power
+   * instead and keeps the dose where the material wants it.
+   *
+   * Ply under a 40 W tube used to be the example and no longer clamps, which is
+   * the intent of raising the ceiling: a mainstream pairing should be limited by
+   * the beam rather than by a constant. It takes a big tube on light work now.
    */
   it('turns the power down rather than outrunning the gantry', () => {
-    const r = derive('plywood', 'etch', CO2_40W)!;
+    const r = derive('softwood', 'etch', { kind: 'co2', watts: 80 })!;
     expect(r.speed).toBe(MAX_LASER_SPEED_MM_MIN);
     expect(r.power).toBeLessThan(100);
     expect(r.notes.join(' ')).toMatch(/turned down/);
@@ -82,6 +86,28 @@ describe('when the machine runs out of speed', () => {
     expect(r.notes.length).toBe(0);
   });
 
+  /**
+   * The pass count is a rounded-up ratio, so the speed has to be scaled by it
+   * rather than dropped to the floor.
+   *
+   * Running every pass at the floor spends `passes × floor ÷ ideal` times the
+   * energy the material asked for. Hardwood at 6 mm under a 5 W diode is the
+   * shipped pairing where that was worst — it charred the kerf and took half
+   * again as long doing it.
+   */
+  it('splits into passes without over-dosing the material', () => {
+    const source = { kind: 'diode' as const, watts: 5 };
+    const r = derive('hardwood', 'cut', source, 6)!;
+    expect(r.passes).toBeGreaterThan(1);
+
+    // Total energy over all the passes is the dose the table asked for, not
+    // whatever fell out of the rounding.
+    const spec = findMaterial('hardwood').laser;
+    const wanted = spec.cutDoseJPerMm2! * 6 * spec.diodeFactor!;
+    const delivered = (r.passes * source.watts * 60) / r.speed;
+    expect(delivered).toBeCloseTo(wanted, 1);
+  });
+
   it('never emits a speed outside what the machine will hold', () => {
     for (const material of materialCatalog()) {
       for (const source of [CO2_40W, DIODE_10W, { kind: 'co2' as const, watts: 150 }]) {
@@ -96,6 +122,40 @@ describe('when the machine runs out of speed', () => {
         }
       }
     }
+  });
+});
+
+describe('a fill spends its dose over an area, not along a line', () => {
+  /**
+   * Pitch sets how many scanlines share each millimetre of surface, so it has
+   * to set the speed too. Before it did, tightening the pitch to get a smoother
+   * fill doubled the exposure as well as the line count — a fill twice as deep
+   * and twice as slow, from a control the operator reached for to change
+   * resolution.
+   */
+  it('holds exposure constant as the pitch changes', () => {
+    const coarse = deriveLaserFeeds(findMaterial('plywood'), 'fill', DIODE_10W, 3, 0.2)!;
+    const fine = deriveLaserFeeds(findMaterial('plywood'), 'fill', DIODE_10W, 3, 0.1)!;
+
+    // Half the pitch, twice the speed: each line is half as wide a strip of
+    // surface, so it gets half the joules.
+    expect(fine.speed).toBeCloseTo(coarse.speed * 2, 0);
+
+    // Which means the job takes the same time either way — twice the lines at
+    // twice the speed — and only the resolution changed.
+    const areaDose = (r: { speed: number }, pitch: number) => (10 * 60) / (r.speed * pitch);
+    expect(areaDose(fine, 0.1)).toBeCloseTo(areaDose(coarse, 0.2), 2);
+  });
+
+  /**
+   * Past the width a scanline actually marks, the lines are no longer sharing a
+   * surface — they are separate lines with bare stock between them, and each
+   * costs what its own strip costs rather than scaling on forever.
+   */
+  it('stops charging for pitch once the lines no longer touch', () => {
+    const wide = deriveLaserFeeds(findMaterial('plywood'), 'fill', DIODE_10W, 3, 0.8)!;
+    const atWidth = deriveLaserFeeds(findMaterial('plywood'), 'fill', DIODE_10W, 3, 0.2)!;
+    expect(wide.speed).toBe(atWidth.speed);
   });
 });
 

@@ -1,5 +1,6 @@
-import { findMaterial, type MaterialId, type MaterialProfile } from './materials';
+import { findMaterial, type LaserMaterial, type MaterialId, type MaterialProfile } from './materials';
 import { describeLaserSource, type LaserSource } from './machineSettings';
+import { DEFAULT_HATCH_SPACING } from './hatchFill';
 import { defaultFeedDiameter, type ToolProfile } from './tooling';
 
 /**
@@ -57,8 +58,15 @@ const REFERENCE_DIAMETER_MM = 3.175;
  * than this is better served by a wider tool than by a feed the machine will
  * not actually achieve — and if it silently did not achieve it, every chipload
  * calculated here would be wrong.
+ *
+ * 2,500 was low enough to be the binding constraint on the commonest job in the
+ * app — plywood with a two-flute 1/8" — which is the one case where this cap
+ * should never bind. Hitting it does not merely slow the job: the code below
+ * responds by turning the *spindle* down to hold chipload, so the machine ended
+ * up cutting at 15,600 RPM when the material wanted 18,000. 4,000 clears that
+ * pairing and is still inside what a rigid hobby gantry tracks in wood.
  */
-export const MAX_CUTTING_FEED_MM_MIN = 2500;
+export const MAX_CUTTING_FEED_MM_MIN = 4000;
 
 /** Slowest feed worth emitting; below this the cutter is rubbing and burning. */
 const MIN_CUTTING_FEED_MM_MIN = 60;
@@ -201,12 +209,30 @@ export function deriveFeeds(
  * more time turning round than marking. The floor is where a job stops being
  * slow and starts being a fire risk — a beam that dwells is a beam that ignites,
  * and the answer to needing more dose than this is another pass, not a crawl.
+ *
+ * The ceiling was 6,000 when the only machine in mind was a heavy CO2 gantry.
+ * A diode module is a few hundred grams on the same rail and the current crop
+ * of them are rated three to five times that; holding every machine to the
+ * slowest one meant a light engrave on a strong source was limited by a number
+ * in this file rather than by the beam or the belts. 12,000 is what a hobby
+ * gantry will actually hold a straight raster line at.
  */
-export const MAX_LASER_SPEED_MM_MIN = 6000;
+export const MAX_LASER_SPEED_MM_MIN = 12000;
 export const MIN_LASER_SPEED_MM_MIN = 120;
 
 /** Lowest power worth firing at: below this the beam is not reaching threshold. */
 const MIN_LASER_POWER_PERCENT = 2;
+
+/**
+ * How wide a strip of material one scanline of a fill actually marks, in mm.
+ *
+ * Not the optical spot, which is smaller on every machine here — it is the
+ * width the surface visibly changes over, which the heat spreading either side
+ * of the beam makes wider than the beam itself. It is the pitch at which a fill
+ * stops having gaps in it, and the only place it is used is deciding whether
+ * two adjacent scanlines share a surface or are separate lines.
+ */
+const FILL_LINE_WIDTH_MM = 0.2;
 
 /** How many times over one line before it is a bad plan rather than a slow one. */
 const MAX_LASER_PASSES = 12;
@@ -222,6 +248,31 @@ export interface LaserRecipe {
   summary: string;
   /** Where the derivation was compromised, or refused. Same contract as feeds. */
   notes: string[];
+}
+
+/**
+ * Energy per mm of one scanline in a fill, from the pitch it is hatched at.
+ *
+ * A fill used to be treated as "an engrave with more lines in it: same surface,
+ * same dose", and that is wrong in the way that matters. What decides how dark
+ * an engrave comes out is dose per unit *area*, and a fill spends it one
+ * scanline at a time — halving the pitch doubles the lines crossing every
+ * millimetre. Charging each line the same joules regardless meant a 0.1 mm fill
+ * burnt twice as deep as a 0.2 mm one and took twice as long doing it, so
+ * pitch, which the operator reaches for to change resolution, silently changed
+ * exposure as well. The shipped Cyberpunk badge has per-element pitch overrides
+ * of 0.5 and 0.8 that are that bug being worked around by hand.
+ *
+ * `FILL_LINE_WIDTH_MM` is where the areal model stops applying. A scanline
+ * spaced further from its neighbour than the strip it actually marks is not
+ * sharing a surface with it — the two are separate lines with bare stock
+ * between them — so past that point each one is charged for its own width and
+ * the pitch stops buying anything. Widening the pitch beyond it makes a job
+ * quicker by marking less of the material, which is the honest answer.
+ */
+function fillLineDose(spec: LaserMaterial, pitchMm: number): number {
+  const pitch = Math.max(0.01, pitchMm);
+  return spec.fillDoseJPerMm2 * Math.min(pitch, FILL_LINE_WIDTH_MM);
 }
 
 /**
@@ -242,7 +293,8 @@ export function deriveLaserFeeds(
   material: MaterialProfile,
   operation: 'cut' | 'etch' | 'fill',
   source: LaserSource,
-  stockThicknessMm: number
+  stockThicknessMm: number,
+  fillPitchMm: number = DEFAULT_HATCH_SPACING
 ): LaserRecipe | null {
   const spec = material.laser;
   const notes: string[] = [];
@@ -250,13 +302,14 @@ export function deriveLaserFeeds(
   if (source.kind === 'diode' && spec.diodeFactor === null) {
     return null;
   }
-  // A fill is an engrave with more lines in it: same surface, same dose.
   const cutting = operation === 'cut';
   const baseDose = cutting
     ? spec.cutDoseJPerMm2 === null
       ? null
       : spec.cutDoseJPerMm2 * Math.max(0.1, stockThicknessMm)
-    : spec.etchDoseJPerMm;
+    : operation === 'fill'
+      ? fillLineDose(spec, fillPitchMm)
+      : spec.etchDoseJPerMm;
   if (baseDose === null) return null;
 
   const dose = baseDose * (source.kind === 'diode' ? spec.diodeFactor! : 1);
@@ -308,7 +361,8 @@ export function deriveLaserFeeds(
       // rather than doubling the pass count for a fractional mm/min shortfall.
       speed = MIN_LASER_SPEED_MM_MIN;
     } else {
-      passes = Math.ceil(MIN_LASER_SPEED_MM_MIN / speed);
+      const singlePass = speed;
+      passes = Math.ceil(MIN_LASER_SPEED_MM_MIN / singlePass);
       if (passes > MAX_LASER_PASSES) {
         notes.push(
           `A ${describeLaserSource(source)} would need ${passes} passes to ${
@@ -317,13 +371,31 @@ export function deriveLaserFeeds(
             `Capped at ${MAX_LASER_PASSES} — expect it not to go through.`
         );
         passes = MAX_LASER_PASSES;
+        speed = MIN_LASER_SPEED_MM_MIN;
       } else {
+        /**
+         * Each pass runs at the single-pass speed *multiplied* by the pass
+         * count, not at the floor itself.
+         *
+         * Dose is the quantity being held, and the pass count came from
+         * rounding a ratio up — so running every pass at the floor delivers
+         * `passes × floor ÷ singlePass` times the energy the material asked
+         * for. That ratio is worst just above a whole number, and 3 mm ply
+         * under a 10 W diode lands almost exactly there: 59.5 mm/min rounds to
+         * 3 passes, and three passes at 120 put half again as much heat into
+         * the kerf as the cut needs. The result is a charred edge on a job that
+         * took half again as long to produce it.
+         *
+         * Multiplying lands the total dose exactly on the target, and can never
+         * fall below the floor — that is precisely what rounding the ratio up
+         * guarantees.
+         */
+        speed = Math.min(MAX_LASER_SPEED_MM_MIN, singlePass * passes);
         notes.push(
-          `One pass would need ${Math.round(speed)} mm/min, slow enough to char and to risk a flare-up. ` +
-            `Split into ${passes} passes at ${MIN_LASER_SPEED_MM_MIN} mm/min instead.`
+          `One pass would need ${Math.round(singlePass)} mm/min, slow enough to char and to risk a ` +
+            `flare-up. Split into ${passes} passes at ${Math.round(speed)} mm/min instead.`
         );
       }
-      speed = MIN_LASER_SPEED_MM_MIN;
     }
   }
 

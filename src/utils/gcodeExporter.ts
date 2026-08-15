@@ -525,6 +525,19 @@ export function planToolpath(
         }
 
         /**
+         * A laser fill is re-derived at the pitch it will actually be hatched
+         * at, rather than at the layer's default.
+         *
+         * See `fillLineDose` in feeds.ts for why: exposure is per unit area and
+         * pitch decides how many lines share each millimetre of it, so a
+         * per-layer recipe applied to a per-element pitch burnt every override
+         * in the document at the wrong depth. The shipped Cyberpunk badge asks
+         * for 0.8 mm on one of its bars, which under the old model got a
+         * quarter of the energy that pitch needs and came out as faint stripes.
+         */
+        const fillCut = laserFillCutting(cut, layer, material, options, pitch);
+
+        /**
          * Hatch inside a boundary pulled in by half the groove the tool cuts.
          *
          * Scanlines run to the outline itself, so the cutter's far half hangs
@@ -549,7 +562,7 @@ export function planToolpath(
         fillGroup++;
         for (const line of hatch) {
           segments.push(
-            makeSegment(layer, cut, options, {
+            makeSegment(layer, fillCut, options, {
               points: line.points,
               isClosed: false,
               // Hatch lines must stay in engraving order, so they all share a
@@ -720,6 +733,37 @@ interface LayerCutting {
   tabHeight: number;
   toolName: string;
   notes: string[];
+}
+
+/**
+ * The layer's cutting parameters with a laser fill's speed and power re-derived
+ * for the pitch this particular element is hatched at.
+ *
+ * Returned unchanged for a router — a mill's feed comes from chipload, which
+ * stepover does not enter into — and unchanged when the beam has no recipe for
+ * the material, where the layer's stored numbers are all there is. The layer
+ * recipe has already reported any notes at the default pitch, so this one is
+ * read for its numbers only; repeating them per element would put the same
+ * sentence in the G-code header once for every filled shape.
+ */
+function laserFillCutting(
+  cut: LayerCutting,
+  layer: EtchLayer,
+  material: ReturnType<typeof findMaterial>,
+  options: GCodeOptions,
+  pitch: number
+): LayerCutting {
+  if (!options.laserMode || layer.operation !== 'fill') return cut;
+  const recipe = deriveLaserFeeds(material, 'fill', options.laser, 0, pitch);
+  if (!recipe) return cut;
+
+  const speed = layer.speedOverride ?? recipe.speed;
+  return {
+    ...cut,
+    speed,
+    power: layer.powerOverride ?? recipe.power,
+    plungeRate: speed,
+  };
 }
 
 function resolveLayerCutting(
