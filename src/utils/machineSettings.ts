@@ -70,7 +70,7 @@ export const SYNCED_MACHINE_PARAMETER_KEYS: readonly string[] = [
   SHIM_THICKNESS_KEY,
   // Literals from here down: these keys are declared further down the file, and
   // naming the consts would read them in their temporal dead zone.
-  'etch_laser_guide_power_s',
+  'etch_laser_guide_power_pct',
   'etch_spindle_min_rpm',
   'etch_spindle_max_rpm',
   'etch_laser_source',
@@ -116,45 +116,54 @@ export function writeShimThickness(value: number): number {
   return clamped;
 }
 
-const GUIDE_POWER_KEY = 'etch_laser_guide_power_s';
+const GUIDE_POWER_KEY = 'etch_laser_guide_power_pct';
 
 /**
- * S-word the laser is fired at when it is being used as a pointer rather than
- * a cutter — framing the job, or lighting the spot to set XY zero against.
+ * Power the laser is fired at when it is being used as a pointer rather than a
+ * cutter — framing the job, or lighting the spot to set XY zero against.
  *
- * There is no percentage to state it as: `$30` decides what full scale means,
- * and it is 1000 on a stock GRBL build and 255 on plenty of shipped diode
- * controllers. S5 is a quarter of a percent on the first and two percent on the
- * second, which is why this is adjustable at all — on a machine whose diode
- * does not reach threshold until a few percent, the spot at the default is
- * simply invisible, and an operator who cannot see the dot cannot zero to it.
+ * A **percentage of full scale**, not an S word. `$30` decides what full scale
+ * means and it is 1000 on a stock GRBL build, 255 on plenty of shipped diode
+ * controllers, and 100 on some: the same S word is three different powers
+ * across those, and a fixed one is either invisible or a burn depending on
+ * whose machine it lands on. `guideSpotOn` reads `$30` off the controller and
+ * converts.
  *
- * Start low and come up. A dot you can see on white card is nowhere near a dot
- * that marks it.
+ * One percent is a visible dot on most diodes. It was S5 out of an assumed
+ * 1000 — a twentieth of this — and on a real machine that turned out to be
+ * nothing at all, which is what moved the whole setting onto a scale that means
+ * something.
  */
-export const DEFAULT_GUIDE_POWER_S = 5;
+export const DEFAULT_GUIDE_POWER_PCT = 1;
 
 /**
  * The ceiling on that. This is a pointer, not a cut: the beam is parked in one
  * place with nothing moving, which is the one condition under which even a
- * modest diode sets scrap alight. The cap is what stops "I could not see it"
- * ending at S200 on a stationary head.
+ * modest diode sets scrap alight. Ten percent of a 10 W diode is a watt, which
+ * marks wood in the time it takes to line a corner up — high enough that no
+ * machine has an excuse for an invisible dot, low enough that the honest answer
+ * to "still cannot see it" is a fault, not a bigger number.
  */
-export const MAX_GUIDE_POWER_S = 30;
+export const MAX_GUIDE_POWER_PCT = 10;
+
+/** Full scale to assume when the controller has not told us its `$30` yet. */
+export const DEFAULT_SPINDLE_PWM_MAX = 1000;
 
 export function clampGuidePower(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return DEFAULT_GUIDE_POWER_S;
-  return Math.min(MAX_GUIDE_POWER_S, Math.round(value));
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_GUIDE_POWER_PCT;
+  // Tenths: the step between 0.1% and 0.2% is a real difference on a machine
+  // whose diode reaches threshold in that region.
+  return Math.min(MAX_GUIDE_POWER_PCT, Math.round(value * 10) / 10);
 }
 
 export function readGuidePower(): number {
   try {
     const raw = localStorage.getItem(GUIDE_POWER_KEY);
-    if (raw === null) return DEFAULT_GUIDE_POWER_S;
+    if (raw === null) return DEFAULT_GUIDE_POWER_PCT;
     const parsed = Number(raw);
-    return Number.isFinite(parsed) ? clampGuidePower(parsed) : DEFAULT_GUIDE_POWER_S;
+    return Number.isFinite(parsed) ? clampGuidePower(parsed) : DEFAULT_GUIDE_POWER_PCT;
   } catch {
-    return DEFAULT_GUIDE_POWER_S;
+    return DEFAULT_GUIDE_POWER_PCT;
   }
 }
 
@@ -167,6 +176,56 @@ export function writeGuidePower(value: number): number {
     // Non-fatal: the setting just won't survive a reload.
   }
   return clamped;
+}
+
+const LASER_MODE_BORROWED_KEY = 'etch_laser_mode_borrowed';
+
+/**
+ * A breadcrumb saying "`$32` was switched off to light a guide spot, and has
+ * not been switched back on yet".
+ *
+ * The guide spot turns laser mode off because GRBL will not fire a stationary
+ * head with it on, and every ordinary way out of that state puts it back. A tab
+ * closed with the spot lit is the one that cannot: the page is gone before it
+ * can send anything, and the setting lives in the controller's EEPROM, so it
+ * survives into the next session and the next job — which then burns a line
+ * through every rapid.
+ *
+ * So the intent is written down before the setting is changed, and acted on at
+ * the next connection. Deliberately *not* in `SYNCED_MACHINE_PARAMETER_KEYS`:
+ * it describes the controller on this bench right now, and restoring a setting
+ * on another machine on the strength of it would be changing a setting nobody
+ * touched.
+ */
+export function readLaserModeBorrowed(): boolean {
+  try {
+    return localStorage.getItem(LASER_MODE_BORROWED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeLaserModeBorrowed(borrowed: boolean): void {
+  try {
+    if (borrowed) localStorage.setItem(LASER_MODE_BORROWED_KEY, '1');
+    else localStorage.removeItem(LASER_MODE_BORROWED_KEY);
+  } catch {
+    // Non-fatal, but it does mean a tab closed mid-spot leaves `$32` off. The
+    // in-session restore paths still cover every other exit.
+  }
+}
+
+/**
+ * The S word for a pointer percentage on a controller whose full scale is
+ * `spindleMax`, floored at 1.
+ *
+ * The floor is the whole reason this is a function rather than a multiply:
+ * 0.5% of a `$30` of 100 rounds to zero, and S0 is a beam that never lights —
+ * indistinguishable, at the machine, from the button being broken.
+ */
+export function guidePowerToS(percent: number, spindleMax: number): number {
+  const scale = Number.isFinite(spindleMax) && spindleMax > 0 ? spindleMax : DEFAULT_SPINDLE_PWM_MAX;
+  return Math.max(1, Math.round((clampGuidePower(percent) / 100) * scale));
 }
 
 const SPINDLE_MIN_KEY = 'etch_spindle_min_rpm';

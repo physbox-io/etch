@@ -360,10 +360,12 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           pointer puts every job out by that offset, the same amount in the same direction every
           time. Press <strong>Guide Spot</strong> to fire the real beam at pointer power, put scrap
           under the head, and jog the <em>dot</em> onto the corner of your stock before zeroing.
-          Raise the S power beside the button until the dot is visible — full scale is whatever your
-          controller's <code>$30</code> is, so the same number is dim on one machine and clear on
-          another. It switches itself off after two minutes, and whenever a job starts. Wear your
-          glasses: it is a low power, not a safe one.
+          Raise the percentage beside the button until the dot is visible — it is a percentage of
+          your controller's own full scale (<code>$30</code>), and the S word it works out to is
+          shown next to it. Etch turns laser mode (<code>$32</code>) off while the spot is lit and
+          back on the moment it goes out, because GRBL only energises the beam during a feed move
+          and a pointer is a head standing still. The spot switches itself off after two minutes,
+          and whenever a job starts. Wear your glasses: it is a low power, not a safe one.
         </Step>
         <Step title="3️⃣ Zero Z with the touch plate">
           Clip the probe lead to the tool, sit the plate on the stock's top face, park the tool a few

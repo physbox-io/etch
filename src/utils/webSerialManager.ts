@@ -1,7 +1,15 @@
 import type { MachineStatus, BedProbeGrid, ProbePoint } from '../types/etch';
 import { postMachineTelemetry } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
-import { DEFAULT_PLATE_THICKNESS_MM, clampGuidePower, readGuidePower } from './machineSettings';
+import {
+  DEFAULT_PLATE_THICKNESS_MM,
+  DEFAULT_SPINDLE_PWM_MAX,
+  clampGuidePower,
+  guidePowerToS,
+  readGuidePower,
+  readLaserModeBorrowed,
+  writeLaserModeBorrowed,
+} from './machineSettings';
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
 
 type StatusListener = (status: MachineStatus) => void;
@@ -143,6 +151,24 @@ class WebSerialManager {
   /** Deadline for the guide spot, so a lit beam cannot be walked away from. */
   private guideSpotTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * The controller's own `$` settings, as reported by `$$`.
+   *
+   * Two of them decide whether a guide spot is even possible, and neither can
+   * be assumed: `$30` is full-scale S (1000, 255 and 100 are all shipped
+   * defaults, and the same S word means three different powers across them) and
+   * `$32` is laser mode, which suppresses the beam whenever the machine is not
+   * in a feed move — including when it is standing still, which is exactly what
+   * a pointer is.
+   */
+  private grblSettings = new Map<number, number>();
+
+  /**
+   * Set while the guide spot has laser mode switched off underneath it, so it
+   * can be switched back on afterwards and nothing else has to know.
+   */
+  private guideSpotRestoreLaserMode = false;
+
   public subscribe(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
     listener({ ...this.status });
@@ -223,6 +249,11 @@ class WebSerialManager {
         portName: 'USB Machine',
         lastError: undefined,
       });
+      // Ask the controller what it is set to. Nothing blocks on the reply — the
+      // settings are read opportunistically and every caller has a fallback —
+      // but asking once here means the guide spot knows this machine's full
+      // scale before anyone presses the button.
+      void this.sendCommand('$$');
       return true;
     } catch (err: any) {
       // The port picker being dismissed lands here too, which is not an error
@@ -277,6 +308,10 @@ class WebSerialManager {
     // the next connection would reference a heightmap to a point on a different
     // setup entirely.
     this.zDatumMachineXY = null;
+    // The settings described the controller that just went away, and the next
+    // one plugged in may be a different machine entirely.
+    this.grblSettings.clear();
+    this.guideSpotRestoreLaserMode = false;
     this.workOffset = [0, 0, 0];
     this.status = { ...INITIAL_STATUS };
     this.notify();
@@ -362,9 +397,44 @@ class WebSerialManager {
       this.update({ lastError: 'Cannot light the guide spot while a job is running.' });
       return;
     }
-    // Clamped here as well as in the UI: this is a public method, and the cap is
-    // a safety property of the beam rather than of the number box.
-    await this.sendCommand(`M3 S${clampGuidePower(power)}`);
+    // GRBL refuses everything in alarm, `M3` included, and refuses it *quietly*
+    // as far as the operator is concerned — the beam simply never appears, which
+    // reads as a broken button rather than as a machine that needs unlocking.
+    if (this.status.state === 'Alarm') {
+      this.update({
+        lastError: 'The machine is in alarm and will refuse to fire. Home it, or unlock ($X), first.',
+      });
+      return;
+    }
+
+    /**
+     * Laser mode has to come off for a spot to exist at all.
+     *
+     * With `$32=1` GRBL only energises the laser during a G1/G2/G3 feed move,
+     * and turns it off everywhere else — rapids, and standing still. That is
+     * the right behaviour for cutting and it is exactly wrong for a pointer: the
+     * head is stationary by definition. `M3 S<n>` is accepted, answers `ok`, and
+     * produces no light, which is what a first attempt at this looked like on a
+     * real machine.
+     *
+     * So laser mode goes off for as long as the spot is lit and is restored the
+     * moment it goes out. `$32` is only accepted in Idle, which the state check
+     * above has already established.
+     */
+    if (this.laserModeEnabled() && !this.guideSpotRestoreLaserMode) {
+      // Written down before the setting is changed, not after: the case this
+      // covers is the page disappearing between the two.
+      writeLaserModeBorrowed(true);
+      await this.sendCommand('$32=0');
+      this.grblSettings.set(32, 0);
+      this.guideSpotRestoreLaserMode = true;
+    }
+
+    // Clamped and scaled here as well as in the UI: this is a public method, the
+    // cap is a safety property of the beam rather than of the number box, and
+    // the percentage means nothing until it is against this machine's `$30`.
+    const s = guidePowerToS(clampGuidePower(power), this.spindlePwmMax());
+    await this.sendCommand(`M3 S${s}`);
     this.update({ guideSpot: true });
     this.armGuideSpotTimeout();
   }
@@ -376,13 +446,60 @@ class WebSerialManager {
       // Nothing to send to, but the flag must not survive: the beam is out
       // because the machine is gone.
       if (this.status.guideSpot) this.update({ guideSpot: false });
+      this.guideSpotRestoreLaserMode = false;
       return;
     }
     await this.sendCommand('M5');
     // S0 as well as M5, so the next `M3` in a hand-typed command or a program
     // header does not inherit the pointer's S word and fire at it.
     await this.sendCommand('S0');
+    // Laser mode back on before anything else can run. A job streamed with
+    // `$32=0` still cuts, but it burns through every rapid on the way, so
+    // leaving it off would be a far worse bug than the one it was turned off to
+    // fix.
+    this.restoreLaserMode();
     this.update({ guideSpot: false });
+  }
+
+  /**
+   * Puts `$32` back if the guide spot borrowed it, without the `M5`/`S0` of a
+   * full `guideSpotOff`.
+   *
+   * For the paths that have already killed output by other means — a job's own
+   * header, a soft reset — where what still has to happen is restoring laser
+   * mode, and where restoring it *late* would mean a job streaming with the
+   * beam burning through its rapids.
+   */
+  private restoreLaserMode() {
+    if (!this.guideSpotRestoreLaserMode) return;
+    this.guideSpotRestoreLaserMode = false;
+    this.grblSettings.set(32, 1);
+    writeLaserModeBorrowed(false);
+    void this.sendCommand('$32=1');
+  }
+
+  /** Full-scale S for this controller — `$30`, or the usual 1000 if unasked. */
+  private spindlePwmMax(): number {
+    return this.grblSettings.get(30) ?? DEFAULT_SPINDLE_PWM_MAX;
+  }
+
+  /**
+   * What a pointer percentage comes out as in S words on this machine, so the
+   * UI can show the number that actually goes down the wire. An operator
+   * comparing settings against LightBurn or a forum post is comparing S words,
+   * and a percentage alone is not translatable without `$30`.
+   */
+  public guidePowerAsS(percent: number): number {
+    return guidePowerToS(percent, this.spindlePwmMax());
+  }
+
+  /**
+   * Whether `$32` laser mode is on. Unknown counts as off: turning it back on
+   * afterwards on a machine that never had it would be changing a setting the
+   * operator did not ask us to touch.
+   */
+  private laserModeEnabled(): boolean {
+    return this.grblSettings.get(32) === 1;
   }
 
   private armGuideSpotTimeout() {
@@ -498,6 +615,11 @@ class WebSerialManager {
     this.gcodeQueue = [];
     this.queueIndex = 0;
     this.clearGuideSpotTimeout();
+    // Ordered before the reset so it is delivered to a controller that is still
+    // listening: `$32` lives in EEPROM and survives the reset, so a spot lit at
+    // the moment of an E-stop would otherwise leave laser mode off for whatever
+    // is run next.
+    this.restoreLaserMode();
     await this.writeRealtime('\x18'); // Ctrl-X soft reset, acted on immediately
     await this.sendCommand('M5');
     this.failPendingWaiters();
@@ -528,9 +650,11 @@ class WebSerialManager {
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     opts: { laserMode?: boolean; guidePower?: number; safeZ?: number } = {}
   ) {
-    // The framing power and the guide spot's are the same setting: both are the
-    // beam being used as a pointer, and a machine whose diode needs S12 to show
-    // a visible dot needs it for both. It used to be a hardcoded 5 here.
+    // The framing power and the guide spot's are the same setting — both are the
+    // beam being used as a pointer, and a machine that needs 2% to show a
+    // visible dot needs it for both. A **percentage**, like the setting it comes
+    // from: this used to be a hardcoded `5` emitted as a raw S word, which is
+    // half a percent on a `$30` of 1000 and five percent on a `$30` of 100.
     const { laserMode = true, guidePower = readGuidePower(), safeZ = 5 } = opts;
     const { minX, minY, maxX, maxY } = bounds;
     const corners: Array<[number, number]> = [
@@ -551,7 +675,7 @@ class WebSerialManager {
     await this.sendCommand(`G0 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
 
     if (laserMode) {
-      await this.sendCommand(`M3 S${Math.round(guidePower)}`);
+      await this.sendCommand(`M3 S${guidePowerToS(guidePower, this.spindlePwmMax())}`);
       for (const [x, y] of corners) {
         await this.sendCommand(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
       }
@@ -612,6 +736,10 @@ class WebSerialManager {
     // own power word.
     this.clearGuideSpotTimeout();
     if (this.status.guideSpot) this.sendCommand('M5');
+    // Laser mode back on *before* the first line goes out. A program streamed
+    // with `$32=0` cuts correctly and burns a line through every rapid on the
+    // way between contours.
+    this.restoreLaserMode();
     // Kept for the tool-change prompt: a T-number alone tells the operator
     // nothing about which bit to reach for, and only the document knows what T3
     // is. Laser jobs never raise one — that machine has no tools to change.
@@ -1148,6 +1276,27 @@ class WebSerialManager {
     if (line.startsWith('<') && line.endsWith('>')) {
       this.parseStatusReport(line.slice(1, -1));
       return;
+    }
+
+    // A `$$` dump, one setting per line: `$30=1000`. Kept because the guide
+    // spot has to know full-scale S and whether laser mode is suppressing a
+    // stationary beam — both unknowable from anything else the machine says.
+    const setting = /^\$(\d+)\s*=\s*(-?[\d.]+)/.exec(line);
+    if (setting) {
+      const number = Number(setting[1]);
+      const value = Number(setting[2]);
+      if (Number.isFinite(value)) this.grblSettings.set(number, value);
+      // Laser mode found off, with a note from a previous session saying we are
+      // the ones who turned it off — a tab closed while a guide spot was lit.
+      // The controller kept the setting in EEPROM, so this is the first chance
+      // anything has had to put it back, and the next job is what it would
+      // otherwise ruin.
+      if (number === 32 && value === 0 && readLaserModeBorrowed()) {
+        this.guideSpotRestoreLaserMode = true;
+        this.restoreLaserMode();
+      }
+      // No `return`: a `$$` line is followed by its own `ok`, and the waiter
+      // logic below is what pairs that up.
     }
 
     // Probe result: [PRB:0.000,0.000,-12.345:1] — where the probe triggered,

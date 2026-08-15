@@ -30,7 +30,7 @@ import {
   MAX_SHIM_THICKNESS_MM,
   readGuidePower,
   writeGuidePower,
-  MAX_GUIDE_POWER_S,
+  MAX_GUIDE_POWER_PCT,
 } from '../utils/machineSettings';
 import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
@@ -552,9 +552,9 @@ export const MachineWorkOriginPanel: React.FC<{
               <div className="flex items-center gap-1.5">
                 <input
                   type="number"
-                  min={1}
-                  max={MAX_GUIDE_POWER_S}
-                  step={1}
+                  min={0.1}
+                  max={MAX_GUIDE_POWER_PCT}
+                  step={0.1}
                   value={guidePower}
                   onChange={(e) => {
                     const next = writeGuidePower(parseFloat(e.target.value) || 0);
@@ -564,11 +564,14 @@ export const MachineWorkOriginPanel: React.FC<{
                     // a toggle-off-edit-toggle-on cycle.
                     if (status.guideSpot) webSerialManager.guideSpotOn(next);
                   }}
-                  title={`Pointer power as an S word, capped at ${MAX_GUIDE_POWER_S}. Full scale is whatever $30 says — usually 1000, sometimes 255 — so raise this until the dot is visible on scrap. Also used for Frame Job. Remembered between sessions.`}
+                  title={`Pointer power, as a percentage of your controller's full scale ($30). Capped at ${MAX_GUIDE_POWER_PCT}%. Also used for Frame Job. Remembered between sessions.`}
                   className={`w-16 ${numInput}`}
                 />
+                {/* The S word as well as the percentage: it is what actually
+                    goes down the wire, and it is the number every other laser
+                    tool and forum post is quoted in. */}
                 <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">
-                  S power
+                  % power (S{webSerialManager.guidePowerAsS(guidePower)})
                 </span>
               </div>
             </div>
@@ -577,8 +580,10 @@ export const MachineWorkOriginPanel: React.FC<{
             <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug max-w-md">
               Wear your glasses, put scrap under the head, and jog the <em>dot</em> onto the corner of
               the stock before zeroing — not the head, and not a red pointer diode, which sits off to
-              one side of the beam. Raise the power until you can see it; it goes out on its own after
-              two minutes.
+              one side of the beam. Raise the percentage until you can see it. Laser mode
+              (<code>$32</code>) is switched off for as long as the spot is lit and back on the moment
+              it goes out, because GRBL will not fire a stationary head with it on. The spot times out
+              after two minutes on its own.
             </p>
           )}
 
