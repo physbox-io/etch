@@ -296,3 +296,228 @@ describe('the pitch default', () => {
     expect(DEFAULT_SHADE_PITCH_MM).toBeLessThanOrEqual(0.3);
   });
 });
+
+/**
+ * How many depths a picture is machined at, and what decides it.
+ *
+ * The picture does. Intensity is the stored byte against 255 and Z is that
+ * fraction of the layer's depth, so black is the full depth, a mid grey is half
+ * of it, and white is not a depth at all — the cutter stays up. Nothing in the
+ * planner rounds tone into bands of its own: the only floor is `TONE_STEP`,
+ * which decides when a change of shade is worth a fresh move, and it sits at
+ * the resolution the bytes are stored at so it can never land above a real one.
+ *
+ * The one thing that does *not* follow is "four tones give four depths". The
+ * sampler is bilinear, so between two pixels it reads every value in between,
+ * and four columns of grey come out as a ramp rather than as four terraces.
+ * That is deliberate and predates this: nearest-neighbour sampling of a 300 px
+ * photo at a 0.25 mm pitch turns every pixel boundary into a step the machine
+ * is quite capable of cutting.
+ */
+describe('depth follows the picture’s own tones', () => {
+  /** `bands` vertical stripes, evenly spaced from black to white. */
+  function bandedImage(bands: number): EtchElement {
+    const px = new Uint8Array(bands * 2);
+    for (let x = 0; x < bands; x++) {
+      const v = Math.round((x / (bands - 1)) * 255);
+      px[x] = v;
+      px[bands + x] = v;
+    }
+    return {
+      ...rampImage(),
+      w: bands * 10,
+      h: 20,
+      imageGray: encodeGray(px),
+      imgW: bands,
+      imgH: 2,
+      hatchSpacing: 4,
+      hatchAngle: 0,
+    } as EtchElement;
+  }
+
+  /** Every distinct cutting depth in the job, deepest first. */
+  function cutDepths(el: EtchElement, zDepth: number): number[] {
+    clearGeomBBoxCache();
+    const doc = docWith(el, shadeLayer({ zDepth, passes: 1 }), 'cnc');
+    const plan = planToolpath(doc);
+    const { moves } = planMoves(plan.segments, {
+      laserMode: false,
+      travelSpeed: 3000,
+      safeZ: 5,
+      toolChanges: new Map(),
+    } as never);
+    const seen = new Set<number>();
+    for (const m of moves) {
+      if (m.kind === 'cut') seen.add(Math.round(m.z1 * 1000) / 1000);
+    }
+    return [...seen].sort((a, b) => a - b);
+  }
+
+  it('takes black to the layer’s depth and a mid grey to half of it', () => {
+    const depths = cutDepths(bandedImage(4), 4);
+    expect(Math.min(...depths)).toBeCloseTo(-4, 2);
+    expect(depths.some((z) => Math.abs(z - -2) < 0.02)).toBe(true);
+    // Nothing is ever cut above the surface or below the layer's depth.
+    expect(depths.every((z) => z <= 0 && z >= -4.001)).toBe(true);
+  });
+
+  it('gets finer as the picture does, without changing the deepest cut', () => {
+    // The same range of tone, sixteen steps instead of four: more tones buy
+    // resolution, not depth.
+    const coarse = cutDepths(bandedImage(4), 4);
+    const fine = cutDepths(bandedImage(16), 4);
+    expect(fine.length).toBeGreaterThan(coarse.length);
+    expect(Math.min(...fine)).toBeCloseTo(-4, 2);
+  });
+
+  it('never bands the depth more coarsely than the tone step', () => {
+    // The gaps between neighbouring depths are the sampled tone, not a
+    // quantisation the planner imposed: at 4 mm, a 255th of full scale is
+    // 0.016 mm, and no gap should be a large multiple of that.
+    const depths = cutDepths(bandedImage(16), 4);
+    const gaps = depths.slice(1).map((z, i) => z - depths[i]);
+    expect(Math.min(...gaps)).toBeLessThan(0.1);
+  });
+
+  it('scales the whole picture when the layer depth changes', () => {
+    const shallow = cutDepths(bandedImage(4), 1);
+    expect(Math.min(...shallow)).toBeCloseTo(-1, 2);
+    expect(shallow.some((z) => Math.abs(z - -0.5) < 0.02)).toBe(true);
+  });
+});
+
+/**
+ * Roughing a relief with a second tool.
+ *
+ * The finishing cutter for a modelled surface is a ball nose, and a ball nose
+ * is a poor clearing tool: it cuts on the tip, takes a shallow stepover, and
+ * spends most of a deep relief hogging ground it is not shaped for. The layer
+ * can name a bigger cutter to clear it first, which is a tool change and three
+ * times less time.
+ */
+describe('roughing pass', () => {
+  const relief = () => ({
+    ...rampImage(),
+    w: 40,
+    h: 40,
+    hatchSpacing: 0.6,
+  }) as EtchElement;
+
+  const plan = (over: Partial<EtchLayer>) => {
+    clearGeomBBoxCache();
+    return planToolpath(
+      docWith(relief(), shadeLayer({ zDepth: 6, tool: 5, ...over }), 'cnc')
+    );
+  };
+
+  it('does nothing unless the layer asks for it', () => {
+    const segs = plan({}).segments;
+    expect(new Set(segs.map((s) => s.tool))).toEqual(new Set([5]));
+  });
+
+  it('clears with the rougher, then finishes in a single pass', () => {
+    const { segments, notes } = plan({ roughTool: 6, roughLeaveMm: 0.5 });
+    const rough = segments.filter((s) => s.tool === 6);
+    const finish = segments.filter((s) => s.tool === 5);
+    expect(rough.length).toBeGreaterThan(0);
+    expect(finish.length).toBeGreaterThan(0);
+
+    // The rougher steps down; the finisher does not have to, because what is
+    // in front of it is a 0.5 mm skin rather than the whole relief.
+    expect(rough[0].passes).toBeGreaterThan(1);
+    expect(finish[0].passes).toBe(1);
+
+    // And it sweeps at its own stepover, which is why it is quicker.
+    expect(rough[0].shadePitch!).toBeGreaterThan(finish[0].shadePitch!);
+    expect(notes.some((n) => /roughed with/.test(n))).toBe(true);
+  });
+
+  it('leaves the finisher exactly the skin it was promised', () => {
+    const leave = 0.5;
+    const { segments } = plan({ roughTool: 6, roughLeaveMm: leave });
+    const deepestRough = Math.min(...segments.filter((s) => s.tool === 6).map((s) => Math.min(...s.depths)));
+    const deepestFinish = Math.min(...segments.filter((s) => s.tool === 5).map((s) => Math.min(...s.depths)));
+    expect(deepestRough - deepestFinish).toBeCloseTo(leave, 5);
+  });
+
+  it('does not rough a relief shallower than the skin it would leave', () => {
+    // Nothing to clear: the finisher takes the whole thing in one pass anyway,
+    // and a tool change to remove nothing is worse than no roughing at all.
+    const { segments } = plan({ zDepth: 0.4, roughTool: 6, roughLeaveMm: 0.5 });
+    expect(segments.every((s) => s.tool === 5)).toBe(true);
+  });
+
+  it('ignores a rougher that is the tool already in the spindle', () => {
+    const { segments } = plan({ tool: 5, roughTool: 5 });
+    expect(new Set(segments.map((s) => s.tool))).toEqual(new Set([5]));
+  });
+
+  it('says nothing about roughing on a laser, which has one head', () => {
+    clearGeomBBoxCache();
+    const { segments } = planToolpath(
+      docWith(relief(), shadeLayer({ roughTool: 6 }), 'laser')
+    );
+    expect(segments.every((s) => s.tool === (shadeLayer().tool ?? 1))).toBe(true);
+  });
+});
+
+/**
+ * Passes that only cut where there is still something to cut.
+ *
+ * Every pass used to run the whole picture. A relief's highlights reach their
+ * final depth on the first pass and then get dragged over on every pass after
+ * it, at cutting feed, rubbing ground already at depth — on a photograph with a
+ * light background that is most of the job.
+ */
+describe('skipping ground a pass has already reached', () => {
+  /** A deep disc in the middle of a shallow field, 60 x 60 mm. */
+  function subjectOnGround(): EtchElement {
+    const n = 60;
+    const px = new Uint8Array(n * n);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        px[y * n + x] = Math.hypot(x - n / 2, y - n / 2) < 10 ? 10 : 235;
+      }
+    }
+    return { ...rampImage(), w: 60, h: 60, imageGray: encodeGray(px), imgW: n, imgH: n, hatchSpacing: 1 } as EtchElement;
+  }
+
+  const moves = (machine: 'cnc' | 'laser') => {
+    clearGeomBBoxCache();
+    const doc = docWith(subjectOnGround(), shadeLayer({ zDepth: 8, tool: 5 }), machine);
+    const plan = planToolpath(doc);
+    return planMoves(plan.segments, {
+      laserMode: machine === 'laser',
+      travelSpeed: 3000,
+      safeZ: 5,
+      toolChanges: new Map(),
+    } as never).moves;
+  };
+
+  const cutLength = (ms: ReturnType<typeof moves>, pass: number) =>
+    ms
+      .filter((m) => m.kind === 'cut' && m.pass === pass)
+      .reduce((n, m) => n + Math.hypot(m.x2 - m.x1, m.y2 - m.y1), 0);
+
+  it('cuts the whole picture on the first pass and only the deep part after', () => {
+    const ms = moves('cnc');
+    const passes = Math.max(...ms.map((m) => m.pass));
+    expect(passes).toBeGreaterThan(2);
+    // The background reaches its final depth immediately; the disc does not.
+    expect(cutLength(ms, 2)).toBeLessThan(cutLength(ms, 1) / 2);
+    expect(cutLength(ms, passes)).toBeGreaterThan(0);
+  });
+
+  it('never leaves the deep part uncut', () => {
+    const ms = moves('cnc');
+    // Whatever is skipped, the last pass still reaches the picture's own depth.
+    const deepest = Math.min(...ms.filter((m) => m.kind === 'cut').map((m) => m.z2));
+    expect(deepest).toBeLessThan(-7);
+  });
+
+  it('leaves a laser alone: one pass, whole sweep, nothing to skip', () => {
+    const ms = moves('laser');
+    expect(new Set(ms.map((m) => m.pass))).toEqual(new Set([1]));
+    expect(ms.some((m) => m.kind === 'cut' && m.power > 0)).toBe(true);
+  });
+});

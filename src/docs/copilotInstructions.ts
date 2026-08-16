@@ -1,6 +1,7 @@
 import type { EtchDocument, EtchElement } from '../types/etch';
 import { getBedBBox } from '../utils/geom';
-import { DEFAULT_TOOL, describeTool, type MachineKind } from '../utils/tooling';
+import { DEFAULT_TOOL, describeTool, hasToolCatalog, toolCatalog, type MachineKind } from '../utils/tooling';
+import { CLIP_ART_CATEGORIES, CLIP_ART_LIBRARY } from '../utils/clipArtLibrary';
 import { findMaterial, DEFAULT_STOCK_THICKNESS_MM } from '../utils/materials';
 
 /**
@@ -22,9 +23,13 @@ is the document's width and height. The Y axis points DOWN, as in SVG: y=0 is
 the top edge of the stock.
 
 Layers carry the machining settings, and every element belongs to one:
-- "cut"  — cuts through the material. Use for outlines and holes.
-- "etch" — scores the surface at reduced power. Use for detail and decoration.
-- "fill" — engraves an area by hatching its interior.
+- "cut"   — cuts through the material. Use for outlines and holes.
+- "etch"  — scores the surface at reduced power. Use for detail and decoration.
+- "fill"  — engraves an area by hatching its interior.
+- "shade" — machines a greyscale picture as tone: darkness varies along the
+  move, rather than the shape being either cut or not. Only "image" elements
+  belong here, and an image on any other kind of layer is skipped entirely —
+  "cut this photo out" and "engrave it as tone" are different jobs.
 
 Each layer also names the tool it is machined with. Layers sharing a tool run
 together; where the tool changes the machine stops and waits for the operator,
@@ -53,6 +58,21 @@ Design for a real machine, not a screen:
 - An engraved area needs a closed boundary; a hatch fill of an open path is
   meaningless.
 
+What the app already has, so you do not draw from scratch what it can place:
+- A clip-art library of vector symbols, placed by id (listed below). They are
+  line art designed to be machined, so prefer one over your own attempt at the
+  same subject.
+- Vector text in any Google Font. Text is outlined automatically once it is
+  added; do not try to write letterforms as paths yourself.
+- A mandala / radial symmetry tool, and preset documents (keychain, coaster,
+  box-joint panel, gear set, desk sign, badge) the user can load themselves.
+- Raster image import, with four modes: "vector" (traced outline), "halftone"
+  (dot grid), "scanline" (engraved lines) and "shade" (greyscale tone on a
+  shade layer). You cannot create a photograph — you have no pixels to send —
+  so when the user asks for one, say which mode fits and point them at the
+  Import Image button. You *can* edit an image already on the bed: its size,
+  position, line pitch (hatchSpacing) and angle (hatchAngle) are all live.
+
 Reply with a short plain-language explanation of what you made and any
 machining caveats worth knowing, then exactly one fenced JSON code block. Keep
 the explanation to a few sentences — the user can see the result on the canvas.
@@ -64,7 +84,8 @@ Return new artwork as SVG:
 \`\`\`json
 {
   "svg": "<svg viewBox=\\"0 0 200 150\\" width=\\"200mm\\" height=\\"150mm\\">…</svg>",
-  "layerHint": "cut"
+  "layerHint": "cut",
+  "add": [{ "type": "symbol", "symbolId": "compass-rose", "layerId": "etch", "w": 40 }]
 }
 \`\`\`
 
@@ -76,6 +97,10 @@ Return new artwork as SVG:
 - Stroke colour picks the layer: #ef4444 red for cut, #3b82f6 blue for etch,
   #22c55e green for fill. Set fill="none" unless you mean a hatched region.
 - "layerHint" is optional and only used when a shape carries no stroke colour.
+- "add" is optional and takes the same element specs as the mutate contract
+  below. It is how you place clip art or text, which cannot be expressed as
+  importable SVG: <text> needs the font and <image> needs pixels, and both are
+  dropped on import. Send it alongside "svg", or on its own.
 - The artwork is added to the current document; it does not replace it.
 `.trim();
 
@@ -96,13 +121,38 @@ Return changes to existing elements:
   element's position on the bed in mm). Types: rect (w, h, optional rx),
   circle (r), ellipse (rx2, ry2), line (x2, y2 — the end point, relative to x/y),
   polygon (sides, outerRadius), star (pointsCount, innerRadius, outerRadius),
-  path (d — an SVG path string in local coordinates).
+  path (d — an SVG path string in local coordinates),
+  text (text, fontSize in mm, optional fontFamily — any Google Font; the
+  outline is generated for you),
+  symbol (symbolId from the clip-art list below, optional w for its size in mm
+  — the path data and scale are filled in for you, so send neither).
+  You cannot add an "image": it needs pixels, which only the Import Image
+  dialog has. Ask the user to import one.
 - "remove" deletes elements by id.
 - Common fields on any element: rotation (degrees), scaleX, scaleY,
   strokeColor, fillColor, machining ("outline" or "filled"), hatchAngle,
-  hatchSpacing.
+  hatchSpacing. On an existing "image" element, hatchSpacing is the line pitch
+  of the tone sweep and w/h its size on the material — both worth adjusting,
+  and a finer pitch costs proportionally more time.
 - Omit any of the three arrays you do not need. Do not invent ids.
 `.trim();
+
+/**
+ * The clip-art ids, grouped as the gallery groups them.
+ *
+ * Built from the library rather than written out, so a symbol added to the app
+ * is offerable by the copilot the same day — a hand-maintained list here would
+ * silently go stale and the copilot would keep drawing its own worse gear.
+ */
+const CLIP_ART_SECTION = [
+  'Clip art you can place by id (type "symbol", field "symbolId"):',
+  ...CLIP_ART_CATEGORIES.map((category) => {
+    const items = CLIP_ART_LIBRARY.filter((s) => s.category === category)
+      .map((s) => `${s.id} (${s.name})`)
+      .join(', ');
+    return `- ${category}: ${items}`;
+  }),
+].join('\n');
 
 /** A compact view of the document — ids, kinds, and where things are. */
 function describeElement(el: EtchElement): string {
@@ -112,6 +162,13 @@ function describeElement(el: EtchElement): string {
   const extras = [
     el.rotation ? `rotated ${el.rotation.toFixed(0)}°` : '',
     el.machining === 'filled' ? 'engrave-filled' : '',
+    // An image is the one element whose pixels are not describable here, so say
+    // what it is and what about it is adjustable — otherwise the copilot reads
+    // "image" as something it could have drawn and offers to redraw it.
+    el.type === 'image'
+      ? `greyscale picture, ${el.imgW ?? '?'}×${el.imgH ?? '?'} samples, tone pitch ${(el.hatchSpacing ?? 0).toFixed(2)}mm`
+      : '',
+    el.type === 'symbol' && el.symbolId ? `clip art "${el.symbolId}"` : '',
     el.visible === false ? 'hidden' : '',
   ].filter(Boolean);
   return `- ${el.id} "${el.name}" ${el.type} on layer ${el.layerId}, ${size} ${at}${
@@ -144,6 +201,20 @@ export function describeDocument(doc: EtchDocument, selectedIds: string[]): stri
   const elementLines = listed.map(describeElement).join('\n') || '(none)';
   const omitted = elements.length - listed.length;
 
+  /**
+   * The rack as the operator has it, not a generic one.
+   *
+   * The tool catalogue is editable, so advice to "use the 60° V-bit" is advice
+   * to stop the job and fit a tool this machine may not have. A laser's
+   * catalogue is intentionally empty, which is how "nothing to change" is
+   * expressed — so the section is omitted rather than printed blank.
+   */
+  const tools = hasToolCatalog(machine)
+    ? `Tools loaded on this machine:\n${toolCatalog(machine)
+        .map((t) => `- T${t.id} ${t.name}${t.diameter ? `, ${t.diameter}mm` : ''} (best for ${t.bestFor.join('/')})`)
+        .join('\n')}`
+    : '';
+
   const selection = selectedIds.length
     ? `Currently selected: ${selectedIds.join(', ')}`
     : 'Nothing is selected — the user means the document as a whole.';
@@ -158,10 +229,13 @@ export function describeDocument(doc: EtchDocument, selectedIds: string[]): stri
         ? ` Stock is ${doc.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM} mm thick.`
         : ''),
     `Layers:\n${layers}`,
+    tools,
     `Elements (${elements.length} total):\n${elementLines}` +
       (omitted > 0 ? `\n…and ${omitted} more, not listed. Work only with what is selected.` : ''),
     selection,
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 export function buildSystemPrompt(
@@ -175,9 +249,17 @@ export function buildSystemPrompt(
     return [
       SHARED_RULES,
       'Answer the question about this document, its machining settings, or how to cut it. Do not return a JSON block — this mode changes nothing.',
+      // Listed here too: "what clip art is there?" is a question this mode gets
+      // asked, and answering it from memory invents symbols that do not exist.
+      CLIP_ART_SECTION,
       context,
     ].join('\n\n');
   }
 
-  return [SHARED_RULES, mode === 'generate' ? GENERATE_CONTRACT : MUTATE_CONTRACT, context].join('\n\n');
+  return [
+    SHARED_RULES,
+    mode === 'generate' ? GENERATE_CONTRACT : MUTATE_CONTRACT,
+    CLIP_ART_SECTION,
+    context,
+  ].join('\n\n');
 }

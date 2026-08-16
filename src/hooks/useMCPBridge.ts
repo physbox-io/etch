@@ -4,6 +4,16 @@ import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
 import { generateGCode } from '../utils/gcodeExporter';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
+import { CLIP_ART_LIBRARY, buildSymbolElement } from '../utils/clipArtLibrary';
+import {
+  DEFAULT_IMAGE_OPTIONS,
+  loadImageElement,
+  processImageCanvas,
+  type ImageProcessOptions,
+} from '../utils/imageProcessor';
+import { planImageImport } from '../utils/imageImport';
+import { machineKind, toolCatalog } from '../utils/tooling';
+import { materialCatalog } from '../utils/materials';
 
 export function useMCPBridge() {
   useEffect(() => {
@@ -137,6 +147,28 @@ export function useMCPBridge() {
           const el = msg.element;
           if (!el) return { ok: false, error: 'element descriptor required' };
 
+          // A symbol named by id but sent without path data machines as
+          // nothing, which looks exactly like an add that worked. Fill it in
+          // from the library rather than making the caller know that a symbol
+          // is really a path plus a viewBox scale.
+          if (el.type === 'symbol' && el.symbolId && !el.d) {
+            const symbol = CLIP_ART_LIBRARY.find((s) => s.id === el.symbolId);
+            if (!symbol) return { ok: false, error: `Clip art '${el.symbolId}' not found` };
+            const built = buildSymbolElement(symbol, {
+              docWidth: store.document.width,
+              docHeight: store.document.height,
+              layerId: el.layerId || store.activeLayerId || store.document.layers[0]?.id,
+              strokeColor: el.strokeColor,
+              size: el.w ?? el.h,
+              x: el.x,
+              y: el.y,
+              rotation: el.rotation,
+              id: el.id,
+            });
+            store.addElement({ ...built, name: el.name || built.name });
+            return { ok: true, addedId: built.id };
+          }
+
           const fullEl = {
             id: el.id || `el_${Date.now()}`,
             name: el.name || 'Agent Element',
@@ -170,6 +202,142 @@ export function useMCPBridge() {
             ...(msg.options || {}),
           });
           return { ok: true, gcode };
+        }
+
+        case 'etch_list_clipart':
+        case 'LIST_CLIPART':
+          return {
+            ok: true,
+            clipart: CLIP_ART_LIBRARY.map((s) => ({
+              id: s.id,
+              name: s.name,
+              category: s.category,
+            })),
+          };
+
+        case 'etch_add_clipart':
+        case 'ADD_CLIPART': {
+          const symbol = CLIP_ART_LIBRARY.find((s) => s.id === msg.symbolId);
+          if (!symbol) return { ok: false, error: `Clip art '${msg.symbolId}' not found` };
+
+          const doc = store.document;
+          const layerId = doc.layers.some((l) => l.id === msg.layerId)
+            ? msg.layerId
+            : store.activeLayerId || doc.layers[0]?.id;
+          const el = buildSymbolElement(symbol, {
+            docWidth: doc.width,
+            docHeight: doc.height,
+            layerId,
+            strokeColor: doc.layers.find((l) => l.id === layerId)?.color,
+            size: msg.size,
+            x: msg.x,
+            y: msg.y,
+            rotation: msg.rotation,
+          });
+          store.addElement(el);
+          return { ok: true, addedId: el.id, sizeMm: el.w };
+        }
+
+        case 'etch_add_image':
+        case 'ADD_IMAGE': {
+          /**
+           * The four import modes, driven by an agent instead of the dialog.
+           *
+           * Bytes only: a remote URL drawn into a canvas taints it and
+           * `getImageData` then throws, so an http source would fail here in a
+           * way that looks like a broken image rather than a same-origin rule.
+           */
+          const raw: string = msg.image || msg.dataUrl || '';
+          if (!raw) return { ok: false, error: 'image (base64 or data: URL) is required' };
+          const src = raw.startsWith('data:') ? raw : `data:image/png;base64,${raw}`;
+
+          const doc = store.document;
+          let img: HTMLImageElement;
+          try {
+            img = await loadImageElement(src);
+          } catch {
+            return { ok: false, error: 'Could not decode that image. Send PNG or JPEG bytes.' };
+          }
+
+          // Size defaults to the aspect-preserving fit the dialog offers, so an
+          // agent that sends only bytes still gets something sensibly scaled to
+          // the stock rather than a 100×100 mm square of stretched picture.
+          const ratio = (img.naturalWidth || img.width || 1) / (img.naturalHeight || img.height || 1);
+          const fitW = Math.round(Math.min(doc.width * 0.6, 100));
+          const requested = (msg.options || {}) as Partial<ImageProcessOptions>;
+          const options: ImageProcessOptions = {
+            ...DEFAULT_IMAGE_OPTIONS,
+            targetWidth: fitW,
+            targetHeight: Math.max(1, Math.round(fitW / ratio)),
+            ...requested,
+          };
+          if (requested.targetWidth && !requested.targetHeight) {
+            options.targetHeight = Math.max(1, Math.round(requested.targetWidth / ratio));
+          } else if (requested.targetHeight && !requested.targetWidth) {
+            options.targetWidth = Math.max(1, Math.round(requested.targetHeight * ratio));
+          }
+
+          const layerId = doc.layers.some((l) => l.id === msg.layerId)
+            ? msg.layerId
+            : store.activeLayerId || doc.layers[0]?.id;
+          if (!layerId) return { ok: false, error: 'This document has no layers to import onto.' };
+
+          const { imageData } = processImageCanvas(img, options, 300);
+          const { element, newShadeLayer } = planImageImport(
+            doc,
+            imageData,
+            options,
+            layerId,
+            store.cncTools
+          );
+          if (!element) {
+            return {
+              ok: false,
+              error:
+                `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
+                `Raise the threshold or contrast, or set invert if the artwork is light on dark.`,
+            };
+          }
+
+          // The shade layer first: an image added to a document that has none
+          // would otherwise reference a layer that does not exist yet, and an
+          // element on a missing layer draws on the canvas but is never
+          // machined.
+          if (newShadeLayer) store.addLayer(newShadeLayer);
+          store.addElement(element);
+          return {
+            ok: true,
+            addedId: element.id,
+            mode: options.mode,
+            layerId: element.layerId,
+            createdShadeLayer: newShadeLayer?.id,
+            sizeMm: { width: options.targetWidth, height: options.targetHeight },
+          };
+        }
+
+        case 'etch_list_capabilities':
+        case 'LIST_CAPABILITIES': {
+          const machine = machineKind(store.document);
+          return {
+            ok: true,
+            machine,
+            // A laser's catalogue is deliberately empty — that is how "this
+            // machine has no tools to change" is expressed, not an error.
+            tools: toolCatalog(machine, store.cncTools).map((t) => ({
+              id: t.id,
+              name: t.name,
+              diameter: t.diameter,
+              bestFor: t.bestFor,
+            })),
+            materials: materialCatalog().map((m) => ({ id: m.id, name: m.name })),
+            layerOperations: ['cut', 'etch', 'fill', 'shade'],
+            imageModes: ['vector', 'halftone', 'scanline', 'shade'],
+            clipartCount: CLIP_ART_LIBRARY.length,
+            drawingTools: [
+              'select', 'freehand', 'grid-freehand', 'bezier', 'node-edit',
+              'line', 'rect', 'circle', 'polygon', 'star', 'text', 'mandala',
+            ],
+          };
         }
 
         default:

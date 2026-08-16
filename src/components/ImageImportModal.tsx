@@ -6,13 +6,11 @@ import {
   traceMarchingSquares,
   generateHalftoneCompoundPath,
   generateScanlinePaths,
-  grayFromImageData,
   DEFAULT_IMAGE_OPTIONS,
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
-import type { EtchElement, EtchLayer } from '../types/etch';
-import { encodeGray } from '../utils/rasterImage';
-import { machineKind, suggestTool } from '../utils/tooling';
+import { planImageImport } from '../utils/imageImport';
+import { machineKind } from '../utils/tooling';
 import {
   X,
   Upload,
@@ -251,15 +249,6 @@ export const ImageImportModal: React.FC = () => {
 
     try {
       const { imageData } = processImageCanvas(loadedImg, options, 300);
-      const scaleX = options.targetWidth / imageData.width;
-      const scaleY = options.targetHeight / imageData.height;
-
-      // Position in center of bed
-      const startX = Math.max(0, (doc.width - options.targetWidth) / 2);
-      const startY = Math.max(0, (doc.height - options.targetHeight) / 2);
-
-      const timestamp = Date.now();
-      let importedElement: EtchElement | null = null;
 
       /**
        * Belt and braces on the layer the artwork lands on.
@@ -277,142 +266,16 @@ export const ImageImportModal: React.FC = () => {
         return;
       }
 
-      /**
-       * A shaded image needs a shade layer, and makes one if the document has
-       * none.
-       *
-       * Not a nicety: the planner refuses to machine an image on any other kind
-       * of layer, because "cut this photograph out" and "engrave it as tone"
-       * are different jobs and only one of them is ever meant. The alternative
-       * to creating it is an import that lands somewhere the toolpath never
-       * looks — which is exactly the failure the target-layer code above exists
-       * to prevent.
-       */
-      const existingShade = doc.layers.find((l) => l.id === shadeTargetId);
-      const shadeLayer: EtchLayer =
-        existingShade ?? {
-          id: `layer_shade_${timestamp}`,
-          name: laserMode ? 'Photo Tone' : 'Carved Relief',
-          color: '#a855f7',
-          operation: 'shade',
-          visible: true,
-          locked: false,
-          // What black comes out at. The laser's numbers are re-derived from
-          // the material and the pitch at export; the depth is the one a router
-          // has no way to derive, so it is a shallow default rather than a
-          // guess at how deep this particular picture wants to be.
-          speed: 1500,
-          power: 80,
-          passes: 1,
-          zDepth: 1.5,
-          tool: suggestTool(machineKind(doc), 'etch', cncTools),
-        };
-
-      if (options.mode === 'vector') {
-        const paths = traceMarchingSquares(imageData, options, scaleX, scaleY);
-        const compoundD = paths.join(' ');
-        if (compoundD) {
-          importedElement = {
-            id: `img_vector_${timestamp}`,
-            name: `Image Vector Trace`,
-            type: 'path',
-            layerId,
-            x: startX,
-            y: startY,
-            d: compoundD,
-            rotation: 0,
-            scaleX: 1,
-            scaleY: 1,
-            opacity: 1,
-            strokeWidth: 0.2,
-            strokeColor: '#000000',
-            fillColor: 'none',
-            machining: 'outline',
-            visible: true,
-            locked: false,
-          };
-        }
-      } else if (options.mode === 'halftone') {
-        const { pathD } = generateHalftoneCompoundPath(imageData, options, scaleX, scaleY);
-        if (pathD) {
-          importedElement = {
-            id: `img_halftone_${timestamp}`,
-            name: `Image Halftone Grid`,
-            type: 'path',
-            layerId,
-            x: startX,
-            y: startY,
-            d: pathD,
-            rotation: 0,
-            scaleX: 1,
-            scaleY: 1,
-            opacity: 1,
-            strokeWidth: 0.2,
-            strokeColor: '#000000',
-            fillColor: '#000000',
-            machining: 'filled',
-            visible: true,
-            locked: false,
-          };
-        }
-      } else if (options.mode === 'shade') {
-        /**
-         * The pixels go in, not a path.
-         *
-         * Everything that decides how the picture is machined — pitch, angle,
-         * how deep black goes, contrast — is still a setting afterwards,
-         * because the element carries the greys rather than a toolpath baked
-         * out of them. That is the difference between this and the other three
-         * modes, and the reason the import is not the last chance to get it
-         * right.
-         */
-        importedElement = {
-          id: `img_shade_${timestamp}`,
-          name: 'Shaded Image',
-          type: 'image',
-          layerId: shadeLayer.id,
-          x: startX,
-          y: startY,
-          w: options.targetWidth,
-          h: options.targetHeight,
-          imageGray: encodeGray(grayFromImageData(imageData)),
-          imgW: imageData.width,
-          imgH: imageData.height,
-          hatchSpacing: options.shadePitch,
-          hatchAngle: 0,
-          rotation: 0,
-          scaleX: 1,
-          scaleY: 1,
-          opacity: 1,
-          strokeWidth: 0,
-          visible: true,
-          locked: false,
-        };
-      } else if (options.mode === 'scanline') {
-        const lines = generateScanlinePaths(imageData, options, scaleX, scaleY);
-        const compoundD = lines.join(' ');
-        if (compoundD) {
-          importedElement = {
-            id: `img_scanline_${timestamp}`,
-            name: `Image Engrave Scanlines`,
-            type: 'path',
-            layerId,
-            x: startX,
-            y: startY,
-            d: compoundD,
-            rotation: 0,
-            scaleX: 1,
-            scaleY: 1,
-            opacity: 1,
-            strokeWidth: 0.2,
-            strokeColor: '#000000',
-            fillColor: 'none',
-            machining: 'outline',
-            visible: true,
-            locked: false,
-          };
-        }
-      }
+      // Shared with the MCP bridge, so an agent-driven import produces exactly
+      // the same element — including the shade layer a shaded image needs and
+      // makes for itself when the document has none.
+      const { element, newShadeLayer } = planImageImport(
+        doc,
+        imageData,
+        options,
+        options.mode === 'shade' ? shadeTargetId || layerId : layerId,
+        cncTools
+      );
 
       /**
        * An image that traced to nothing closes the dialog with nothing to show
@@ -421,7 +284,7 @@ export const ImageImportModal: React.FC = () => {
        * threshold is what decides whether any pixel counts as dark at all — and
        * leave the dialog open so it can be turned.
        */
-      if (!importedElement) {
+      if (!element) {
         alert(
           `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
             `Raise the threshold (or the contrast) until the preview shows the outline you want, ` +
@@ -432,10 +295,9 @@ export const ImageImportModal: React.FC = () => {
 
       setDocument({
         ...doc,
-        layers:
-          options.mode === 'shade' && !existingShade ? [...doc.layers, shadeLayer] : doc.layers,
-        elements: [...doc.elements, importedElement],
-        selectedIds: [importedElement.id],
+        layers: newShadeLayer ? [...doc.layers, newShadeLayer] : doc.layers,
+        elements: [...doc.elements, element],
+        selectedIds: [element.id],
       });
 
       closeImageImport();

@@ -1166,6 +1166,59 @@ export const PropertiesSidebar: React.FC = () => {
                         ? profile.guidance
                         : 'Not in the catalogue. The job will still pause for it, but Etch cannot advise on it.'}
                     </p>
+
+                    {/* Roughing, offered only where it pays: a relief is the one
+                        operation whose finishing tool is a bad clearing tool. A
+                        cut is one lap of an outline and an etch removes almost
+                        nothing, so neither has ground for a second tool to
+                        clear. */}
+                    {layer.operation === 'shade' && (
+                      <div className="mt-2">
+                        <label className="block text-[9px] uppercase font-semibold text-slate-500 dark:text-slate-400">
+                          Rough first with
+                        </label>
+                        <select
+                          value={layer.roughTool ?? ''}
+                          onChange={(e) =>
+                            updateLayer(layer.id, {
+                              roughTool: e.target.value === '' ? undefined : Number(e.target.value),
+                            })
+                          }
+                          className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"
+                        >
+                          <option value="">No roughing pass — one tool</option>
+                          {tools
+                            .filter((t) => t.id !== tool)
+                            .map((t) => (
+                              <option key={t.id} value={t.id}>
+                                T{t.id} — {t.name}
+                              </option>
+                            ))}
+                        </select>
+                        {layer.roughTool != null && (
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <label className="text-[10px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                              Leave (mm)
+                            </label>
+                            <NumberInput
+                              step="0.1"
+                              min={0.05}
+                              fallbackOnBlur={0.5}
+                              value={layer.roughLeaveMm ?? 0.5}
+                              onChange={(val) => updateLayer(layer.id, { roughLeaveMm: val ?? 0.5 })}
+                              className={NUM_INPUT}
+                            />
+                          </div>
+                        )}
+                        <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                          {layer.roughTool == null
+                            ? 'A ball nose models a surface well and clears ground badly. A bigger cutter roughing first, and this one finishing in a single pass, is usually several times quicker.'
+                            : `Clears the ground at the rougher’s own stepover, then ${
+                                profile?.name ?? 'this tool'
+                              } finishes in one pass. Rough with a cutter narrow enough to reach the design’s tightest corner — anywhere it cannot, the finisher meets full material.`}
+                        </p>
+                      </div>
+                    )}
                     {warning && (
                       <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
                         <AlertTriangle className="w-3 h-3 mt-px flex-shrink-0" />

@@ -7,6 +7,7 @@ import {
   hasRaster,
   planShadeRuns,
   shadePointCount,
+  type ShadeRun,
 } from './rasterImage';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
@@ -118,6 +119,30 @@ const MAX_TAB_DEPTH_FRACTION = 0.6;
  */
 const SCORE_LINE_FRACTION = 0.25;
 
+/**
+ * How much board a relief has to leave under its deepest point, in mm.
+ *
+ * A shaded image is not a groove and the fraction above does not apply to it:
+ * it clears a whole field, so there is no line for the part to fold along, and
+ * a carving held to a quarter of the board is a carving with no depth in it —
+ * 2.2 mm of modelling in 10 mm of hardwood, which was the depth this preset
+ * shipped at until someone asked why. What a relief can actually get wrong is
+ * running out of board, so that is what is checked instead: three millimetres
+ * is enough to keep a tile stiff and enough to keep a hold-down screw in it.
+ */
+const RELIEF_FLOOR_MM = 3;
+
+/**
+ * What a roughing pass leaves for the finisher, in mm, when the layer does not
+ * say.
+ *
+ * Half a millimetre is a skin a ball nose takes in one pass without loading up,
+ * and thick enough to swallow the terracing the rougher's own stepdown leaves
+ * behind — the point of finishing is that none of the rougher's steps survive
+ * into the surface.
+ */
+const DEFAULT_ROUGH_LEAVE_MM = 0.5;
+
 /** The stock on the bed, and the two allowances the job may ask of it. */
 export interface StockSettings {
   thickness: number;
@@ -182,6 +207,9 @@ export function scoreLineRisk(doc: EtchDocument): ScoreLineRisk | null {
   let worst: ScoreLineRisk | null = null;
   for (const layer of doc.layers) {
     if (!layer.visible || layer.operation === 'cut') continue;
+    // A relief is area work, not a scored line, and is checked by
+    // `reliefFloorRisk` against what it leaves under itself instead.
+    if (layer.operation === 'shade') continue;
     // A layer nothing is drawn on cuts nothing, however deep it claims to go.
     if (!doc.elements.some((el) => el.layerId === layer.id && el.visible)) continue;
 
@@ -309,6 +337,15 @@ export interface GCodeSegment {
    * comes out at — the intensity scales them.
    */
   intensities?: number[];
+  /**
+   * Pitch between the sweeps of a shaded image, mm. Set alongside
+   * `intensities` and only there.
+   *
+   * The preview draws a sweep this wide, so a picture reads as continuous tone
+   * on screen exactly where it will come out as continuous tone on the material
+   * — and as stripes where the pitch is coarse enough to leave them.
+   */
+  shadePitch?: number;
 }
 
 /** Machining order by operation, regardless of where the layer sits in the list. */
@@ -538,7 +575,7 @@ export function planToolpath(
           continue;
         }
         fillGroup++;
-        const shade = planShadeSegments(el, layer, cut, options, material, fillGroup);
+        const shade = planShadeSegments(el, layer, cut, options, material, stock, fillGroup);
         segments.push(...shade.segments);
         notes.push(...shade.notes);
         continue;
@@ -1091,6 +1128,7 @@ function makeSegment(
     fillGroup?: number;
     tabs?: TabSpan[];
     intensities?: number[];
+    shadePitch?: number;
   }
 ): GCodeSegment {
   const tabs = geom.tabs ?? [];
@@ -1114,7 +1152,52 @@ function makeSegment(
     linkFrom: geom.linkFrom ?? null,
     fillGroup: geom.fillGroup ?? -1,
     points: geom.points,
-    ...(geom.intensities ? { intensities: geom.intensities } : {}),
+    ...(geom.intensities ? { intensities: geom.intensities, shadePitch: geom.shadePitch } : {}),
+  };
+}
+
+/**
+ * The roughing pass a shade layer asks for, or null if it asks for none.
+ *
+ * Null rather than a flag for every reason it might not happen: a laser has no
+ * second tool and no Z, the rougher has to be a different tool from the
+ * finisher to be worth a tool change, and there has to be more relief than the
+ * skin it would leave — a picture only half a millimetre deep is finished in one
+ * pass anyway, and roughing it would be a tool change to remove nothing.
+ */
+function roughingPlan(
+  layer: EtchLayer,
+  options: GCodeOptions,
+  material: ReturnType<typeof findMaterial>,
+  stock: StockSettings,
+  peak: number,
+  finish: LayerCutting
+): { cutting: LayerCutting; pitch: number; leave: number } | null {
+  if (options.laserMode || layer.roughTool == null) return null;
+  if (layer.roughTool === (layer.tool ?? DEFAULT_TOOL)) return null;
+
+  const leave = Math.max(0.05, layer.roughLeaveMm ?? DEFAULT_ROUGH_LEAVE_MM);
+  const reachable = finish.zDepth * peak;
+  if (reachable <= leave) return null;
+
+  const cutting = resolveLayerCutting(
+    { ...layer, tool: layer.roughTool, stepdownOverride: undefined },
+    'cnc',
+    material,
+    options.spindle,
+    options.laser,
+    stock,
+    options.customCncTools
+  );
+  const step = Math.abs(cutting.depths[0] ?? 0);
+  if (step <= 0) return null;
+
+  return {
+    // Stepped down to the roughed depth, not to the layer's: the skin the
+    // finisher takes is depth the rougher must not cut.
+    cutting: { ...cutting, depths: planPasses(reachable - leave, step).depths },
+    pitch: defaultPitch(cutting, false),
+    leave,
   };
 }
 
@@ -1132,6 +1215,7 @@ function planShadeSegments(
   cut: LayerCutting,
   options: GCodeOptions,
   material: ReturnType<typeof findMaterial>,
+  stock: StockSettings,
   fillGroup: number
 ): { segments: GCodeSegment[]; notes: string[] } {
   const notes: string[] = [];
@@ -1160,10 +1244,91 @@ function planShadeSegments(
     return { segments: [], notes };
   }
 
-  const segments = runs.map((run) =>
-    makeSegment(layer, shaded, options, {
+  /**
+   * The darkest tone anywhere in the picture, and with it the depth this image
+   * actually reaches.
+   *
+   * Loops rather than `Math.max(...intensities)`: a photograph's run holds tens
+   * of thousands of samples and spreading that into an argument list blows the
+   * stack.
+   */
+  let peak = 0;
+  for (const run of runs) {
+    for (const v of run.intensities) if (v > peak) peak = v;
+  }
+
+  /**
+   * Passes come from how deep the *picture* goes, not from the layer's depth.
+   *
+   * The layer's depth is the meaning of black — it is the scale the greys are
+   * read against, and setting it to the thickness of the board is the natural
+   * way to say "white is the surface and black is the back of it". But the pass
+   * plan used to be built from that number alone, so a picture whose darkest
+   * tone was two thirds of black still paid for the passes to reach black, and
+   * every one of them re-swept the entire image to remove nothing. Here it is
+   * planned against `zDepth × peak`, which is the deepest cut that will
+   * actually be made.
+   *
+   * The per-point depth is untouched: `planMoves` still reads the full `zDepth`
+   * against each sample, so the tone maps exactly as before. Only the floors
+   * the passes step down through change.
+   */
+  const step = Math.abs(shaded.depths[0] ?? 0);
+  const reachable = shaded.zDepth * peak;
+  let deepened = shaded;
+  if (!options.laserMode && step > 0 && reachable > 0 && reachable < shaded.zDepth - 1e-6) {
+    const trimmed = planPasses(reachable, step).depths;
+    if (trimmed.length > 0 && trimmed.length < shaded.depths.length) {
+      notes.push(
+        `"${el.name}" is never darker than ${Math.round(peak * 100)}% of black, so it carves ` +
+          `${reachable.toFixed(1)} mm of the layer's ${shaded.zDepth} mm and needs ` +
+          `${trimmed.length} pass${trimmed.length === 1 ? '' : 'es'}, not the ` +
+          `${shaded.depths.length} the full depth would take.`
+      );
+      deepened = { ...shaded, depths: trimmed };
+    }
+  }
+
+  /**
+   * How much board is left under the deepest point, said from what the picture
+   * does rather than from what the layer permits.
+   *
+   * A relief is area work and cannot fold along a groove, so the score-line
+   * fraction has nothing to say about it. Running out of board is the way it
+   * fails — and cutting through on purpose, by painting a hole pure black, is
+   * the way it is used, so the two are worded apart.
+   */
+  if (!options.laserMode && stock.thickness > 0) {
+    const left = stock.thickness - reachable;
+    if (left <= 0) {
+      notes.push(
+        `"${el.name}" carves ${reachable.toFixed(1)} mm into ${stock.thickness} mm stock, so its ` +
+          `darkest tone is cut clean through and the cutter reaches whatever is under the work. ` +
+          `Put a sacrificial board down.`
+      );
+    } else if (left < RELIEF_FLOOR_MM) {
+      notes.push(
+        `"${el.name}" carves ${reachable.toFixed(1)} mm into ${stock.thickness} mm stock, leaving ` +
+          `${left.toFixed(1)} mm under its deepest point. Carve shallower, or work in thicker stock.`
+      );
+    }
+  }
+
+  const shadeGeometry = (
+    run: ShadeRun,
+    cutting: LayerCutting,
+    runPitch: number,
+    intensities: number[],
+    // The tool is read off the layer by `makeSegment`, so a roughing sweep is
+    // emitted as the layer it would have been if the rougher were its tool.
+    // Without this the rough segments come out labelled with the finisher's
+    // T-number and the job never stops to change tools.
+    on: EtchLayer = layer
+  ) =>
+    makeSegment(on, cutting, options, {
       points: run.points.map((p) => localToBed(el, p.x, p.y)),
-      intensities: run.intensities,
+      intensities,
+      shadePitch: runPitch,
       isClosed: false,
       // Sorted with the fills and never kerf-compensated, so the enclosed area
       // that orders contours has nothing to say about a sweep. -1 keeps the
@@ -1172,8 +1337,50 @@ function planShadeSegments(
       bBoxArea: -1,
       linkTolerance: 0,
       fillGroup,
-    })
-  );
+    });
+
+  /**
+   * Clear the ground with a bigger tool first, if the layer asks for one.
+   *
+   * The rougher cuts the same picture `leave` millimetres shallower, at its own
+   * stepover — a quarter-inch mill sweeps four times as few lines as a 3 mm ball
+   * nose — and the finisher then takes a single pass, because what is left in
+   * front of it is a skin of known thickness rather than the whole relief.
+   *
+   * Both come out of one layer rather than out of a duplicated element on a
+   * second layer. The duplicate is the obvious way to do it by hand and it goes
+   * wrong the first time the image is moved or resized: two copies of the same
+   * picture, one of them stale, carving the same ground in different places.
+   */
+  const rough = roughingPlan(layer, options, material, stock, peak, shaded);
+  const segments: GCodeSegment[] = [];
+
+  if (rough) {
+    const roughRuns = planShadeRuns(el, { pitch: rough.pitch, angle });
+    for (const run of roughRuns) {
+      segments.push(
+        shadeGeometry(
+          run,
+          rough.cutting,
+          rough.pitch,
+          // The same picture, every point of it lifted by the skin the finisher
+          // is going to take. Where the relief is shallower than that skin the
+          // rougher has nothing to do and stays out of it entirely.
+          run.intensities.map((v) => Math.max(0, v - rough.leave / shaded.zDepth)),
+          { ...layer, tool: layer.roughTool }
+        )
+      );
+    }
+    notes.push(
+      `"${el.name}" is roughed with a ${rough.cutting.toolName} at ${rough.pitch} mm, leaving ` +
+        `${rough.leave} mm for the ${shaded.toolName} to finish in one pass. Anywhere the roughing ` +
+        `tool is too wide to reach — the tight corners between motifs — the finisher meets full ` +
+        `material instead of that ${rough.leave} mm, so rough with a cutter that fits the design.`
+    );
+  }
+
+  const finish = rough ? { ...deepened, depths: [-reachable] } : deepened;
+  for (const run of runs) segments.push(shadeGeometry(run, finish, pitch, run.intensities));
 
   if (!options.laserMode && shaded.flatBottomed) {
     notes.push(

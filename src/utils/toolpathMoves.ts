@@ -119,6 +119,73 @@ const APPROACH_CLEARANCE_MM = 0.5;
  */
 const FILL_HOP_CLEARANCE_MM = 1;
 
+/**
+ * Is a gap in a shading pass long enough to be worth lifting over?
+ *
+ * Skipping ground the pass before already cut is only free in principle. Each
+ * skip costs a retract, a traverse and a plunge, and on a relief swept at 0.6 mm
+ * the gaps come every few millimetres — the first version of this skipped every
+ * one of them and turned a 79 minute job into 141, with more distance spent
+ * hopping than cutting.
+ *
+ * So the gap has to pay for the hop: cutting through it costs `gap / feed`,
+ * skipping it costs the climb out and back plus `gap / rapid`.
+ *
+ * The climb is measured from the depth the tool is *actually* at on each side
+ * of the gap, not from the pass's floor. That distinction is the difference
+ * between the feature working and not: a plunge rate is a fraction of a feed —
+ * 250 mm/min against 1400 for a ball nose — so pricing every hop as if it
+ * started at the floor made a photograph's shallow background look as expensive
+ * to skip as a relief's deep ground, and a picture that could have been cut in
+ * 36 minutes took 58.
+ */
+function gapWorthSkipping(
+  gapMm: number,
+  deepestZ: number,
+  seg: GCodeSegment,
+  opts: PlanMoveOptions
+): boolean {
+  const perMm = 1 / seg.speed - 1 / opts.travelSpeed;
+  // A feed as quick as the rapid never pays for a hop, whatever the gap.
+  if (perMm <= 1e-9) return false;
+  const lift = Math.abs(deepestZ) + Math.min(opts.safeZ, FILL_HOP_CLEARANCE_MM);
+  const plunge = seg.plungeRate > 0 ? seg.plungeRate : opts.travelSpeed;
+  return gapMm * perMm > lift / opts.travelSpeed + lift / plunge;
+}
+
+/**
+ * Joins spans whose gap is too short to be worth lifting over, and puts back
+ * the head and tail of the sweep for the same reason.
+ *
+ * The ends matter as much as the middle, and for a subtler reason: a sweep
+ * entered at its own start begins where the picture is shallow and deepens as it
+ * goes, while a sweep entered part-way in begins with a plunge to whatever depth
+ * the picture has reached there. Trimming a few millimetres off the front of
+ * every line turns a run of shallow entries into a run of deep ones.
+ */
+function mergeShortGaps(
+  spans: Array<[number, number]>,
+  cum: number[],
+  zAt: (i: number) => number,
+  seg: GCodeSegment,
+  opts: PlanMoveOptions
+): void {
+  for (let i = spans.length - 1; i > 0; i--) {
+    const leave = spans[i - 1][1];
+    const enter = spans[i][0];
+    const deepest = Math.min(zAt(leave), zAt(enter));
+    if (!gapWorthSkipping(cum[enter] - cum[leave], deepest, seg, opts)) {
+      spans[i - 1][1] = spans[i][1];
+      spans.splice(i, 1);
+    }
+  }
+  if (spans.length === 0) return;
+  if (!gapWorthSkipping(cum[spans[0][0]], zAt(spans[0][0]), seg, opts)) spans[0][0] = 0;
+  const last = spans[spans.length - 1];
+  const tail = cum[cum.length - 1] - cum[last[1]];
+  if (!gapWorthSkipping(tail, zAt(last[1]), seg, opts)) last[1] = cum.length - 1;
+}
+
 /** Shortest path there is room to descend along, in mm. */
 const MIN_RAMP_PATH_MM = 1.5;
 
@@ -197,6 +264,19 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       const shade = seg.intensities;
       const pts = seg.points;
 
+      /**
+       * Distance to each point along the sweep.
+       *
+       * Measured once, over the whole sweep, because a pass no longer
+       * necessarily runs the whole of it: `along` is what the preview reveals
+       * by, and a pass that cuts the middle third has to report its position
+       * along the sweep, not along the third.
+       */
+      const cum = new Array<number>(pts.length).fill(0);
+      for (let i = 1; i < pts.length; i++) {
+        cum[i] = cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      }
+
       for (let passIdx = 0; passIdx < seg.depths.length; passIdx++) {
         const common = { ...base, pass: passIdx + 1, beamOn: opts.laserMode };
         /**
@@ -210,120 +290,160 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
          * depth, so the surface that comes out is exactly the picture.
          */
         const floor = opts.laserMode ? 0 : seg.depths[passIdx];
+        const prevFloor = passIdx === 0 ? 0 : seg.depths[passIdx - 1];
         const zAt = (i: number) =>
           opts.laserMode ? 0 : Math.max(-seg.zDepth * shade[i], floor);
+        /** Where the pass before this one left the surface at that point. */
+        const zPrev = (i: number) =>
+          opts.laserMode ? 0 : Math.max(-seg.zDepth * shade[i], prevFloor);
 
-        const first = pts[0];
-        const gap = started ? Math.hypot(cx - first.x, cy - first.y) : Infinity;
-        if (gap > 1e-9 || repositionNeeded) {
-          /**
-           * A hop from one sweep of a picture to the next stays inside the
-           * picture, which is ground the cutter is in the middle of carving, so
-           * there is nothing on it to clear. Anything else — the first sweep of
-           * the image, or a reposition after a tool change — goes up to full
-           * clearance like any other traverse.
-           */
-          const inSameImage =
-            !opts.laserMode &&
-            prev !== null &&
-            !repositionNeeded &&
-            seg.fillGroup >= 0 &&
-            seg.fillGroup === prev.fillGroup;
-          const hopZ = inSameImage ? Math.min(opts.safeZ, FILL_HOP_CLEARANCE_MM) : opts.safeZ;
-
-          if (!opts.laserMode && engaged !== null) {
-            moves.push({
-              ...common,
-              kind: 'retract',
-              x1: cx, y1: cy, z1: engaged,
-              x2: cx, y2: cy, z2: hopZ,
-              feed: opts.travelSpeed,
-              beamOn: false,
-              along0: 0, along1: 0,
-            });
-            engaged = null;
-            parkedZ = hopZ;
-          } else if (!opts.laserMode && parkedZ > hopZ) {
-            moves.push({
-              ...common,
-              kind: 'travel',
-              x1: cx, y1: cy, z1: parkedZ,
-              x2: cx, y2: cy, z2: hopZ,
-              feed: opts.travelSpeed,
-              beamOn: false,
-              along0: 0, along1: 0,
-            });
-            parkedZ = hopZ;
+        /**
+         * The stretches this pass actually removes material from.
+         *
+         * Every pass used to run the whole sweep, so a relief whose highlights
+         * reached their final depth on the first pass still dragged the cutter
+         * over them on all the others — rubbing at a depth it had already cut,
+         * at cutting feed, for as many passes as the deepest part of the
+         * picture needed. On the Thai tile that was most of the flower, five
+         * times over. A stretch is kept when either of its ends is deeper this
+         * pass than it was last, and the gaps between kept stretches are
+         * travelled instead.
+         *
+         * A laser has one pass and no floors, so it keeps the whole sweep and
+         * none of this applies.
+         */
+        const spans: Array<[number, number]> = [];
+        if (opts.laserMode) {
+          spans.push([0, pts.length - 1]);
+        } else {
+          let open = -1;
+          for (let i = 1; i < pts.length; i++) {
+            const cuts = zAt(i - 1) < zPrev(i - 1) - 1e-9 || zAt(i) < zPrev(i) - 1e-9;
+            if (cuts) {
+              if (open < 0) open = i - 1;
+            } else if (open >= 0) {
+              spans.push([open, i - 1]);
+              open = -1;
+            }
           }
-          if (Math.hypot(cx - first.x, cy - first.y) > 1e-9) {
-            const travelZ = opts.laserMode ? clearanceZ : parkedZ;
-            moves.push({
-              ...common,
-              kind: 'travel',
-              x1: cx, y1: cy, z1: travelZ,
-              x2: first.x, y2: first.y, z2: travelZ,
-              feed: opts.travelSpeed,
-              beamOn: false,
-              along0: 0, along1: 0,
-            });
-          }
-          cx = first.x;
-          cy = first.y;
-          repositionNeeded = false;
-        }
-        started = true;
-
-        // Entry. There is no path to ramp along — the sweep is the picture, and
-        // starting it a few millimetres in would leave that stretch uncarved —
-        // so the tool goes straight down to where this pass starts. It is never
-        // more than one stepdown deep, because the floor above says so.
-        if (!opts.laserMode) {
-          const z0 = zAt(0);
-          const from = engaged ?? parkedZ;
-          if (Math.abs(from - z0) > 1e-6) {
-            moves.push({
-              ...common,
-              kind: from > z0 ? 'plunge' : 'retract',
-              x1: cx, y1: cy, z1: from,
-              x2: cx, y2: cy, z2: z0,
-              feed: from > z0 ? seg.plungeRate : opts.travelSpeed,
-              beamOn: false,
-              along0: 0, along1: 0,
-            });
-          }
-          engaged = z0;
+          if (open >= 0) spans.push([open, pts.length - 1]);
+          mergeShortGaps(spans, cum, zAt, seg, opts);
         }
 
-        let px = first.x;
-        let py = first.y;
-        let pz = zAt(0);
-        let along = 0;
-        for (let i = 1; i < pts.length; i++) {
-          const p = pts[i];
-          const step = Math.hypot(p.x - px, p.y - py);
-          if (step < 1e-9) continue;
-          const z = zAt(i);
-          moves.push({
-            ...common,
-            kind: 'cut',
-            x1: px, y1: py, z1: pz,
-            x2: p.x, y2: p.y, z2: z,
-            feed: seg.speed,
-            // The tone of the stretch being travelled, which is the one
-            // recorded at the point it starts from: the run was built by
-            // holding a shade until it changed.
-            power: opts.laserMode ? seg.power * shade[i - 1] : 0,
-            along0: along, along1: along + step,
-          });
-          px = p.x;
-          py = p.y;
-          pz = z;
-          along += step;
-        }
+        for (let spanIdx = 0; spanIdx < spans.length; spanIdx++) {
+          const [from0, to0] = spans[spanIdx];
+          if (to0 <= from0) continue;
+          const first = pts[from0];
 
-        cx = px;
-        cy = py;
-        if (!opts.laserMode) engaged = pz;
+          const gap = started ? Math.hypot(cx - first.x, cy - first.y) : Infinity;
+          if (gap > 1e-9 || repositionNeeded) {
+            /**
+             * A hop from one sweep of a picture to the next — or from one
+             * stretch of a sweep to the next stretch of the same one — stays
+             * inside the picture, which is ground the cutter is in the middle
+             * of carving, so there is nothing on it to clear. Anything else,
+             * the first sweep of the image or a reposition after a tool change,
+             * goes up to full clearance like any other traverse.
+             */
+            const inSameImage =
+              !opts.laserMode &&
+              !repositionNeeded &&
+              (spanIdx > 0 ||
+                (prev !== null && seg.fillGroup >= 0 && seg.fillGroup === prev.fillGroup));
+            const hopZ = inSameImage ? Math.min(opts.safeZ, FILL_HOP_CLEARANCE_MM) : opts.safeZ;
+
+            if (!opts.laserMode && engaged !== null) {
+              moves.push({
+                ...common,
+                kind: 'retract',
+                x1: cx, y1: cy, z1: engaged,
+                x2: cx, y2: cy, z2: hopZ,
+                feed: opts.travelSpeed,
+                beamOn: false,
+                along0: 0, along1: 0,
+              });
+              engaged = null;
+              parkedZ = hopZ;
+            } else if (!opts.laserMode && parkedZ > hopZ) {
+              moves.push({
+                ...common,
+                kind: 'travel',
+                x1: cx, y1: cy, z1: parkedZ,
+                x2: cx, y2: cy, z2: hopZ,
+                feed: opts.travelSpeed,
+                beamOn: false,
+                along0: 0, along1: 0,
+              });
+              parkedZ = hopZ;
+            }
+            if (Math.hypot(cx - first.x, cy - first.y) > 1e-9) {
+              const travelZ = opts.laserMode ? clearanceZ : parkedZ;
+              moves.push({
+                ...common,
+                kind: 'travel',
+                x1: cx, y1: cy, z1: travelZ,
+                x2: first.x, y2: first.y, z2: travelZ,
+                feed: opts.travelSpeed,
+                beamOn: false,
+                along0: 0, along1: 0,
+              });
+            }
+            cx = first.x;
+            cy = first.y;
+            repositionNeeded = false;
+          }
+          started = true;
+
+          // Entry. There is no path to ramp along — the sweep is the picture,
+          // and starting it a few millimetres in would leave that stretch
+          // uncarved — so the tool goes straight down to where this pass
+          // starts. It is never more than one stepdown deep, because the floor
+          // above says so.
+          if (!opts.laserMode) {
+            const z0 = zAt(from0);
+            const fromZ = engaged ?? parkedZ;
+            if (Math.abs(fromZ - z0) > 1e-6) {
+              moves.push({
+                ...common,
+                kind: fromZ > z0 ? 'plunge' : 'retract',
+                x1: cx, y1: cy, z1: fromZ,
+                x2: cx, y2: cy, z2: z0,
+                feed: fromZ > z0 ? seg.plungeRate : opts.travelSpeed,
+                beamOn: false,
+                along0: 0, along1: 0,
+              });
+            }
+            engaged = z0;
+          }
+
+          let px = first.x;
+          let py = first.y;
+          let pz = zAt(from0);
+          for (let i = from0 + 1; i <= to0; i++) {
+            const p = pts[i];
+            if (Math.hypot(p.x - px, p.y - py) < 1e-9) continue;
+            const z = zAt(i);
+            moves.push({
+              ...common,
+              kind: 'cut',
+              x1: px, y1: py, z1: pz,
+              x2: p.x, y2: p.y, z2: z,
+              feed: seg.speed,
+              // The tone of the stretch being travelled, which is the one
+              // recorded at the point it starts from: the run was built by
+              // holding a shade until it changed.
+              power: opts.laserMode ? seg.power * shade[i - 1] : 0,
+              along0: cum[i - 1], along1: cum[i],
+            });
+            px = p.x;
+            py = p.y;
+            pz = z;
+          }
+
+          cx = px;
+          cy = py;
+          if (!opts.laserMode) engaged = pz;
+        }
       }
       continue;
     }

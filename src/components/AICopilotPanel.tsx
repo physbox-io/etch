@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore';
 import { importSVG, fitToBed } from '../utils/svgImporter';
 import { callLLM, extractJson, stripCodeFences, LLMError } from '../utils/llmClient';
 import { buildSystemPrompt } from '../docs/copilotInstructions';
+import { CLIP_ART_LIBRARY, buildSymbolElement } from '../utils/clipArtLibrary';
 import {
   DEFAULT_MODEL,
   isClaudeModel,
@@ -167,6 +168,47 @@ export const AICopilotPanel: React.FC = () => {
       for (const spec of payload.add) {
         if (!spec || typeof spec.type !== 'string') continue;
         const id = `ai_${Date.now()}_${addedIds.length}`;
+        const layerId = layerIds.has(spec.layerId) ? spec.layerId : doc.layers[0]?.id;
+
+        /**
+         * Clip art asked for by id becomes real geometry here.
+         *
+         * A `symbol` element is a path plus a viewBox-derived scale, and one
+         * with neither draws and machines as nothing — an add that looks like
+         * it worked and produces an empty toolpath. The model is told to send
+         * only the id for exactly this reason.
+         */
+        if (spec.type === 'symbol' && spec.symbolId) {
+          const symbol = CLIP_ART_LIBRARY.find((s) => s.id === spec.symbolId);
+          if (!symbol) {
+            notes.push(`No clip art "${spec.symbolId}" — skipped.`);
+            continue;
+          }
+          addElement(
+            buildSymbolElement(symbol, {
+              docWidth: doc.width,
+              docHeight: doc.height,
+              layerId,
+              strokeColor: spec.strokeColor || doc.layers.find((l) => l.id === layerId)?.color,
+              size: spec.w ?? spec.h,
+              x: spec.x,
+              y: spec.y,
+              rotation: spec.rotation,
+              id,
+            })
+          );
+          addedIds.push(id);
+          changed++;
+          continue;
+        }
+
+        if (spec.type === 'image') {
+          // There are no pixels in a JSON reply, and an image element without
+          // them is a blank rectangle on a shade layer.
+          notes.push('An image has to be brought in through Import Image — skipped.');
+          continue;
+        }
+
         addElement({
           strokeWidth: 0.5,
           strokeColor: '#ef4444',
@@ -179,7 +221,7 @@ export const AICopilotPanel: React.FC = () => {
           id,
           name: spec.name || `AI ${spec.type}`,
           type: spec.type as ElementType,
-          layerId: layerIds.has(spec.layerId) ? spec.layerId : doc.layers[0]?.id,
+          layerId,
           x: spec.x ?? doc.width / 2,
           y: spec.y ?? doc.height / 2,
           visible: true,
@@ -253,10 +295,20 @@ export const AICopilotPanel: React.FC = () => {
         );
       }
 
-      const summary =
-        mode === 'generate' && typeof payload.svg === 'string'
-          ? applySvg(payload.svg, payload.layerHint)
-          : applyEdits(payload);
+      /**
+       * Generated artwork can arrive as both at once.
+       *
+       * Clip art and text cannot travel as importable SVG — <text> needs the
+       * font and <image> needs pixels, and the importer drops both — so a reply
+       * that draws a plaque and puts a library rosette on it has to send the
+       * plaque as `svg` and the rosette as `add`. Applying only the first would
+       * quietly lose half of what the model was asked for.
+       */
+      const hasSvg = mode === 'generate' && typeof payload.svg === 'string';
+      const hasEdits = ['add', 'update', 'remove'].some((k) => Array.isArray(payload[k]) && payload[k].length);
+      const summary = [hasSvg ? applySvg(payload.svg, payload.layerHint) : '', hasEdits || !hasSvg ? applyEdits(payload) : '']
+        .filter(Boolean)
+        .join(' ');
 
       say({ role: 'assistant', mode, text: `${prose ? `${prose}\n\n` : ''}✅ ${summary}` });
     } catch (err: any) {

@@ -72,6 +72,23 @@ export interface EtchLayer {
   speedOverride?: number;     // mm/min with the beam on
   powerOverride?: number;     // 0 - 100 % of the tube
   /**
+   * Clear this layer's relief with a second, bigger tool before the layer's own
+   * tool finishes it. `shade` layers only, and CNC only.
+   *
+   * A ball nose is the right cutter for a modelled surface and a poor one for
+   * hogging out the ground under it: it cuts on a small part of its tip, takes a
+   * shallow stepover, and on the Thai tile preset spent 79 minutes where a
+   * quarter-inch mill roughing first and the ball nose finishing takes 24. That
+   * is not a setting anyone should have to discover by duplicating the image
+   * onto a second layer, which is what it used to take.
+   *
+   * `roughLeaveMm` is what the rougher leaves standing for the finisher — the
+   * whole point of the two-tool split, and the reason the finish is one pass
+   * instead of stepping down through ground that is no longer there.
+   */
+  roughTool?: number;
+  roughLeaveMm?: number;
+  /**
    * Whether a through-cut on this layer gets holding tabs. Defaults to on for
    * `cut` layers, because the alternative is the part coming loose under a
    * spinning cutter on the last pass.

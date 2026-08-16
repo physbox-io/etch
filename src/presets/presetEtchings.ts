@@ -1,3 +1,4 @@
+import { thaiTileElements, TILE_RELIEF_DEPTH_MM } from './thaiTile';
 import type { EtchDocument, EtchElement } from '../types/etch';
 
 export interface EtchPreset {
@@ -864,6 +865,36 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       ],
       selectedIds: [],
       elements: generateCyberpunkBadgeElements(150, 100),
+    }
+  },
+  {
+    id: 'thai-lotus-tile',
+    name: 'Thai Lotus Relief Tile (150x150mm)',
+    category: 'Coasters & Art',
+    description: '150mm carved wooden tile: an eight-fold Thai lotus roundel machined as a shaded relief from a 120mm height map, with water-drop ripples running out from the centre, and eight pierced leaves cut clean through.',
+    doc: {
+      id: 'doc_thai_tile',
+      name: 'Thai Lotus Relief Tile',
+      width: 150,
+      height: 150,
+      gridSize: 10,
+      snapToGrid: true,
+      units: 'mm',
+      origin: 'top-left',
+      machine: 'cnc',
+      material: 'hardwood',
+      stockThickness: 10,
+      notecard: `### Thai Lotus Relief Tile
+- **Relief Layer (Purple)**: the 120mm lotus roundel as a shaded image. Greys are *heights* — white is the untouched board, black is the back of the board — so the ground carves 5.5mm and the flower stands 5.2mm proud of it, with water-drop rings running out from the centre — 2mm deep at the first, 1.5mm at the second, 1mm from the third out — cut across the whole carving, petals included. The layer depth is the 10mm thickness, so a grey says where in the board that point sits — but nothing here is black, and the passes are planned from the darkest tone the picture actually has. About 80 minutes in 5 passes; a shallower ground is the setting that buys the time back. Roughed with the ¼" flat mill and finished with the 3.175mm ball nose — 24 minutes instead of 78. Clear the roughing tool in the layer panel if you only own one cutter.
+- **Cut Layer (Red)**: eight pierced leaves, then the 140mm rounded outline. Through-cuts belong here and not in the picture: the relief's pass count comes from the deepest thing in it, so a hole in the height map would put the whole sweep through seven passes instead of three.
+- Pitch, sweep angle, depth and size are all still editable — the element carries the pixels, not a baked toolpath.
+- **Recommended Material**: 10mm teak, mahogany or maple. The relief is surface work and runs before anything releases the tile.`,
+      layers: [
+        { id: 'relief', name: 'Lotus Relief', color: '#a855f7', operation: 'shade', visible: true, locked: false, speed: 1400, power: 80, passes: 1, zDepth: TILE_RELIEF_DEPTH_MM, tool: 5, roughTool: 6 },
+        { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 10.5, tool: 1 },
+      ],
+      selectedIds: [],
+      elements: thaiTileElements(150),
     }
   }
 ];

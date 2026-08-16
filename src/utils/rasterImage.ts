@@ -25,11 +25,17 @@ export const SHADE_WHITE = 0.02;
  * A photograph's flat areas — sky, a wall, a background dropped to white —
  * would otherwise emit one move per sample across their whole width, and the
  * G-code for a postcard would run to millions of lines for a picture that is
- * mostly one shade. Roughly a 256th of full scale is finer than any laser
- * resolves and far finer than a router's depth of cut, so nothing visible is
- * lost by carrying a shade until it actually changes.
+ * mostly one shade. So a shade is carried until it actually changes.
+ *
+ * One 255th, because that is the resolution the picture is stored at: the
+ * samples are bytes, so a step finer than this can only ever be an artefact of
+ * the bilinear interpolation between two of them, and a step coarser throws
+ * away tone the image really does carry. It used to be a 96th, which on a deep
+ * carve quantised Z more coarsely than the cutter could hold — 0.11 mm of
+ * terracing on a 10 mm relief, from a constant chosen when the only thing
+ * shading did was modulate a laser.
  */
-const TONE_STEP = 1 / 96;
+const TONE_STEP = 1 / 255;
 
 /** Default line pitch, mm. Fine enough to read as tone rather than as stripes. */
 export const DEFAULT_SHADE_PITCH_MM = 0.25;

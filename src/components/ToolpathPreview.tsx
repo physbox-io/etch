@@ -3,7 +3,7 @@ import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { EtchDocument } from '../types/etch';
 import type { GCodeSegment } from '../utils/gcodeExporter';
 import { buildTimeline, sampleAt, type ToolMove } from '../utils/toolpathTimeline';
-import { buildChunks } from '../utils/toolpathChunks';
+import { buildChunks, TONE_LEVELS } from '../utils/toolpathChunks';
 
 /**
  * Draws — and now runs — the toolpath the machine will actually follow.
@@ -128,10 +128,17 @@ export const ToolpathPreview: React.FC<{
     [segments]
   );
 
-  /** The un-run path, drawn once per colour rather than once per segment. */
+  /**
+   * The un-run path, drawn once per colour rather than once per segment.
+   *
+   * Shaded sweeps are left out: a photograph drawn as one flat stroke is a slab
+   * of layer colour with gaps in it, which hides both the picture and the
+   * revealed path underneath. `toneGhosts` draws those instead.
+   */
   const ghosts = useMemo(() => {
     const byColour = new Map<string, string>();
     segments.forEach((seg) => {
+      if (seg.intensities) return;
       const c = colourFor(seg);
       byColour.set(c, (byColour.get(c) ?? '') + pathFor(seg) + ' ');
     });
@@ -151,6 +158,38 @@ export const ToolpathPreview: React.FC<{
   const { chunks, chunkOfSegment } = useMemo(
     () => buildChunks(segments, segLengths, colourFor),
     [segments, segLengths, colourFor]
+  );
+
+  /**
+   * The picture, faintly, before the head has been over it — the shaded
+   * counterpart of `ghosts`.
+   *
+   * One path per tone band for the whole job rather than per chunk, because
+   * this is a backdrop and never animates: the reveal on top is what needs to
+   * stay per chunk.
+   */
+  const toneGhosts = useMemo(() => {
+    const byLevel = new Map<string, string>();
+    for (const chunk of chunks) {
+      for (const band of chunk.tones ?? []) {
+        const key = `${band.level}|${chunk.colour}`;
+        byLevel.set(key, (byLevel.get(key) ?? '') + band.d);
+      }
+    }
+    return [...byLevel.entries()].map(([key, d]) => {
+      const [level, colour] = key.split('|');
+      return { level: Number(level), colour, d };
+    });
+  }, [chunks]);
+
+  /**
+   * How wide to draw a sweep: the pitch, so sweeps that will merge into
+   * continuous tone on the material merge on screen too, and a pitch coarse
+   * enough to leave stripes in the work shows them here first.
+   */
+  const sweepWidth = useCallback(
+    (chunkIdx: number) => Math.max(0.08, segments[chunks[chunkIdx].startIndex]?.shadePitch ?? 0.35),
+    [chunks, segments]
   );
 
   /**
@@ -176,7 +215,9 @@ export const ToolpathPreview: React.FC<{
   }, [timeline, laserMode]);
 
   // ---- Animation plumbing -------------------------------------------------
-  const revealRefs = useRef<Array<SVGPathElement | null>>([]);
+  // One entry per chunk, holding its path elements: a shaded chunk is drawn as
+  // one path per tone band, and they are revealed together.
+  const revealRefs = useRef<Array<Array<SVGPathElement | null>>>([]);
   const headRef = useRef<SVGGElement | null>(null);
   const headDotRef = useRef<SVGCircleElement | null>(null);
   const liveRef = useRef<SVGLineElement | null>(null);
@@ -195,8 +236,14 @@ export const ToolpathPreview: React.FC<{
   const elapsedRef = useRef({ secs: 0, anchorTs: 0 });
 
   const setChunkReveal = (i: number, frac: number) => {
-    const el = revealRefs.current[i];
-    if (el) el.setAttribute('stroke-dasharray', `${frac} 1`);
+    const els = revealRefs.current[i];
+    if (!els) return;
+    for (const el of els) el?.setAttribute('stroke-dasharray', `${frac} 1`);
+  };
+
+  /** Collects a chunk's path elements; `slot` is the tone band, or 0 if flat. */
+  const captureReveal = (chunkIdx: number, slot: number) => (el: SVGPathElement | null) => {
+    (revealRefs.current[chunkIdx] ??= [])[slot] = el;
   };
 
   /**
@@ -505,24 +552,55 @@ export const ToolpathPreview: React.FC<{
             />
           ))}
 
-          {/* Where it has. Revealed by arc length via a normalised dash. */}
-          {chunks.map((chunk, cIdx) => (
+          {/* The picture a shaded image will burn, before the head gets to it */}
+          {toneGhosts.map((band) => (
             <path
-              key={cIdx}
-              ref={(el) => {
-                revealRefs.current[cIdx] = el;
-              }}
-              d={chunk.d}
-              pathLength={1}
-              strokeDasharray="0 1"
+              key={`t${band.level}${band.colour}`}
+              d={band.d}
               fill="none"
-              stroke={chunk.colour}
-              strokeWidth={chunk.type === 'cut' ? 0.6 : 0.4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              opacity={chunk.type === 'cut' ? 1 : 0.85}
+              stroke={band.colour}
+              strokeWidth={0.35}
+              strokeLinecap="butt"
+              opacity={0.18 * (band.level / TONE_LEVELS)}
             />
           ))}
+
+          {/* Where it has. Revealed by arc length via a normalised dash. */}
+          {chunks.map((chunk, cIdx) =>
+            chunk.tones ? (
+              /* A sweep across a picture: one stroke per tone band, all
+                 uncovered together, so the photograph appears as it is burnt
+                 instead of a slab of layer colour appearing over it. */
+              chunk.tones.map((band) => (
+                <path
+                  key={`${cIdx}t${band.level}`}
+                  ref={captureReveal(cIdx, band.level)}
+                  d={band.d}
+                  pathLength={1}
+                  strokeDasharray="0 1"
+                  fill="none"
+                  stroke={chunk.colour}
+                  strokeWidth={sweepWidth(cIdx)}
+                  strokeLinecap="butt"
+                  opacity={band.level / TONE_LEVELS}
+                />
+              ))
+            ) : (
+              <path
+                key={cIdx}
+                ref={captureReveal(cIdx, 0)}
+                d={chunk.d}
+                pathLength={1}
+                strokeDasharray="0 1"
+                fill="none"
+                stroke={chunk.colour}
+                strokeWidth={chunk.type === 'cut' ? 0.6 : 0.4}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={chunk.type === 'cut' ? 1 : 0.85}
+              />
+            )
+          )}
 
           {/* What a dry run will actually trace: the outlines, not the fills. */}
           {boundaries && boundaries.length > 0 && (

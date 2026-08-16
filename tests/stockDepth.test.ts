@@ -30,8 +30,27 @@ describe('presets declare the stock they were drawn for', () => {
 
   it('leaves surface work shallower than the stock', () => {
     for (const preset of PRESET_ETCHINGS) {
-      for (const layer of preset.doc.layers.filter((l) => l.operation !== 'cut')) {
+      // Shade is exempt, and only shade. An etch or a fill deeper than the
+      // board is a typo; a relief deeper than the board is a design — black in
+      // the picture becomes a hole, which is how the Thai tile pierces itself
+      // without a cut layer.
+      for (const layer of preset.doc.layers.filter(
+        (l) => l.operation !== 'cut' && l.operation !== 'shade'
+      )) {
         expect(layer.zDepth, `${preset.id}/${layer.id}`).toBeLessThan(preset.doc.stockThickness!);
+      }
+    }
+  });
+
+  it('never carves a relief further past the board than a cut would', () => {
+    // A shade layer set well past the back of the stock is not piercing, it is
+    // spending passes ploughing the spoilboard: every grey in the picture is
+    // scaled against that depth, so the modelling gets squeezed into the top
+    // of the range for nothing.
+    for (const preset of PRESET_ETCHINGS) {
+      const thickness = preset.doc.stockThickness!;
+      for (const layer of preset.doc.layers.filter((l) => l.operation === 'shade')) {
+        expect(layer.zDepth, `${preset.id}/${layer.id}`).toBeLessThanOrEqual(thickness + 1);
       }
     }
   });
@@ -344,5 +363,64 @@ describe('undo', () => {
     // setting, so it has to be undoable like any other change to the drawing.
     useStore.getState().undo();
     expect(useStore.getState().document.layers.map((l) => l.zDepth)).toEqual(before);
+  });
+});
+
+/**
+ * The failure this describes is the opposite one: the score-line fraction was
+ * written for grooves, and applying it to a carved relief held the Thai tile
+ * preset to 2.2 mm of modelling in 10 mm of hardwood. A relief clears a field
+ * — there is no line in it to fold along — so it is checked against what it
+ * leaves under itself instead, and against what the *picture* reaches rather
+ * than what the layer permits.
+ */
+describe('relief depth in thick stock', () => {
+  const tile = () => PRESET_ETCHINGS.find((p) => p.id === 'thai-lotus-tile')!;
+  const doc = (zDepth: number, thickness: number, machine: 'cnc' | 'laser' = 'cnc') => ({
+    ...tile().doc,
+    machine,
+    stockThickness: thickness,
+    layers: tile().doc.layers.map((l) => (l.operation === 'shade' ? { ...l, zDepth } : l)),
+  });
+  const notes = (zDepth: number, thickness: number, machine: 'cnc' | 'laser' = 'cnc') =>
+    planToolpath(doc(zDepth, thickness, machine)).notes.join(' ');
+
+  it('does not call a carving a fold line', () => {
+    // The layer is the whole thickness of the board — well past the score-line
+    // fraction, and the natural way to say "black is the back of the board".
+    expect(scoreLineRisk(doc(10, 10))).toBeNull();
+    expect(notes(10, 10)).not.toMatch(/fold line/);
+  });
+
+  it('plans passes from the picture, not from the layer depth', () => {
+    // The tile's darkest tone is about two thirds of black, so it reaches
+    // ~6.8 mm of the layer's 10 and pays for the passes to get there, not for
+    // the passes to reach black.
+    const plan = planToolpath(doc(10, 10));
+    const shade = plan.segments.filter((s) => s.type === 'shade');
+    expect(Math.min(...shade[0].depths)).toBeGreaterThan(-7.5);
+    expect(shade[0].passes).toBeLessThan(7);
+    expect(notes(10, 10)).toMatch(/never darker than/);
+  });
+
+  it('says nothing while there is board left under the deepest point', () => {
+    expect(notes(10, 10)).not.toMatch(/deepest point/);
+    expect(notes(10, 10)).not.toMatch(/clean through/);
+  });
+
+  it('flags a relief that has nearly reached the back of the board', () => {
+    // 10 mm of layer against 8 mm of board: the picture's darkest tone is
+    // around 70% of black, so it reaches ~7 mm and leaves about one.
+    expect(notes(10, 8)).toMatch(/leaving 1\.\d mm under its deepest point/);
+  });
+
+  it('says a through-carve is a through-carve', () => {
+    // Deep enough that the picture's own darkest tone comes out the back.
+    expect(notes(16, 10)).toMatch(/cut clean through/);
+    expect(notes(16, 10)).toMatch(/sacrificial board/);
+  });
+
+  it('says nothing on a laser, which has no depth of cut', () => {
+    expect(notes(16, 10, 'laser')).not.toMatch(/clean through/);
   });
 });

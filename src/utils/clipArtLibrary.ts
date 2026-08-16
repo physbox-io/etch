@@ -319,3 +319,58 @@ export function getClipArtScale(item: ClipArtItem, targetSize: number): number {
   const extent = Math.max(w || 0, h || 0);
   return extent > 0 ? targetSize / extent : 1;
 }
+
+export const DEFAULT_SYMBOL_SIZE_MM = 36;
+
+/**
+ * A placed clip-art element, from the gallery, the copilot or an agent.
+ *
+ * Shared because a `symbol` element is only geometry once its `pathData` has
+ * been copied into `d` and the viewBox scale worked out: an element of that
+ * type with neither draws and machines as nothing at all. Anything that asks
+ * for a symbol by id therefore has to come through here rather than assembling
+ * the element itself.
+ */
+export function buildSymbolElement(
+  item: ClipArtItem,
+  opts: {
+    docWidth: number;
+    docHeight: number;
+    layerId: string;
+    strokeColor?: string;
+    /** Bounding size in mm; defaults to a size that fits small stock. */
+    size?: number;
+    x?: number;
+    y?: number;
+    rotation?: number;
+    id?: string;
+  }
+) {
+  const size = Math.max(
+    1,
+    opts.size ?? Math.min(DEFAULT_SYMBOL_SIZE_MM, Math.min(opts.docWidth, opts.docHeight) * 0.6)
+  );
+  const scale = getClipArtScale(item, size);
+
+  return {
+    id: opts.id ?? `symbol_${Date.now()}`,
+    name: item.name,
+    type: 'symbol' as const,
+    symbolId: item.id,
+    layerId: opts.layerId,
+    x: opts.x ?? (opts.docWidth - size) / 2,
+    y: opts.y ?? (opts.docHeight - size) / 2,
+    w: size,
+    h: size,
+    d: item.pathData,
+    rotation: opts.rotation ?? 0,
+    scaleX: scale,
+    scaleY: scale,
+    opacity: 1,
+    strokeWidth: 0.5,
+    strokeColor: opts.strokeColor || '#ef4444',
+    fillColor: 'none',
+    visible: true,
+    locked: false,
+  };
+}

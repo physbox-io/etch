@@ -1,30 +1,11 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
-import { CLIP_ART_CATEGORIES, CLIP_ART_LIBRARY, getClipArtScale } from '../utils/clipArtLibrary';
-
-/** Placed symbols are normalised to this size in machine units (mm). */
-const SYMBOL_SIZE_MM = 36;
-
-/**
- * How big a symbol to drop, and where.
- *
- * 36 mm centred on a 300x200 bed is a sensible default and was hardcoded as
- * `x: 150, y: 100` — which is the centre of that bed and nowhere near the centre
- * of any other. On a business card it put the symbol 65 mm past the right edge,
- * outside the canvas viewBox, so the art was placed, selected, and invisible.
- *
- * Derived from the stock instead, and shrunk to fit it: a 36 mm badge does not
- * go on a 55 mm card with anything left over, and arriving already too big is a
- * worse first move than arriving a size you can scale up.
- */
-function placement(docWidth: number, docHeight: number) {
-  const size = Math.min(SYMBOL_SIZE_MM, Math.min(docWidth, docHeight) * 0.6);
-  return {
-    size,
-    x: (docWidth - size) / 2,
-    y: (docHeight - size) / 2,
-  };
-}
+import {
+  CLIP_ART_CATEGORIES,
+  CLIP_ART_LIBRARY,
+  buildSymbolElement,
+  getClipArtScale,
+} from '../utils/clipArtLibrary';
 import { X, Image } from 'lucide-react';
 
 export const ClipArtModal: React.FC = () => {
@@ -36,31 +17,22 @@ export const ClipArtModal: React.FC = () => {
   const strokeColor = activeLayer.color || '#ef4444';
 
   const handleSelectSymbol = (symbol: typeof CLIP_ART_LIBRARY[0]) => {
-    // Path data is in raw viewBox units, and the library mixes a legacy 24-unit
-    // grid with the newer 100-unit one, so derive the scale per symbol.
-    const { size, x, y } = placement(document.width, document.height);
-    const scale = getClipArtScale(symbol, size);
-    addElement({
-      id: `symbol_${Date.now()}`,
-      name: symbol.name,
-      type: 'symbol',
-      symbolId: symbol.id,
-      layerId: activeLayerId,
-      x,
-      y,
-      w: size,
-      h: size,
-      d: symbol.pathData,
-      rotation: 0,
-      scaleX: scale,
-      scaleY: scale,
-      opacity: 1,
-      strokeWidth: 0.5,
-      strokeColor,
-      fillColor: 'none',
-      visible: true,
-      locked: false,
-    });
+    /**
+     * Sized and placed from the stock, not from a fixed coordinate.
+     *
+     * 36 mm centred on a 300x200 bed was hardcoded as `x: 150, y: 100` — the
+     * centre of that bed and nowhere near the centre of any other. On a
+     * business card it put the symbol 65 mm past the right edge, outside the
+     * canvas viewBox, so the art was placed, selected, and invisible.
+     */
+    addElement(
+      buildSymbolElement(symbol, {
+        docWidth: document.width,
+        docHeight: document.height,
+        layerId: activeLayerId,
+        strokeColor,
+      })
+    );
     toggleClipArtModal();
   };
 
