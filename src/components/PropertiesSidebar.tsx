@@ -300,6 +300,22 @@ const CncLayerCutting: React.FC<{
         </label>
       )}
 
+      {layer.operation === 'etch' && profile?.tipAngleDeg && (
+        <label className="flex items-center gap-1.5 text-[10px] text-indigo-600 dark:text-indigo-300 font-medium cursor-pointer">
+          <input
+            type="checkbox"
+            checked={layer.vCarve3D ?? true}
+            onChange={(e) => {
+              update({ vCarve3D: e.target.checked });
+              commit();
+            }}
+            className="cursor-pointer text-indigo-600 rounded"
+          />
+          <span>3D V-Carve (Variable depth for sharp corners)</span>
+          <InfoTooltip text="V-carves along the medial axis where bit depth tracks width, lifting to Z=0 at sharp corner tips." />
+        </label>
+      )}
+
       <button
         onClick={() => setShowAdvanced((v) => !v)}
         className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"

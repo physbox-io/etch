@@ -36,12 +36,22 @@ import { DEFAULT_STOCK_THICKNESS_MM, findMaterial } from './materials';
 import { readSpindleRange, readLaserSource, describeLaserSource, type LaserSource } from './machineSettings';
 import { offsetContours, type OffsetSide } from './contourOffset';
 import { planMoves, type PlannedMove } from './toolpathMoves';
+import { fitArcsToPolyline, arcToMachineGCode } from './arcFitting';
+import { generateVCarveToolpaths } from './vCarve';
 
 export interface GCodeOptions {
   laserMode: boolean;          // True for Laser GRBL M3/M5, False for CNC router Z-axis passes
   spindleSpeedMax: number;    // Maximum S-value for a laser (e.g. 1000 for GRBL)
   travelSpeed: number;        // Rapid move speed mm/min (e.g. 3000)
   innerContourFirst: boolean; // Cut internal holes before outer boundaries
+  /**
+   * Whether to fit G2/G3 circular arcs to planar cutting moves.
+   * Reduces line count by 50-85% on curved geometry and prevents GRBL buffer lag.
+   * Default: true.
+   */
+  arcFitting?: boolean;
+  /** Tolerance in mm for arc fitting (default: 0.02 mm). */
+  arcTolerance?: number;
   /**
    * The spindle's speed range, for the feeds model. Defaults to whatever the
    * machine panel has stored, so an export driven from a script matches the one
@@ -619,6 +629,34 @@ export function planToolpath(
         }
       }
 
+      // 3D V-Carve for Etch layers on CNC using a V-bit
+      const isVBit = cut.tipAngleDeg !== undefined && cut.tipAngleDeg > 0;
+      if (
+        !options.laserMode &&
+        layer.operation === 'etch' &&
+        layer.vCarve3D &&
+        isVBit &&
+        contours.length > 0
+      ) {
+        const vcarveRuns = generateVCarveToolpaths(contours, {
+          tipAngleDeg: cut.tipAngleDeg!,
+          maxDepth: layer.vCarveMaxDepth ?? cut.zDepth,
+        });
+
+        for (const run of vcarveRuns) {
+          segments.push(
+            makeSegment(layer, cut, options, {
+              points: run.points,
+              intensities: run.intensities,
+              isClosed: false,
+              bBoxArea: boundingArea(run.points),
+              linkTolerance: 0,
+            })
+          );
+        }
+        if (el.hatchOutline === false) continue;
+      }
+
       // Filled elements are engraved: hatch the interior, then optionally
       // follow the outline. Contours alone would only score the edge.
       if (el.machining === 'filled') {
@@ -829,6 +867,8 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     spindleSpeedMax: 1000,
     travelSpeed: 3000,
     innerContourFirst: true,
+    arcFitting: true,
+    arcTolerance: 0.02,
     spindle: readSpindleRange(),
     laser: readLaserSource(),
     ...opts,
@@ -872,6 +912,7 @@ interface LayerCutting {
    * and for any tool that has not said what shape its end is.
    */
   flatBottomed: boolean;
+  tipAngleDeg?: number;
   side: OffsetSide;
   tabs: boolean;
   tabHeight: number;
@@ -1092,6 +1133,7 @@ function resolveLayerCutting(
     radius: (profile?.diameter ?? 0) / 2,
     grooveRadius: cutWidthAtDepth(profile, zDepth) / 2,
     flatBottomed: isFlatBottomed(profile),
+    tipAngleDeg: profile?.tipAngleDeg,
     side: resolveCutSide(layer),
     tabs,
     tabHeight,
@@ -1826,6 +1868,79 @@ export function generateGCode(
         // for each would double the size of the file for no extra control.
         sWord = ` S${s}`;
         lastS = s;
+      }
+    }
+
+    // If arc fitting is enabled and we are at the start of a series of planar cutting moves
+    if (
+      options.arcFitting &&
+      m.kind === 'cut' &&
+      !segments[m.segIndex]?.intensities
+    ) {
+      let runEnd = i;
+      while (
+        runEnd + 1 < program.moves.length &&
+        !changeAtMove.has(runEnd + 1)
+      ) {
+        const nextM = program.moves[runEnd + 1];
+        if (
+          nextM.kind === 'cut' &&
+          nextM.segIndex === m.segIndex &&
+          nextM.pass === m.pass &&
+          Math.abs(nextM.z2 - m.z2) < 1e-6 &&
+          Math.abs(nextM.feed - m.feed) < 1e-3 &&
+          Math.abs(nextM.power - m.power) < 1e-3 &&
+          nextM.beamOn === m.beamOn &&
+          Math.hypot(
+            nextM.x1 - program.moves[runEnd].x2,
+            nextM.y1 - program.moves[runEnd].y2
+          ) < 1e-4
+        ) {
+          runEnd++;
+        } else {
+          break;
+        }
+      }
+
+      if (runEnd - i >= 2) {
+        const polyPoints: Pt[] = [{ x: m.x1, y: m.y1 }];
+        for (let k = i; k <= runEnd; k++) {
+          polyPoints.push({ x: program.moves[k].x2, y: program.moves[k].y2 });
+        }
+
+        const arcCommands = fitArcsToPolyline(
+          polyPoints,
+          options.arcTolerance ?? 0.02
+        );
+
+        // Emit compressed commands
+        for (const cmd of arcCommands) {
+          if (cmd.type === 'line') {
+            const end = toMachine(cmd.to.x, cmd.to.y);
+            const feed = Math.max(1, Math.round(m.feed));
+            const fWord = feed !== lastFeed ? ` F${feed}` : '';
+            const zChanged =
+              !options.laserMode &&
+              (lastZ === null || Math.abs(m.z2 - lastZ) > 1e-6);
+            const axes = `X${end.x.toFixed(3)} Y${end.y.toFixed(3)}${
+              zChanged ? ` Z${m.z2.toFixed(3)}` : ''
+            }`;
+            gcode += `G1 ${axes}${fWord}${sWord}\n`;
+            lastFeed = feed;
+            lastZ = m.z2;
+          } else {
+            const arcG = arcToMachineGCode(doc, cmd);
+            const feed = Math.max(1, Math.round(m.feed));
+            const fWord = feed !== lastFeed ? ` F${feed}` : '';
+            gcode += `${arcG.gCommand} X${arcG.end.x.toFixed(3)} Y${arcG.end.y.toFixed(3)} I${arcG.i.toFixed(3)} J${arcG.j.toFixed(3)}${fWord}${sWord}\n`;
+            lastFeed = feed;
+            lastZ = m.z2;
+          }
+        }
+
+        lastKind = 'cut';
+        i = runEnd;
+        continue;
       }
     }
 

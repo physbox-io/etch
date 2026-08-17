@@ -105,6 +105,13 @@ export interface EtchLayer {
    */
   cutSide?: 'auto' | 'outside' | 'inside' | 'on';
   /**
+   * For an 'etch' layer with a tapered V-bit on CNC: whether to carve with 3D variable
+   * depth along the medial axis for sharp corners and beveled walls.
+   */
+  vCarve3D?: boolean;
+  /** Maximum flat bottom depth ceiling for V-Carve pocketing in mm. */
+  vCarveMaxDepth?: number;
+  /**
    * The tool this layer is machined with, as a T-number. Layers that differ
    * here are cut in separate blocks with a programmed pause between them, so
    * this is what makes a V-carved inscription inside an end-milled part one job

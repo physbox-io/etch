@@ -3,12 +3,10 @@ import { useStore } from '../store/useStore';
 import {
   loadImageElement,
   processImageCanvas,
-  traceMarchingSquares,
-  generateHalftoneCompoundPath,
-  generateScanlinePaths,
   DEFAULT_IMAGE_OPTIONS,
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
+import { camWorker } from '../utils/camWorkerClient';
 import { planImageImport } from '../utils/imageImport';
 import { machineKind } from '../utils/tooling';
 import {
@@ -153,11 +151,12 @@ export const ImageImportModal: React.FC = () => {
   useEffect(() => {
     if (!loadedImg || !previewCanvasRef.current) return;
 
-    const timer = setTimeout(() => {
+    let cancelled = false;
+    const timer = setTimeout(async () => {
       try {
         const { imageData } = processImageCanvas(loadedImg, options, 300);
         const canvas = previewCanvasRef.current;
-        if (!canvas) return;
+        if (!canvas || cancelled) return;
 
         canvas.width = imageData.width;
         canvas.height = imageData.height;
@@ -171,6 +170,15 @@ export const ImageImportModal: React.FC = () => {
         // Draw background processed image
         ctx.putImageData(imageData, 0, 0);
 
+        // Run tracing in background Web Worker
+        const traceResult = await camWorker.traceImage(
+          imageData,
+          options,
+          scaleX,
+          scaleY
+        );
+        if (cancelled) return;
+
         ctx.save();
         // Geometry arrives in mm; the canvas is in source pixels.
         ctx.scale(1 / scaleX, 1 / scaleY);
@@ -178,50 +186,41 @@ export const ImageImportModal: React.FC = () => {
         ctx.lineWidth = 1.5 * Math.min(scaleX, scaleY);
         ctx.fillStyle = 'rgba(0, 229, 255, 0.6)';
 
-        if (options.mode === 'vector') {
-          const paths = traceMarchingSquares(imageData, options, scaleX, scaleY);
-          setPreviewStats({ elementCount: 1, detailCount: paths.length });
-
-          const compoundD = paths.join(' ');
-          if (compoundD) {
-            const path2D = new Path2D(compoundD);
+        if (traceResult.mode === 'vector') {
+          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
+          if (traceResult.compoundD) {
+            const path2D = new Path2D(traceResult.compoundD);
             ctx.stroke(path2D);
           }
-        } else if (options.mode === 'halftone') {
-          const { pathD, dotCount } = generateHalftoneCompoundPath(imageData, options, scaleX, scaleY);
-          setPreviewStats({ elementCount: 1, detailCount: dotCount });
-
-          if (pathD) {
-            const path2D = new Path2D(pathD);
+        } else if (traceResult.mode === 'halftone') {
+          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
+          if (traceResult.pathD) {
+            const path2D = new Path2D(traceResult.pathD);
             ctx.fillStyle = '#00e5ff';
             ctx.fill(path2D);
           }
-        } else if (options.mode === 'scanline') {
-          const lines = generateScanlinePaths(imageData, options, scaleX, scaleY);
-          setPreviewStats({ elementCount: 1, detailCount: lines.length });
-
-          const compoundD = lines.join(' ');
-          if (compoundD) {
-            const path2D = new Path2D(compoundD);
+        } else if (traceResult.mode === 'scanline') {
+          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
+          if (traceResult.compoundD) {
+            const path2D = new Path2D(traceResult.compoundD);
             ctx.stroke(path2D);
           }
-        } else if (options.mode === 'shade') {
-          // Nothing is drawn over the picture, because the picture *is* the
-          // toolpath: the greys already on the canvas are the depths, or the
-          // powers, that will be machined. Overlaying sweep lines would hide
-          // the one thing worth checking before importing it.
+        } else if (traceResult.mode === 'shade') {
           setPreviewStats({
             elementCount: 1,
-            detailCount: Math.max(1, Math.round(options.targetHeight / Math.max(0.05, options.shadePitch))),
+            detailCount: traceResult.detailCount,
           });
         }
         ctx.restore();
       } catch (err) {
-        console.error('Error rendering image preview:', err);
+        if (!cancelled) console.error('Error rendering image preview:', err);
       }
-    }, 180);
+    }, 120);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [loadedImg, options, targetLayerId]);
 
   if (!isImageImportOpen) return null;

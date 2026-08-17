@@ -31,6 +31,10 @@ export const DOCS_TABS = [
     group: 'Automation',
     items: [{ id: 'mcp', label: '🤖 AI & MCP Bridge' }],
   },
+  {
+    group: 'Legal & Terms',
+    items: [{ id: 'license', label: '⚖️ License & Disclaimers' }],
+  },
 ] as const;
 
 export type DocsTabId = (typeof DOCS_TABS)[number]['items'][number]['id'];

@@ -519,6 +519,34 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       </Card>
     </div>
   ),
+
+  license: (
+    <div className="flex flex-col gap-4">
+      <H>⚖️ License &amp; Terms</H>
+      <P>
+        PhysBox Etch is distributed under the <strong>PhysBox Permissive Public License (PPPL-1.0)</strong>.
+        Commercial use of generated G-code, toolpaths, and engraved goods is fully permitted with attribution.
+      </P>
+      <div className="bg-slate-100 dark:bg-slate-950 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[50vh] overflow-y-auto">
+{`PhysBox Permissive Public License (PPPL-1.0)
+Copyright (c) 2026 PhysBox Contributors and Authors. All Rights Reserved.
+
+1. PERMISSION AND SCOPE
+Permission is granted to access, execute, and use the Software for personal, educational, research, and commercial purposes, including the generation, export, and commercial utilization of output artifacts (such as toolpaths, G-code, and laser/engraver instructions).
+
+2. PERMITTED COMMERCIAL USE OF OUTPUTS
+You are fully permitted to design, manufacture, sell, and monetize any physical workpieces, laser-cut materials, or etched parts produced using the Software.
+
+3. ATTRIBUTION & RESTRICTIONS ON SOFTWARE FORKING
+(a) Attribution: The copyright notice and license must be retained in all copies or substantial portions of the Software.
+(b) No Standalone Forking or Hosted Service Redistribution: You may NOT redistribute, sublicense, re-brand, or host the Software source as a competing standalone service or software fork without explicit prior written authorization.
+(c) Brand Protection: The names "PhysBox", "Etch", "Volt", "Mesh", "Flux", or the names of their contributors may not be used to endorse or promote third-party products without specific prior written permission.
+
+4. STRICT DISCLAIMER OF LIABILITY & PHYSICAL MACHINERY WARNING
+THE SOFTWARE, LASER/CNC TOOLPATH CALCULATORS, AND MACHINE CONTROLLERS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CNC/LASER DAMAGE, TOOL BREAKAGE, FIRE, FUMES, WORKPIECE LOSS, BUSINESS INTERRUPTION, OR BODILY INJURY RESULTING FROM OPERATION OF MACHINERY. OPERATORS ASSUME SOLE RESPONSIBILITY FOR LASER SAFETY, EYE PROTECTION, CLAMPING, AND MACHINE LIMITS.`}
+      </div>
+    </div>
+  ),
 };
 
 /** The app's Reference Guide. Grouped tabs on the left, one explainer on the right. */
