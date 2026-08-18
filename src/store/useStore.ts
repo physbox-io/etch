@@ -22,6 +22,7 @@ import {
 import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type ToolProfile } from '../utils/tooling';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
+import { getBedBBox } from '../utils/geom';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -233,6 +234,7 @@ interface EtchStore {
   commitHistory: () => void;
   deleteElements: (ids: string[]) => void;
   duplicateSelected: () => void;
+  centerSelected: (axis: 'horizontal' | 'vertical') => void;
   clearCanvas: () => void;
 
   // Mandala Symmetry
@@ -719,6 +721,71 @@ export const useStore = create<EtchStore>((set, get) => ({
       history: newHistory,
       historyIndex: newHistory.length - 1,
     });
+  },
+
+  /**
+   * Centre on one axis. What "centre" means depends on how much is selected:
+   *
+   * - one element: its middle moves to the middle of the stock;
+   * - two or more: everything after the first moves onto the *first-selected*
+   *   element's middle, which is the "key object" convention every drawing
+   *   program uses — pick the thing to line up against, then the things to
+   *   line up. `selectedIds` is in click order (shift-click appends), so the
+   *   first entry really is the one the operator picked first.
+   *
+   * The move is computed from *bed* boxes, not from `el.x`: a rotated or
+   * scaled shape's origin is nowhere near its visual middle, and centring on
+   * `x` alone would leave it visibly off.
+   */
+  centerSelected: (axis) => {
+    const { document, selectedIds, history, historyIndex } = get();
+    if (selectedIds.length === 0) return;
+
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (selected.length === 0) return;
+
+    /** Where each moving element is being asked to put its middle. */
+    let targetX: number;
+    let targetY: number;
+    let movers: EtchElement[];
+
+    if (selected.length === 1) {
+      targetX = document.width / 2;
+      targetY = document.height / 2;
+      movers = selected;
+    } else {
+      const anchor = getBedBBox(selected[0]);
+      targetX = anchor.centerX;
+      targetY = anchor.centerY;
+      // The anchor itself must not move, or lining two things up would shift
+      // both and the one you deliberately placed would not stay put.
+      movers = selected.slice(1);
+    }
+
+    // Each mover is offset by its own centre, not by the group's: two shapes
+    // asked to share a centre have to end up on top of each other, which one
+    // group-wide delta cannot do.
+    const deltas = new Map<string, { dx: number; dy: number }>();
+    for (const el of movers) {
+      const b = getBedBBox(el);
+      deltas.set(el.id, {
+        dx: axis === 'horizontal' ? targetX - b.centerX : 0,
+        dy: axis === 'vertical' ? targetY - b.centerY : 0,
+      });
+    }
+    if ([...deltas.values()].every((d) => d.dx === 0 && d.dy === 0)) return;
+
+    const newDoc = {
+      ...document,
+      elements: document.elements.map((el) => {
+        const d = deltas.get(el.id);
+        return d ? { ...el, x: el.x + d.dx, y: el.y + d.dy } : el;
+      }),
+    };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+    set({ document: newDoc, history: newHistory, historyIndex: newHistory.length - 1 });
   },
 
   commitHistory: () => {

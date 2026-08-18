@@ -18,6 +18,8 @@ import {
   Upload,
   Route,
   X,
+  AlignHorizontalJustifyCenter,
+  AlignVerticalJustifyCenter,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -435,6 +437,7 @@ export const PropertiesSidebar: React.FC = () => {
     activeLayerId,
     mandalaSettings,
     updateElement,
+    centerSelected,
     setActiveLayer,
     addLayer,
     updateLayer,
@@ -451,7 +454,19 @@ export const PropertiesSidebar: React.FC = () => {
     setPropertiesOpen,
   } = useStore();
 
-  const selectedElement = document.elements.find((el) => selectedIds.includes(el.id));
+  /*
+    The *last* selected element, not the first one in document order. With a
+    multiple selection the inspector edits the element you most recently
+    clicked — that is the one the centre buttons move onto the first-selected
+    element, and showing some other element's numbers while a different one
+    jumps would be unreadable.
+  */
+  const selectedElement =
+    document.elements.find((el) => el.id === selectedIds[selectedIds.length - 1]) ?? null;
+  const anchorElement =
+    selectedIds.length > 1
+      ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
+      : null;
   // Laser is the default target — most Etch documents are cut on one, and the
   // exporter treats an unset machine as a laser too.
   const machineKind = machineKindOf(document);
@@ -504,6 +519,24 @@ export const PropertiesSidebar: React.FC = () => {
 
       {selectedElement ? (
         <div className="p-4 space-y-4 text-xs">
+          {/* Which of a multiple selection these fields are editing. Without
+              this the panel silently speaks for one of several selected
+              elements, and an edit lands somewhere the operator did not
+              expect. */}
+          {anchorElement && (
+            <div className="px-2.5 py-1.5 rounded bg-slate-100 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 text-[10px] text-slate-600 dark:text-slate-400 leading-relaxed">
+              {selectedIds.length} selected — editing{' '}
+              <span className="font-semibold text-slate-800 dark:text-slate-200">
+                {selectedElement.name}
+              </span>
+              , aligning to{' '}
+              <span className="font-semibold text-slate-800 dark:text-slate-200">
+                {anchorElement.name}
+              </span>
+              .
+            </div>
+          )}
+
           {/* Element Name */}
           <div>
             <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Element Name</label>
@@ -532,6 +565,40 @@ export const PropertiesSidebar: React.FC = () => {
                 onChange={(val) => updateElement(selectedElement.id, { y: val ?? 0 })}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
+            </div>
+            {/*
+              Centring is on bed boxes, not on `x`/`y`, so a rotated shape
+              lands where it looks centred rather than where its origin
+              happens to be. With more than one element selected the target is
+              the first-selected element's middle rather than the stock's. The
+              keyboard does the same thing: H and V in App.tsx call the same
+              store action.
+            */}
+            <div className="col-span-2 flex gap-2">
+              <button
+                onClick={() => centerSelected('horizontal')}
+                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                title={
+                  anchorElement
+                    ? `Centre horizontally on ${anchorElement.name} (H)`
+                    : 'Centre horizontally on the stock (H)'
+                }
+              >
+                <AlignHorizontalJustifyCenter className="w-3.5 h-3.5" />
+                Center H
+              </button>
+              <button
+                onClick={() => centerSelected('vertical')}
+                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                title={
+                  anchorElement
+                    ? `Centre vertically on ${anchorElement.name} (V)`
+                    : 'Centre vertically on the stock (V)'
+                }
+              >
+                <AlignVerticalJustifyCenter className="w-3.5 h-3.5" />
+                Center V
+              </button>
             </div>
             {selectedElement.w !== undefined && (
               <div>

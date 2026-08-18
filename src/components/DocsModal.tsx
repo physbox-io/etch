@@ -50,6 +50,16 @@ const Step = ({ title, children }: { title: string; children: React.ReactNode })
   </div>
 );
 
+/** One row of the shortcut tables: the keys on the left, what they do on the right. */
+const Key = ({ combo, children }: { combo: string; children: React.ReactNode }) => (
+  <div className="text-xs flex gap-3 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-slate-200 dark:[&:not(:first-child)]:border-slate-700/60 [&:not(:first-child)]:pt-2 [&:not(:last-child)]:pb-2">
+    <kbd className="shrink-0 w-28 font-mono text-[11px] text-slate-700 dark:text-slate-200">
+      {combo}
+    </kbd>
+    <span className="text-slate-500 dark:text-slate-400 leading-relaxed">{children}</span>
+  </div>
+);
+
 const Warn = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200/70 dark:border-amber-800/60 rounded-xl p-4 flex flex-col gap-2.5">
     <strong className="text-amber-800 dark:text-amber-300 font-semibold text-xs">{title}</strong>
@@ -93,6 +103,12 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           outline-only shape without aiming at its stroke. With snapping on, the group lands on the
           grid as one, keeping the shapes' spacing exact.
         </Step>
+        <Step title="Centring on the stock, or on another shape">
+          <strong>H</strong> and <strong>V</strong> — and the two buttons beside X/Y Position in the
+          inspector — centre the selection horizontally or vertically. One shape centres on the
+          stock; with several selected, everything after the first moves onto the first-selected
+          shape's centre, which is how you line a label up with the plate it sits on.
+        </Step>
         <Step title="Resize and rotate">
           The corner knob and the stem above the box appear for a single selection only, and act on
           the shape's own centre — shown by the crosshair in the middle of the box. Hold{' '}
@@ -104,6 +120,61 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         Locked shapes and shapes on hidden layers stay out of the way — they can neither be dragged
         nor caught by a box-select.
       </P>
+    </div>
+  ),
+
+  shortcuts: (
+    <div className="flex flex-col gap-4">
+      <H>⌨️ Keyboard Shortcuts</H>
+      <P>
+        Shortcuts are ignored while the cursor is in a text box or a number field, so typing a
+        dimension never triggers one.
+      </P>
+      <Card>
+        <Key combo="H">
+          Centre horizontally. With one shape selected its middle moves to the middle of the stock;
+          with several, everything after the first jumps onto the <strong>first-selected</strong>{' '}
+          shape's centre line, so pick the thing to line up against first.
+        </Key>
+        <Key combo="V">
+          Centre vertically — the same rule, on the other axis. The two buttons beside{' '}
+          <strong>X/Y Position</strong> in the inspector do exactly the same thing.
+        </Key>
+        <Key combo="Ctrl/Cmd + A">Select every shape in the document.</Key>
+        <Key combo="Ctrl/Cmd + C">Copy the selection.</Key>
+        <Key combo="Ctrl/Cmd + V">
+          Paste, offset slightly from the original so the copy is not hidden underneath it.
+        </Key>
+        <Key combo="Delete / ⌫">
+          Delete the selection — or, with the <strong>Node</strong> tool up, just the selected node
+          of the path being edited.
+        </Key>
+        <Key combo="Ctrl/Cmd + Z">Undo.</Key>
+        <Key combo="Ctrl/Cmd + Y">Redo.</Key>
+        <Key combo="Ctrl/Cmd + S">Save the document; add <strong>Shift</strong> for Save As.</Key>
+        <Key combo="Esc">Put the current tool away and go back to Select.</Key>
+      </Card>
+      <P>
+        Centring measures the shape as it is drawn on the material, rotation and scale included —
+        not its X/Y origin — so a rotated shape lands where it looks centred. It is one undo step,
+        however many shapes moved.
+      </P>
+      <H>With the mouse</H>
+      <Card>
+        <Key combo="Shift + click">Add a shape to the selection, or take it back out.</Key>
+        <Key combo="Alt + click">
+          Step down through overlapping shapes, one per click, to reach what is underneath.
+        </Key>
+        <Key combo="Shift + drag">
+          On empty canvas, box-select and add the catch to the current selection. On the rotate
+          stem, snap the angle to 15° steps.
+        </Key>
+      </Card>
+      <H>Drawing a path</H>
+      <Card>
+        <Key combo="Enter">Finish the open path the Pen tool is drawing.</Key>
+        <Key combo="Esc">Abandon it.</Key>
+      </Card>
     </div>
   ),
 

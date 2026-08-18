@@ -8,7 +8,10 @@
 export const DOCS_TABS = [
   {
     group: 'User Interface',
-    items: [{ id: 'selection', label: '🖱️ Selecting & Moving' }],
+    items: [
+      { id: 'selection', label: '🖱️ Selecting & Moving' },
+      { id: 'shortcuts', label: '⌨️ Keyboard Shortcuts' },
+    ],
   },
   {
     group: 'Design',

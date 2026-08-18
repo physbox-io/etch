@@ -79,6 +79,19 @@ export const App: React.FC = () => {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         e.preventDefault();
         useStore.getState().pasteClipboard();
+      } else if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.key.toLowerCase() === 'h' || e.key.toLowerCase() === 'v') &&
+        selectedIds.length > 0
+      ) {
+        // Bare H/V only: Ctrl/Cmd+V is paste, and stealing it here would mean
+        // the selection jumped to the middle instead of the clipboard landing.
+        e.preventDefault();
+        useStore
+          .getState()
+          .centerSelected(e.key.toLowerCase() === 'h' ? 'horizontal' : 'vertical');
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
         e.preventDefault();
         setSelectedIds(document.elements.map((el) => el.id));
