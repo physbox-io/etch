@@ -670,6 +670,7 @@ export function toolWarning(
   layer: { operation: LayerOperation; zDepth?: number },
   customCncTools?: ToolProfile[]
 ): string | null {
+  if (layer.operation === 'ghost') return null;
   const profile = findTool(machine, tool, customCncTools);
   if (!profile) return null;
 
@@ -694,6 +695,7 @@ export function toolWarning(
 
 /** The catalogued tool that best fits an operation, for sensible new layers. */
 export function suggestTool(machine: MachineKind, operation: LayerOperation, customCncTools?: ToolProfile[]): number {
+  if (operation === 'ghost') return DEFAULT_TOOL;
   const match = toolCatalog(machine, customCncTools).find(
     (t) => t.bestFor[0] === (operation === 'shade' ? 'etch' : operation)
   );

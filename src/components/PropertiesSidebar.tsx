@@ -2,7 +2,8 @@ import React from 'react';
 import { useStore } from '../store/useStore';
 import { FontPicker } from './FontPicker';
 import { NumberInput } from './NumberInput';
-import type { LayerOperation, EtchLayer } from '../types/etch';
+import type { LayerOperation, EtchLayer, MachinedLayer } from '../types/etch';
+import { isMachinedLayer } from '../types/etch';
 import {
   SlidersHorizontal,
   Layers,
@@ -66,7 +67,12 @@ const SMALL_LABEL =
  * different laser should derive that laser's numbers, not carry these.
  */
 const LaserLayerCutting: React.FC<{
-  layer: EtchLayer;
+  /**
+   * Narrower than `EtchLayer` on purpose: feeds are derived per operation, and
+   * a ghost layer has none — it is a guide, not a thing the tube ever fires at.
+   * Taking the narrow type is what makes the caller prove it before rendering.
+   */
+  layer: MachinedLayer;
   material: MaterialProfile;
   /** The laser on the bench, chosen in the status bar — see the store. */
   source: LaserSource;
@@ -1083,6 +1089,7 @@ export const PropertiesSidebar: React.FC = () => {
                       <option value="etch">Etch</option>
                       <option value="fill">Fill</option>
                       <option value="shade">Shade</option>
+                      <option value="ghost">Ghost</option>
                     </select>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
@@ -1121,7 +1128,16 @@ export const PropertiesSidebar: React.FC = () => {
                   what the app knew and an unfair thing to hand someone who had
                   just picked a material.
                 */}
-                {isLaser ? (
+                {!isMachinedLayer(layer) ? (
+                  <div className="p-2 rounded bg-slate-100 dark:bg-slate-850 border border-slate-200 dark:border-slate-700/60 text-[10px] text-slate-600 dark:text-slate-300 space-y-1">
+                    <div className="font-semibold flex items-center gap-1 text-slate-700 dark:text-slate-200">
+                      <span>👻 Ghost Layer (Guide / Reference)</span>
+                    </div>
+                    <p className="leading-snug text-slate-500 dark:text-slate-400">
+                      Geometry on this layer serves as guides and anchors (e.g. text-on-path). It is visible on canvas with dashed styling but is excluded from toolpaths and G-code.
+                    </p>
+                  </div>
+                ) : isLaser ? (
                   <LaserLayerCutting
                     layer={layer}
                     material={material}
@@ -1145,7 +1161,7 @@ export const PropertiesSidebar: React.FC = () => {
                     are cut in separate blocks with a pause between them, so this
                     is a machining decision as much as a settings one. A laser
                     has no catalogue and no choice to make — see tooling.ts. */}
-                {hasToolCatalog(machineKind, cncTools) && (
+                {isMachinedLayer(layer) && hasToolCatalog(machineKind, cncTools) && (
                   <div
                     className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/50"
                     onClick={(e) => e.stopPropagation()}

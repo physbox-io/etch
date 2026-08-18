@@ -1241,21 +1241,30 @@ export const EtchCanvas: React.FC = () => {
           // One transform for the element, shared verbatim with the selection
           // overlay below, so the two can never drift apart.
           const transform = getElementTransform(el);
-          const strokeColor = isSelected ? '#f59e0b' : el.strokeColor || layer?.color || '#ef4444';
+          const isGhost = layer?.operation === 'ghost';
+          const strokeColor = isSelected ? '#f59e0b' : el.strokeColor || layer?.color || (isGhost ? '#94a3b8' : '#ef4444');
           const strokeW = isSelected ? (el.strokeWidth || 0.5) + 0.3 : el.strokeWidth || 0.5;
           const fillColor =
-            el.fillColor && el.fillColor !== 'none'
-              ? el.fillColor
-              : layer?.operation === 'fill'
-                ? strokeColor
-                : 'none';
+            isGhost
+              ? 'none'
+              : el.fillColor && el.fillColor !== 'none'
+                ? el.fillColor
+                : layer?.operation === 'fill'
+                  ? strokeColor
+                  : 'none';
           const common = {
             stroke: strokeColor,
             strokeWidth: strokeW,
             fill: fillColor,
-            opacity: el.opacity ?? 1,
+            opacity: (el.opacity ?? 1) * (isGhost ? 0.6 : 1),
             strokeDasharray:
-              el.strokeDash === 'dashed' ? '2,1' : el.strokeDash === 'dotted' ? '0.4,1' : undefined,
+              el.strokeDash === 'dashed'
+                ? '2,1'
+                : el.strokeDash === 'dotted'
+                  ? '0.4,1'
+                  : isGhost
+                    ? '3,2'
+                    : undefined,
           };
           const isPathish = ['path', 'freehand', 'symbol', 'star', 'bezier'].includes(el.type);
           const polyPoints =

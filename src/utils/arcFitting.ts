@@ -50,21 +50,24 @@ export function circleFrom3Points(
     (p1Sq * (p3.x - p2.x) + p2Sq * (p1.x - p3.x) + p3Sq * (p2.x - p1.x)) / d;
 
   const radius = Math.hypot(p1.x - cx, p1.y - cy);
-  if (!isFinite(radius) || radius < 0.1 || radius > 50000) return null;
+  // Practical CAM machine bounds: reject degenerate radii (< 0.5 mm) and
+  // enormous radii (> 1000 mm). Fitting a 10-meter radius circle to three micro-points
+  // causes severe GRBL radius mismatch (error 33) and buffer stalls.
+  if (!isFinite(radius) || radius < 0.5 || radius > 1000) return null;
 
   return { center: { x: cx, y: cy }, radius };
 }
 
 /**
- * Returns angular swept direction from p1 -> p2 -> p3 around center in document coordinates (Y-down).
- * True if clockwise in SVG space, false if counter-clockwise.
+ * Which way p1 -> p2 -> p3 turns, as it looks on a Y-down canvas: true for
+ * clockwise on screen, false for counter-clockwise.
+ *
+ * The centre is not a parameter because the answer does not depend on it — the
+ * sign of the turn is all there is. Note that "clockwise on screen" is the
+ * *counter*-clockwise sign in the raw numbers, which is the distinction
+ * `arcToMachineGCode` has to undo, and once got backwards.
  */
-export function getArcDirection(
-  p1: Pt,
-  p2: Pt,
-  p3: Pt,
-  center: Pt
-): boolean {
+export function getArcDirection(p1: Pt, p2: Pt, p3: Pt): boolean {
   // 2D cross product of (p2 - p1) x (p3 - p2)
   const cross =
     (p2.x - p1.x) * (p3.y - p2.y) - (p2.y - p1.y) * (p3.x - p2.x);
@@ -87,6 +90,13 @@ export function testArcCandidate(
 
   const pStart = points[startIndex];
   const pEnd = points[endIndex];
+
+  // Minimum chord length check: if endpoints are closer than 0.5 mm, fitting an arc
+  // is dangerous. In G-code, identical or sub-micron endpoints are interpreted by CNC
+  // and laser controllers (GRBL) as a full 360-degree circle!
+  const chordLen = Math.hypot(pEnd.x - pStart.x, pEnd.y - pStart.y);
+  if (chordLen < 0.5) return null;
+
   const midIndex = Math.floor((startIndex + endIndex) / 2);
   const pMid = points[midIndex];
 
@@ -94,7 +104,7 @@ export function testArcCandidate(
   if (!circle) return null;
 
   const { center, radius } = circle;
-  const clockwise = getArcDirection(pStart, pMid, pEnd, center);
+  const clockwise = getArcDirection(pStart, pMid, pEnd);
 
   // Verify all points between start and end lie on this circle within tolerance
   let prevAngle = Math.atan2(pStart.y - center.y, pStart.x - center.x);
@@ -126,6 +136,10 @@ export function testArcCandidate(
     if (totalSweep > Math.PI + 1e-4) return null;
     prevAngle = angle;
   }
+
+  // Require a minimum sweep angle (~3 degrees / 0.05 rad) to avoid turning
+  // near-straight lines into large-radius micro-arcs that fail controller arc tolerance
+  if (totalSweep < 0.05) return null;
 
   return { center, radius, clockwise };
 }
@@ -205,10 +219,20 @@ export function fitArcsToPolyline(
 /**
  * Converts a document-space ArcMove into GRBL machine space G-code parameters.
  *
- * Handles SVG Y-down to GRBL Y-up inversion:
- * In SVG/Document space (Y increases downward), clockwise arc (G2 doc) rotates X+ towards Y+.
- * When docToMachine mirrors Y (top-left or center origins), clockwise in doc becomes
- * COUNTER-CLOCKWISE in GRBL machine space, which requires emitting G3!
+ * The subtlety is that `clockwise` here is a *visual* fact about the canvas, not
+ * a numeric one. `getArcDirection` returns true when the points turn left in the
+ * raw numbers — mathematically counter-clockwise — which renders as clockwise
+ * only because document Y points downward.
+ *
+ * G2/G3 are defined in the machine's own frame, where Y points up. So when
+ * `docToMachine` mirrors Y (top-left and center origins) the numeric sense flips
+ * back and a doc-visual-clockwise arc is genuinely clockwise to GRBL: G2. It is
+ * `bottom-left` — the origin that passes coordinates through untouched — that
+ * keeps the raw numeric sense and therefore emits G3.
+ *
+ * Getting this backwards does not produce a slightly wrong arc; it produces the
+ * complementary one. A 90 degree corner is cut as the 270 degrees the other way
+ * round, which is what turned text-on-a-path into a field of loops.
  */
 export function arcToMachineGCode(
   doc: EtchDocument,
@@ -225,8 +249,9 @@ export function arcToMachineGCode(
   // Determine whether docToMachine flips the Y axis (top-left and center flip Y; bottom-left does not)
   const flipsY = doc.origin !== 'bottom-left';
 
-  // Inverted Y swaps Clockwise <-> Counter-Clockwise
-  const machineClockwise = flipsY ? !arc.clockwise : arc.clockwise;
+  // Mirroring Y restores the machine's numeric sense; leaving it alone preserves
+  // the document's, which is the inverse of how the arc looks on screen.
+  const machineClockwise = flipsY ? arc.clockwise : !arc.clockwise;
   const gCommand = machineClockwise ? 'G2' : 'G3';
 
   return {

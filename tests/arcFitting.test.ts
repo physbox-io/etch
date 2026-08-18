@@ -9,6 +9,7 @@ import {
 } from '../src/utils/arcFitting';
 import type { Pt } from '../src/utils/pathFlatten';
 import type { EtchDocument } from '../src/types/etch';
+import { docToMachine } from '../src/utils/machineCoords';
 
 describe('circleFrom3Points', () => {
   it('computes correct center and radius for known circle points', () => {
@@ -109,46 +110,123 @@ describe('arcToMachineGCode coordinate mapping', () => {
     elements: [],
   };
 
-  it('inverts CW/CCW when origin is top-left (Y flips in GRBL)', () => {
-    // Clockwise arc in SVG space (Y-down)
-    const arc: ArcMove = {
-      type: 'arc',
-      from: { x: 50, y: 50 },
-      to: { x: 60, y: 60 },
-      center: { x: 50, y: 60 },
-      radius: 10,
-      clockwise: true,
-    };
+  /**
+   * Simulates how GRBL actually interpolates the emitted word, rather than
+   * restating the implementation's own rule back at it. G2 sweeps clockwise in
+   * the machine frame (decreasing angle about the centre), G3 counter-clockwise.
+   * A wrong G-word does not shift the arc slightly — it cuts the complementary
+   * arc, so a 90 degree corner comes out as a 270 degree loop. That is what put
+   * circles where a line of Lobster text on a curved path should have been.
+   */
+  function simulate(doc: EtchDocument, arc: ArcMove, docMid: Pt) {
+    const w = arcToMachineGCode(doc, arc);
+    const start = docToMachine(doc, arc.from.x, arc.from.y);
+    const centre = { x: start.x + w.i, y: start.y + w.j };
+    const angle = (p: Pt) => Math.atan2(p.y - centre.y, p.x - centre.x);
+    const positive = (a: number) => (a <= 0 ? a + 2 * Math.PI : a);
+    const cw = w.gCommand === 'G2';
+    const along = (p: Pt) =>
+      positive(cw ? angle(start) - angle(p) : angle(p) - angle(start));
+    const sweep = along(w.end);
+    return { word: w, sweep, midFraction: along(docToMachine(doc, docMid.x, docMid.y)) / sweep };
+  }
 
-    const docTopLeft: EtchDocument = { ...baseDoc, origin: 'top-left' };
-    const gcodeWord = arcToMachineGCode(docTopLeft, arc);
+  // A quarter turn in document space: (60,50) -> (50,60) about centre (50,50),
+  // passing through the 45 degree point. Visually clockwise on a Y-down canvas.
+  const quarter: ArcMove = {
+    type: 'arc',
+    from: { x: 60, y: 50 },
+    to: { x: 50, y: 60 },
+    center: { x: 50, y: 50 },
+    radius: 10,
+    clockwise: true,
+  };
+  const quarterMid: Pt = {
+    x: 50 + 10 * Math.cos(Math.PI / 4),
+    y: 50 + 10 * Math.sin(Math.PI / 4),
+  };
 
-    // SVG CW with Y-flip becomes Machine CCW -> G3
-    expect(gcodeWord.gCommand).toBe('G3');
-    // Start is doc(50, 50) -> machine(50, 150)
-    // Center is doc(50, 60) -> machine(50, 140)
-    // I = center.x - start.x = 0
-    // J = center.y - start.y = 140 - 150 = -10
-    expect(gcodeWord.i).toBeCloseTo(0, 3);
-    expect(gcodeWord.j).toBeCloseTo(-10, 3);
+  it('agrees with getArcDirection about which way the sample arc turns', () => {
+    // Guards the pairing above: if the flag and the fitter ever disagree, every
+    // other assertion here would be testing a case the fitter cannot produce.
+    expect(getArcDirection(quarter.from, quarterMid, quarter.to)).toBe(
+      quarter.clockwise
+    );
   });
 
-  it('preserves CW/CCW when origin is bottom-left (no Y-flip)', () => {
-    const arc: ArcMove = {
-      type: 'arc',
-      from: { x: 50, y: 50 },
-      to: { x: 60, y: 60 },
-      center: { x: 50, y: 60 },
-      radius: 10,
-      clockwise: true,
-    };
+  for (const origin of ['top-left', 'center', 'bottom-left'] as const) {
+    it(`sweeps the short way through the real mid point with a ${origin} origin`, () => {
+      const doc = { ...baseDoc, origin };
+      const { sweep, midFraction } = simulate(doc, quarter, quarterMid);
+      expect(sweep).toBeCloseTo(Math.PI / 2, 4);
+      expect(midFraction).toBeCloseTo(0.5, 4);
+    });
 
-    const docBottomLeft: EtchDocument = { ...baseDoc, origin: 'bottom-left' };
-    const gcodeWord = arcToMachineGCode(docBottomLeft, arc);
+    it(`sweeps the short way for the reversed arc with a ${origin} origin`, () => {
+      const doc = { ...baseDoc, origin };
+      const reversed: ArcMove = {
+        ...quarter,
+        from: quarter.to,
+        to: quarter.from,
+        clockwise: false,
+      };
+      const { sweep, midFraction } = simulate(doc, reversed, quarterMid);
+      expect(sweep).toBeCloseTo(Math.PI / 2, 4);
+      expect(midFraction).toBeCloseTo(0.5, 4);
+    });
+  }
 
-    // No Y-flip: CW remains CW -> G2
-    expect(gcodeWord.gCommand).toBe('G2');
-    expect(gcodeWord.i).toBeCloseTo(0, 3);
-    expect(gcodeWord.j).toBeCloseTo(10, 3);
+  it('mirrors the centre offset for a Y-flipping origin', () => {
+    const w = arcToMachineGCode({ ...baseDoc, origin: 'top-left' }, quarter);
+    // Start doc(60,50) -> machine(60,150); centre doc(50,50) -> machine(50,150)
+    expect(w.i).toBeCloseTo(-10, 3);
+    expect(w.j).toBeCloseTo(0, 3);
+  });
+
+  it('emits opposite G-words for the same arc under flipping and non-flipping origins', () => {
+    // bottom-left passes coordinates through, so it is the one origin whose
+    // numeric turn direction is not mirrored on the way out.
+    const flipped = arcToMachineGCode({ ...baseDoc, origin: 'top-left' }, quarter);
+    const passthrough = arcToMachineGCode({ ...baseDoc, origin: 'bottom-left' }, quarter);
+    expect(flipped.gCommand).toBe('G2');
+    expect(passthrough.gCommand).toBe('G3');
+  });
+});
+
+describe('arcFitting safety and rejection of degeneracies', () => {
+  it('rejects micro-chords (< 0.5 mm) to avoid 360-degree full-circle loop bug', () => {
+    // 4 points spanning only 0.1 mm
+    const microPoints: Pt[] = [
+      { x: 10.00, y: 10.00 },
+      { x: 10.03, y: 10.02 },
+      { x: 10.06, y: 10.03 },
+      { x: 10.09, y: 10.04 },
+    ];
+    const candidate = testArcCandidate(microPoints, 0, 3, 0.02);
+    expect(candidate).toBeNull();
+
+    const commands = fitArcsToPolyline(microPoints, 0.02);
+    expect(commands.every((c) => c.type === 'line')).toBe(true);
+  });
+
+  it('rejects arcs with tiny angular sweep (< 0.05 rad)', () => {
+    // Almost collinear points over a 5mm chord
+    const nearlyFlat: Pt[] = [
+      { x: 0, y: 0 },
+      { x: 1.5, y: 0.001 },
+      { x: 3.0, y: 0.002 },
+      { x: 5.0, y: 0.003 },
+    ];
+    const candidate = testArcCandidate(nearlyFlat, 0, 3, 0.02);
+    expect(candidate).toBeNull();
+  });
+
+  it('rejects circles with radius > 1000 mm in circleFrom3Points', () => {
+    const p1 = { x: 0, y: 0 };
+    const p2 = { x: 10, y: 0.001 };
+    const p3 = { x: 20, y: 0 };
+    const circle = circleFrom3Points(p1, p2, p3);
+    // Radius would be > 25,000 mm, which exceeds 1000 mm limit
+    expect(circle).toBeNull();
   });
 });

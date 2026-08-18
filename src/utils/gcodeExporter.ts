@@ -1,4 +1,5 @@
-import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
+import type { EtchDocument, EtchElement, EtchLayer, MachinedLayer, MachinedOperation } from '../types/etch';
+import { isMachinedLayer } from '../types/etch';
 import { localToBed, isOutsideStock, bedBoxOfAll } from './geom';
 import { flattenPath, type Pt } from './pathFlatten';
 import { clipValuedPolylineToStock, isWhollyInside } from './clipToStock';
@@ -216,7 +217,7 @@ export function scoreLineRisk(doc: EtchDocument): ScoreLineRisk | null {
 
   let worst: ScoreLineRisk | null = null;
   for (const layer of doc.layers) {
-    if (!layer.visible || layer.operation === 'cut') continue;
+    if (!layer.visible || layer.operation === 'cut' || layer.operation === 'ghost') continue;
     // A relief is area work, not a scored line, and is checked by
     // `reliefFloorRisk` against what it leaves under itself instead.
     if (layer.operation === 'shade') continue;
@@ -269,7 +270,7 @@ function safeEtchDepth(stockThickness: number): number {
 
 export interface GCodeSegment {
   layerId: string;
-  type: 'cut' | 'etch' | 'fill' | 'shade';
+  type: MachinedOperation;
   /** T-number from the layer. Segments only run consecutively if these match. */
   tool: number;
   /** Cutting feed along the path, mm/min — derived, or the layer's override. */
@@ -533,7 +534,10 @@ export function planToolpath(
 
   // Extract path points from all visible elements across layers
   for (const layer of doc.layers) {
-    if (!layer.visible) continue;
+    // A ghost layer is the anchor a piece of text rides, not something to cut.
+    // The guard narrows the type as well as skipping the work, so everything
+    // below can take a layer that is known to be machined.
+    if (!layer.visible || !isMachinedLayer(layer)) continue;
     const layerElements = doc.elements.filter((el) => el.layerId === layer.id && el.visible);
 
     /**
@@ -933,7 +937,7 @@ interface LayerCutting {
  */
 function laserFillCutting(
   cut: LayerCutting,
-  layer: EtchLayer,
+  layer: MachinedLayer,
   material: ReturnType<typeof findMaterial>,
   options: GCodeOptions,
   pitch: number
@@ -954,7 +958,7 @@ function laserFillCutting(
 }
 
 function resolveLayerCutting(
-  layer: EtchLayer,
+  layer: MachinedLayer,
   machine: MachineKind,
   material: ReturnType<typeof findMaterial>,
   spindle: SpindleRange,
@@ -1158,7 +1162,7 @@ function resolveCutSide(layer: EtchLayer): OffsetSide {
 
 /** Assembles a segment from the layer's resolved cutting values. */
 function makeSegment(
-  layer: EtchLayer,
+  layer: MachinedLayer,
   cut: LayerCutting,
   options: GCodeOptions,
   geom: {
@@ -1208,7 +1212,7 @@ function makeSegment(
  * pass anyway, and roughing it would be a tool change to remove nothing.
  */
 function roughingPlan(
-  layer: EtchLayer,
+  layer: MachinedLayer,
   options: GCodeOptions,
   material: ReturnType<typeof findMaterial>,
   stock: StockSettings,
@@ -1253,7 +1257,7 @@ function roughingPlan(
  */
 function planShadeSegments(
   el: EtchElement,
-  layer: EtchLayer,
+  layer: MachinedLayer,
   cut: LayerCutting,
   options: GCodeOptions,
   material: ReturnType<typeof findMaterial>,
@@ -1365,7 +1369,7 @@ function planShadeSegments(
     // emitted as the layer it would have been if the rougher were its tool.
     // Without this the rough segments come out labelled with the finisher's
     // T-number and the job never stops to change tools.
-    on: EtchLayer = layer
+    on: MachinedLayer = layer
   ) =>
     makeSegment(on, cutting, options, {
       points: run.points.map((p) => localToBed(el, p.x, p.y)),
@@ -1930,11 +1934,34 @@ export function generateGCode(
             lastZ = m.z2;
           } else {
             const arcG = arcToMachineGCode(doc, cmd);
-            const feed = Math.max(1, Math.round(m.feed));
-            const fWord = feed !== lastFeed ? ` F${feed}` : '';
-            gcode += `${arcG.gCommand} X${arcG.end.x.toFixed(3)} Y${arcG.end.y.toFixed(3)} I${arcG.i.toFixed(3)} J${arcG.j.toFixed(3)}${fWord}${sWord}\n`;
-            lastFeed = feed;
-            lastZ = m.z2;
+            const startM = docToMachine(doc, cmd.from.x, cmd.from.y);
+            const chord = Math.hypot(arcG.end.x - startM.x, arcG.end.y - startM.y);
+            const rStart = Math.hypot(arcG.i, arcG.j);
+            const rEnd = Math.hypot(arcG.end.x - (startM.x + arcG.i), arcG.end.y - (startM.y + arcG.j));
+            const deltaR = Math.abs(rStart - rEnd);
+
+            // Safety guard: if quantized endpoints are degenerate or deltaR exceeds GRBL tolerance (0.003 mm),
+            // emit as linear move to prevent 360-degree full-circle loops or GRBL error 33 aborts
+            if (chord < 0.01 || deltaR > 0.003) {
+              const end = toMachine(cmd.to.x, cmd.to.y);
+              const feed = Math.max(1, Math.round(m.feed));
+              const fWord = feed !== lastFeed ? ` F${feed}` : '';
+              const zChanged =
+                !options.laserMode &&
+                (lastZ === null || Math.abs(m.z2 - lastZ) > 1e-6);
+              const axes = `X${end.x.toFixed(3)} Y${end.y.toFixed(3)}${
+                zChanged ? ` Z${m.z2.toFixed(3)}` : ''
+              }`;
+              gcode += `G1 ${axes}${fWord}${sWord}\n`;
+              lastFeed = feed;
+              lastZ = m.z2;
+            } else {
+              const feed = Math.max(1, Math.round(m.feed));
+              const fWord = feed !== lastFeed ? ` F${feed}` : '';
+              gcode += `${arcG.gCommand} X${arcG.end.x.toFixed(3)} Y${arcG.end.y.toFixed(3)} I${arcG.i.toFixed(3)} J${arcG.j.toFixed(3)}${fWord}${sWord}\n`;
+              lastFeed = feed;
+              lastZ = m.z2;
+            }
           }
         }
 

@@ -66,6 +66,43 @@ export function sanitizeDoc(doc: EtchDocument): EtchDocument {
   return touched ? { ...doc, elements } : doc;
 }
 
+/**
+ * Sends any ghosted anchor path that no text rides any more back to the layer
+ * it came from.
+ *
+ * Attaching text to a path ghosts the anchor so it stops being cut; this is the
+ * other half, and it has to run on every way the last text can leave — detaching
+ * it, pointing it at a different path, and deleting the text outright. Miss one
+ * and a shape the operator drew to be cut stays a guide forever, with nothing
+ * left in the document saying where it belonged.
+ */
+function releaseUnusedAnchors(doc: EtchDocument): EtchDocument {
+  const ghostLayerIds = new Set(
+    doc.layers.filter((l) => l.operation === 'ghost').map((l) => l.id)
+  );
+  if (ghostLayerIds.size === 0) return doc;
+
+  const stillRidden = new Set(
+    doc.elements.filter((el) => el.type === 'text' && el.textPathId).map((el) => el.textPathId)
+  );
+
+  let touched = false;
+  const elements = doc.elements.map((el) => {
+    if (!el.ghostFromLayerId || !ghostLayerIds.has(el.layerId)) return el;
+    if (stillRidden.has(el.id)) return el;
+    // The layer it came from can have been deleted since. Leaving it ghosted is
+    // the honest outcome — re-homing it to some arbitrary survivor would put
+    // geometry back in the job that nobody asked to cut.
+    if (!doc.layers.some((l) => l.id === el.ghostFromLayerId)) return el;
+    touched = true;
+    const restored = { ...el, layerId: el.ghostFromLayerId };
+    delete restored.ghostFromLayerId;
+    return restored;
+  });
+
+  return touched ? { ...doc, elements } : doc;
+}
+
 interface EtchStore {
   document: EtchDocument;
   activeTool: ToolMode;
@@ -607,10 +644,67 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   updateElement: (id, updates, transient = false) => {
     const { document, history, historyIndex } = get();
-    const newElements = document.elements.map((el) =>
+
+    let newLayers = document.layers;
+    let newElements = document.elements.map((el) =>
       el.id === id ? { ...el, ...updates } : el
     );
-    const newDoc = { ...document, elements: newElements };
+
+    /*
+      Attaching text to a path turns that path into a guide, so it moves onto a
+      ghost layer and stops being cut — otherwise the anchor is engraved along
+      with the lettering, which is never what anyone meant by "text on a path".
+
+      The condition is `'textPathId' in updates`, not a truthy `textPathId`,
+      because detaching and re-pointing have to be handled too. The move is
+      remembered on the anchor and undone when the last text leaves it: a shape
+      the operator drew to be cut, then happened to run some text along, must
+      not quietly stay a guide forever with nothing in the document recording
+      where it belonged.
+    */
+    if ('textPathId' in updates) {
+      const previousAnchorId = document.elements.find((e) => e.id === id)?.textPathId;
+      const nextAnchorId = updates.textPathId;
+      // Releasing the path being left behind is `releaseUnusedAnchors` below,
+      // which runs on every edit and so also covers the text being deleted.
+
+      if (nextAnchorId && nextAnchorId !== previousAnchorId) {
+        const anchor = document.elements.find((e) => e.id === nextAnchorId);
+        let ghostLayer = newLayers.find((l) => l.operation === 'ghost');
+        if (anchor && !ghostLayer) {
+          ghostLayer = {
+            id: `ghost_${Date.now()}`,
+            name: 'Ghost (Guides)',
+            color: '#94a3b8',
+            operation: 'ghost',
+            visible: true,
+            locked: false,
+            speed: 0,
+            power: 0,
+            passes: 0,
+            zDepth: 0,
+          };
+          newLayers = [...newLayers, ghostLayer];
+        }
+        // Already ghosted means a second run of text shares this anchor. Leave
+        // `ghostFromLayerId` alone — the first attach recorded the real origin
+        // and overwriting it with the ghost layer would strand the path there.
+        if (anchor && ghostLayer && anchor.layerId !== ghostLayer.id) {
+          const from = anchor.layerId;
+          newElements = newElements.map((el) =>
+            el.id === nextAnchorId
+              ? { ...el, layerId: ghostLayer!.id, ghostFromLayerId: from }
+              : el
+          );
+        }
+      }
+    }
+
+    const newDoc = releaseUnusedAnchors({
+      ...document,
+      layers: newLayers,
+      elements: newElements,
+    });
 
     if (transient) {
       set({ document: newDoc });
@@ -638,7 +732,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   deleteElements: (ids) => {
     const { document, history, historyIndex } = get();
     const newElements = document.elements.filter((el) => !ids.includes(el.id));
-    const newDoc = { ...document, elements: newElements };
+    // Deleting the text is one of the ways an anchor path stops being ridden.
+    const newDoc = releaseUnusedAnchors({ ...document, elements: newElements });
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
 
@@ -797,9 +892,22 @@ export const useStore = create<EtchStore>((set, get) => ({
     const fallbackId = newLayers[0].id;
     // Re-home this layer's elements; orphaned elements would still render but
     // silently vanish from SVG export and G-code, which both iterate layers.
-    const newElements = document.elements.map((el) =>
-      el.layerId === layerId ? { ...el, layerId: fallbackId } : el
-    );
+    //
+    // A ghosted anchor remembers the layer it was pulled off, so deleting the
+    // ghost layer sends it back there rather than to whichever layer happens to
+    // be first — which would put it in the job at that layer's settings.
+    const newElements = document.elements.map((el) => {
+      if (el.layerId !== layerId) return el;
+      const home =
+        el.ghostFromLayerId && newLayers.some((l) => l.id === el.ghostFromLayerId)
+          ? el.ghostFromLayerId
+          : fallbackId;
+      const moved = { ...el, layerId: home };
+      // It is off the ghost layer either way now, so the note has nothing left
+      // to say and would only point at a layer this element no longer knows.
+      delete moved.ghostFromLayerId;
+      return moved;
+    });
     set({
       document: { ...document, layers: newLayers, elements: newElements },
       activeLayerId: activeLayerId === layerId ? fallbackId : activeLayerId,

@@ -2,7 +2,7 @@ import { findMaterial, type LaserMaterial, type MaterialId, type MaterialProfile
 import { describeLaserSource, type LaserSource } from './machineSettings';
 import { DEFAULT_HATCH_SPACING } from './hatchFill';
 import { defaultFeedDiameter, type ToolProfile } from './tooling';
-import type { LayerOperation } from '../types/etch';
+import type { MachinedOperation } from '../types/etch';
 
 /**
  * The operation a layer's *feeds* are derived as.
@@ -14,7 +14,7 @@ import type { LayerOperation } from '../types/etch';
  * the same place, and inventing a fourth recipe for it would be a second table
  * to keep in step with the first.
  */
-export function feedsOperation(operation: LayerOperation): 'cut' | 'etch' | 'fill' {
+export function feedsOperation(operation: MachinedOperation): 'cut' | 'etch' | 'fill' {
   return operation === 'shade' ? 'fill' : operation;
 }
 

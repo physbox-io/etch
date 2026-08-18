@@ -8,8 +8,33 @@ import type { MaterialId } from '../utils/materials';
  * depth are what black comes out at rather than what everything comes out at.
  * Grey lands proportionally between that and nothing — a photo engraved as
  * tone, or carved as a relief on a router.
+ *
+ * `ghost` is for construction/anchoring lines (e.g. guide paths for text-on-path).
+ * Ghost layers are drawn on canvas for reference but are never machined into G-code.
  */
-export type LayerOperation = 'cut' | 'etch' | 'fill' | 'shade';
+export type LayerOperation = 'cut' | 'etch' | 'fill' | 'shade' | 'ghost';
+
+/**
+ * The operations that actually put the tool in the material.
+ *
+ * `ghost` is deliberately outside it. A guide path is drawn and never planned,
+ * so a toolpath segment carrying `type: 'ghost'` would be a contradiction — not
+ * a case every consumer of a segment has to remember to handle. Keeping the
+ * narrower type is what makes the planner's ghost skip load-bearing instead of
+ * merely conventional: forget it and the compiler says so.
+ */
+export type MachinedOperation = Exclude<LayerOperation, 'ghost'>;
+
+/**
+ * A layer that is actually cut. The planner narrows to this once, at the top of
+ * its layer loop, so nothing downstream has to re-ask whether a guide path
+ * belongs in the file — or what feeds to derive for one.
+ */
+export type MachinedLayer = EtchLayer & { operation: MachinedOperation };
+
+export function isMachinedLayer(layer: EtchLayer): layer is MachinedLayer {
+  return layer.operation !== 'ghost';
+}
 
 export interface EtchLayer {
   id: string;
@@ -190,6 +215,15 @@ export interface EtchElement {
   textPathOffset?: number;
   textPathAlign?: 'left' | 'center' | 'right';
   textPathSide?: 'above' | 'below';
+  /**
+   * Set on the *anchor path* when attaching text moved it onto a ghost layer:
+   * the layer it came from, so detaching can put it back.
+   *
+   * Without it the move is one-way — a shape the operator drew to be cut, and
+   * then happened to run some text along, would quietly stop being cut and
+   * there would be nothing left in the document saying where it belonged.
+   */
+  ghostFromLayerId?: string;
   // symbol
   symbolId?: string;
   // bezier / freehand / path
