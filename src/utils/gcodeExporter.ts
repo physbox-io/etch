@@ -35,7 +35,7 @@ import {
 } from './feeds';
 import { DEFAULT_STOCK_THICKNESS_MM, findMaterial } from './materials';
 import { readSpindleRange, readLaserSource, describeLaserSource, type LaserSource } from './machineSettings';
-import { offsetContours, type OffsetSide } from './contourOffset';
+import { strokeBandPasses, offsetContours, type OffsetSide } from './contourOffset';
 import { planMoves, type PlannedMove } from './toolpathMoves';
 import { fitArcsToPolyline, arcToMachineGCode } from './arcFitting';
 import { generateVCarveToolpaths } from './vCarve';
@@ -368,6 +368,33 @@ const OPERATION_ORDER: Record<GCodeSegment['type'], number> = { shade: 0, fill: 
 export const SAFE_Z = 5;
 
 /**
+ * The coordinate-system preamble every program starts with.
+ *
+ * `G90`/`G21` were always here. `G54` and `G92.1` were not, and their absence
+ * is a job that lands somewhere other than where it was zeroed:
+ *
+ *  - `zeroXY` writes **G54** specifically, via `G10 L20 P1`. A controller left
+ *    modal on G55-G59 — which GRBL keeps across a reset, so it can be left over
+ *    from a session months ago — is then zeroed in one coordinate system and
+ *    cut in another.
+ *  - a G92 offset survives a reset too, and rides on top of whatever G54 says.
+ *    `G10 L20` folds in one that is already active, so the readout still says
+ *    zero and the job is still shifted.
+ *
+ * Both surface the same way: the whole job translated by a constant,
+ * undistorted, with the drawing and the preview agreeing with each other and
+ * not with the material. Naming the frame costs two lines and removes the
+ * class. It belongs to the dry run as much as to the job — a dry run that
+ * checks the origin against a different coordinate system than the cut is
+ * worse than none, because it reports success.
+ */
+const COORD_SYSTEM_PREAMBLE =
+  `G90 ; Absolute positioning\n` +
+  `G21 ; Millimeter units\n` +
+  `G54 ; Work coordinate system 1 — the one zeroing writes with G10 L20 P1\n` +
+  `G92.1 ; Clear any leftover G92 offset riding on top of it\n`;
+
+/**
  * Longest hop the tool will make while staying down in the work, in mm.
  *
  * Not a safety limit — `linkFrom` has already established that a hop this far
@@ -416,6 +443,20 @@ function defaultPitch(cut: LayerCutting, laserMode: boolean): number {
 }
 
 /**
+ * How wide one pass actually cuts, in mm.
+ *
+ * Not the tool's diameter: a V-bit 3 mm across leaves a groove a few tenths
+ * wide at engraving depth, and the groove is what covers ground. On a laser
+ * there is no tool to ask, so the default hatch pitch stands in — it is already
+ * defined as the pitch at which adjacent lines just meet, which is the same
+ * quantity measured a different way.
+ */
+function effectiveCutWidth(cut: LayerCutting, laserMode: boolean): number {
+  if (!laserMode && cut.grooveRadius > 0) return cut.grooveRadius * 2;
+  return defaultPitch(cut, laserMode);
+}
+
+/**
  * Builds the ordered toolpath for a document, without serialising it.
  *
  * Exported because the preview draws from exactly this — the same segments in
@@ -431,6 +472,18 @@ export function planToolpath(
   const segments: GCodeSegment[] = [];
   const skipped: string[] = [];
   const notes: string[] = [];
+  /** Elements machined at their stroke width, and the job time that costs. */
+  let widened = 0;
+  /**
+   * Elements drawn with a stroke wide enough to be visibly thicker than one
+   * pass, but left machining as an outline.
+   *
+   * Counted rather than noted per element: on a drawing where every line is
+   * 0.5 mm this is every element, and a note per element is a wall of text that
+   * hides the notes that matter. The point is only to answer the question the
+   * drawing raises — "why did my thick line come out a hairline" — once.
+   */
+  let drawnThick = 0;
   /**
    * Which fill is being hatched, counted across the whole job.
    *
@@ -764,6 +817,37 @@ export function planToolpath(
         if (el.hatchOutline === false) continue;
       }
 
+      /**
+       * A line machined at the width it was drawn, rather than as a hairline.
+       *
+       * Opt-in via `machining: 'stroked'`; see the field's note for why it is
+       * not simply what `strokeWidth` always means. Widening is area work, so
+       * the passes are dosed like a fill rather than like an outline: several
+       * overlapping passes at an outline's power put several times an outline's
+       * energy into the same millimetre, which is the same mistake `fillLineDose`
+       * exists to prevent.
+       */
+      const cutWidth = effectiveCutWidth(cut, options.laserMode);
+      const strokeWidth = el.strokeWidth ?? 0;
+      const stroked = el.machining === 'stroked' && strokeWidth > cutWidth;
+      const strokeCut = stroked
+        ? laserFillCutting(cut, layer, material, options, cutWidth)
+        : cut;
+      let strokeGroup = 0;
+      if (stroked) {
+        fillGroup++;
+        strokeGroup = fillGroup;
+        widened++;
+      } else if (el.machining === 'stroked') {
+        notes.push(
+          `"${el.name}" is set to machine at its stroke width, but that width ` +
+            `(${strokeWidth} mm) is no wider than the ${cutWidth.toFixed(2)} mm one pass ` +
+            `already cuts — it comes out as a single line, which is what it would have been anyway.`
+        );
+      } else if (strokeWidth >= cutWidth * 2) {
+        drawnThick++;
+      }
+
       // Each subpath becomes its own segment: a path with several M commands
       // (an imported letterform, say) must not be joined end-to-end into one
       // continuous cut.
@@ -774,6 +858,22 @@ export function planToolpath(
         // everything else is scored on the line it was drawn on and goes now.
         if (cut.side !== 'on' && layer.operation === 'cut' && isClosedContour(pts)) {
           pendingCuts.push(pts);
+        } else if (stroked) {
+          for (const band of strokeBandPasses(pts, strokeWidth, cutWidth)) {
+            segments.push(
+              makeSegment(layer, strokeCut, options, {
+                points: band,
+                isClosed: true,
+                // Shares a sort key with its siblings for the same reason hatch
+                // lines do: the passes that make up one thick line must stay
+                // together and in order, not be interleaved with another
+                // element's by contour sorting.
+                bBoxArea: -1,
+                linkTolerance: MAX_LINK_MM,
+                fillGroup: strokeGroup,
+              })
+            );
+          }
         } else {
           segments.push(
             makeSegment(layer, cut, options, {
@@ -847,6 +947,22 @@ export function planToolpath(
         `Only the part of the drawing over the material is run — the rest would have been ` +
         `cut into the bed. Nothing on the canvas has changed, so move or resize the art and ` +
         `it comes back.`
+    );
+  }
+
+  if (widened > 0) {
+    notes.push(
+      `${widened} element${widened === 1 ? ' is' : 's are'} machined at ${widened === 1 ? 'its' : 'their'} ` +
+        `stroke width, as passes laid side by side. That is area work, so it takes proportionally ` +
+        `longer than scoring the same line once.`
+    );
+  }
+  if (drawnThick > 0) {
+    notes.push(
+      `${drawnThick} element${drawnThick === 1 ? ' is' : 's are'} drawn with a stroke wider than one ` +
+        `pass cuts, but machined as an outline — so ${drawnThick === 1 ? 'it comes' : 'they come'} out as ` +
+        `a single line whatever thickness the canvas shows. Set an element to "Stroked" in the ` +
+        `inspector to cut it at its drawn width.`
     );
   }
 
@@ -1764,8 +1880,7 @@ export function generateGCode(
   // Everything the planner had to compromise on, said once and up front rather
   // than left for the operator to notice in the material.
   for (const n of [...notes, ...program.notes]) gcode += `; NOTE: ${n}\n`;
-  gcode += `G90 ; Absolute positioning\n`;
-  gcode += `G21 ; Millimeter units\n`;
+  gcode += COORD_SYSTEM_PREAMBLE;
 
   if (options.laserMode) {
     gcode += `M5  ; Laser off initially\n`;
@@ -2292,8 +2407,7 @@ export function generateAirCutGCode(
   gcode += `; Fills, extra passes and cut depth are NOT run — this checks origin,\n`;
   gcode += `; extents, travel and clamps, not the cut.\n`;
   gcode += `; Boundaries: ${boundaries.length} of ${segments.length} planned segments\n`;
-  gcode += `G90 ; Absolute positioning\n`;
-  gcode += `G21 ; Millimeter units\n`;
+  gcode += COORD_SYSTEM_PREAMBLE;
   gcode += `M5 ; ${options.laserMode ? 'Laser off — it stays off for the whole dry run' : 'Spindle off — nothing is being cut'}\n`;
   if (options.laserMode) gcode += `S0 ; No beam power, whatever the last job left set\n`;
   else gcode += `G0 Z${traceZ.toFixed(3)} ; Up into thin air, clear of stock and clamps\n`;

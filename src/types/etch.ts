@@ -241,9 +241,16 @@ export interface EtchElement {
   /**
    * How this element is machined, independent of its layer.
    * 'outline' follows the contours; 'filled' additionally hatches the interior
-   * (engraving a solid glyph or shape rather than just its edge).
+   * (engraving a solid glyph or shape rather than just its edge); 'stroked'
+   * machines the contours at `strokeWidth`, as passes laid side by side, so a
+   * line drawn 2 mm thick comes out 2 mm thick.
+   *
+   * 'stroked' is opt-in rather than the default for `strokeWidth` because the
+   * default stroke in every shipped preset is wider than a beam: honouring it
+   * everywhere would silently widen and slow every drawing that already exists,
+   * on machines whose owners had drawn a hairline and got one.
    */
-  machining?: 'outline' | 'filled';
+  machining?: 'outline' | 'filled' | 'stroked';
   /** Hatch direction in degrees, and line pitch in mm. */
   hatchAngle?: number;
   hatchSpacing?: number;

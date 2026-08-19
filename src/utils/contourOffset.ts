@@ -170,3 +170,79 @@ export function contourArea(contour: Pt[]): number {
   }
   return -sum / 2;
 }
+
+/**
+ * The passes that machine a drawn line at the width it was drawn.
+ *
+ * Stroke width used to be paint: a 2 mm line and a hairline produced the same
+ * single pass down the centre, so the drawing and the material disagreed about
+ * how thick the line was. Repeating that centre pass does not fix it — repeats
+ * go deeper, not wider, and `layer.passes` already owns depth. Width has to
+ * come from passes laid side by side across the stroke.
+ *
+ * The band is built once and then cleared concentrically, which is how a CAM
+ * system clears any thin pocket, and it is what makes this work for open and
+ * closed paths with the same code. The obvious alternative — offset the
+ * centreline by ±d for a ladder of parallel copies — is the polyline-offsetting
+ * swamp this module's header warns about: on any curve tighter than the offset
+ * the copies self-intersect, and the tool doubles back through the line it just
+ * cut. Clipper resolves that as part of the offset.
+ *
+ * `cutWidthMm` is what one pass actually removes — the groove a router leaves
+ * at depth, or the beam's effective width on a laser. A stroke no wider than
+ * that is already a single pass, and is returned as the drawn line untouched
+ * rather than as a degenerate band.
+ */
+export function strokeBandPasses(
+  contour: Pt[],
+  strokeWidthMm: number,
+  cutWidthMm: number
+): Pt[][] {
+  if (!(strokeWidthMm > cutWidthMm) || cutWidthMm <= 0 || contour.length < 2) {
+    return [contour];
+  }
+
+  const isClosed =
+    contour.length > 2 &&
+    Math.hypot(contour[0].x - contour[contour.length - 1].x, contour[0].y - contour[contour.length - 1].y) < 1e-6;
+  const usable = stripClosingPoint(contour);
+  if (usable.length < 2) return [contour];
+
+  const half = strokeWidthMm / 2;
+
+  /*
+   * etClosedLine offsets a loop to *both* sides and gives back the band
+   * directly, orientation and all. Doing it as outer-minus-inner instead means
+   * deciding which way each contour winds first, and a glyph counter winds the
+   * other way from the glyph — get that backwards and the stroke lands inside
+   * out.
+   */
+  const band: ClipperLib.Paths = [];
+  const bandOffset = new ClipperLib.ClipperOffset(2, ARC_TOLERANCE);
+  bandOffset.AddPaths(
+    toClipper([usable]),
+    ClipperLib.JoinType.jtRound,
+    isClosed ? ClipperLib.EndType.etClosedLine : ClipperLib.EndType.etOpenRound
+  );
+  bandOffset.Execute(band, half * SCALE);
+  if (band.length === 0) return [contour];
+
+  // Concentric passes inward from the band's edge. The first sits half a cut
+  // width in, so the pass's outer edge lands on the drawn edge of the stroke
+  // rather than half a groove outside it.
+  const passes: Pt[][] = [];
+  for (let inset = cutWidthMm / 2; inset < half; inset += cutWidthMm) {
+    const ring: ClipperLib.Paths = [];
+    const co = new ClipperLib.ClipperOffset(2, ARC_TOLERANCE);
+    co.AddPaths(band, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+    co.Execute(ring, -inset * SCALE);
+    if (ring.length === 0) break;
+    for (const p of fromClipper(ring)) {
+      if (p.length >= 3) passes.push(close(p));
+    }
+  }
+
+  // A band too narrow for even one full pass still has to cut something, and
+  // the line it was drawn on is the honest answer.
+  return passes.length > 0 ? passes : [contour];
+}

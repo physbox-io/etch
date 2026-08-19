@@ -370,3 +370,38 @@ describe('air cut dry run', () => {
   });
 });
 
+
+describe('coordinate system preamble', () => {
+  /**
+   * A job that never says which work coordinate system it wants runs in
+   * whichever one the controller was left in, while zeroing writes G54. That,
+   * and a G92 offset surviving a reset, both land the job translated by a
+   * constant with the drawing and the preview still agreeing with each other.
+   */
+  const cases: Array<[string, (d: EtchDocument) => string]> = [
+    ['job', (d) => generateGCode(d, {}, planToolpath(d))],
+    ['dry run', (d) => generateAirCutGCode(d, {}, planToolpath(d))],
+  ];
+
+  for (const [name, emit] of cases) {
+    it(`${name} selects G54 and clears any leftover G92`, () => {
+      const gcode = emit(doc([layer('cut', 'cut')], [rect('r1', 'cut')], 'laser'));
+      expect(gcode).toMatch(/^G54\b/m);
+      expect(gcode).toMatch(/^G92\.1\b/m);
+    });
+
+    it(`${name} states the frame before it commands any motion`, () => {
+      const gcode = emit(doc([layer('cut', 'cut')], [rect('r1', 'cut')], 'cnc'));
+      const lines = gcode.split('\n');
+      const firstMove = lines.findIndex((l) => /^G[01]\b/.test(l));
+      expect(firstMove).toBeGreaterThan(-1);
+      // G0 Z to clearance is emitted as part of the preamble on a router, so
+      // the frame has to be established above it, not merely somewhere earlier.
+      for (const word of ['G90', 'G21', 'G54', 'G92.1']) {
+        const at = lines.findIndex((l) => l.startsWith(`${word} `));
+        expect(at, `${word} missing`).toBeGreaterThan(-1);
+        expect(at, `${word} after first motion`).toBeLessThan(firstMove);
+      }
+    });
+  }
+});

@@ -418,6 +418,31 @@ const CncLayerCutting: React.FC<{
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
 /** Only closed geometry has an interior worth hatching. */
+/**
+ * Whether an element can be machined at its drawn stroke width.
+ *
+ * Broader than `canBeFilled` on purpose: an open line has no interior to hatch
+ * but is the commonest thing anyone draws thick and expects to come out thick.
+ * Only an image is excluded, for the same reason it is excluded from filling —
+ * it is swept as tone and has no stroke of its own.
+ */
+function canBeStroked(el: EtchElement): boolean {
+  if (el.type === 'image') return false;
+  if (el.type === 'text') return hasFreshOutline(el);
+  return true;
+}
+
+/**
+ * The machining modes offered for an element, in the order they appear.
+ *
+ * "filled" is dropped for anything with no interior to hatch — an open path or
+ * a line — rather than shown and refused, which is the same rule the panel has
+ * always used, just no longer deciding whether the control exists at all.
+ */
+function machiningModes(el: EtchElement): Array<'outline' | 'filled' | 'stroked'> {
+  return canBeFilled(el) ? ['outline', 'filled', 'stroked'] : ['outline', 'stroked'];
+}
+
 function canBeFilled(el: EtchElement): boolean {
   // An image is neither outlined nor hatched: it is swept as tone, and its own
   // controls are the sweep's.
@@ -968,14 +993,19 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
           )}
 
-          {/* Machining mode: trace the edge, or engrave the interior. */}
-          {canBeFilled(selectedElement) && (
+          {/* Machining mode: trace the edge, engrave the interior, or cut the
+              line at the width it was drawn. */}
+          {canBeStroked(selectedElement) && (
             <div className="space-y-2">
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
                 Machining
               </label>
-              <div className="grid grid-cols-2 gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-                {(['outline', 'filled'] as const).map((mode) => {
+              <div
+                className={`grid ${
+                  canBeFilled(selectedElement) ? 'grid-cols-3' : 'grid-cols-2'
+                } gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700`}
+              >
+                {machiningModes(selectedElement).map((mode) => {
                   const active = (selectedElement.machining ?? 'outline') === mode;
                   return (
                     <button
@@ -1000,6 +1030,14 @@ export const PropertiesSidebar: React.FC = () => {
                   );
                 })}
               </div>
+
+              {selectedElement.machining === 'stroked' && (
+                <p className="pl-2 border-l-2 border-slate-200 dark:border-slate-700 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+                  Cut as a band {selectedElement.strokeWidth ?? 0} mm wide, in passes laid side by
+                  side. Set the width under Stroke, above. This is area work — it takes
+                  proportionally longer than scoring the line once.
+                </p>
+              )}
 
               {selectedElement.machining === 'filled' && (
                 <div className="space-y-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
