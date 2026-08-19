@@ -109,6 +109,7 @@ export function testArcCandidate(
   // Verify all points between start and end lie on this circle within tolerance
   let prevAngle = Math.atan2(pStart.y - center.y, pStart.x - center.x);
   let totalSweep = 0;
+  let prevPt = pStart;
 
   for (let i = startIndex + 1; i <= endIndex; i++) {
     const pt = points[i];
@@ -116,6 +117,25 @@ export function testArcCandidate(
     if (Math.abs(dist - radius) > tolerance) {
       return null;
     }
+
+    /*
+     * The vertices lying on the circle is not enough: the polyline is the
+     * straight chords *between* them, and the arc has to stay within tolerance
+     * of those too.
+     *
+     * With vertices far apart this is the whole check. Four points spread down
+     * a 100 mm line, each a micron off true from polygon-offset rounding, sit
+     * within a hundredth of a millimetre of a circle 320 mm across — and that
+     * circle bows 4 mm out in the middle, where there is no vertex to test. It
+     * came out of the machine as a lens: one side bowed one way, the other side
+     * the other, on what was drawn as a straight thick line.
+     */
+    const chord = Math.hypot(pt.x - prevPt.x, pt.y - prevPt.y);
+    const half = chord / 2;
+    if (half >= radius) return null;
+    const sagitta = radius - Math.sqrt(radius * radius - half * half);
+    if (sagitta > tolerance) return null;
+    prevPt = pt;
 
     const angle = Math.atan2(pt.y - center.y, pt.x - center.x);
     let diff = angle - prevAngle;

@@ -144,3 +144,19 @@ describe('machining at stroke width', () => {
     expect(notes.some((n) => /machined at their stroke width|machined at its stroke width/.test(n))).toBe(true);
   });
 });
+
+describe('a widened line is cut straight', () => {
+  it('emits no arcs for a straight stroked line', () => {
+    // The band's long sides are straight, and were briefly emitted as G2 arcs
+    // bowing several mm out — a drawn line that came out of the machine as a
+    // lens. See tests/arcFitting.test.ts for the fitter-level guard.
+    const { segments } = planToolpath(doc([line({ machining: 'stroked', strokeWidth: 2 })]));
+    for (const seg of segments) {
+      const ys = seg.points.map((p) => p.y);
+      // Every point is on one of the two edges of a 2 mm band centred on y=20,
+      // or on a cap between them. Nothing bows outside it.
+      expect(Math.min(...ys)).toBeGreaterThan(18.9);
+      expect(Math.max(...ys)).toBeLessThan(21.1);
+    }
+  });
+});

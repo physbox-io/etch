@@ -230,3 +230,55 @@ describe('arcFitting safety and rejection of degeneracies', () => {
     expect(circle).toBeNull();
   });
 });
+
+describe('an arc must stay near the chords, not just the vertices', () => {
+  /**
+   * The failure this exists for, measured off real material: a thick straight
+   * line came out of the laser as a lens — one long side bowed one way, the
+   * other side the other.
+   *
+   * The four points are a side of a polygon-offset band: nominally straight,
+   * with the endpoints a thousandth of a millimetre off true from the rounded
+   * ends. That is enough for a circle 320 mm across to pass through all four
+   * within a hundredth of a millimetre, and the old check tested only the
+   * vertices — so nothing looked at the middle of the span, where the arc bows
+   * out by nearly 4 mm.
+   */
+  const bandSide = [
+    { x: 100, y: 50.898578 },
+    { x: 99.991, y: 50.9 },
+    { x: 0.007, y: 50.9 },
+    { x: 0, y: 50.898995 },
+  ];
+
+  it('refuses the arc that made a straight line into a lens', () => {
+    expect(testArcCandidate(bandSide, 0, 3, 0.02)).toBeNull();
+  });
+
+  it('emits that side as straight moves', () => {
+    const commands = fitArcsToPolyline(bandSide, 0.02);
+    expect(commands.every((c) => c.type === 'line')).toBe(true);
+  });
+
+  it('still fits a genuine arc whose points are densely sampled', () => {
+    // A 20 mm radius quarter circle at the flattener's step density, which is
+    // the case arc fitting exists to serve.
+    const arc = Array.from({ length: 25 }, (_, k) => {
+      const a = (k / 24) * (Math.PI / 2);
+      return { x: 20 * Math.cos(a), y: 20 * Math.sin(a) };
+    });
+    const fit = testArcCandidate(arc, 0, 24, 0.02);
+    expect(fit).not.toBeNull();
+    expect(fit!.radius).toBeCloseTo(20, 3);
+  });
+
+  it('rejects a real arc sampled too coarsely to be one', () => {
+    // The same circle at four points. Each chord bows 1.5 mm off the arc, so
+    // what was drawn is a polygon and cutting it as a curve would be wrong.
+    const coarse = [0, 1, 2, 3].map((k) => {
+      const a = (k / 3) * (Math.PI / 2);
+      return { x: 20 * Math.cos(a), y: 20 * Math.sin(a) };
+    });
+    expect(testArcCandidate(coarse, 0, 3, 0.02)).toBeNull();
+  });
+});
