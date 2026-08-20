@@ -20,6 +20,7 @@ import {
   findTool,
   hasToolCatalog,
   isFlatBottomed,
+  machineWords,
   type MachineKind,
   type ToolProfile,
 } from './tooling';
@@ -45,6 +46,25 @@ export interface GCodeOptions {
   spindleSpeedMax: number;    // Maximum S-value for a laser (e.g. 1000 for GRBL)
   travelSpeed: number;        // Rapid move speed mm/min (e.g. 3000)
   innerContourFirst: boolean; // Cut internal holes before outer boundaries
+  /**
+   * How hard the planner works to shorten the hops between paths, 0-3.
+   *
+   *   0 — leave the order alone.
+   *   1 — visit the nearest unvisited path next.
+   *   2 — also start each closed path at whichever of its own points is
+   *       nearest, instead of wherever the geometry happened to begin.
+   *   3 — also run a relocation pass over the result.
+   *
+   * Only ever applied to etching. A cut is ordered inner-before-outer because
+   * an outline releases the part, and shortening travel is not worth cutting a
+   * shape free before the holes inside it are done; a hatch fill is a
+   * serpentine whose order *is* the fill. That leaves surface line work, which
+   * is exactly the case that needs it: a traced photograph is hundreds of
+   * separate loops, sorted by enclosed area, which is very nearly random on the
+   * material. Measured on a 92-loop trace across 100 mm of stock, the travel
+   * went from 4768 mm to 751 mm.
+   */
+  travelOptimization: number;
   /**
    * Whether to fit G2/G3 circular arcs to planar cutting moves.
    * Reduces line count by 50-85% on curved geometry and prevents GRBL buffer lag.
@@ -984,7 +1004,25 @@ export function planToolpath(
     return options.innerContourFirst ? a.bBoxArea - b.bBoxArea : 0;
   });
 
-  return { segments: routeByTool(segments), skipped, notes: [...new Set(notes)] };
+  const routed = routeByTool(segments);
+  const before = travelDistance(routed);
+  const optimized = optimizeTravel(routed, options.travelOptimization ?? 2);
+  const ordered = optimized.segments;
+  notes.push(...optimized.notes);
+  const after = travelDistance(ordered);
+  // Reported only when it actually changed the job. A note on every export
+  // saying travel fell by two percent is noise in a panel whose whole value is
+  // that everything in it is something the operator needs to know.
+  if (before - after > 50 && after < before * 0.8) {
+    notes.push(
+      `Path order optimised: the ${machineWords(doc.machine ?? 'laser').head} travels ` +
+        `${Math.round(before - after)} mm less between paths (${Math.round(before)} mm down to ` +
+        `${Math.round(after)} mm). Only surface line work is reordered — cuts keep their ` +
+        `inner-before-outer order.`
+    );
+  }
+
+  return { segments: ordered, skipped, notes: [...new Set(notes)] };
 }
 
 /** Options with the document's own settings filled in for anything unstated. */
@@ -996,6 +1034,7 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     spindleSpeedMax: 1000,
     travelSpeed: 3000,
     innerContourFirst: true,
+    travelOptimization: 2,
     arcFitting: true,
     arcTolerance: 0.02,
     passOrder: 'per-level',
@@ -1768,6 +1807,389 @@ function routeByTool(segments: GCodeSegment[]): GCodeSegment[] {
   }
 
   return routed;
+}
+
+/**
+ * Total distance between the end of one path and the start of the next.
+ *
+ * The tool is lifted for all of it and cutting for none of it, so it is pure
+ * cost — and on a traced image it is routinely most of the job.
+ */
+function travelDistance(segments: GCodeSegment[]): number {
+  let total = 0;
+  let cur: Pt = { x: 0, y: 0 };
+  for (const seg of segments) {
+    if (seg.points.length === 0) continue;
+    total += Math.hypot(seg.points[0].x - cur.x, seg.points[0].y - cur.y);
+    cur = seg.points[seg.points.length - 1];
+  }
+  return total;
+}
+
+/**
+ * Whether this segment's position in the program is free to change.
+ *
+ * Everything excluded here is excluded because its order carries meaning that
+ * distance does not know about:
+ *
+ *   - `cut` releases the part. Inner-before-outer is the rule that stops an
+ *     outline being cut free while the holes inside it are still to do, and no
+ *     travel saving is worth losing it.
+ *   - a hatch fill is a serpentine. Its order *is* the fill, `linkFrom` says
+ *     where the tool has to already be standing for the next line to be
+ *     reached without lifting, and reordering would break both.
+ *   - a shaded sweep is a photograph being scanned. Out of order it is still
+ *     the same picture in the same place, but the tone either side of every
+ *     sweep boundary was planned against its neighbours.
+ *   - a tabbed path has its tabs positioned along its own arc length.
+ */
+function isReorderable(seg: GCodeSegment): boolean {
+  return (
+    seg.type === 'etch' &&
+    seg.fillGroup < 0 &&
+    seg.linkFrom === null &&
+    !seg.intensities &&
+    seg.tabs.length === 0 &&
+    seg.points.length > 1
+  );
+}
+
+/** Two segments the planner may reorder relative to each other. */
+function sameReorderBlock(a: GCodeSegment, b: GCodeSegment): boolean {
+  // Layer stays a boundary: within one operation the author's order stands, and
+  // an etch layer laid down after another one may well be meant to be.
+  return a.layerId === b.layerId && a.tool === b.tool && a.type === b.type;
+}
+
+/** A closed path can be entered anywhere along itself; an open one cannot. */
+function isClosedLoop(seg: GCodeSegment): boolean {
+  const pts = seg.points;
+  if (pts.length < 4) return false;
+  return (
+    Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 1e-6
+  );
+}
+
+/**
+ * Up to this many evenly spaced points per segment are considered when picking
+ * which segment to visit next.
+ *
+ * Scanning every vertex of every remaining segment on every step is quadratic
+ * in the *point* count, and a traced photograph is hundreds of thousands of
+ * points — the optimiser would cost more than the travel it saves. Anchors
+ * choose the segment; the exact entry point is then found by scanning that one
+ * segment's vertices, which is linear overall.
+ */
+const TRAVEL_ANCHORS = 16;
+
+function anchorsOf(seg: GCodeSegment, rotatable: boolean): Pt[] {
+  const pts = seg.points;
+  if (!rotatable) return [pts[0]];
+  const step = Math.max(1, Math.floor(pts.length / TRAVEL_ANCHORS));
+  const out: Pt[] = [];
+  for (let i = 0; i < pts.length; i += step) out.push(pts[i]);
+  return out;
+}
+
+/**
+ * Re-enters a closed path at `index`, so it starts nearest where the tool
+ * already is.
+ *
+ * The direction round the loop is preserved — this rotates, it never reverses.
+ * On a router that matters: reversing an etch pass swaps climb milling for
+ * conventional and changes the finish. The duplicated closing point is dropped
+ * before the rotation and re-appended after, or the seam would end up in the
+ * middle of the path.
+ */
+function rotateLoop(seg: GCodeSegment, index: number): GCodeSegment {
+  if (index === 0) return seg;
+  const ring = seg.points.slice(0, -1);
+  const rotated = [...ring.slice(index), ...ring.slice(0, index)];
+  rotated.push(rotated[0]);
+  return { ...seg, points: rotated };
+}
+
+/**
+ * Paths above which the relocation refinement is skipped.
+ *
+ * Nearest-neighbour is near enough to constant time per path with the grid
+ * below, but relocation is inherently quadratic — every path is tried against
+ * every gap. At four thousand paths that is four and a half seconds, and a
+ * traced photograph can be more. The cap is announced in the plan's notes
+ * rather than applied quietly: a "Thorough" setting that silently stopped being
+ * thorough on exactly the jobs that need it most would be worse than one that
+ * is simply slow.
+ */
+const RELOCATE_LIMIT = 2000;
+
+/**
+ * A uniform bucket grid over candidate entry points, searched in rings outward.
+ *
+ * Nearest-neighbour routing is a scan for the closest remaining path on every
+ * step, and written as a plain loop that is quadratic in the path count with
+ * the anchors as a constant factor on top. A traced photograph is thousands of
+ * loops, which is seconds — and the planner running in a worker means that
+ * shows up as a preview that never arrives rather than as a frozen window.
+ *
+ * The grid makes each step cost roughly the number of points in the handful of
+ * cells nearest the tool, which does not grow with the size of the job.
+ */
+class AnchorGrid {
+  private readonly cell: number;
+  private readonly minX: number;
+  private readonly minY: number;
+  private readonly cols: number;
+  private readonly rows: number;
+  private readonly buckets: Map<number, Array<{ x: number; y: number; seg: number }>>;
+
+  constructor(anchors: Array<{ x: number; y: number; seg: number }>) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const a of anchors) {
+      if (a.x < minX) minX = a.x;
+      if (a.y < minY) minY = a.y;
+      if (a.x > maxX) maxX = a.x;
+      if (a.y > maxY) maxY = a.y;
+    }
+    const w = Math.max(maxX - minX, 1e-6);
+    const h = Math.max(maxY - minY, 1e-6);
+    // Aimed at a couple of anchors per cell. Everything in one cell is the
+    // quadratic scan again; one anchor per cell is mostly empty-ring walking.
+    this.cell = Math.max(Math.sqrt((w * h) / Math.max(1, anchors.length / 2)), 1e-6);
+    this.minX = minX;
+    this.minY = minY;
+    this.cols = Math.floor(w / this.cell) + 1;
+    this.rows = Math.floor(h / this.cell) + 1;
+
+    this.buckets = new Map();
+    for (const a of anchors) {
+      const key = this.keyOf(a.x, a.y);
+      const bucket = this.buckets.get(key);
+      if (bucket) bucket.push(a);
+      else this.buckets.set(key, [a]);
+    }
+  }
+
+  private col(x: number): number {
+    return Math.min(this.cols - 1, Math.max(0, Math.floor((x - this.minX) / this.cell)));
+  }
+  private row(y: number): number {
+    return Math.min(this.rows - 1, Math.max(0, Math.floor((y - this.minY) / this.cell)));
+  }
+  private keyOf(x: number, y: number): number {
+    return this.row(y) * this.cols + this.col(x);
+  }
+
+  /** The nearest anchor whose segment is still unvisited, or -1 if none is. */
+  nearestSegment(p: Pt, taken: Uint8Array): number {
+    const c0 = this.col(p.x);
+    const r0 = this.row(p.y);
+    let best = -1;
+    let bestDist = Infinity;
+    const maxRing = Math.max(this.cols, this.rows);
+
+    for (let ring = 0; ring <= maxRing; ring++) {
+      // Anything in a cell this many rings out is at least this far away, so
+      // once a candidate beats that, no further ring can improve on it.
+      if (best >= 0 && (ring - 1) * this.cell > bestDist) break;
+
+      for (let r = r0 - ring; r <= r0 + ring; r++) {
+        if (r < 0 || r >= this.rows) continue;
+        const edgeRow = r === r0 - ring || r === r0 + ring;
+        for (let c = c0 - ring; c <= c0 + ring; c++) {
+          // Only the perimeter of the ring is new; the inside was scanned already.
+          if (!edgeRow && c !== c0 - ring && c !== c0 + ring) continue;
+          if (c < 0 || c >= this.cols) continue;
+          const bucket = this.buckets.get(r * this.cols + c);
+          if (!bucket) continue;
+          for (const a of bucket) {
+            if (taken[a.seg]) continue;
+            const d = Math.hypot(a.x - p.x, a.y - p.y);
+            if (d < bestDist) {
+              bestDist = d;
+              best = a.seg;
+            }
+          }
+        }
+      }
+    }
+
+    return best;
+  }
+}
+
+/**
+ * Orders one block of freely-reorderable segments to shorten the travel.
+ *
+ * Greedy nearest-neighbour: not optimal, but it is the difference between
+ * "nearly all of this job is the head flying about with the beam off" and
+ * "hardly any of it", which is the part worth having. `level` buys the
+ * refinements described on `GCodeOptions.travelOptimization`.
+ */
+function routeBlock(block: GCodeSegment[], from: Pt, level: number): GCodeSegment[] {
+  const rotate = level >= 2;
+
+  const anchors: Array<{ x: number; y: number; seg: number }> = [];
+  for (let i = 0; i < block.length; i++) {
+    for (const a of anchorsOf(block[i], rotate && isClosedLoop(block[i]))) {
+      anchors.push({ x: a.x, y: a.y, seg: i });
+    }
+  }
+  const grid = new AnchorGrid(anchors);
+  const taken = new Uint8Array(block.length);
+
+  const out: GCodeSegment[] = [];
+  let cur = from;
+
+  for (let n = 0; n < block.length; n++) {
+    const pick = grid.nearestSegment(cur, taken);
+    // Only reachable if every anchor's segment is taken, which the loop bound
+    // rules out — but a grid that silently dropped a path would drop it from
+    // the job, so this falls back rather than trusting the invariant.
+    const idx = pick >= 0 ? pick : taken.findIndex((t) => !t);
+    taken[idx] = 1;
+
+    let seg = block[idx];
+    if (rotate && isClosedLoop(seg)) {
+      // The anchors only chose the segment. Now that it is chosen, its own
+      // vertices are cheap to scan exactly.
+      let bestPt = 0;
+      let bestPtDist = Infinity;
+      for (let i = 0; i < seg.points.length - 1; i++) {
+        const d = Math.hypot(seg.points[i].x - cur.x, seg.points[i].y - cur.y);
+        if (d < bestPtDist) {
+          bestPtDist = d;
+          bestPt = i;
+        }
+      }
+      seg = rotateLoop(seg, bestPt);
+    }
+
+    out.push(seg);
+    cur = seg.points[seg.points.length - 1];
+  }
+
+  return level >= 3 ? relocatePass(out, from) : out;
+}
+
+/**
+ * Relocation refinement: takes each path out and puts it back wherever it fits
+ * best, keeping anything that shortens the total.
+ *
+ * Greedy nearest-neighbour reliably strands a few paths — it takes the cheap
+ * ones early and then has to fly back across the work for whatever it skipped.
+ * Moving a single path is used rather than the usual 2-opt segment reversal
+ * because reversal would run those paths backwards, and cut direction is not
+ * free on a router.
+ *
+ * Scored by the three links a move actually changes rather than by re-adding
+ * the whole tour. Re-totalling is the obvious way to write this and it is
+ * cubic: at 800 paths it took 38 seconds, and a traced photograph runs to
+ * thousands. The planner runs in a worker, so that is not a frozen window — it
+ * is a preview that never arrives, which is worse for being harder to explain.
+ */
+function relocatePass(order: GCodeSegment[], from: Pt): GCodeSegment[] {
+  if (order.length < 4 || order.length > RELOCATE_LIMIT) return order;
+  let work = order.slice();
+
+  const startOf = (seg: GCodeSegment) => seg.points[0];
+  const endOf = (seg: GCodeSegment) => seg.points[seg.points.length - 1];
+  const link = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
+
+  /**
+   * What it costs to sit `seg` in the gap ahead of `list[at]`: the two links it
+   * adds, less the one it displaces. Everything outside that gap is unchanged,
+   * which is the whole reason this is affordable.
+   */
+  const gapCost = (list: GCodeSegment[], at: number, seg: GCodeSegment) => {
+    const prevExit = at === 0 ? from : endOf(list[at - 1]);
+    const next = at < list.length ? startOf(list[at]) : null;
+    return (
+      link(prevExit, startOf(seg)) +
+      (next ? link(endOf(seg), next) - link(prevExit, next) : 0)
+    );
+  };
+
+  // One sweep. A second rarely finds anything a first did not, and this runs on
+  // every preview redraw.
+  for (let i = 0; i < work.length; i++) {
+    const seg = work[i];
+    // The tour without it. Its own gap in this list is index `i`, so comparing
+    // against `gapCost(rest, i, seg)` is comparing against leaving it alone.
+    const rest = work.slice(0, i).concat(work.slice(i + 1));
+
+    let bestPos = i;
+    let bestCost = gapCost(rest, i, seg);
+    for (let k = 0; k <= rest.length; k++) {
+      if (k === i) continue;
+      const cost = gapCost(rest, k, seg);
+      if (cost < bestCost - 1e-9) {
+        bestCost = cost;
+        bestPos = k;
+      }
+    }
+
+    if (bestPos !== i) {
+      rest.splice(bestPos, 0, seg);
+      work = rest;
+    }
+  }
+
+  return work;
+}
+
+/**
+ * Shortens the travel between paths, without moving anything whose order
+ * matters. See `GCodeOptions.travelOptimization`.
+ *
+ * Runs after `routeByTool`, not before: regrouping by tool moves segments
+ * around, and an order settled before that would be an order for a program the
+ * machine is no longer going to run.
+ */
+export function optimizeTravel(
+  segments: GCodeSegment[],
+  level: number
+): { segments: GCodeSegment[]; notes: string[] } {
+  if (level <= 0 || segments.length < 2) return { segments, notes: [] };
+
+  const notes: string[] = [];
+  let unrefined = 0;
+  const out = segments.slice();
+  for (let i = 0; i < out.length; ) {
+    if (!isReorderable(out[i])) {
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < out.length && isReorderable(out[end]) && sameReorderBlock(out[i], out[end])) {
+      end++;
+    }
+    // Two is enough to be worth it: one of them is going to be entered from
+    // wherever the other left off, and at level 2 it can be re-entered too.
+    if (end - i >= 2) {
+      // Where the tool is standing when the block starts. Not the origin: the
+      // first path of the block should be the one nearest whatever ran before it.
+      const prev = i > 0 ? out[i - 1] : null;
+      const from =
+        prev && prev.points.length > 0 ? prev.points[prev.points.length - 1] : { x: 0, y: 0 };
+      if (level >= 3 && end - i > RELOCATE_LIMIT) unrefined += end - i;
+      const routed = routeBlock(out.slice(i, end), from, level);
+      for (let k = 0; k < routed.length; k++) out[i + k] = routed[k];
+    }
+    i = end;
+  }
+
+  if (unrefined > 0) {
+    notes.push(
+      `Travel optimisation stopped at reordering for ${unrefined} paths: the extra refinement ` +
+        `pass compares every path against every gap, and past ${RELOCATE_LIMIT} paths that takes ` +
+        `longer to plan than it saves at the machine. The reordering itself was applied in full.`
+    );
+  }
+
+  return { segments: out, notes };
 }
 
 /** Where the program stops for the operator to swap tools. */

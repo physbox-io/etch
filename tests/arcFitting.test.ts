@@ -69,8 +69,31 @@ describe('fitArcsToPolyline', () => {
     ];
 
     const commands = fitArcsToPolyline(linePoints, 0.02);
-    expect(commands.length).toBe(3);
+    // One move, not one per point. The interior points are on the line to
+    // within the tolerance, and emitting them costs the controller a block
+    // each for geometry it already has.
+    expect(commands.length).toBe(1);
     expect(commands.every((cmd) => cmd.type === 'line')).toBe(true);
+    expect(commands[0].from).toEqual({ x: 0, y: 0 });
+    expect(commands[0].to).toEqual({ x: 30, y: 0 });
+  });
+
+  it('keeps a point that is off the line by more than the tolerance', () => {
+    // The same run with one point stepped 0.1 mm aside — a real feature at a
+    // 0.02 mm tolerance, and the collapse must not swallow it.
+    const commands = fitArcsToPolyline(
+      [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 20, y: 0.1 },
+        { x: 30, y: 0 },
+      ],
+      0.02
+    );
+    const visits = commands.some(
+      (cmd) => cmd.type === 'line' && Math.abs(cmd.to.y - 0.1) < 1e-9
+    );
+    expect(visits).toBe(true);
   });
 
   it('handles mixed paths with both straight segments and curves', () => {

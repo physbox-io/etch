@@ -144,9 +144,28 @@ way — a preview that does its own conversion will drift from the file.
   `deriveLaserFeeds` + `laserRefusal` (laser), from the material, the stock
   thickness, and the machine. A file opened on a different machine derives that
   machine's numbers rather than inheriting the author's.
-- Path data is flattened by `pathFlatten.ts` at `CURVE_STEPS = 24` points per
-  curve. Emitting a path with a million commands means 24 M points downstream, so
-  anything that *generates* paths must simplify before handing them over.
+- Path data is flattened by `pathFlatten.ts` to a **chord tolerance**, not a
+  fixed step count: a curve gets the segments its own size and curvature need.
+  A fixed count was both wasteful on small curves and inaccurate on large ones,
+  and it is what turned a traced outline into tens of thousands of 0.025 mm
+  moves — short enough that a controller runs out of blocks to process before
+  the axes reach the feed rate. Anything that *generates* paths must still
+  simplify before handing them over; `simplifyPolyline` in the same file is the
+  shared Ramer–Douglas–Peucker used by the tracer and the arc fitter alike.
+- **Tolerances are a shared budget, not a per-module choice.** Flattening
+  (0.02 mm) and arc fitting (0.02 mm, half of which it spends collapsing
+  straight runs) are meant to total under 0.05 mm away from the drawn shape.
+  A third stage that picks its own generous figure spends the budget a fourth
+  time and the drift starts showing up on fitted joints. The image tracer's
+  simplification is the one deliberately outside it — it is a fidelity choice
+  about a photograph, and it is a slider under Advanced in the import dialog.
+- `travelOptimization` (0–3, in the export dialog's advanced options) shortens
+  the hops between **etched** paths only. Cuts keep inner-before-outer order
+  because an outline releases the part; hatch fills and shaded sweeps keep
+  theirs because the order *is* the fill. Closed paths may be re-entered at
+  their nearest point but are never reversed — direction is climb versus
+  conventional on a router. See `tests/travelOptimize.test.ts`, which is mostly
+  guards against a future "just reorder everything".
 
 ## Laser vs CNC
 
@@ -239,6 +258,13 @@ The element keeps the pixels rather than a baked toolpath specifically so pitch,
 angle, depth and size stay editable after import. An image on a non-`shade`
 layer is skipped with a note: "cut this photo out" and "engrave it as tone" are
 different jobs and only one is ever meant.
+
+Job time in `toolpathTimeline.ts` is a trapezoidal model with junction speeds
+and a block-rate floor, not `distance / feed`. The naive figure says ten
+thousand 0.03 mm moves take as long as one 300 mm move at the same feed, which
+is wrong by several times on exactly the engraving jobs people most want a
+number for. The constants at the top of that file are the shape of a small
+belt-driven machine, not settings anyone has typed.
 
 ## House style
 

@@ -36,8 +36,36 @@ describe('buildTimeline', () => {
     const cuts = moves.filter((m) => m.kind === 'cut');
     expect(cuts).toHaveLength(1);
     expect(cutLength).toBe(60);
-    // 60 mm at 600 mm/min is a tenth of a minute.
-    expect(minutes).toBeCloseTo(0.1, 6);
+    // 60 mm at 600 mm/min is a tenth of a minute at the feed — plus the time
+    // spent getting up to it and back down again, which the estimate no longer
+    // pretends is free. One long move barely notices; the same 60 mm cut as a
+    // thousand short ones is where this matters, and is guarded below.
+    expect(minutes).toBeGreaterThan(0.1);
+    expect(minutes).toBeLessThan(0.101);
+  });
+
+  it('charges a dense wandering path for never reaching its feed rate', () => {
+    // The same 60 mm at the same feed, but walked in 0.05 mm steps that turn at
+    // every one — the shape a traced outline has. The machine cannot accelerate
+    // to 600 mm/min inside a twentieth of a millimetre and has to slow for each
+    // corner, so this comes out several times slower than the naive
+    // distance-over-feed tenth of a minute.
+    //
+    // A dense *straight* path deliberately does not: collinear blocks are
+    // exactly what a look-ahead planner exists to run at full speed, and an
+    // estimate that punished them would be wrong in the other direction.
+    const dense = [{ x: 0, y: 0 }];
+    for (let i = 1; i <= 1200; i++) {
+      dense.push({ x: i * 0.05 * Math.cos(0.26), y: (i % 2 ? 1 : 0) * 0.05 * Math.sin(0.26) });
+    }
+
+    const { minutes, cutLength } = buildTimeline([seg({ points: dense })], {
+      travelSpeed: 3000,
+      laserMode: true,
+    });
+
+    expect(cutLength).toBeGreaterThan(55);
+    expect(minutes).toBeGreaterThan(0.1 * 3);
   });
 
   it('steps depth down per pass and ramps into each one', () => {

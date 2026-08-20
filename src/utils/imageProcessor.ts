@@ -1,5 +1,7 @@
 import type { EtchElement } from '../types/etch';
 import { DEFAULT_SHADE_PITCH_MM } from './rasterImage';
+import { fitCubics } from './curveFit';
+import { simplifyPolyline } from './pathFlatten';
 
 export interface ImageProcessOptions {
   brightness: number; // -100 to 100
@@ -19,6 +21,17 @@ export interface ImageProcessOptions {
   scanlineSpacing: number; // mm between lines (default e.g. 0.8)
   minHoleArea: number; // min pixel count to keep noise down
   smoothing: boolean;
+  /**
+   * Simplification tolerance for a vector trace, in source pixels.
+   *
+   * A marching-squares outline is a staircase with a step per pixel, and this
+   * is how much of that staircase is allowed to be thrown away. Below one pixel
+   * the trace is describing detail finer than the image it came from, which no
+   * laser resolves and every controller has to process anyway. Exposed because
+   * the right answer depends on the picture: a logo simplifies hard without
+   * changing shape, a signature does not.
+   */
+  simplifyPx: number;
   /** Line pitch for `shade`, mm between sweeps across the picture. */
   shadePitch: number;
 }
@@ -35,6 +48,7 @@ export const DEFAULT_IMAGE_OPTIONS: ImageProcessOptions = {
   scanlineSpacing: 1,
   minHoleArea: 4,
   smoothing: true,
+  simplifyPx: 0.75,
   shadePitch: DEFAULT_SHADE_PITCH_MM,
 };
 
@@ -181,10 +195,11 @@ export function traceMarchingSquares(
   const usedV = new Uint8Array(lw * (height + 1));
   const paths: string[] = [];
 
-  // Simplification tolerance: about three quarters of a source pixel, expressed
-  // in whatever units the caller asked the points to be scaled into. Below that
-  // the staircase is finer than the image it came from, and no laser resolves it.
-  const epsilon = 0.75 * Math.min(scaleX, scaleY);
+  // Simplification tolerance, expressed in whatever units the caller asked the
+  // points to be scaled into. Defaulted rather than required so a caller from
+  // before this was a setting — the MCP bridge, an older saved preset — still
+  // traces at the three-quarters of a pixel it always did.
+  const epsilon = (options.simplifyPx ?? DEFAULT_IMAGE_OPTIONS.simplifyPx) * Math.min(scaleX, scaleY);
 
   const sample = (x: number, y: number) => {
     if (x < 0 || x >= width || y < 0 || y >= height) return 0;
@@ -263,65 +278,6 @@ function polygonArea(pts: { x: number; y: number }[]): number {
 }
 
 /**
- * Ramer–Douglas–Peucker, replacing a colinearity test that only ever fired on
- * perfectly axis-aligned runs.
- *
- * A marching-squares outline is a staircase: every step is one pixel and every
- * corner is a right angle, so a 300 px image traces tens of thousands of points
- * that describe a shape a few hundred would describe as well. Keeping them all
- * is what made the resulting element slow to render, slow to hit-test, and slow
- * to plan a toolpath over long after the trace itself had finished — each `Q`
- * becomes 24 flattened points downstream.
- *
- * `epsilon` is in output units (mm once scaled), so the tolerance is a real
- * distance on the material rather than a pixel count.
- */
-function simplifyPoints(
-  points: { x: number; y: number }[],
-  epsilon: number
-): { x: number; y: number }[] {
-  if (points.length <= 3 || epsilon <= 0) return points;
-
-  const keep = new Uint8Array(points.length);
-  keep[0] = 1;
-  keep[points.length - 1] = 1;
-
-  // Iterative to keep a 100k-point staircase off the call stack.
-  const stack: [number, number][] = [[0, points.length - 1]];
-  while (stack.length) {
-    const [lo, hi] = stack.pop()!;
-    if (hi - lo < 2) continue;
-    const a = points[lo];
-    const b = points[hi];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy);
-    let worst = -1;
-    let worstIdx = -1;
-    for (let i = lo + 1; i < hi; i++) {
-      const p = points[i];
-      // Degenerate span (a closed loop's ends coincide): fall back to radius.
-      const dist =
-        len < 1e-9
-          ? Math.hypot(p.x - a.x, p.y - a.y)
-          : Math.abs(dy * (p.x - a.x) - dx * (p.y - a.y)) / len;
-      if (dist > worst) {
-        worst = dist;
-        worstIdx = i;
-      }
-    }
-    if (worst > epsilon && worstIdx > 0) {
-      keep[worstIdx] = 1;
-      stack.push([lo, worstIdx], [worstIdx, hi]);
-    }
-  }
-
-  const res: { x: number; y: number }[] = [];
-  for (let i = 0; i < points.length; i++) if (keep[i]) res.push(points[i]);
-  return res;
-}
-
-/**
  * Converts polyline points to SVG path `d` string with optional corner smoothing.
  */
 function pointsToSVGPath(
@@ -329,7 +285,7 @@ function pointsToSVGPath(
   smoothing: boolean,
   epsilon: number
 ): string {
-  const points = simplifyPoints(rawPoints, epsilon);
+  const points = simplifyPolyline(rawPoints, epsilon);
   if (points.length < 2) return '';
   let d = `M ${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`;
 
@@ -341,13 +297,25 @@ function pointsToSVGPath(
     return d;
   }
 
-  // Smooth path using midpoints
-  for (let i = 0; i < points.length; i++) {
-    const p1 = points[i];
-    const p2 = points[(i + 1) % points.length];
-    const midX = (p1.x + p2.x) / 2;
-    const midY = (p1.y + p2.y) / 2;
-    d += ` Q ${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${midX.toFixed(2)},${midY.toFixed(2)}`;
+  // Fitted rather than smoothed per point. The old midpoint-quadratic scheme
+  // emitted one curve command for every point the simplifier had just decided
+  // to keep, so simplifying harder bought nothing downstream: each Q flattens
+  // back into a couple of dozen machine moves. Fitting lets one cubic span a
+  // whole run of points, and splits only where the outline really does turn.
+  //
+  // Fitted to the same tolerance the outline was simplified at, deliberately.
+  // A tighter figure sounds safer and is not: what is left after simplification
+  // still carries the staircase's own half-pixel wobble, and a fit forbidden to
+  // deviate by that much has to split at every point to follow it — which is
+  // the per-point curve this replaced, at more expense. The tolerance is what
+  // rounding the staircase means.
+  // Closed with its own first point, so the seam is a fitted curve like every
+  // other stretch. Fitting only as far as the last point and letting `Z` draw
+  // the closing edge leaves one straight chord across whatever the outline was
+  // doing where the tracer happened to start.
+  const curves = fitCubics([...points, points[0]], Math.max(epsilon, 1e-4), true);
+  for (const c of curves) {
+    d += ` C ${c.c1.x.toFixed(3)},${c.c1.y.toFixed(3)} ${c.c2.x.toFixed(3)},${c.c2.y.toFixed(3)} ${c.end.x.toFixed(3)},${c.end.y.toFixed(3)}`;
   }
   d += ' Z';
   return d;

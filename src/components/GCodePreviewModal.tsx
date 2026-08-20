@@ -32,6 +32,32 @@ import { InfoTooltip } from './InfoTooltip';
  */
 const NO_PLAN: ToolpathPlan = { segments: [], skipped: [], notes: [] };
 
+const TRAVEL_OPT_LABELS = ['Off', 'Reorder', 'Nearest entry', 'Thorough'];
+
+/**
+ * What each notch actually does, in terms of the machine rather than the
+ * algorithm. The last line of the top two is the honest caveat: visiting
+ * neighbours in turn concentrates heat where scattered order let it cool, and
+ * on thin ply that is a real effect rather than a theoretical one.
+ */
+function TRAVEL_OPT_HELP(level: number, laserMode: boolean, head: string): string {
+  switch (level) {
+    case 0:
+      return `Paths are etched in the order they were drawn. Shortest to plan, longest to run.`;
+    case 1:
+      return `Each path is followed by whichever unetched path starts nearest, so the ${head} stops crossing the work between neighbours.`;
+    case 2:
+      return (
+        `As above, and each closed path is entered at whichever of its own points is nearest — the direction round it is unchanged. ` +
+        (laserMode
+          ? `On thin material, note that etching neighbours in turn gives the stock less time to cool than a scattered order did.`
+          : `Cut direction is preserved, so the finish is the same.`)
+      );
+    default:
+      return `As above, plus a pass that lifts stranded paths out and puts them back where they fit best. Slower to plan; worth it on a traced image of hundreds of loops.`;
+  }
+}
+
 export const GCodePreviewModal: React.FC = () => {
   const {
     isGCodeModalOpen, toggleGCodeModal, document, vectorizeText,
@@ -55,6 +81,12 @@ export const GCodePreviewModal: React.FC = () => {
    */
   const [passOrder, setPassOrder] = useState<PassOrder>('per-level');
   const [travelSpeed, setTravelSpeed] = useState(3000);
+  /**
+   * How hard the planner works to shorten the hops between etched paths. See
+   * `GCodeOptions.travelOptimization`. Two by default: reordered and re-entered
+   * at the nearest point, which is where nearly all of the saving is.
+   */
+  const [travelOptimization, setTravelOptimization] = useState(2);
   const [applyLevelling, setApplyLevelling] = useState(true);
   const [machine, setMachine] = useState<MachineStatus>(() => webSerialManager.getStatus());
   const [confirmRun, setConfirmRun] = useState(false);
@@ -93,8 +125,15 @@ export const GCodePreviewModal: React.FC = () => {
    * is exactly the copy the operator may have just edited away from.
    */
   const exportOpts = useMemo(
-    () => ({ laserMode, innerContourFirst, travelSpeed, passOrder, customCncTools: cncTools }),
-    [laserMode, innerContourFirst, travelSpeed, passOrder, cncTools]
+    () => ({
+      laserMode,
+      innerContourFirst,
+      travelSpeed,
+      travelOptimization,
+      passOrder,
+      customCncTools: cncTools,
+    }),
+    [laserMode, innerContourFirst, travelSpeed, travelOptimization, passOrder, cncTools]
   );
 
   /**
@@ -384,6 +423,36 @@ export const GCodePreviewModal: React.FC = () => {
                     onChange={(e) => setInnerContourFirst(e.target.checked)}
                     className="w-4 h-4 accent-red-500 rounded cursor-pointer"
                   />
+                </div>
+
+                {/* Travel optimisation. A traced image is hundreds of separate
+                    loops sorted by enclosed area, which is very nearly random
+                    on the material — this is the setting that stops most of
+                    such a job being the head flying about with the beam off. */}
+                <div className="p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-800 dark:text-slate-200">
+                      Travel Optimisation{' '}
+                      <InfoTooltip
+                        text={`Shortens the hops between etched paths. Cuts are never reordered — they run inner-before-outer so a part is not released early — and fills keep their scanline order.`}
+                      />
+                    </div>
+                    <span className="text-xs font-mono text-cyan-500">
+                      {TRAVEL_OPT_LABELS[travelOptimization]}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={3}
+                    step={1}
+                    value={travelOptimization}
+                    onChange={(e) => setTravelOptimization(Number(e.target.value))}
+                    className="w-full mt-2 accent-red-500 cursor-pointer"
+                  />
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                    {TRAVEL_OPT_HELP(travelOptimization, laserMode, words.head)}
+                  </p>
                 </div>
 
                 {/* Pass order. Only worth showing on a job that takes more

@@ -1,4 +1,4 @@
-import type { Pt } from './pathFlatten';
+import { simplifyPolyline, type Pt } from './pathFlatten';
 import type { EtchDocument } from '../types/etch';
 import { docToMachine } from './machineCoords';
 
@@ -178,6 +178,21 @@ export function fitArcsToPolyline(
   minPointsForArc: number = 4
 ): PathCommand[] {
   if (points.length < 2) return [];
+  if (points.length === 2) {
+    return [{ type: 'line', from: points[0], to: points[1] }];
+  }
+
+  // Straight runs are collapsed before any arc is looked for. The fitter only
+  // ever compressed curves: where no arc fitted it fell through to one `line`
+  // per point, so a traced staircase or a dense imported polyline arrived at
+  // the machine with every one of its points intact. Those are the moves short
+  // enough that the controller runs out of blocks before the axis reaches its
+  // feed rate.
+  //
+  // Half the arc tolerance, so collapsing first and then fitting arcs to what
+  // is left still lands inside the tolerance the caller asked for rather than
+  // spending it twice.
+  points = simplifyPolyline(points, tolerance / 2);
   if (points.length === 2) {
     return [{ type: 'line', from: points[0], to: points[1] }];
   }

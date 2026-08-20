@@ -8,8 +8,49 @@ export interface SubPath {
   closed: boolean;
 }
 
-/** Segments used to approximate one curve. Enough for mm-scale machining. */
-const CURVE_STEPS = 24;
+/**
+ * How far a flattened polyline may sit from the curve it replaces, in mm.
+ *
+ * This used to be a fixed 24 segments per curve, which is not a tolerance at
+ * all — the error a fixed step count produces scales with the size of the
+ * curve. A 5 mm circle got 96 points that no laser could resolve, while a
+ * 300 mm sweep got the same 96 with a sixth of a millimetre of flat-sided
+ * error baked in. Worse, the tracer emits one quadratic per pixel-scale
+ * corner, so 24 steps turned a 209-point outline into 4994 points spaced
+ * 0.025 mm apart: short enough that the controller runs out of blocks to
+ * process before the machine reaches its feed rate, and an engrave set to
+ * 3000 mm/min actually runs at a few hundred.
+ *
+ * Held deliberately tight against the arc fitter's own 0.02 mm so the two
+ * stages together stay inside a 0.05 mm budget away from the drawn shape.
+ * Anything that adds a third tolerance to that chain should come out of the
+ * same budget rather than picking its own generous number.
+ */
+const FLATTEN_TOLERANCE_MM = 0.02;
+
+/**
+ * Ceiling on the segments one curve may flatten into.
+ *
+ * A tolerance on its own has no upper bound, and a single imported path
+ * describing a metre-wide sweep would flatten into tens of thousands of points
+ * on the main thread. At this cap a 150 mm radius holds about 0.05 mm, which
+ * is the same budget the tolerance is aiming at anyway.
+ */
+const MAX_CURVE_STEPS = 128;
+
+/**
+ * Segments needed to keep a curve with this bound on |B''| inside tolerance.
+ *
+ * The chord error of a curve split into n uniform pieces is bounded by
+ * max|B''| / (8n²); this inverts that. Curves flatter than the tolerance come
+ * back as one straight line, which is the point — a traced outline is
+ * thousands of curves each shorter than the beam is wide.
+ */
+function stepsForCurvature(maxSecondDeriv: number): number {
+  if (!(maxSecondDeriv > 0)) return 1;
+  const n = Math.ceil(Math.sqrt(maxSecondDeriv / (8 * FLATTEN_TOLERANCE_MM)));
+  return Math.max(1, Math.min(MAX_CURVE_STEPS, n));
+}
 
 /**
  * Flattens an SVG path `d` string into polylines.
@@ -225,12 +266,79 @@ export function flattenPath(d: string): SubPath[] {
   return res;
 }
 
+/**
+ * Ramer–Douglas–Peucker, replacing a colinearity test that only ever fired on
+ * perfectly axis-aligned runs.
+ *
+ * A marching-squares outline is a staircase: every step is one pixel and every
+ * corner is a right angle, so a 300 px image traces tens of thousands of points
+ * that describe a shape a few hundred would describe as well. Keeping them all
+ * is what made the resulting element slow to render, slow to hit-test, and slow
+ * to plan a toolpath over long after the trace itself had finished — each `Q`
+ * becomes 24 flattened points downstream.
+ *
+ * `epsilon` is in output units (mm once scaled), so the tolerance is a real
+ * distance on the material rather than a pixel count.
+ *
+ * Shared with the arc fitter, which runs it over already-flattened toolpaths
+ * for the same reason: whatever produced the points, a run of them within a
+ * hair of a straight line is a straight line as far as the machine goes.
+ */
+export function simplifyPolyline(points: Pt[], epsilon: number): Pt[] {
+  if (points.length <= 3 || epsilon <= 0) return points;
+
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+
+  // Iterative to keep a 100k-point staircase off the call stack.
+  const stack: [number, number][] = [[0, points.length - 1]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop()!;
+    if (hi - lo < 2) continue;
+    const a = points[lo];
+    const b = points[hi];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    let worst = -1;
+    let worstIdx = -1;
+    for (let i = lo + 1; i < hi; i++) {
+      const p = points[i];
+      // Degenerate span (a closed loop's ends coincide): fall back to radius.
+      const dist =
+        len < 1e-9
+          ? Math.hypot(p.x - a.x, p.y - a.y)
+          : Math.abs(dy * (p.x - a.x) - dx * (p.y - a.y)) / len;
+      if (dist > worst) {
+        worst = dist;
+        worstIdx = i;
+      }
+    }
+    if (worst > epsilon && worstIdx > 0) {
+      keep[worstIdx] = 1;
+      stack.push([lo, worstIdx], [worstIdx, hi]);
+    }
+  }
+
+  const res: Pt[] = [];
+  for (let i = 0; i < points.length; i++) if (keep[i]) res.push(points[i]);
+  return res;
+}
+
 /** All points of a path, flattened into one list (subpath boundaries dropped). */
 export function pathPoints(d: string): Pt[] {
   return flattenPath(d).flatMap((sp) => sp.points);
 }
 
 function emitCubic(p0: Pt, c1: Pt, c2: Pt, p1: Pt, out: (x: number, y: number) => void) {
+  // |B''| of a cubic is largest at one end or the other, so bounding both
+  // control differences bounds the whole curve. A cubic that loops back on
+  // itself has a small chord and a large second difference, and comes out of
+  // this with the many steps it needs rather than the one its endpoints suggest.
+  const d1 = Math.hypot(p0.x - 2 * c1.x + c2.x, p0.y - 2 * c1.y + c2.y);
+  const d2 = Math.hypot(c1.x - 2 * c2.x + p1.x, c1.y - 2 * c2.y + p1.y);
+  const CURVE_STEPS = stepsForCurvature(6 * Math.max(d1, d2));
   for (let s = 1; s <= CURVE_STEPS; s++) {
     const t = s / CURVE_STEPS;
     const mt = 1 - t;
@@ -246,6 +354,10 @@ function emitCubic(p0: Pt, c1: Pt, c2: Pt, p1: Pt, out: (x: number, y: number) =
 }
 
 function emitQuad(p0: Pt, c: Pt, p1: Pt, out: (x: number, y: number) => void) {
+  // A quadratic's second derivative is constant, so this bound is exact.
+  const CURVE_STEPS = stepsForCurvature(
+    2 * Math.hypot(p0.x - 2 * c.x + p1.x, p0.y - 2 * c.y + p1.y)
+  );
   for (let s = 1; s <= CURVE_STEPS; s++) {
     const t = s / CURVE_STEPS;
     const mt = 1 - t;
@@ -314,7 +426,16 @@ function emitArc(
   if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI;
   if (sweep && dTheta < 0) dTheta += 2 * Math.PI;
 
-  const steps = Math.max(6, Math.ceil((Math.abs(dTheta) / (Math.PI / 2)) * CURVE_STEPS / 2));
+  // Sagitta of a circular arc split into n pieces is r·dθ²/(8n²) — the same
+  // shape as the Bézier bound, so it goes through the same inversion. The
+  // larger radius bounds an ellipse. The floor of two matters only for a sweep
+  // past a half turn, where the chord between the endpoints is not merely
+  // inaccurate but describes a different shape entirely.
+  const rMax = Math.max(rx, ry);
+  const steps = Math.max(
+    Math.abs(dTheta) > Math.PI ? 2 : 1,
+    stepsForCurvature(rMax * dTheta * dTheta)
+  );
   for (let s = 1; s <= steps; s++) {
     const t = theta1 + (dTheta * s) / steps;
     const px = cosPhi * rx * Math.cos(t) - sinPhi * ry * Math.sin(t) + cx;

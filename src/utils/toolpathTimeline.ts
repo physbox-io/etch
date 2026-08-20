@@ -1,5 +1,6 @@
 import { SAFE_Z, planToolChanges, type GCodeSegment } from './gcodeExporter';
 import { planMoves, type MoveKind, type PassOrder } from './toolpathMoves';
+import type { Pt } from './pathFlatten';
 
 /**
  * One move of the tool, with the clock time it occupies.
@@ -70,6 +71,142 @@ export interface Timeline {
 }
 
 /**
+ * Machine dynamics the estimate assumes, in the absence of anything better.
+ *
+ * These are not settings anyone has typed. They are the shape of a small
+ * belt-driven hobby machine, and they exist because `distance / feed` is not an
+ * estimate of anything a real controller does: it says a job of ten thousand
+ * 0.03 mm moves at 3000 mm/min takes the same time as one 300 mm move at
+ * 3000 mm/min, when in practice the first never gets anywhere near 3000 and can
+ * run five times longer. That error is exactly the one an engraved photograph
+ * hits hardest, so a preview that ignores it is most wrong about the jobs
+ * people most want a number for.
+ */
+const ACCEL_MM_S2 = 500;
+
+/**
+ * GRBL's junction deviation, mm. How far off the corner the machine is allowed
+ * to cut in exchange for carrying speed through it — a corner is taken at the
+ * speed a circular arc of that sagitta could hold.
+ */
+const JUNCTION_DEVIATION_MM = 0.01;
+
+/**
+ * Blocks per second the controller can accept and plan.
+ *
+ * The floor under a move's time, and the thing that actually governs a dense
+ * engrave: past this rate the machine is waiting for its next instruction, not
+ * for its axes. A conservative figure for GRBL over a 115200 serial link.
+ */
+const BLOCKS_PER_SECOND = 450;
+
+/**
+ * The speed the machine can carry through the corner between two moves.
+ *
+ * Straight through, it keeps everything; into a right angle it keeps almost
+ * nothing. This is GRBL's own centripetal rule rather than a guess, so the
+ * estimate slows down in the places the machine actually slows down — which on
+ * a traced outline is every single point.
+ */
+function junctionSpeed(prev: Pt | null, next: Pt | null): number {
+  if (!prev || !next) return 0;
+  const cosTheta = prev.x * next.x + prev.y * next.y;
+  // Doubling back: a full stop, and the formula below would divide by zero.
+  if (cosTheta <= -0.999999) return 0;
+  if (cosTheta >= 0.999999) return Infinity;
+  const sinHalf = Math.sqrt((1 - cosTheta) / 2);
+  return Math.sqrt((ACCEL_MM_S2 * JUNCTION_DEVIATION_MM * sinHalf) / (1 - sinHalf));
+}
+
+/**
+ * How long a move of `distance` takes, entering at `vIn` and leaving at `vOut`,
+ * never exceeding `vMax`.
+ *
+ * Trapezoidal: accelerate, hold, decelerate. A move too short to reach `vMax`
+ * gets a triangular profile with the peak solved for, which is the case that
+ * matters — on a dense engrave every move is that case.
+ */
+function moveSeconds(distance: number, vIn: number, vOut: number, vMax: number): number {
+  if (distance <= 0) return 0;
+  const a = ACCEL_MM_S2;
+
+  // Peak reachable inside the distance, accelerating from one end and
+  // decelerating to the other.
+  const vPeak = Math.min(
+    vMax,
+    Math.sqrt(Math.max(0, (2 * a * distance + vIn * vIn + vOut * vOut) / 2))
+  );
+
+  const dAccel = Math.max(0, (vPeak * vPeak - vIn * vIn) / (2 * a));
+  const dDecel = Math.max(0, (vPeak * vPeak - vOut * vOut) / (2 * a));
+  const dCruise = Math.max(0, distance - dAccel - dDecel);
+
+  const tAccel = (vPeak - vIn) / a;
+  const tDecel = (vPeak - vOut) / a;
+  const tCruise = vPeak > 1e-9 ? dCruise / vPeak : 0;
+
+  return Math.max(0, tAccel) + Math.max(0, tDecel) + tCruise;
+}
+
+/**
+ * Entry and exit speeds for every move, in mm/s.
+ *
+ * Backward pass first: a move can only enter as fast as it can still brake to
+ * whatever the next one will accept. Then forward: it can only leave as fast as
+ * it managed to accelerate to. Running them in that order is what makes a run
+ * of short moves come out slow — each one is braking for the next before it has
+ * finished speeding up for itself, which is precisely why a dense engrave never
+ * reaches its feed rate.
+ */
+function planSpeeds(
+  moves: Array<{ x1: number; y1: number; x2: number; y2: number; z1: number; z2: number; feed: number }>
+): Array<{ vIn: number; vOut: number }> {
+  const n = moves.length;
+  const dist: number[] = new Array(n);
+  const vLimit: number[] = new Array(n);
+  const dir: Array<Pt | null> = new Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const m = moves[i];
+    dist[i] = Math.hypot(m.x2 - m.x1, m.y2 - m.y1, m.z2 - m.z1);
+    vLimit[i] = Math.max(1, m.feed) / 60;
+    const dx = m.x2 - m.x1;
+    const dy = m.y2 - m.y1;
+    const len = Math.hypot(dx, dy);
+    dir[i] = len < 1e-9 ? null : { x: dx / len, y: dy / len };
+  }
+
+  // The speed each junction can hold, capped by both neighbours' feeds.
+  const junction: number[] = new Array(n + 1).fill(0);
+  for (let i = 1; i < n; i++) {
+    junction[i] = Math.min(
+      junctionSpeed(dir[i - 1], dir[i]),
+      vLimit[i - 1],
+      vLimit[i]
+    );
+  }
+
+  for (let i = n - 1; i >= 0; i--) {
+    // Braking from this junction to the next one over the move's own length.
+    const reachable = Math.sqrt(junction[i + 1] * junction[i + 1] + 2 * ACCEL_MM_S2 * dist[i]);
+    if (junction[i] > reachable) junction[i] = reachable;
+  }
+  for (let i = 0; i < n; i++) {
+    const reachable = Math.sqrt(junction[i] * junction[i] + 2 * ACCEL_MM_S2 * dist[i]);
+    if (junction[i + 1] > reachable) junction[i + 1] = reachable;
+  }
+
+  const out: Array<{ vIn: number; vOut: number }> = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = {
+      vIn: Math.min(junction[i], vLimit[i]),
+      vOut: Math.min(junction[i + 1], vLimit[i]),
+    };
+  }
+  return out;
+}
+
+/**
  * Puts the planned moves on a clock.
  *
  * This used to replay the segments itself, mirroring generateGCode()'s
@@ -105,6 +242,13 @@ export function buildTimeline(
   let deepestZ = 0;
   let maxPower = 0;
 
+  // Speeds are settled over the whole program before any of it is timed. A
+  // move's duration depends on how fast the machine is still going when it
+  // arrives and how fast it must be going when it leaves, and the second of
+  // those is a fact about moves that have not been reached yet — a backward
+  // pass, then a forward one, exactly as the controller's own planner does it.
+  const speeds = planSpeeds(program.moves);
+
   for (let i = 0; i < program.moves.length; i++) {
     const change = changeAtMove.get(i);
     if (change) {
@@ -123,7 +267,11 @@ export function buildTimeline(
     // Z counts towards the distance travelled: a ramp descends while it moves,
     // and a job of many shallow passes spends real time on that descent.
     const distance = Math.hypot(m.x2 - m.x1, m.y2 - m.y1, m.z2 - m.z1);
-    const dt = distance / Math.max(1, m.feed);
+    // Minutes, and never quicker than the controller can take the instruction.
+    const dt = Math.max(
+      moveSeconds(distance, speeds[i].vIn, speeds[i].vOut, Math.max(1, m.feed) / 60),
+      1 / BLOCKS_PER_SECOND
+    ) / 60;
 
     if (m.z2 < deepestZ) deepestZ = m.z2;
     if (m.kind === 'cut' && m.power > maxPower) maxPower = m.power;

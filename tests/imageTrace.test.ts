@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { traceMarchingSquares, DEFAULT_IMAGE_OPTIONS } from '../src/utils/imageProcessor';
+import { flattenPath } from '../src/utils/pathFlatten';
 
 /**
  * Regression cover for the contour tracer.
@@ -71,7 +72,63 @@ describe('traceMarchingSquares', () => {
     const img = image(300, 300, (x, y) => x > 50 && x < 250 && y > 50 && y < 250);
     const [d] = traceMarchingSquares(img, DEFAULT_IMAGE_OPTIONS, 1, 1);
     // Four corners, not 800 one-pixel steps.
-    expect((d.match(/[MLQ]/g) || []).length).toBeLessThan(20);
+    expect((d.match(/[MLQC]/g) || []).length).toBeLessThan(20);
+  });
+
+  /**
+   * The path commands are only half the story: what the machine runs is the
+   * flattened polyline, and smoothing used to undo the simplifier completely.
+   * One quadratic was emitted per surviving point and each flattened into two
+   * dozen more, so a 209-point outline reached the controller as 4994 moves
+   * spaced 0.025 mm apart — short enough that it runs out of blocks to process
+   * before the axes reach the feed rate, and an engrave set to 3000 mm/min
+   * actually ran at a few hundred.
+   */
+  it('does not undo its own simplification when smoothing', () => {
+    const img = image(300, 300, (x, y) => Math.hypot(x - 150, y - 150) < 100);
+    const scale = 50 / 300;
+    const smoothed = traceMarchingSquares(
+      img,
+      { ...DEFAULT_IMAGE_OPTIONS, smoothing: true },
+      scale,
+      scale
+    )[0];
+    const plain = traceMarchingSquares(
+      img,
+      { ...DEFAULT_IMAGE_OPTIONS, smoothing: false },
+      scale,
+      scale
+    )[0];
+
+    // Rounding a staircase does cost points — a curve needs them to flatten
+    // into. What it must not cost is a multiple of two dozen per point kept,
+    // which is what a curve command per point came to.
+    const count = (d: string) => flattenPath(d).reduce((n, sp) => n + sp.points.length, 0);
+    expect(count(smoothed)).toBeLessThan(count(plain) * 5);
+
+    // And the rounding stays rounding. A smoothed outline comes out slightly
+    // *shorter* than the staircase it replaced, because a rounded corner is a
+    // shortcut across a square one — and closer to the circle that was traced.
+    // What it must never be is longer: an unbounded least-squares fit answers a
+    // nearly-collinear run with handles hundreds of times the chord, and the
+    // excursion between the samples shows up only here, as cut length.
+    const length = (d: string) =>
+      flattenPath(d).reduce((total, sp) => {
+        for (let i = 1; i < sp.points.length; i++) {
+          total += Math.hypot(sp.points[i].x - sp.points[i - 1].x, sp.points[i].y - sp.points[i - 1].y);
+        }
+        return total;
+      }, 0);
+    expect(length(smoothed)).toBeGreaterThan(length(plain) * 0.9);
+    expect(length(smoothed)).toBeLessThan(length(plain) * 1.01);
+  });
+
+  it('simplifies harder when asked to', () => {
+    const img = image(300, 300, (x, y) => Math.hypot(x - 150, y - 150) < 100);
+    const detailed = traceMarchingSquares(img, { ...DEFAULT_IMAGE_OPTIONS, simplifyPx: 0.75 }, 1, 1)[0];
+    const coarse = traceMarchingSquares(img, { ...DEFAULT_IMAGE_OPTIONS, simplifyPx: 3 }, 1, 1)[0];
+    const count = (d: string) => flattenPath(d).reduce((n, sp) => n + sp.points.length, 0);
+    expect(count(coarse)).toBeLessThan(count(detailed) / 2);
   });
 
   it('rejects specks by enclosed area, not by point count', () => {

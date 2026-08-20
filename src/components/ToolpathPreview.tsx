@@ -3,6 +3,8 @@ import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { EtchDocument } from '../types/etch';
 import type { GCodeSegment } from '../utils/gcodeExporter';
 import { buildTimeline, sampleAt, type Timeline, type ToolMove } from '../utils/toolpathTimeline';
+import { usePanZoom } from '../hooks/usePanZoom';
+import { ZoomControls } from './ZoomControls';
 import { buildChunks, TONE_LEVELS } from '../utils/toolpathChunks';
 
 /**
@@ -505,9 +507,24 @@ export const ToolpathPreview: React.FC<{
 
   const headSize = Math.max(doc.width, doc.height) / 110;
 
+  /**
+   * Zoom for reading the path itself. A whole 300x200 bed on a panel this size
+   * puts a millimetre at about a pixel, which is not enough to see whether two
+   * neighbouring passes are about to run into each other, or what the travel
+   * between a traced image's loops actually does.
+   */
+  const view = usePanZoom(24);
+  /**
+   * Destructured rather than used as `view.attachHost` at the call site: the
+   * lint rule that guards against reading refs during render treats any object
+   * a `ref` prop is taken from as a ref itself, and then flags every other
+   * property of it read in the same element.
+   */
+  const { attachHost } = view;
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex-1 min-h-0 bg-slate-100 dark:bg-slate-950 p-3 relative">
+      <div className="flex-1 min-h-0 bg-slate-100 dark:bg-slate-950 p-3 relative overflow-hidden">
         {/* Live readout — the numbers that change as the tool moves. */}
         <div className="absolute top-4 right-4 z-10 flex items-center gap-2 px-2 py-1 rounded-md bg-white/85 dark:bg-slate-900/85 border border-slate-200 dark:border-slate-700 font-mono text-[11px] pointer-events-none">
           {live && (
@@ -530,10 +547,25 @@ export const ToolpathPreview: React.FC<{
           </span>
         </div>
 
+        <ZoomControls view={view} className="absolute bottom-4 right-4 z-10" />
+
+        {/* Clipped, because the SVG is transformed on top of its viewBox rather
+            than having the viewBox rewritten — the same arrangement the main
+            canvas uses. Without the clip a zoomed toolpath draws over the
+            panels either side of it. */}
         <svg
           viewBox={`-5 -5 ${doc.width + 10} ${doc.height + 10}`}
-          className="w-full h-full"
+          className="w-full h-full touch-none"
           preserveAspectRatio="xMidYMid meet"
+          style={{
+            transform: view.transform,
+            cursor: view.zoom > 1 ? (view.panning ? 'grabbing' : 'grab') : undefined,
+          }}
+          ref={attachHost}
+          onPointerDown={view.onPointerDown}
+          onPointerMove={view.onPointerMove}
+          onPointerUp={view.onPointerUp}
+          onPointerCancel={view.onPointerUp}
         >
           {/* The bed, so scale and overruns are obvious */}
           <rect

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import {
   loadImageElement,
@@ -7,6 +7,8 @@ import {
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
 import { camWorker } from '../utils/camWorkerClient';
+import { usePanZoom } from '../hooks/usePanZoom';
+import { ZoomControls } from './ZoomControls';
 import { BusyToast } from './BusyToast';
 import { planImageImport } from '../utils/imageImport';
 import { machineKind } from '../utils/tooling';
@@ -39,7 +41,57 @@ export const ImageImportModal: React.FC = () => {
 
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [loadedImg, setLoadedImg] = useState<HTMLImageElement | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  /**
+   * The traced geometry, kept as geometry.
+   *
+   * It used to be stroked straight into the preview canvas, which is a 300 px
+   * bitmap — fine at the size the dialog shows it and useless the moment you
+   * zoom in, because the thing you are zooming in to judge is whether the
+   * outline follows the picture, and both would be equally blurred. Held here
+   * and drawn as an SVG over the canvas, the outline stays sharp at any
+   * magnification while the pixels underneath it go frankly blocky, which is
+   * the honest rendering: those really are the pixels it was traced from.
+   */
+  const [overlay, setOverlay] = useState<{
+    imgW: number;
+    imgH: number;
+    scaleX: number;
+    scaleY: number;
+    strokeD?: string;
+    fillD?: string;
+  } | null>(null);
+
+  /** Zoom, so the simplification setting can be judged on actual detail. */
+  const view = usePanZoom(16);
+  /**
+   * Destructured rather than used as `view.attachHost` at the call site: the
+   * lint rule that guards against reading refs during render treats any object
+   * a `ref` prop is taken from as a ref itself, and then flags every other
+   * property of it read in the same element.
+   */
+  const { attachHost } = view;
+
   const [options, setOptions] = useState<ImageProcessOptions>(DEFAULT_IMAGE_OPTIONS);
+
+  /**
+   * Millimetres per traced pixel, so the simplification tolerance can be shown
+   * as a distance on the material as well as a pixel count. The trace runs on
+   * a copy downsampled to 300 px on its long side, so the source image's own
+   * resolution past that point is not what the tolerance is measured against.
+   */
+  const mmPerPixel = useMemo(() => {
+    if (!loadedImg) return 0;
+    const w = loadedImg.naturalWidth || loadedImg.width || 0;
+    const h = loadedImg.naturalHeight || loadedImg.height || 0;
+    if (!w || !h) return 0;
+    const scale = Math.min(1, 300 / Math.max(w, h));
+    return Math.min(
+      options.targetWidth / Math.max(1, Math.round(w * scale)),
+      options.targetHeight / Math.max(1, Math.round(h * scale))
+    );
+  }, [loadedImg, options.targetWidth, options.targetHeight]);
   const [lockAspect, setLockAspect] = useState<boolean>(true);
   const [aspectRatio, setAspectRatio] = useState<number>(1);
   const [targetLayerId, setTargetLayerId] = useState<string>(activeLayerId || doc.layers[0]?.id || 'cut');
@@ -183,39 +235,19 @@ export const ImageImportModal: React.FC = () => {
         );
         if (cancelled) return;
 
-        ctx.save();
-        // Geometry arrives in mm; the canvas is in source pixels.
-        ctx.scale(1 / scaleX, 1 / scaleY);
-        ctx.strokeStyle = '#00e5ff';
-        ctx.lineWidth = 1.5 * Math.min(scaleX, scaleY);
-        ctx.fillStyle = 'rgba(0, 229, 255, 0.6)';
-
-        if (traceResult.mode === 'vector') {
+        const base = { imgW: imageData.width, imgH: imageData.height, scaleX, scaleY };
+        if (traceResult.mode === 'vector' || traceResult.mode === 'scanline') {
           setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
-          if (traceResult.compoundD) {
-            const path2D = new Path2D(traceResult.compoundD);
-            ctx.stroke(path2D);
-          }
+          setOverlay({ ...base, strokeD: traceResult.compoundD });
         } else if (traceResult.mode === 'halftone') {
           setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
-          if (traceResult.pathD) {
-            const path2D = new Path2D(traceResult.pathD);
-            ctx.fillStyle = '#00e5ff';
-            ctx.fill(path2D);
-          }
-        } else if (traceResult.mode === 'scanline') {
-          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
-          if (traceResult.compoundD) {
-            const path2D = new Path2D(traceResult.compoundD);
-            ctx.stroke(path2D);
-          }
+          setOverlay({ ...base, fillD: traceResult.pathD });
         } else if (traceResult.mode === 'shade') {
-          setPreviewStats({
-            elementCount: 1,
-            detailCount: traceResult.detailCount,
-          });
+          // Shading has no outline to draw: the processed greyscale on the
+          // canvas below *is* the preview.
+          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
+          setOverlay({ ...base });
         }
-        ctx.restore();
       } catch (err) {
         if (!cancelled) console.error('Error rendering image preview:', err);
       } finally {
@@ -533,6 +565,68 @@ export const ImageImportModal: React.FC = () => {
                   </div>
                 )}
 
+                {/* Advanced. Vector only: the other three modes decide at
+                    import that a pixel is either cut or not, and simplifying
+                    an outline is meaningless to a dot grid or a scan. */}
+                {options.mode === 'vector' && (
+                  <div>
+                    <button
+                      onClick={() => setShowAdvanced((v) => !v)}
+                      className="w-full text-left text-[10px] uppercase font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      {showAdvanced ? '▾' : '▸'} Advanced
+                    </button>
+
+                    {showAdvanced && (
+                      <div className="space-y-3 mt-2 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                            Simplify
+                          </span>
+                          <span className="text-xs font-mono text-cyan-500">
+                            {options.simplifyPx.toFixed(2)} px
+                            {mmPerPixel > 0 && ` · ${(options.simplifyPx * mmPerPixel).toFixed(3)} mm`}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.25"
+                          max="4"
+                          step="0.25"
+                          value={options.simplifyPx}
+                          onChange={(e) =>
+                            setOptions({ ...options, simplifyPx: Number(e.target.value) })
+                          }
+                          className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                        />
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                          How far the traced outline may sit from the picture. A trace follows the
+                          pixel grid one step at a time, and most of those steps are finer than
+                          anything this machine can resolve — but the controller still has to run
+                          every one, which is what makes an imported image take far longer to etch
+                          than its size suggests. Raise this until the preview starts losing detail
+                          you wanted, then come back one notch.
+                        </p>
+                        <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer pt-1">
+                          <input
+                            type="checkbox"
+                            checked={options.smoothing}
+                            onChange={(e) =>
+                              setOptions({ ...options, smoothing: e.target.checked })
+                            }
+                            className="rounded border-slate-300 dark:border-slate-700 text-cyan-500 focus:ring-cyan-500"
+                          />
+                          Fit curves to the outline
+                        </label>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                          Rounds off the pixel staircase. Off, the outline is emitted as the
+                          straight lines it was traced as — squarer, and fewer moves.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Target Size & Layer */}
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-3">
@@ -636,11 +730,72 @@ export const ImageImportModal: React.FC = () => {
           {/* Canvas Preview Column (7 cols) */}
           <div className="md:col-span-7 flex flex-col items-center justify-center bg-slate-950/80 rounded-2xl p-4 border border-slate-800 relative min-h-[320px]">
             {loadedImg ? (
-              <div className="relative max-w-full max-h-[450px] flex items-center justify-center overflow-hidden rounded-xl">
-                <canvas
-                  ref={previewCanvasRef}
-                  className="max-w-full max-h-[420px] object-contain border border-slate-700/50 shadow-2xl rounded-lg"
-                />
+              /* Fills the column rather than shrink-wrapping the image. The
+                 transform does not affect layout, so a box sized to the canvas
+                 is a viewport the size of the *unzoomed* picture: zooming then
+                 grows the contents inside a window that never grows with them,
+                 and all the new detail lands outside the clip. */
+              <div
+                // The wheel and the drag belong to the whole viewport, not to
+                // the picture inside it: at any zoom past 1 most of what you
+                // want to point at is off to one side, and a zoom that only
+                // works while the pointer happens to be over the image reads as
+                // a zoom that has stopped working.
+                //
+                // Anchoring stays honest because the inner element is centred
+                // here, so the two share a centre — which is what the transform
+                // scales about.
+                className="relative flex-1 w-full min-h-0 flex items-center justify-center overflow-hidden rounded-xl touch-none"
+                ref={attachHost}
+                style={{
+                  cursor: view.zoom > 1 ? (view.panning ? 'grabbing' : 'grab') : undefined,
+                }}
+                onPointerDown={view.onPointerDown}
+                onPointerMove={view.onPointerMove}
+                onPointerUp={view.onPointerUp}
+                onPointerCancel={view.onPointerUp}
+              >
+                {/* Canvas and outline are transformed together, so the outline
+                    stays registered to the pixels it was traced from at every
+                    zoom. */}
+                <div className="relative" style={{ transform: view.transform }}>
+                  <canvas
+                    ref={previewCanvasRef}
+                    // Blocky rather than smeared when magnified: the steps are
+                    // the source pixels, and whether the traced outline is
+                    // following them or chasing them is the question the
+                    // simplification setting is asking.
+                    // Capped so a 300 px trace is not upscaled into a blur just
+                    // because the window is tall, but never taller than the
+                    // window either — at 1x this has to fit, whatever the panel
+                    // has been resized to.
+                    style={{ imageRendering: 'pixelated', maxHeight: 'min(420px, 100%)' }}
+                    className="block max-w-full border border-slate-700/50 shadow-2xl rounded-lg"
+                  />
+                  {overlay && (overlay.strokeD || overlay.fillD) && (
+                    <svg
+                      className="absolute inset-0 w-full h-full pointer-events-none"
+                      viewBox={`0 0 ${overlay.imgW} ${overlay.imgH}`}
+                      preserveAspectRatio="none"
+                    >
+                      {/* Geometry arrives in mm; this box is in source pixels. */}
+                      <g transform={`scale(${1 / overlay.scaleX}, ${1 / overlay.scaleY})`}>
+                        {overlay.fillD && <path d={overlay.fillD} fill="#00e5ff" />}
+                        {overlay.strokeD && (
+                          <path
+                            d={overlay.strokeD}
+                            fill="none"
+                            stroke="#00e5ff"
+                            strokeWidth={1.5 * Math.min(overlay.scaleX, overlay.scaleY)}
+                          />
+                        )}
+                      </g>
+                    </svg>
+                  )}
+                </div>
+
+                <ZoomControls view={view} className="absolute bottom-3 right-3 z-10" />
+
                 <div className="absolute top-3 right-3 bg-slate-900/80 backdrop-blur-md border border-slate-700 px-3 py-1.5 rounded-lg text-[11px] font-mono text-cyan-400 flex items-center gap-2">
                   <span>
                     Size: {options.targetWidth} × {options.targetHeight} mm
