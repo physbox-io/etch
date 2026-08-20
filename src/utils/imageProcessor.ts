@@ -313,9 +313,17 @@ function pointsToSVGPath(
   // other stretch. Fitting only as far as the last point and letting `Z` draw
   // the closing edge leaves one straight chord across whatever the outline was
   // doing where the tracer happened to start.
-  const curves = fitCubics([...points, points[0]], Math.max(epsilon, 1e-4), true);
-  for (const c of curves) {
-    d += ` C ${c.c1.x.toFixed(3)},${c.c1.y.toFixed(3)} ${c.c2.x.toFixed(3)},${c.c2.y.toFixed(3)} ${c.end.x.toFixed(3)},${c.end.y.toFixed(3)}`;
+  const fitted = fitCubics([...points, points[0]], Math.max(epsilon, 1e-4), true);
+  for (let i = 0; i < fitted.length; i++) {
+    const seg = fitted[i];
+    // A straight final piece back to where the outline started is what `Z`
+    // draws anyway, and emitting it as well leaves a duplicate point in every
+    // traced loop once it is flattened.
+    if (seg.kind === 'line' && i === fitted.length - 1) break;
+    d +=
+      seg.kind === 'line'
+        ? ` L ${seg.end.x.toFixed(3)},${seg.end.y.toFixed(3)}`
+        : ` C ${seg.c1.x.toFixed(3)},${seg.c1.y.toFixed(3)} ${seg.c2.x.toFixed(3)},${seg.c2.y.toFixed(3)} ${seg.end.x.toFixed(3)},${seg.end.y.toFixed(3)}`;
   }
   d += ' Z';
   return d;

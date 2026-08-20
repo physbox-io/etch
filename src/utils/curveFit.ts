@@ -2,10 +2,19 @@ import type { Pt } from './pathFlatten';
 
 /** One cubic Bézier, continuing from wherever the previous one ended. */
 export interface CubicSeg {
+  kind: 'curve';
   c1: Pt;
   c2: Pt;
   end: Pt;
 }
+
+/** A straight run, continuing from wherever the previous piece ended. */
+export interface LineSeg {
+  kind: 'line';
+  end: Pt;
+}
+
+export type FittedSeg = CubicSeg | LineSeg;
 
 /**
  * Least-squares cubic fitting for polylines (Schneider's algorithm).
@@ -48,6 +57,40 @@ function add(a: Pt, b: Pt): Pt {
 function normalize(a: Pt): Pt {
   const len = Math.hypot(a.x, a.y);
   return len < 1e-12 ? { x: 0, y: 0 } : { x: a.x / len, y: a.y / len };
+}
+
+/**
+ * Whether every point of a run lies within `tolerance` of the chord between its
+ * ends — i.e. whether this is a straight line as far as the caller's own
+ * accuracy is concerned.
+ *
+ * Checked before fitting rather than after, because the least-squares solve
+ * will happily answer a straight run with a curve. It passes the tolerance
+ * test, so it is accepted, and what comes out is a line described by four
+ * control points that are not quite on it: it wobbles by a fraction of the
+ * tolerance, flattens into points it does not need, and is no longer something
+ * the arc fitter or the node editor can recognise as straight. Saying "line"
+ * costs nothing and is simply true.
+ */
+function isStraightRun(pts: Pt[], first: number, last: number, tolerance: number): boolean {
+  const a = pts[first];
+  const b = pts[last];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+
+  for (let i = first + 1; i < last; i++) {
+    const p = pts[i];
+    // A degenerate chord is a closed run whose ends coincide. Distance from the
+    // single point they share is the only meaningful measure, and a run that
+    // strays from it is a loop, not a line.
+    const dist =
+      len < 1e-12
+        ? Math.hypot(p.x - a.x, p.y - a.y)
+        : Math.abs(dy * (p.x - a.x) - dx * (p.y - a.y)) / len;
+    if (dist > tolerance) return false;
+  }
+  return true;
 }
 
 /** Bézier basis, written out rather than looped — this is the hot path. */
@@ -221,7 +264,7 @@ function reparameterize(
  * what stops a traced shape showing a crease at whichever point the tracer
  * happened to start from.
  */
-export function fitCubics(points: Pt[], tolerance: number, closed = false): CubicSeg[] {
+export function fitCubics(points: Pt[], tolerance: number, closed = false): FittedSeg[] {
   // Consecutive duplicates give a zero-length tangent and a singular solve.
   const pts: Pt[] = [];
   for (const p of points) {
@@ -229,11 +272,7 @@ export function fitCubics(points: Pt[], tolerance: number, closed = false): Cubi
     if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > 1e-9) pts.push(p);
   }
   if (pts.length < 2) return [];
-  if (pts.length === 2) {
-    // Two points describe a line; a "curve" here would be the line with two
-    // redundant control points on it.
-    return [{ c1: pts[0], c2: pts[1], end: pts[1] }];
-  }
+  if (pts.length === 2) return [{ kind: 'line', end: pts[1] }];
 
   const last = pts.length - 1;
   const tHat1 = closed
@@ -243,7 +282,7 @@ export function fitCubics(points: Pt[], tolerance: number, closed = false): Cubi
     ? normalize(sub(pts[last - 1], pts[0]))
     : normalize(sub(pts[last - 1], pts[last]));
 
-  const out: CubicSeg[] = [];
+  const out: FittedSeg[] = [];
   fitRun(pts, 0, last, tHat1, tHat2, tolerance, 0, out);
   return out;
 }
@@ -256,13 +295,16 @@ function fitRun(
   tHat2: Pt,
   tolerance: number,
   depth: number,
-  out: CubicSeg[]
+  out: FittedSeg[]
 ): void {
   if (last - first < 1) return;
 
-  // Two points with nothing between them: a chord is the fit, exactly.
-  if (last - first === 1) {
-    out.push({ c1: pts[first], c2: pts[last], end: pts[last] });
+  // Straight within tolerance — including the two-point case, where it is
+  // straight by definition. Smoothing is for rounding off a pixel staircase,
+  // and the one thing it should never do is put a bend in an edge that the
+  // drawing says is flat.
+  if (isStraightRun(pts, first, last, tolerance)) {
+    out.push({ kind: 'line', end: pts[last] });
     return;
   }
 
@@ -271,7 +313,7 @@ function fitRun(
   let { error, index } = computeMaxError(pts, first, last, bez, u);
 
   if (error < tolerance) {
-    out.push({ c1: bez[1], c2: bez[2], end: bez[3] });
+    out.push({ kind: 'curve', c1: bez[1], c2: bez[2], end: bez[3] });
     return;
   }
 
@@ -286,7 +328,7 @@ function fitRun(
       error = next.error;
       index = next.index;
       if (error < tolerance) {
-        out.push({ c1: bez[1], c2: bez[2], end: bez[3] });
+        out.push({ kind: 'curve', c1: bez[1], c2: bez[2], end: bez[3] });
         return;
       }
     }
@@ -296,7 +338,7 @@ function fitRun(
     // Out of budget. A chord is wrong by more than the tolerance, but it is
     // wrong by a bounded amount and it terminates — which recursing further on
     // a hundred thousand points of noise does not.
-    out.push({ c1: pts[first], c2: pts[last], end: pts[last] });
+    out.push({ kind: 'line', end: pts[last] });
     return;
   }
 

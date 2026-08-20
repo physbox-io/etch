@@ -125,10 +125,18 @@ describe('traceMarchingSquares', () => {
 
   it('simplifies harder when asked to', () => {
     const img = image(300, 300, (x, y) => Math.hypot(x - 150, y - 150) < 100);
-    const detailed = traceMarchingSquares(img, { ...DEFAULT_IMAGE_OPTIONS, simplifyPx: 0.75 }, 1, 1)[0];
-    const coarse = traceMarchingSquares(img, { ...DEFAULT_IMAGE_OPTIONS, simplifyPx: 3 }, 1, 1)[0];
+    const trace = (simplifyPx: number, smoothing: boolean) =>
+      traceMarchingSquares(img, { ...DEFAULT_IMAGE_OPTIONS, simplifyPx, smoothing }, 1, 1)[0];
     const count = (d: string) => flattenPath(d).reduce((n, sp) => n + sp.points.length, 0);
-    expect(count(coarse)).toBeLessThan(count(detailed) / 2);
+
+    expect(count(trace(3, false))).toBeLessThan(count(trace(0.75, false)) / 2);
+
+    // Smoothed, the slider buys far less on a shape that really is a circle:
+    // once the outline is curves, how finely it flattens is set by the
+    // flattening tolerance and the radius, not by how many points were traced.
+    // What it does buy is a description in fewer pieces.
+    const commands = (d: string) => (d.match(/[LC]/g) || []).length;
+    expect(commands(trace(3, true))).toBeLessThan(commands(trace(0.75, true)) / 2);
   });
 
   it('rejects specks by enclosed area, not by point count', () => {

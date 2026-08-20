@@ -4,9 +4,13 @@ import { flattenPath, type Pt } from '../src/utils/pathFlatten';
 
 /** The `d` string a run of fitted cubics describes, for measuring downstream. */
 function toPath(points: Pt[], tolerance: number, closed = false): string {
-  const curves = fitCubics(points, tolerance, closed);
   let d = `M ${points[0].x},${points[0].y}`;
-  for (const c of curves) d += ` C ${c.c1.x},${c.c1.y} ${c.c2.x},${c.c2.y} ${c.end.x},${c.end.y}`;
+  for (const seg of fitCubics(points, tolerance, closed)) {
+    d +=
+      seg.kind === 'line'
+        ? ` L ${seg.end.x},${seg.end.y}`
+        : ` C ${seg.c1.x},${seg.c1.y} ${seg.c2.x},${seg.c2.y} ${seg.end.x},${seg.end.y}`;
+  }
   return d;
 }
 
@@ -60,6 +64,7 @@ describe('fitCubics', () => {
     // The old scheme emitted a curve per point. Anything near 60 here means
     // the fit is not spanning runs and the point count never actually drops.
     expect(curves.length).toBeLessThan(8);
+    expect(curves.every((c) => c.kind === 'curve')).toBe(true);
     expect(maxDeviation(pts, toPath(pts, 0.05))).toBeLessThan(0.05);
   });
 
@@ -87,6 +92,64 @@ describe('fitCubics', () => {
     expect(polylineLength(flat)).toBeLessThan(polylineLength(pts) * 1.5);
   });
 
+  describe('straight runs stay straight', () => {
+    it('calls a straight line a line', () => {
+      const pts: Pt[] = [];
+      for (let i = 0; i <= 40; i++) pts.push({ x: i * 0.5, y: 0 });
+
+      const fitted = fitCubics(pts, 0.05);
+      // One piece, and it is a line — not a cubic with its controls arranged to
+      // look like one. Smoothing exists to round off a pixel staircase; putting
+      // a bend in an edge the drawing says is flat is the one thing it must not
+      // do, and a "flat" cubic from a least-squares solve is only flat to within
+      // the tolerance it was allowed.
+      expect(fitted).toHaveLength(1);
+      expect(fitted[0].kind).toBe('line');
+      expect(fitted[0].end).toEqual({ x: 20, y: 0 });
+    });
+
+    it('keeps the straight sides of a shape straight and rounds only the corner', () => {
+      const pts: Pt[] = [];
+      for (let i = 0; i <= 20; i++) pts.push({ x: i, y: 0 });
+      // A quarter-turn, then away again.
+      for (let i = 1; i <= 8; i++) {
+        const t = (i / 8) * (Math.PI / 2);
+        pts.push({ x: 20 + 3 * Math.sin(t), y: 3 - 3 * Math.cos(t) });
+      }
+      for (let i = 1; i <= 20; i++) pts.push({ x: 23, y: 3 + i });
+
+      const fitted = fitCubics(pts, 0.05);
+      expect(fitted.some((f) => f.kind === 'line')).toBe(true);
+      expect(fitted.some((f) => f.kind === 'curve')).toBe(true);
+      // The first piece is the flat run in, and it reaches the corner intact
+      // rather than being chopped up to feed the curve that follows.
+      expect(fitted[0].kind).toBe('line');
+      expect(fitted[0].end.y).toBeCloseTo(0, 6);
+    });
+
+    it('does not call a shallow arc straight', () => {
+      // Bowed by well over the tolerance across its span: a real curve, and
+      // flattening it to a chord would cut the bow off the shape.
+      const pts: Pt[] = [];
+      for (let i = 0; i <= 20; i++) {
+        const x = i;
+        pts.push({ x, y: -0.5 * Math.sin((x / 20) * Math.PI) });
+      }
+      expect(fitCubics(pts, 0.02).every((f) => f.kind === 'line')).toBe(false);
+    });
+
+    it('respects the tolerance it is given', () => {
+      // Bowed by 0.1: straight if the caller can live with 0.2, not if it needs
+      // 0.01.
+      const pts: Pt[] = [];
+      for (let i = 0; i <= 20; i++) {
+        pts.push({ x: i, y: -0.1 * Math.sin((i / 20) * Math.PI) });
+      }
+      expect(fitCubics(pts, 0.2).every((f) => f.kind === 'line')).toBe(true);
+      expect(fitCubics(pts, 0.01).every((f) => f.kind === 'line')).toBe(false);
+    });
+  });
+
   it('closes a loop through its own seam', () => {
     const ring: Pt[] = [];
     for (let i = 0; i < 32; i++) {
@@ -97,6 +160,10 @@ describe('fitCubics', () => {
 
     const curves = fitCubics(ring, 0.05, true);
     const end = curves[curves.length - 1].end;
+    // Mostly curves. Not all: a split can leave a run of two points, which has
+    // nothing between its ends to be bowed away from them, so a chord is the
+    // only honest thing to call it.
+    expect(curves.filter((c) => c.kind === 'curve').length).toBeGreaterThan(curves.length / 2);
     expect(Math.hypot(end.x - ring[0].x, end.y - ring[0].y)).toBeLessThan(1e-6);
 
     // Radius holds all the way round, including across the seam — a loop fitted
