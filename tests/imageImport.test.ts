@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { planImageImport } from '../src/utils/imageImport';
 import { DEFAULT_IMAGE_OPTIONS, type ImageProcessOptions } from '../src/utils/imageProcessor';
-import { buildSymbolElement, CLIP_ART_LIBRARY } from '../src/utils/clipArtLibrary';
+import { buildSymbolElement, loadClipArt } from '../src/utils/clipArtLibrary';
 import type { EtchDocument } from '../src/types/etch';
 
 /**
@@ -118,7 +118,8 @@ describe('planImageImport', () => {
 });
 
 describe('buildSymbolElement', () => {
-  it('scales each symbol by its own viewBox, not a shared assumption', () => {
+  it('scales each symbol by its own viewBox, not a shared assumption', async () => {
+    const CLIP_ART_LIBRARY = await loadClipArt();
     const legacy = CLIP_ART_LIBRARY.find((s) => s.viewBox === '0 0 24 24')!;
     const modern = CLIP_ART_LIBRARY.find((s) => s.viewBox === '0 0 100 100')!;
     const placed = (item: typeof legacy) =>
@@ -130,8 +131,8 @@ describe('buildSymbolElement', () => {
     expect(placed(modern).scaleX * 100).toBeCloseTo(50);
   });
 
-  it('carries the library path data, without which a symbol machines as nothing', () => {
-    const item = CLIP_ART_LIBRARY[0];
+  it('carries the library path data, without which a symbol machines as nothing', async () => {
+    const item = (await loadClipArt())[0];
     const el = buildSymbolElement(item, { docWidth: 300, docHeight: 200, layerId: 'etch' });
     expect(el.d).toBe(item.pathData);
     expect(el.symbolId).toBe(item.id);

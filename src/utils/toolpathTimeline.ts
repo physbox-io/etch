@@ -1,5 +1,5 @@
 import { SAFE_Z, planToolChanges, type GCodeSegment } from './gcodeExporter';
-import { planMoves, type MoveKind } from './toolpathMoves';
+import { planMoves, type MoveKind, type PassOrder } from './toolpathMoves';
 
 /**
  * One move of the tool, with the clock time it occupies.
@@ -80,7 +80,7 @@ export interface Timeline {
  */
 export function buildTimeline(
   segments: GCodeSegment[],
-  opts: { travelSpeed: number; laserMode: boolean }
+  opts: { travelSpeed: number; laserMode: boolean; passOrder?: PassOrder }
 ): Timeline {
   const travelSpeed = Math.max(1, opts.travelSpeed);
   const changes = planToolChanges(segments);
@@ -89,6 +89,10 @@ export function buildTimeline(
     travelSpeed,
     safeZ: SAFE_Z,
     toolChanges: new Map(changes.map((c) => [c.segIndex, { tool: c.tool, from: c.from }])),
+    // The preview is the program, not a second opinion about it: planning the
+    // animation in a different pass order would show the tool visiting the work
+    // in an order the machine never takes.
+    passOrder: opts.passOrder,
   });
 
   const moves: ToolMove[] = [];

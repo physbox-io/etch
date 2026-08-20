@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "clipart:preview": "vite-node tools/clipart/preview.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview"

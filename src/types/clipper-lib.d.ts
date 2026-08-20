@@ -1,7 +1,7 @@
 /**
  * Minimal typings for clipper-lib, which ships none.
  *
- * Only the surface `utils/contourOffset.ts` actually uses is declared. Typing
+ * Only the surface the app and `tools/clipart` actually use is declared. Typing
  * the whole library would be a large guess at code we do not call; typing the
  * handful of entry points we do call means a wrong argument is a compile error
  * rather than a silently empty toolpath.
@@ -55,10 +55,23 @@ declare module 'clipper-lib' {
     Clear(): void;
   }
 
+  /**
+   * Result tree for a clip that had open subject paths. Clipping an open path
+   * cannot return a flat `Paths` — the caller has to be told which results are
+   * still open — so the PolyTree overload plus `OpenPathsFromPolyTree` is the
+   * only way to difference a line against a region.
+   */
+  export class PolyTree {
+    Clear(): void;
+  }
+
   export class Clipper {
     constructor(initOptions?: number);
     AddPaths(paths: Paths, polyType: PolyType, closed: boolean): boolean;
     Execute(clipType: ClipType, solution: Paths, subjFillType: PolyFillType, clipFillType: PolyFillType): boolean;
+    Execute(clipType: ClipType, solution: PolyTree, subjFillType: PolyFillType, clipFillType: PolyFillType): boolean;
+    static OpenPathsFromPolyTree(tree: PolyTree): Paths;
+    static ClosedPathsFromPolyTree(tree: PolyTree): Paths;
     static Area(path: Path): number;
     static Orientation(path: Path): boolean;
     static CleanPolygons(paths: Paths, distance?: number): Paths;

@@ -235,6 +235,7 @@ interface EtchStore {
   deleteElements: (ids: string[]) => void;
   duplicateSelected: () => void;
   centerSelected: (axis: 'horizontal' | 'vertical') => void;
+  nudgeSelected: (dx: number, dy: number) => void;
   clearCanvas: () => void;
 
   // Mandala Symmetry
@@ -788,6 +789,31 @@ export const useStore = create<EtchStore>((set, get) => ({
     set({ document: newDoc, history: newHistory, historyIndex: newHistory.length - 1 });
   },
 
+  /**
+   * Moves the selection by a fixed distance, in millimetres of document space.
+   *
+   * Locked elements are left where they are — the same rule the canvas drag
+   * follows, and the reason to lock something in the first place.
+   *
+   * Written without a history entry, like a drag: an arrow key held down
+   * repeats at the keyboard's own rate, and one entry per repeat would bury the
+   * undo stack under a single nudge across the stock. The caller commits on
+   * key-up, so one press-and-hold undoes as one move.
+   */
+  nudgeSelected: (dx, dy) => {
+    const { document, selectedIds } = get();
+    if (selectedIds.length === 0 || (dx === 0 && dy === 0)) return;
+    const moving = new Set(selectedIds);
+    let touched = false;
+    const elements = document.elements.map((el) => {
+      if (!moving.has(el.id) || el.locked) return el;
+      touched = true;
+      return { ...el, x: el.x + dx, y: el.y + dy };
+    });
+    if (!touched) return;
+    set({ document: { ...document, elements } });
+  },
+
   commitHistory: () => {
     const { document, history, historyIndex } = get();
     if (history[historyIndex] === document) return;
@@ -865,19 +891,39 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
   },
 
+  /**
+   * Adds all the copies in one go rather than looping over addElement, which
+   * would leave only the last copy selected and push one undo entry per
+   * element — duplicating a ten-part group then took ten undos to take back.
+   */
   duplicateSelected: () => {
-    const { document, selectedIds, addElement } = get();
+    const { document, selectedIds, history, historyIndex } = get();
     const selected = document.elements.filter((el) => selectedIds.includes(el.id));
-    for (const el of selected) {
-      const copy: EtchElement = {
-        ...el,
-        id: `el_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-        name: `${el.name} Copy`,
+    if (selected.length === 0) return;
+
+    const newIds: string[] = [];
+    const copies: EtchElement[] = selected.map((el, i) => {
+      const newId = `el_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+      newIds.push(newId);
+      return {
+        ...JSON.parse(JSON.stringify(el)),
+        id: newId,
+        name: el.name.endsWith('Copy') ? el.name : `${el.name} Copy`,
         x: el.x + 5,
         y: el.y + 5,
       };
-      addElement(copy);
-    }
+    });
+
+    const newDoc = { ...document, elements: [...document.elements, ...copies] };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: newIds,
+    });
   },
 
   clearCanvas: () => {

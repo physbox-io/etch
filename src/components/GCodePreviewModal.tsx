@@ -1,25 +1,36 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import {
-  generateGCode,
   generateAirCutGCode,
   planAirCutBoundaries,
-  planToolpath,
   planToolChanges,
   scoreLineRisk,
   tabHoldingMm,
+  type ToolpathPlan,
 } from '../utils/gcodeExporter';
+import { camWorker, type ProgramResult } from '../utils/camWorkerClient';
 import { machineToDoc } from '../utils/machineCoords';
 import { describeTool, machineKind, machineWords } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
-import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind } from 'lucide-react';
+import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind, Loader2 } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { warpGcode, getGridStats } from '../utils/bedLeveler';
+import type { PassOrder } from '../utils/toolpathMoves';
+import { BusyToast } from './BusyToast';
 import { DocsInfoButton } from './DocsModal';
 import { InfoTooltip } from './InfoTooltip';
+
+/**
+ * Stands in for the plan while one is being made.
+ *
+ * A module-level constant rather than a fresh object per render: it is the
+ * dependency of half the memos below, and a new `[]` each time would make every
+ * one of them recompute on every frame of a live job.
+ */
+const NO_PLAN: ToolpathPlan = { segments: [], skipped: [], notes: [] };
 
 export const GCodePreviewModal: React.FC = () => {
   const {
@@ -37,6 +48,12 @@ export const GCodePreviewModal: React.FC = () => {
   const laserMode = machineKind(document) === 'laser';
   const words = machineWords(machineKind(document));
   const [innerContourFirst, setInnerContourFirst] = useState(true);
+  /**
+   * How the depth passes are ordered. Defaults to taking every path down a
+   * level before any path goes deeper, so nothing is cut free while the tool is
+   * still working beside it.
+   */
+  const [passOrder, setPassOrder] = useState<PassOrder>('per-level');
   const [travelSpeed, setTravelSpeed] = useState(3000);
   const [applyLevelling, setApplyLevelling] = useState(true);
   const [machine, setMachine] = useState<MachineStatus>(() => webSerialManager.getStatus());
@@ -76,14 +93,80 @@ export const GCodePreviewModal: React.FC = () => {
    * is exactly the copy the operator may have just edited away from.
    */
   const exportOpts = useMemo(
-    () => ({ laserMode, innerContourFirst, travelSpeed, customCncTools: cncTools }),
-    [laserMode, innerContourFirst, travelSpeed, cncTools]
+    () => ({ laserMode, innerContourFirst, travelSpeed, passOrder, customCncTools: cncTools }),
+    [laserMode, innerContourFirst, travelSpeed, passOrder, cncTools]
   );
 
-  const plan = useMemo(
-    () => (isGCodeModalOpen ? planToolpath(document, exportOpts)
-        : { segments: [], skipped: [], notes: [] }),
-    [isGCodeModalOpen, document, exportOpts]
+  /**
+   * The program, planned on a worker thread.
+   *
+   * All three of the plan, the G-code and the preview's animation come back
+   * from one request. They used to be computed here, synchronously, in three
+   * memos that each re-planned the document — which on a traced photograph or a
+   * dense hatch fill is minutes of a blocked main thread, long enough that
+   * Chrome offers to kill the page. Nothing in this panel is on the critical
+   * path of a running job, so waiting for it is free; freezing the tab while a
+   * job streams is not.
+   */
+  const [program, setProgram] = useState<ProgramResult | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isGCodeModalOpen) return;
+    // `document` changes identity on every frame of a drag and on every status
+    // poll of a running job. Without the delay each of those starts a plan the
+    // next one immediately makes stale, and the worker spends the job queueing.
+    let live = true;
+    const t = setTimeout(() => {
+      setPlanning(true);
+      camWorker
+        .planProgram(document, exportOpts, { travelSpeed, laserMode })
+        .then((result) => {
+          if (!live) return;
+          setProgram(result);
+          setPlanError(null);
+        })
+        .catch((err: unknown) => {
+          if (!live) return;
+          setProgram(null);
+          setPlanError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (live) setPlanning(false);
+        });
+    }, 120);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [isGCodeModalOpen, document, exportOpts, travelSpeed, laserMode]);
+
+  /*
+    A closed panel holds no program.
+
+    The plan on screen is kept while the next one is being made — that is what
+    stops the preview flashing empty every time a setting is touched — but it is
+    dropped the moment the panel closes. Reopening it against a document that
+    has since been edited would otherwise show, and offer to the machine, a job
+    the drawing no longer describes.
+  */
+  useEffect(() => {
+    if (!isGCodeModalOpen) return;
+    return () => {
+      setProgram(null);
+      setPlanError(null);
+      setPlanning(false);
+    };
+  }, [isGCodeModalOpen]);
+
+  const plan = program?.plan ?? NO_PLAN;
+
+  // The pass-order choice only means anything where something takes more than
+  // one pass; on a single-pass job the two orders are the same program.
+  const multiPass = useMemo(
+    () => plan.segments.some((s) => s.depths.length > 1),
+    [plan.segments]
   );
 
   // A laser has no tools to change between, so it never lists any — the same
@@ -117,17 +200,18 @@ export const GCodePreviewModal: React.FC = () => {
     [scoreRisk, document]
   );
 
+  /**
+   * The file, with the bed's own shape put back into it.
+   *
+   * The warp stays here rather than going to the worker because it is a rewrite
+   * of an existing program against a probe grid the operator can change without
+   * re-planning anything — and because the plan the machine is offered has to
+   * be the plan on screen.
+   */
   const gcodeStr = useMemo(() => {
-    // This component stays mounted, and `document` changes identity on every
-    // frame of a drag — regenerating (including the scanline hatch fill) while
-    // the panel is closed would cost that on every mouse move.
-    if (!isGCodeModalOpen) return '';
-    // The rack is passed explicitly rather than left to the exporter's storage
-    // fallback: the store is what the operator edited, and it is the only copy
-    // guaranteed to exist if the browser refused to save it.
-    const raw = generateGCode(document, exportOpts, plan);
-    return levelling ? warpGcode(raw, levelling) : raw;
-  }, [isGCodeModalOpen, document, exportOpts, levelling, plan]);
+    if (!program) return '';
+    return levelling ? warpGcode(program.gcode, levelling) : program.gcode;
+  }, [program, levelling]);
 
   /**
    * The outlines a dry run traces, shown while one is being considered or run.
@@ -173,6 +257,9 @@ export const GCodePreviewModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
+      {/* The plan is made on a worker now, so the panel stays usable while it
+          runs — which is exactly why it has to say that it is running. */}
+      <BusyToast show={planning} label={`Planning ${laserMode ? 'cut path' : 'toolpath'}\u2026`} />
       <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] transition-colors">
         {/* Modal Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
@@ -298,6 +385,30 @@ export const GCodePreviewModal: React.FC = () => {
                     className="w-4 h-4 accent-red-500 rounded cursor-pointer"
                   />
                 </div>
+
+                {/* Pass order. Only worth showing on a job that takes more
+                    than one pass at anything — on a single-pass job the two
+                    orders are the same program. */}
+                {multiPass && (
+                  <div className="p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
+                    <div className="font-semibold text-slate-800 dark:text-slate-200">Pass Order</div>
+                    <select
+                      value={passOrder}
+                      onChange={(e) => setPassOrder(e.target.value as PassOrder)}
+                      className="w-full mt-1.5 px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200"
+                    >
+                      <option value="per-level">Every path, one level at a time</option>
+                      <option value="per-path">One path to full depth, then the next</option>
+                    </select>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-snug">
+                      {passOrder === 'per-level'
+                        ? `Nothing is cut free until the last level, so a finished part cannot ${laserMode ? 'shift or drop through' : 'lift on the cutter'} while the rest of the job is still being cut.`
+                        : laserMode
+                          ? 'Shorter: the beam finishes an outline before moving on, but it also concentrates every pass of it into one spot, and each part drops out while the rest of the job is still running.'
+                          : `Shorter: the ${words.head} descends once per path and never comes back. Each part is cut free while the others are still being cut around it.`}
+                    </p>
+                  </div>
+                )}
 
                 {/* Travel Speed */}
                 <div>
@@ -654,10 +765,20 @@ export const GCodePreviewModal: React.FC = () => {
                         setConfirmAirCut(false);
                         setConfirmRun(true);
                       }}
-                      className="flex-1 py-2 rounded-lg font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-500/20 transition-all cursor-pointer text-xs"
+                      // There is no program to send until the plan comes back,
+                      // and offering the button anyway would start a job from
+                      // an empty file.
+                      disabled={!gcodeStr}
+                      className="flex-1 py-2 rounded-lg font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white shadow-md shadow-emerald-500/20 transition-all cursor-pointer text-xs"
                     >
-                      {machine.connected ? <Play className="w-4 h-4" /> : <Usb className="w-4 h-4" />}
-                      <span>Run on Machine</span>
+                      {!gcodeStr ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : machine.connected ? (
+                        <Play className="w-4 h-4" />
+                      ) : (
+                        <Usb className="w-4 h-4" />
+                      )}
+                      <span>{gcodeStr ? 'Run on Machine' : 'Planning\u2026'}</span>
                     </button>
                     <button
                       onClick={() => {
@@ -716,12 +837,13 @@ export const GCodePreviewModal: React.FC = () => {
 
             {showRaw ? (
               <div className="flex-1 min-h-0 p-4 bg-slate-900 dark:bg-slate-950 overflow-y-auto font-mono text-[11px] text-emerald-400 select-text leading-relaxed">
-                <pre>{gcodeStr}</pre>
+                <pre>{gcodeStr || (planError ? `; Planning failed: ${planError}` : '; Planning\u2026')}</pre>
               </div>
             ) : (
               <ToolpathPreview
                 doc={document}
                 segments={plan.segments}
+                timeline={program?.timeline ?? null}
                 travelSpeed={travelSpeed}
                 showTravel={showTravel}
                 laserMode={laserMode}

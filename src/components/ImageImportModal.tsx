@@ -7,6 +7,7 @@ import {
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
 import { camWorker } from '../utils/camWorkerClient';
+import { BusyToast } from './BusyToast';
 import { planImageImport } from '../utils/imageImport';
 import { machineKind } from '../utils/tooling';
 import {
@@ -148,10 +149,13 @@ export const ImageImportModal: React.FC = () => {
    * preview showed 36x the dots it was about to place and did 36x the work to
    * be wrong.
    */
+  const [tracing, setTracing] = useState(false);
+
   useEffect(() => {
     if (!loadedImg || !previewCanvasRef.current) return;
 
     let cancelled = false;
+    setTracing(true);
     const timer = setTimeout(async () => {
       try {
         const { imageData } = processImageCanvas(loadedImg, options, 300);
@@ -214,6 +218,8 @@ export const ImageImportModal: React.FC = () => {
         ctx.restore();
       } catch (err) {
         if (!cancelled) console.error('Error rendering image preview:', err);
+      } finally {
+        if (!cancelled) setTracing(false);
       }
     }, 120);
 
@@ -308,6 +314,10 @@ export const ImageImportModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 select-none">
+      {/* Tracing runs on the CAM worker, so the sliders keep moving while it
+          works — and the preview underneath is still the previous trace until
+          it comes back. */}
+      <BusyToast show={tracing} label="Tracing image…" />
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden text-slate-800 dark:text-slate-100">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/50">

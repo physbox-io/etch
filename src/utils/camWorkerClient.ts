@@ -11,6 +11,7 @@ import {
 } from './imageProcessor';
 import { hatchContours } from './hatchFill';
 import { planToolpath, generateGCode, type GCodeOptions } from './gcodeExporter';
+import { buildTimeline, type Timeline } from './toolpathTimeline';
 import { fitArcsToPolyline, type PathCommand } from './arcFitting';
 import type { Pt } from './pathFlatten';
 import type { EtchDocument } from '../types/etch';
@@ -42,9 +43,24 @@ export type CamRequestPayload =
       payload: { doc: EtchDocument; opts?: Partial<GCodeOptions> };
     }
   | {
+      type: 'PLAN_PROGRAM';
+      payload: {
+        doc: EtchDocument;
+        opts?: Partial<GCodeOptions>;
+        timeline: { travelSpeed: number; laserMode: boolean };
+      };
+    }
+  | {
       type: 'FIT_ARCS';
       payload: { points: Pt[]; tolerance?: number };
     };
+
+/** The plan, the file and the animation, from one traversal of the document. */
+export interface ProgramResult {
+  plan: ReturnType<typeof planToolpath>;
+  gcode: string;
+  timeline: Timeline;
+}
 
 class CamWorkerClient {
   private worker: Worker | null = null;
@@ -155,6 +171,15 @@ class CamWorkerClient {
           const res = generateGCode(req.payload.doc, req.payload.opts);
           return Promise.resolve(res as unknown as T);
         }
+        case 'PLAN_PROGRAM': {
+          const { doc, opts, timeline } = req.payload;
+          const plan = planToolpath(doc, opts);
+          return Promise.resolve({
+            plan,
+            gcode: generateGCode(doc, opts, plan),
+            timeline: buildTimeline(plan.segments, { ...timeline, passOrder: opts?.passOrder }),
+          } as unknown as T);
+        }
         case 'FIT_ARCS': {
           const res = fitArcsToPolyline(req.payload.points, req.payload.tolerance);
           return Promise.resolve(res as unknown as T);
@@ -217,6 +242,25 @@ class CamWorkerClient {
     return this.sendRequest({
       type: 'GENERATE_GCODE',
       payload: { doc, opts },
+    });
+  }
+
+  /**
+   * The whole program for a document: plan, G-code and preview timeline.
+   *
+   * One request rather than three, because each of the three is a full
+   * traversal of the geometry and the exporter and the timeline would otherwise
+   * re-plan the document the caller has just planned. Prefer this over calling
+   * `planToolpath` and `generateGCode` separately from a component.
+   */
+  public planProgram(
+    doc: EtchDocument,
+    opts: Partial<GCodeOptions>,
+    timeline: { travelSpeed: number; laserMode: boolean }
+  ): Promise<ProgramResult> {
+    return this.sendRequest({
+      type: 'PLAN_PROGRAM',
+      payload: { doc, opts, timeline },
     });
   }
 

@@ -4,7 +4,7 @@ import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
 import { generateGCode } from '../utils/gcodeExporter';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
-import { CLIP_ART_LIBRARY, buildSymbolElement } from '../utils/clipArtLibrary';
+import { CLIP_ART_INDEX, buildSymbolElement, loadClipArtItem } from '../utils/clipArtLibrary';
 import {
   DEFAULT_IMAGE_OPTIONS,
   loadImageElement,
@@ -17,48 +17,61 @@ import { materialCatalog } from '../utils/materials';
 
 export function useMCPBridge() {
   useEffect(() => {
-    // The bridge's WebSocket server lives in the Vite dev server plugin, so in a
-    // static production build there is nothing to connect to — and because the
-    // URL is derived from `location.host`, the failed upgrade is answered by our
-    // own nginx with index.html, and the retry below would re-request it every
-    // three seconds for as long as the tab is open.
-    if (!import.meta.env.DEV) return;
+    // The MCP hub is a separate local process (physbox_mcp) listening on 3142,
+    // not the Vite dev server: the browser dials the hub directly and announces
+    // itself with HELLO, exactly as Mesh does. Deliberately not dev-gated — the
+    // hub runs on the user's own machine, so the hosted build reaches it too.
+    // ws://localhost is exempt from mixed-content blocking because localhost is
+    // a potentially trustworthy origin, which is why this works from https.
+    // (The old dev-only guard was needed when this URL came from location.host:
+    // a hosted page's failed upgrade was answered by our own nginx with
+    // index.html, and the retry re-requested it forever. An absolute localhost
+    // URL just fails to connect and retries quietly, exactly as Mesh does.)
 
     let ws: WebSocket | null = null;
     let retryTimer: any = null;
     let dead = false;
 
     function connect() {
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = location.host || 'localhost:5174';
-      const wsUrl = `${protocol}//${host}/mcp?role=browser`;
-
-      ws = new WebSocket(wsUrl);
+      if (dead) return;
+      const params = new URLSearchParams(location.search);
+      const wsPort = params.get('mcpPort') || '3142';
+      ws = new WebSocket(`ws://localhost:${wsPort}`);
 
       ws.onopen = () => {
+        ws?.send(JSON.stringify({ event: 'HELLO', app: 'etch', port: location.port }));
         console.log('[Physbox Etch] MCP Bridge WebSocket connected');
       };
 
       ws.onmessage = async (event) => {
+        let msg: any;
         try {
-          const msg = JSON.parse(event.data);
-          const reqId = msg.reqId || msg.id;
-          const cmd = msg.command || msg.cmd;
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        const cmd = msg.command || msg.cmd;
+        const id = msg.id ?? msg.reqId;
+        if (!cmd) return;
 
-          if (!cmd) return;
-
-          const response = await handleMCPCommand(cmd, msg);
-          if (reqId && ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ reqId, ...response }));
+        // The hub keys pending requests off `id` and reads the payload out of
+        // `data`, so the reply has to be wrapped rather than spread flat.
+        try {
+          const data = await handleMCPCommand(cmd, msg);
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ event: 'RESULT', cmd, id, data }));
           }
         } catch (err: any) {
           console.error('[MCP Bridge] Command error:', err);
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ event: 'ERROR', cmd, id, error: String(err) }));
+          }
         }
       };
 
       ws.onclose = () => {
         if (!dead) {
-          retryTimer = setTimeout(connect, 3000);
+          retryTimer = setTimeout(connect, 2000);
         }
       };
 
@@ -152,7 +165,7 @@ export function useMCPBridge() {
           // from the library rather than making the caller know that a symbol
           // is really a path plus a viewBox scale.
           if (el.type === 'symbol' && el.symbolId && !el.d) {
-            const symbol = CLIP_ART_LIBRARY.find((s) => s.id === el.symbolId);
+            const symbol = await loadClipArtItem(el.symbolId);
             if (!symbol) return { ok: false, error: `Clip art '${el.symbolId}' not found` };
             const built = buildSymbolElement(symbol, {
               docWidth: store.document.width,
@@ -208,7 +221,7 @@ export function useMCPBridge() {
         case 'LIST_CLIPART':
           return {
             ok: true,
-            clipart: CLIP_ART_LIBRARY.map((s) => ({
+            clipart: CLIP_ART_INDEX.map((s) => ({
               id: s.id,
               name: s.name,
               category: s.category,
@@ -217,7 +230,7 @@ export function useMCPBridge() {
 
         case 'etch_add_clipart':
         case 'ADD_CLIPART': {
-          const symbol = CLIP_ART_LIBRARY.find((s) => s.id === msg.symbolId);
+          const symbol = await loadClipArtItem(msg.symbolId);
           if (!symbol) return { ok: false, error: `Clip art '${msg.symbolId}' not found` };
 
           const doc = store.document;
@@ -332,7 +345,7 @@ export function useMCPBridge() {
             materials: materialCatalog().map((m) => ({ id: m.id, name: m.name })),
             layerOperations: ['cut', 'etch', 'fill', 'shade'],
             imageModes: ['vector', 'halftone', 'scanline', 'shade'],
-            clipartCount: CLIP_ART_LIBRARY.length,
+            clipartCount: CLIP_ART_INDEX.length,
             drawingTools: [
               'select', 'freehand', 'grid-freehand', 'bezier', 'node-edit',
               'line', 'rect', 'circle', 'polygon', 'star', 'text', 'mandala',

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { EtchDocument } from '../types/etch';
 import type { GCodeSegment } from '../utils/gcodeExporter';
-import { buildTimeline, sampleAt, type ToolMove } from '../utils/toolpathTimeline';
+import { buildTimeline, sampleAt, type Timeline, type ToolMove } from '../utils/toolpathTimeline';
 import { buildChunks, TONE_LEVELS } from '../utils/toolpathChunks';
 
 /**
@@ -90,13 +90,32 @@ export const ToolpathPreview: React.FC<{
   live?: LiveToolPosition | null;
   /** Outlines a dry run will trace, drawn over the path when one is in view. */
   boundaries?: Array<{ x: number; y: number }[]> | null;
-}> = ({ doc, segments, travelSpeed, showTravel, laserMode, live = null, boundaries = null }) => {
+  /**
+   * The timeline the caller has already had planned, off the main thread.
+   *
+   * Passed in rather than built here because planning it is a full traversal of
+   * the job's geometry, and the caller has just had that done on a worker to
+   * emit the file — building it again on the main thread is the same minutes of
+   * frozen tab that moving the work off it was meant to end. Omitted (or null)
+   * only by a caller with no worker to hand, which falls back to building it.
+   */
+  timeline?: Timeline | null;
+}> = ({
+  doc,
+  segments,
+  travelSpeed,
+  showTravel,
+  laserMode,
+  live = null,
+  boundaries = null,
+  timeline: precomputed = null,
+}) => {
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
 
   const timeline = useMemo(
-    () => buildTimeline(segments, { travelSpeed, laserMode }),
-    [segments, travelSpeed, laserMode]
+    () => precomputed ?? buildTimeline(segments, { travelSpeed, laserMode }),
+    [precomputed, segments, travelSpeed, laserMode]
   );
 
   const colourFor = useCallback(

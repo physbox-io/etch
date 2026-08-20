@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { useStore } from '../src/store/useStore';
 import { planToolpath, generateGCode } from '../src/utils/gcodeExporter';
 import { textToOutlineD, outlineSignature } from '../src/utils/textVectorizer';
-import { buildSymbolElement, CLIP_ART_LIBRARY } from '../src/utils/clipArtLibrary';
+import { buildSymbolElement, loadClipArt } from '../src/utils/clipArtLibrary';
 import type { EtchDocument, EtchElement, EtchLayer } from '../src/types/etch';
 
 describe('Ghost layer functionality', () => {
@@ -179,8 +179,13 @@ describe('Ghost layer functionality', () => {
     }
   });
 
-  it('safely generates G-code for Clip Art with no degenerate arcs', () => {
-    for (const clip of CLIP_ART_LIBRARY.slice(0, 8)) {
+  // 15s: the traced motifs carry thousands of points and this walks every
+  // emitted move, which is the point of the test but not a 5s job.
+  it('safely generates G-code for Clip Art with no degenerate arcs', { timeout: 15000 }, async () => {
+    // A spread of the library rather than all of it — every symbol through
+    // the whole exporter is a minute of test time for the same assertion.
+    const clips = await loadClipArt();
+    for (const clip of clips.filter((c, i) => i % 9 === 0 || c.detail === 'fine')) {
       const clipEl = buildSymbolElement(clip, { docWidth: 100, docHeight: 100, layerId: 'layer-etch' });
       const doc: EtchDocument = {
         ...baseDoc,

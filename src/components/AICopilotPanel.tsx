@@ -4,7 +4,7 @@ import { useStore } from '../store/useStore';
 import { importSVG, fitToBed } from '../utils/svgImporter';
 import { callLLM, extractJson, stripCodeFences, LLMError } from '../utils/llmClient';
 import { buildSystemPrompt } from '../docs/copilotInstructions';
-import { CLIP_ART_LIBRARY, buildSymbolElement } from '../utils/clipArtLibrary';
+import { buildSymbolElement, loadClipArtItem } from '../utils/clipArtLibrary';
 import {
   DEFAULT_MODEL,
   isClaudeModel,
@@ -136,7 +136,7 @@ export const AICopilotPanel: React.FC = () => {
   };
 
   /** Applies element-level edits, ignoring ids the document doesn't have. */
-  const applyEdits = (payload: any): string => {
+  const applyEdits = async (payload: any): Promise<string> => {
     const byId = new Map(doc.elements.map((el) => [el.id, el]));
     const notes: string[] = [];
     let changed = 0;
@@ -179,7 +179,7 @@ export const AICopilotPanel: React.FC = () => {
          * only the id for exactly this reason.
          */
         if (spec.type === 'symbol' && spec.symbolId) {
-          const symbol = CLIP_ART_LIBRARY.find((s) => s.id === spec.symbolId);
+          const symbol = await loadClipArtItem(spec.symbolId);
           if (!symbol) {
             notes.push(`No clip art "${spec.symbolId}" — skipped.`);
             continue;
@@ -306,7 +306,7 @@ export const AICopilotPanel: React.FC = () => {
        */
       const hasSvg = mode === 'generate' && typeof payload.svg === 'string';
       const hasEdits = ['add', 'update', 'remove'].some((k) => Array.isArray(payload[k]) && payload[k].length);
-      const summary = [hasSvg ? applySvg(payload.svg, payload.layerHint) : '', hasEdits || !hasSvg ? applyEdits(payload) : '']
+      const summary = [hasSvg ? applySvg(payload.svg, payload.layerHint) : '', hasEdits || !hasSvg ? await applyEdits(payload) : '']
         .filter(Boolean)
         .join(' ');
 

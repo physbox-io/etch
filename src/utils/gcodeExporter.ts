@@ -36,7 +36,7 @@ import {
 import { DEFAULT_STOCK_THICKNESS_MM, findMaterial } from './materials';
 import { readSpindleRange, readLaserSource, describeLaserSource, type LaserSource } from './machineSettings';
 import { strokeBandPasses, offsetContours, type OffsetSide } from './contourOffset';
-import { planMoves, type PlannedMove } from './toolpathMoves';
+import { planMoves, type PlannedMove, type PassOrder } from './toolpathMoves';
 import { fitArcsToPolyline, arcToMachineGCode } from './arcFitting';
 import { generateVCarveToolpaths } from './vCarve';
 
@@ -53,6 +53,15 @@ export interface GCodeOptions {
   arcFitting?: boolean;
   /** Tolerance in mm for arc fitting (default: 0.02 mm). */
   arcTolerance?: number;
+  /**
+   * The order the depth passes are taken in. Defaults to `'per-level'`.
+   *
+   * Every path takes a level before any path takes the next, so nothing is cut
+   * free while there is still cutting to do around it. `'per-path'` is the
+   * older, shorter program — each path taken to full depth before the tool
+   * moves on — and is worth having for a job whose paths do not enclose parts.
+   */
+  passOrder?: PassOrder;
   /**
    * The spindle's speed range, for the feeds model. Defaults to whatever the
    * machine panel has stored, so an export driven from a script matches the one
@@ -989,6 +998,7 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     innerContourFirst: true,
     arcFitting: true,
     arcTolerance: 0.02,
+    passOrder: 'per-level',
     spindle: readSpindleRange(),
     laser: readLaserSource(),
     ...opts,
@@ -1825,6 +1835,7 @@ export function generateGCode(
     travelSpeed: options.travelSpeed,
     safeZ: SAFE_Z,
     toolChanges: new Map(toolChanges.map((c) => [c.segIndex, { tool: c.tool, from: c.from }])),
+    passOrder: options.passOrder,
   });
 
   const material = findMaterial(doc.material);
@@ -1848,6 +1859,24 @@ export function generateGCode(
   }
   gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   gcode += `; Segments: ${segments.length}\n`;
+  /*
+    How the depth passes are ordered, but only where there are any to order.
+
+    Worth saying in the file because it is the difference between a part being
+    cut free at the halfway point of the job and being cut free at the end of
+    it, and that is something the operator wants to know before deciding where
+    to put the clamps.
+  */
+  // A loop, not a spread: a hatch fill can be tens of thousands of segments,
+  // which is more arguments than Math.max can be called with.
+  let deepest = 0;
+  for (const sg of segments) deepest = Math.max(deepest, sg.depths.length);
+  if (deepest > 1) {
+    gcode += options.passOrder === 'per-path'
+      ? `; Pass order: each path taken to full depth before the next starts\n`
+      : `; Pass order: every path takes a level before any path goes deeper — ` +
+        `nothing is cut free until the last level\n`;
+  }
   /**
    * What a shaded image is being run at, said in the header.
    *
@@ -2150,6 +2179,7 @@ export function planProgramMoves(
     travelSpeed: options.travelSpeed,
     safeZ: SAFE_Z,
     toolChanges: new Map(toolChanges.map((c) => [c.segIndex, { tool: c.tool, from: c.from }])),
+    passOrder: options.passOrder,
   });
   return { moves: program.moves, segments };
 }

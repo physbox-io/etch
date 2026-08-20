@@ -140,6 +140,12 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           Centre vertically — the same rule, on the other axis. The two buttons beside{' '}
           <strong>X/Y Position</strong> in the inspector do exactly the same thing.
         </Key>
+        <Key combo="← ↑ → ↓">
+          Nudge the selection by one grid square — the same grid a drag snaps to, so a nudged shape
+          lands on the same lines. With snapping off the step is 1 mm. Hold <strong>Shift</strong>{' '}
+          for ten steps at a time, or <strong>Alt</strong> for a tenth of one. Holding a key down
+          undoes as a single move, however far it travelled.
+        </Key>
         <Key combo="Ctrl/Cmd + A">Select every shape in the document.</Key>
         <Key combo="Ctrl/Cmd + C">Copy the selection.</Key>
         <Key combo="Ctrl/Cmd + V">

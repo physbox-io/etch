@@ -15,6 +15,21 @@ import { DocsModal } from './components/DocsModal';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ToolConfigModal } from './components/ToolConfigModal';
 import { ImageImportModal } from './components/ImageImportModal';
+import { prefetchClipArt } from './utils/clipArtLibrary';
+
+/**
+ * Which way each arrow key moves the selection, in document space.
+ *
+ * Down is +Y: the document's Y axis increases downward, SVG-fashion, and the
+ * machine-space flip happens once on the way out to G-code. An arrow key that
+ * agreed with the machine instead would disagree with the screen.
+ */
+const NUDGE: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
 
 export const App: React.FC = () => {
   // Connect to WebSocket MCP bridge
@@ -31,6 +46,18 @@ export const App: React.FC = () => {
     isPropertiesOpen,
     setPropertiesOpen,
   } = useStore();
+
+  /**
+   * Pull the clip-art geometry in while the tab is idle.
+   *
+   * The gallery's paths are a chunk of their own so the app does not carry
+   * them on first paint, but a beginner clicking Clip Art should not then wait
+   * on a fetch — by the time the modal opens the chunk is usually already in
+   * memory, and if it is not the grid still draws from the index.
+   */
+  useEffect(() => {
+    prefetchClipArt();
+  }, []);
 
   /**
    * Keep text outlines up to date automatically. Text is not machineable as a
@@ -92,15 +119,45 @@ export const App: React.FC = () => {
         useStore
           .getState()
           .centerSelected(e.key.toLowerCase() === 'h' ? 'horizontal' : 'vertical');
+      } else if (NUDGE[e.key] && selectedIds.length > 0 && !e.ctrlKey && !e.metaKey) {
+        /*
+          Arrow keys nudge the selection.
+
+          The step is the grid the drawing is being snapped to, so a nudged
+          element lands on the same lines a dragged one does — a 1 mm default
+          would walk geometry off a 5 mm grid one press at a time. Shift takes
+          ten steps for crossing the stock; Alt takes a tenth of one, for the
+          cases the grid is too coarse to express.
+
+          Nothing is pushed to history here: the key repeats while it is held,
+          and one entry per repeat would leave undo needing forty presses to
+          walk a shape back. The key-up below commits the whole move as one.
+        */
+        e.preventDefault();
+        const grid = document.snapToGrid ? Math.max(0.01, document.gridSize) : 1;
+        const step = e.altKey ? grid / 10 : e.shiftKey ? grid * 10 : grid;
+        const [dx, dy] = NUDGE[e.key];
+        useStore.getState().nudgeSelected(dx * step, dy * step);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
         e.preventDefault();
         setSelectedIds(document.elements.map((el) => el.id));
       }
     };
 
+    // A nudge is committed when the key comes up, so a press-and-hold across
+    // the stock is one undo step rather than one per keyboard repeat.
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (NUDGE[e.key]) useStore.getState().commitHistory();
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedIds, document.elements, deleteElements, undo, redo, setSelectedIds]);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [selectedIds, document.elements, document.gridSize, document.snapToGrid,
+      deleteElements, undo, redo, setSelectedIds]);
 
   return (
     /*

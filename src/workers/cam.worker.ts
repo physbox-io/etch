@@ -6,6 +6,7 @@ import {
 } from '../utils/imageProcessor';
 import { hatchContours } from '../utils/hatchFill';
 import { planToolpath, generateGCode, type GCodeOptions } from '../utils/gcodeExporter';
+import { buildTimeline } from '../utils/toolpathTimeline';
 import { fitArcsToPolyline } from '../utils/arcFitting';
 import type { Pt } from '../utils/pathFlatten';
 import type { EtchDocument } from '../types/etch';
@@ -41,6 +42,15 @@ export type WorkerCamRequest =
       id: number;
       type: 'GENERATE_GCODE';
       payload: { doc: EtchDocument; opts?: Partial<GCodeOptions> };
+    }
+  | {
+      id: number;
+      type: 'PLAN_PROGRAM';
+      payload: {
+        doc: EtchDocument;
+        opts?: Partial<GCodeOptions>;
+        timeline: { travelSpeed: number; laserMode: boolean };
+      };
     }
   | {
       id: number;
@@ -116,6 +126,31 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
         const { doc, opts } = req.payload;
         const gcode = generateGCode(doc, opts);
         respondSuccess(req.id, gcode);
+        break;
+      }
+      /**
+       * Everything the Run panel needs, from one plan.
+       *
+       * Kept as a single request because the three used to be three separate
+       * pieces of work over the same geometry — the plan, the G-code, and the
+       * preview's timeline — and the last two each re-planned the whole
+       * document from scratch. On a traced photograph that is minutes of the
+       * main thread, three times over, which is why Chrome offered to kill the
+       * page after the operator pressed Run.
+       */
+      case 'PLAN_PROGRAM': {
+        const { doc, opts, timeline } = req.payload;
+        const plan = planToolpath(doc, opts);
+        respondSuccess(req.id, {
+          plan,
+          gcode: generateGCode(doc, opts, plan),
+          timeline: buildTimeline(plan.segments, {
+            ...timeline,
+            // The animation has to be planned the way the file was emitted, or
+            // it shows the tool taking an order the machine never takes.
+            passOrder: opts?.passOrder,
+          }),
+        });
         break;
       }
       case 'FIT_ARCS': {

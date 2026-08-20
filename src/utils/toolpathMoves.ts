@@ -69,6 +69,89 @@ export interface PlanMoveOptions {
   safeZ: number;
   /** Segment indices at which the program stops to be re-tooled. */
   toolChanges: Map<number, { tool: number; from: number | null }>;
+  /**
+   * The order the depth passes are taken in. Defaults to `'per-level'`.
+   *
+   * See {@link PassOrder}. Optional so a caller that has no opinion — the
+   * preview timeline, a test — gets the same order the exporter would emit
+   * rather than a second, quietly different program.
+   */
+  passOrder?: PassOrder;
+}
+
+/**
+ * Whether a path finishes its depth before the next path starts.
+ *
+ * - `'per-path'` — each path is cut to full depth, then the tool moves on. The
+ *   shortest program: the tool descends once per path and never comes back.
+ * - `'per-level'` — every path takes its first pass, then every path takes its
+ *   second, and so on. More traversing, but nothing is cut free until the last
+ *   level, so a part cannot lift, shift or be thrown while the rest of the job
+ *   is still being cut around it. It also spreads the heat of a multi-pass
+ *   laser cut over the whole job instead of concentrating it on one outline.
+ *
+ * Levels are taken within a tool's own run of the program, never across a tool
+ * change: reordering past one would mean fitting the bit back after it has
+ * already been swapped out.
+ */
+export type PassOrder = 'per-path' | 'per-level';
+
+/** One visit to a segment, carrying the passes to take while the tool is there. */
+interface PassVisit {
+  sIdx: number;
+  /** Indices into the segment's `depths`, in the order they are cut. */
+  passes: number[];
+}
+
+/**
+ * The order the segments and their passes are walked in.
+ *
+ * Written out as a list rather than decided inside the traversal because the
+ * traversal carries running state — where the tool is, how high it is parked,
+ * what it last cut — and that state has to follow the program's real order. A
+ * flat list is also what makes the two orders one code path instead of two.
+ */
+function planPassVisits(segments: GCodeSegment[], opts: PlanMoveOptions): PassVisit[] {
+  // A segment with nothing to cut is dropped here rather than mid-traversal, so
+  // "the previous segment" downstream means the previous one actually cut.
+  const usable: number[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].points.length >= 2) usable.push(i);
+  }
+
+  const allPasses = (sIdx: number) => segments[sIdx].depths.map((_, i) => i);
+
+  if ((opts.passOrder ?? 'per-level') === 'per-path') {
+    return usable.map((sIdx) => ({ sIdx, passes: allPasses(sIdx) }));
+  }
+
+  const visits: PassVisit[] = [];
+  let group: number[] = [];
+  const flush = () => {
+    if (group.length === 0) return;
+    // The deepest path in the group decides how many levels there are; a
+    // shallower one simply runs out and stops being visited.
+    //
+    // Counted with a loop rather than a spread into Math.max: a dense hatch
+    // fill is tens of thousands of segments in one group, and that many
+    // arguments overflows the call stack.
+    let levels = 0;
+    for (const i of group) levels = Math.max(levels, segments[i].depths.length);
+    for (let p = 0; p < levels; p++) {
+      for (const sIdx of group) {
+        if (p < segments[sIdx].depths.length) visits.push({ sIdx, passes: [p] });
+      }
+    }
+    group = [];
+  };
+  for (const sIdx of usable) {
+    // A tool change opens a new group: everything before it belongs to the bit
+    // that is about to come out.
+    if (group.length > 0 && opts.toolChanges.has(sIdx)) flush();
+    group.push(sIdx);
+  }
+  flush();
+  return visits;
 }
 
 export interface PlannedProgram {
@@ -214,9 +297,16 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
 
   const clearanceZ = opts.laserMode ? 0 : opts.safeZ;
 
-  for (let sIdx = 0; sIdx < segments.length; sIdx++) {
+  const visits = planPassVisits(segments, opts);
+
+  for (let vIdx = 0; vIdx < visits.length; vIdx++) {
+    const { sIdx, passes: passList } = visits[vIdx];
     const seg = segments[sIdx];
-    const prev = sIdx > 0 ? segments[sIdx - 1] : null;
+    // The segment cut *before* this one, which under a per-level order is not
+    // `sIdx - 1`. Every link and fill-hop test below asks "did the tool just
+    // come off something it can stay down for", and that is a question about
+    // the program's order, not the segment array's.
+    const prev = vIdx > 0 ? segments[visits[vIdx - 1].sIdx] : null;
     if (seg.points.length < 2) continue;
 
     const base = {
@@ -228,7 +318,10 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       passes: seg.depths.length,
     };
 
-    const change = opts.toolChanges.get(sIdx);
+    // Only on the visit that opens this tool's run of the program: under a
+    // per-level order the same segment is visited once per level, and pausing
+    // for the bit again on the second one would ask for a tool already fitted.
+    const change = passList[0] === 0 ? opts.toolChanges.get(sIdx) : undefined;
     if (change) {
       // Park before stopping: the operator is about to have the machine, and
       // may jog it to reach the collet.
@@ -277,7 +370,7 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         cum[i] = cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
       }
 
-      for (let passIdx = 0; passIdx < seg.depths.length; passIdx++) {
+      for (const passIdx of passList) {
         const common = { ...base, pass: passIdx + 1, beamOn: opts.laserMode };
         /**
          * The floor for this pass, and with it the whole of relief roughing.
@@ -450,7 +543,7 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
 
     const geom = measurePath(seg.points, seg.isClosed);
 
-    for (let passIdx = 0; passIdx < seg.depths.length; passIdx++) {
+    for (const passIdx of passList) {
       const pass = passIdx + 1;
       const z = opts.laserMode ? 0 : seg.depths[passIdx];
       const common = { ...base, pass, beamOn: opts.laserMode };

@@ -1,7 +1,7 @@
 import type { EtchDocument, EtchElement } from '../types/etch';
 import { getBedBBox } from '../utils/geom';
 import { DEFAULT_TOOL, describeTool, hasToolCatalog, toolCatalog, type MachineKind } from '../utils/tooling';
-import { CLIP_ART_CATEGORIES, CLIP_ART_LIBRARY } from '../utils/clipArtLibrary';
+import { CLIP_ART_CATEGORIES, CLIP_ART_INDEX } from '../utils/clipArtLibrary';
 import { findMaterial, DEFAULT_STOCK_THICKNESS_MM } from '../utils/materials';
 
 /**
@@ -147,7 +147,7 @@ Return changes to existing elements:
 const CLIP_ART_SECTION = [
   'Clip art you can place by id (type "symbol", field "symbolId"):',
   ...CLIP_ART_CATEGORIES.map((category) => {
-    const items = CLIP_ART_LIBRARY.filter((s) => s.category === category)
+    const items = CLIP_ART_INDEX.filter((s) => s.category === category)
       .map((s) => `${s.id} (${s.name})`)
       .join(', ');
     return `- ${category}: ${items}`;
