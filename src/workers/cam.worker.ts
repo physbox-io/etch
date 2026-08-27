@@ -149,6 +149,8 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
             // The animation has to be planned the way the file was emitted, or
             // it shows the tool taking an order the machine never takes.
             passOrder: opts?.passOrder,
+            overscan: opts?.overscan,
+            stock: { width: doc.width, height: doc.height },
           }),
         });
         break;

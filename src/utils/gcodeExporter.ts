@@ -1,7 +1,8 @@
 import type { EtchDocument, EtchElement, EtchLayer, MachinedLayer, MachinedOperation } from '../types/etch';
 import { isMachinedLayer } from '../types/etch';
 import { localToBed, isOutsideStock, bedBoxOfAll } from './geom';
-import { flattenPath, type Pt } from './pathFlatten';
+import { type Pt } from './pathFlatten';
+import { extractElementContours } from './elementContours';
 import { clipValuedPolylineToStock, isWhollyInside } from './clipToStock';
 import {
   DEFAULT_SHADE_PITCH_MM,
@@ -12,6 +13,7 @@ import {
 } from './rasterImage';
 import { hasFreshOutline } from './textVectorizer';
 import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
+import { pocketRings } from './pocketOffset';
 import { docToMachine, describeOrigin } from './machineCoords';
 import {
   DEFAULT_TOOL,
@@ -38,8 +40,9 @@ import { DEFAULT_STOCK_THICKNESS_MM, findMaterial } from './materials';
 import { readSpindleRange, readLaserSource, describeLaserSource, type LaserSource } from './machineSettings';
 import { strokeBandPasses, offsetContours, type OffsetSide } from './contourOffset';
 import { planMoves, type PlannedMove, type PassOrder } from './toolpathMoves';
+import { removeOverlapLines } from './dedupeOverlaps';
 import { fitArcsToPolyline, arcToMachineGCode } from './arcFitting';
-import { generateVCarveToolpaths } from './vCarve';
+import { generateVCarveToolpaths, vCarveFlatBottom } from './vCarve';
 
 export interface GCodeOptions {
   laserMode: boolean;          // True for Laser GRBL M3/M5, False for CNC router Z-axis passes
@@ -103,6 +106,36 @@ export interface GCodeOptions {
    * refused to persist an edit.
    */
   customCncTools?: ToolProfile[];
+  /**
+   * Cut a line that two shapes share once rather than twice. Defaults to on.
+   *
+   * On by default because the doubled line is always a mistake and never a
+   * plan: nobody draws two coincident edges meaning "burn this one twice". The
+   * switch exists for the job that turns out to be the exception, and because
+   * silently changing what a file cuts is worse than offering the choice. See
+   * `dedupeOverlaps.ts` for what it will and will not touch.
+   */
+  removeOverlaps?: boolean;
+  /**
+   * Run the head up to speed outside the shape before the beam lights on each
+   * line of a fill. Laser only, and defaults on — see `overscanFor` in
+   * `toolpathMoves.ts` for why a router must never do this.
+   */
+  overscan?: boolean;
+  /**
+   * Leave a little wall on a deep cut and take it off with a final light lap.
+   * On by default where it makes a difference — see `finishAllowanceFor`, which
+   * decides both whether and how much.
+   */
+  finishPass?: boolean;
+  /** Override the derived allowance, in mm. Advanced use only. */
+  finishAllowanceMm?: number;
+  /**
+   * Curve onto the finished wall along a tangent instead of driving straight at
+   * it. On by default, and skipped by itself wherever there is no room in
+   * waste — see `planLead`.
+   */
+  leadInOut?: boolean;
 }
 // Kerf compensation is no longer an option because it is no longer optional:
 // cutting on the centreline makes every part undersized by half the cutter, so
@@ -378,6 +411,61 @@ export interface GCodeSegment {
    */
   intensities?: number[];
   /**
+   * An arc that curves onto the contour, and one that curves off it, both in
+   * waste material. Absent when there was no room for them.
+   *
+   * Without it the cutter arrives at the wall travelling straight at it, stops
+   * being fed for the instant the direction changes, and leaves a witness mark
+   * — a dwell at the start point that is visible on any finished edge and
+   * measurable on a fitted one. Arriving along a tangent means the cut begins
+   * with the tool already moving along the wall, at the full feed, so there is
+   * no moment where it is rubbing in one spot.
+   *
+   * They are cut at the working depth, not descended along, and the tool
+   * plunges at the start of the lead-in — which is safe precisely because the
+   * lead is in waste.
+   */
+  leadIn?: Pt[];
+  leadOut?: Pt[];
+  /**
+   * The last, light pass that produces the wall you actually see.
+   *
+   * A cut planned with a finish allowance is two passes: the roughing one runs
+   * a fraction of a millimetre wide of the line and takes the depth, and this
+   * one comes back at the true line and takes only that fraction off. The
+   * roughing pass is where the cutter is loaded, deflected and pushed off the
+   * line; the finishing pass is barely loaded at all, so the wall it leaves is
+   * straight and square. It is also the pass that frees the part, which is why
+   * the tabs are on this one and not on the roughing pass.
+   */
+  finishPass?: boolean;
+  /**
+   * A hole made by plunging rather than by milling round it.
+   *
+   * Set only for a round hole close enough to the cutter's own diameter that
+   * milling it is impossible — offsetting a contour inward by more than its own
+   * radius leaves nothing, which is why these used to be dropped with a note
+   * saying to fit a smaller cutter. Plunging makes the hole at the size of the
+   * tool, which for a hole this close to that size is the hole that was wanted.
+   *
+   * The points are the centre, twice: a hole has no path, but everything
+   * downstream — clipping to the stock, sorting, timing — is written against a
+   * polyline, and a degenerate one keeps all of it working rather than needing
+   * a special case in each.
+   *
+   * **Not a canned cycle.** GRBL 1.1 implements none: `G81` and `G83` are
+   * errors on the controller this app is written for, so the peck is emitted as
+   * the plunges and retracts it is made of. That also means the preview can
+   * show it and the estimate can time it, neither of which is true of a cycle
+   * the controller expands by itself.
+   */
+  drill?: {
+    /** What the hole will actually come out at — the cutter's diameter, mm. */
+    diameterMm: number;
+    /** What it was drawn at, for the note when the two differ. */
+    drawnMm: number;
+  };
+  /**
    * Pitch between the sweeps of a shaded image, mm. Set alongside
    * `intensities` and only there.
    *
@@ -503,6 +591,13 @@ export function planToolpath(
   const notes: string[] = [];
   /** Elements machined at their stroke width, and the job time that costs. */
   let widened = 0;
+  /** Holes plunged rather than milled, for the note that has to name the size. */
+  const drilled: Array<{ drawn: number; made: number }> = [];
+  /** Contours getting a finishing pass, and how much wall it takes off. */
+  let finished = 0;
+  let finishedAllowance = 0;
+  /** Contours the finishing lap curves onto rather than driving straight at. */
+  let led = 0;
   /**
    * Elements drawn with a stroke wide enough to be visibly thicker than one
    * pass, but left machining as an outline.
@@ -614,6 +709,47 @@ export function planToolpath(
     );
   }
 
+  /**
+   * Closed contours drawn on ghost layers.
+   *
+   * A ghost layer is never cut — that is the whole point of it — but "not cut"
+   * and "not there" are different claims, and conflating them is what made a
+   * reference outline dangerous. Radius compensation asks whether a contour is
+   * a hole or a disc, and answers by nesting: something around it means the
+   * waste is inside, nothing around it means the waste is outside. Drop the
+   * reference outline out of that question and every hole inside it becomes a
+   * lone circle, which is a *disc*, and the cutter goes round the outside of
+   * it — a 7.9 mm hole comes out at 14.2 mm and the part is scrap.
+   *
+   * The case this exists for is stock already cut to size: the outline is
+   * drawn so the holes can be placed against it, and must not be cut because
+   * the edge already exists. That drawing is now readable by the planner
+   * without being machined by it.
+   */
+  const referenceContours: Pt[][] = [];
+  for (const layer of doc.layers) {
+    if (!layer.visible || layer.operation !== 'ghost') continue;
+    for (const el of doc.elements) {
+      if (el.layerId !== layer.id || !el.visible) continue;
+      /*
+       * Text anchors are excluded, and they are the reason ghost exists: a
+       * shape gets moved onto a ghost layer when text is attached to ride it,
+       * and `ghostFromLayerId` records where it came from so detaching can put
+       * it back. That marker is exactly "this is here to carry text", not "this
+       * is a boundary", and a closed anchor — a circle with a word running
+       * round it is the ordinary case — would otherwise start reporting
+       * everything inside it as a hole. Attaching text must not change what the
+       * job cuts, which was the whole point of moving the path to ghost.
+       */
+      if (el.ghostFromLayerId) continue;
+      for (const pts of extractElementContours(el)) {
+        // Only closed geometry encloses anything; an open guide path cannot
+        // answer an inside/outside question and is left out of it.
+        if (pts.length >= 3 && isClosedContour(pts)) referenceContours.push(pts);
+      }
+    }
+  }
+
   // Extract path points from all visible elements across layers
   for (const layer of doc.layers) {
     // A ghost layer is the anchor a piece of text rides, not something to cut.
@@ -648,6 +784,17 @@ export function planToolpath(
      * on whether something else encloses it, and a single outline does not know.
      */
     const pendingCuts: Pt[][] = [];
+    /**
+     * Round contours on this layer that *might* be drilled, decided once the
+     * whole layer is known.
+     *
+     * It cannot be decided per contour, and getting that wrong destroys the
+     * part: a lone 3 mm circle is a 3 mm *disc* to be cut out, and the tool
+     * goes round the outside of it. The same circle inside a plate is a hole,
+     * and the tool goes down it. Only nesting tells the two apart, and nesting
+     * is not knowable until every contour on the layer has been collected.
+     */
+    const drillable: Array<{ index: number; centre: Pt; diameter: number }> = [];
 
     for (const el of layerElements) {
       /**
@@ -724,10 +871,15 @@ export function planToolpath(
         isVBit &&
         contours.length > 0
       ) {
-        const vcarveRuns = generateVCarveToolpaths(contours, {
+        const vMaxDepth = layer.vCarveMaxDepth ?? cut.zDepth;
+        // The tip flat, which for a V-bit is what `profile.diameter` holds —
+        // the same number `cutWidthAtDepth` starts its taper from.
+        const vOpts = {
           tipAngleDeg: cut.tipAngleDeg!,
-          maxDepth: layer.vCarveMaxDepth ?? cut.zDepth,
-        });
+          maxDepth: vMaxDepth,
+          tipDiameterMm: cut.radius * 2,
+        };
+        const vcarveRuns = generateVCarveToolpaths(contours, vOpts);
 
         for (const run of vcarveRuns) {
           segments.push(
@@ -739,6 +891,44 @@ export function planToolpath(
               linkTolerance: 0,
             })
           );
+        }
+
+        /*
+         * The floor of anything too wide for the cone to reach the bottom of.
+         *
+         * Without this the medial-axis pass clamps at the ceiling and says
+         * nothing, so a wide letter comes out with tapered walls and its middle
+         * still standing at full height. These rings are cut at one constant
+         * depth, so they go in as ordinary closed geometry rather than as a
+         * shaded sweep — `intensities` is what marks a segment as varying-Z,
+         * and these do not vary.
+         */
+        const flat = vCarveFlatBottom(contours, vOpts);
+        if (flat.needed) {
+          const floorCut = { ...cut, zDepth: flat.depthMm, depths: [flat.depthMm] };
+          for (const ring of flat.rings) {
+            segments.push(
+              makeSegment(layer, floorCut, options, {
+                points: ring,
+                isClosed: true,
+                bBoxArea: boundingArea(ring),
+                linkTolerance: 0,
+              })
+            );
+          }
+          if (flat.tooNarrow) {
+            notes.push(
+              `"${el.name}" is wider than a ${cut.toolName} spans at ${vMaxDepth} mm deep, so the ` +
+                `middle of it cannot be reached by V-carving — and it is too narrow for the bit to ` +
+                `clear at that depth either. Go deeper, or clear it with an end mill first.`
+            );
+          } else {
+            notes.push(
+              `"${el.name}" is wider than a ${cut.toolName} spans at ${vMaxDepth} mm deep, so the ` +
+                `walls are V-carved and the floor between them is cleared flat at that depth, in ` +
+                `${flat.rings.length} pass${flat.rings.length === 1 ? '' : 'es'}.`
+            );
+          }
         }
         if (el.hatchOutline === false) continue;
       }
@@ -796,25 +986,63 @@ export function planToolpath(
             ? contours
             : offsetContours(contours, cut.grooveRadius, 'inside').contours;
 
-        const hatch = hatchRegion(
-          region,
-          el.hatchAngle ?? doc.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
-          pitch
-        );
+        /*
+         * Two ways to clear an area, and the machine decides which.
+         *
+         * A laser engraves: it has no side load, nothing to deflect, and the
+         * scan *is* the picture, so hatch lines are right. A router cuts, and a
+         * zig-zag drives it into the wall at full width twice per line — see
+         * `pocketOffset.ts`. Rings that follow the wall hold the engagement
+         * steady instead.
+         */
         fillGroup++;
-        for (const line of hatch) {
-          segments.push(
-            makeSegment(layer, fillCut, options, {
-              points: line.points,
-              isClosed: false,
-              // Hatch lines must stay in engraving order, so they all share a
-              // sort key and never get interleaved by inner-contour sorting.
-              bBoxArea: -1,
-              linkTolerance: MAX_LINK_MM,
-              linkFrom: line.linkFrom,
-              fillGroup,
-            })
+        const pocket = options.laserMode ? null : pocketRings(region, pitch);
+        let hatch: ReturnType<typeof hatchRegion> = [];
+
+        if (pocket) {
+          pocket.rings.forEach((ring, i) => {
+            segments.push(
+              makeSegment(layer, fillCut, options, {
+                points: ring,
+                isClosed: true,
+                /*
+                 * Where the previous ring finished — a closed ring ends where
+                 * it started. `pocketRings` has already rotated this one to
+                 * begin near that point, so the hop is one stepover of material
+                 * taken at depth rather than a retract and a re-entry between
+                 * every pass of the pocket.
+                 */
+                linkFrom: i > 0 ? { ...pocket.rings[i - 1][0] } : null,
+                // Same sort key as a hatch line, and for the same reason: the
+                // rings clear one pocket in a deliberate order, innermost
+                // first, and inner-contour sorting would interleave them with
+                // another element's.
+                bBoxArea: -1,
+                linkTolerance: MAX_LINK_MM,
+                fillGroup,
+              })
+            );
+          });
+        } else {
+          hatch = hatchRegion(
+            region,
+            el.hatchAngle ?? doc.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
+            pitch
           );
+          for (const line of hatch) {
+            segments.push(
+              makeSegment(layer, fillCut, options, {
+                points: line.points,
+                isClosed: false,
+                // Hatch lines must stay in engraving order, so they all share a
+                // sort key and never get interleaved by inner-contour sorting.
+                bBoxArea: -1,
+                linkTolerance: MAX_LINK_MM,
+                linkFrom: line.linkFrom,
+                fillGroup,
+              })
+            );
+          }
         }
 
         /**
@@ -828,7 +1056,8 @@ export function planToolpath(
          * not in the file". The keychain preset's lettering is exactly this case
          * on the default end mill.
          */
-        if (hatch.length === 0 && contours.length > 0 && cut.grooveRadius > 0) {
+        const clearedNothing = pocket ? pocket.rings.length === 0 : hatch.length === 0;
+        if (clearedNothing && contours.length > 0 && cut.grooveRadius > 0) {
           const groove = (cut.grooveRadius * 2).toFixed(2);
           if (el.hatchOutline === false) {
             skipped.push(
@@ -886,6 +1115,29 @@ export function planToolpath(
         // Through-cuts are held back so the whole layer can be offset together;
         // everything else is scored on the line it was drawn on and goes now.
         if (cut.side !== 'on' && layer.operation === 'cut' && isClosedContour(pts)) {
+          /*
+           * A hole the size of the cutter is drilled, not milled.
+           *
+           * Milling it is arithmetically impossible — offsetting a contour
+           * inward by more than its own radius leaves nothing — so until now
+           * these were dropped with a note telling the operator to fit a
+           * smaller cutter. Plunging is the answer the note should have given:
+           * an end mill makes a hole its own diameter, and for a hole already
+           * within a tenth of that, that is the hole the drawing asked for.
+           */
+          const circle = !options.laserMode ? circleFromContour(pts) : null;
+          const toolDia = cut.radius * 2;
+          if (
+            circle &&
+            toolDia > 0 &&
+            Math.abs(circle.r * 2 - toolDia) <= toolDia * DRILLABLE_TOLERANCE
+          ) {
+            drillable.push({
+              index: pendingCuts.length,
+              centre: { x: circle.cx, y: circle.cy },
+              diameter: circle.r * 2,
+            });
+          }
           pendingCuts.push(pts);
         } else if (stroked) {
           for (const band of strokeBandPasses(pts, strokeWidth, cutWidth)) {
@@ -916,26 +1168,172 @@ export function planToolpath(
       }
     }
 
-    if (pendingCuts.length > 0) {
-      const offset = offsetContours(pendingCuts, cut.radius, cut.side);
-      if (offset.dropped > 0) {
+    /*
+     * Now that the layer is complete, a candidate that sits inside another of
+     * its contours is a hole and gets drilled; one that does not is a small
+     * disc, and the cutter goes round the outside of it as it always did.
+     */
+    const drilledIndices = new Set<number>();
+    for (const candidate of drillable) {
+      const enclosed =
+        pendingCuts.some(
+          (other, i) => i !== candidate.index && pointInPolygon(candidate.centre, other)
+        ) ||
+        // A hole inside a reference outline is still a hole, and still drilled.
+        referenceContours.some((ref) => pointInPolygon(candidate.centre, ref));
+      if (!enclosed) continue;
+
+      drilledIndices.add(candidate.index);
+      const toolDia = cut.radius * 2;
+      drilled.push({ drawn: candidate.diameter, made: toolDia });
+      segments.push(
+        makeSegment(layer, cut, options, {
+          points: [candidate.centre, { ...candidate.centre }],
+          isClosed: false,
+          bBoxArea: boundingArea(pendingCuts[candidate.index]),
+          linkTolerance: 0,
+          drill: { diameterMm: toolDia, drawnMm: candidate.diameter },
+        })
+      );
+    }
+
+    const millable = pendingCuts.filter((_, i) => !drilledIndices.has(i));
+
+    /*
+     * Contours that only a reference outline knows to be holes.
+     *
+     * Held apart from the rest and offset the other way, rather than folded
+     * into one call with the reference geometry added: `offsetContours` unions
+     * everything it is handed and returns the result, so a reference outline
+     * passed in as context would come back out as a toolpath, and no reliable
+     * identity survives the union to strip it again by. Splitting the input
+     * keeps the reference geometry out of the cut entirely, and leaves every
+     * contour whose nesting was already unambiguous going through exactly the
+     * call it went through before.
+     */
+    const holeSide = cut.side === 'outside' ? 'inside' : cut.side;
+    const referenceHoles =
+      holeSide === cut.side || referenceContours.length === 0
+        ? []
+        : millable.filter((c) => isReferenceHole(c, millable, referenceContours));
+    const ordinary =
+      referenceHoles.length === 0 ? millable : millable.filter((c) => !referenceHoles.includes(c));
+
+    if (referenceHoles.length > 0) {
+      notes.push(
+        `${referenceHoles.length} contour${referenceHoles.length === 1 ? '' : 's'} on layer ` +
+          `"${layer.name}" ${referenceHoles.length === 1 ? 'is' : 'are'} cut as ` +
+          `${referenceHoles.length === 1 ? 'a hole' : 'holes'} because a reference (ghost) outline ` +
+          `encloses ${referenceHoles.length === 1 ? 'it' : 'them'}. The reference itself is not cut. ` +
+          `Without it ${referenceHoles.length === 1 ? 'it' : 'they'} would have been read as ` +
+          `${referenceHoles.length === 1 ? 'a disc' : 'discs'} and cut oversize by the cutter diameter.`
+      );
+    }
+
+    if (millable.length > 0) {
+      /**
+       * Whether this cut is worth finishing, decided rather than asked.
+       *
+       * A cutter in a deep cut is a cantilever: it deflects away from the wall
+       * under load and springs back where the load eases, which is why a
+       * one-pass profile comes out with a wall that is neither straight nor
+       * square. Leaving a fraction of a millimetre and coming back for it with
+       * almost no load on the tool is the standard answer.
+       *
+       * Only for a cut that takes more than one depth pass. In stock thin
+       * enough to go through in one, the tool is barely loaded and barely
+       * deflects, and a second lap round every part would be time spent for a
+       * difference nobody can see or measure.
+       */
+      const allowance = finishAllowanceFor(cut, options);
+      const finishing = allowance > 0;
+
+      const roughParts = offsetContours(ordinary, cut.radius + allowance, cut.side);
+      const roughHoles =
+        referenceHoles.length > 0
+          ? offsetContours(referenceHoles, cut.radius + allowance, holeSide)
+          : { contours: [] as Pt[][], dropped: 0 };
+      const roughOffset = {
+        contours: [...roughParts.contours, ...roughHoles.contours],
+        dropped: roughParts.dropped + roughHoles.dropped,
+      };
+      if (roughOffset.dropped > 0) {
         notes.push(
-          `${offset.dropped} feature${offset.dropped === 1 ? '' : 's'} on layer "${layer.name}" ` +
-            `${offset.dropped === 1 ? 'is' : 'are'} narrower than the ${cut.toolName} and cannot ` +
-            `be cut with it. ${offset.dropped === 1 ? 'It has' : 'They have'} been left out rather ` +
+          `${roughOffset.dropped} feature${roughOffset.dropped === 1 ? '' : 's'} on layer "${layer.name}" ` +
+            `${roughOffset.dropped === 1 ? 'is' : 'are'} narrower than the ${cut.toolName} and cannot ` +
+            `be cut with it. ${roughOffset.dropped === 1 ? 'It has' : 'They have'} been left out rather ` +
             `than gouged through — use a smaller cutter.`
         );
       }
-      for (const pts of offset.contours) {
+
+      for (const pts of roughOffset.contours) {
         segments.push(
           makeSegment(layer, cut, options, {
             points: pts,
             isClosed: true,
             bBoxArea: boundingArea(pts),
             linkTolerance: 0,
-            tabs: cut.tabs ? planTabs(pathLength(pts)) : [],
+            // Tabs hold a part that is about to come free, and nothing comes
+            // free until the finishing pass has taken the last of the wall.
+            tabs: cut.tabs && !finishing ? planTabs(pathLength(pts)) : [],
           })
         );
+      }
+
+      if (finishing) {
+        const finishParts = offsetContours(ordinary, cut.radius, cut.side);
+        const finishHoles =
+          referenceHoles.length > 0
+            ? offsetContours(referenceHoles, cut.radius, holeSide)
+            : { contours: [] as Pt[][], dropped: 0 };
+        const finishOffset = {
+          contours: [...finishParts.contours, ...finishHoles.contours],
+          dropped: finishParts.dropped + finishHoles.dropped,
+        };
+        for (const pts of finishOffset.contours) {
+          /*
+           * The lead goes on the finishing lap and only there. It exists to
+           * keep a dwell mark off the finished wall, and the roughing pass does
+           * not make a finished wall — giving it one would be two more arcs per
+           * contour per level, cut in waste, for nothing.
+           */
+          const lead = options.leadInOut === false
+            ? null
+            // Reference outlines join the sibling set for the same reason they
+            // join the offset decision: the lead has to curve on from the waste
+            // side, and which side is waste is the same nesting question.
+            : planLead(
+                pts,
+                [...finishOffset.contours, ...referenceContours],
+                millable,
+                leadRadiusFor(cut)
+              );
+          if (lead) led++;
+          segments.push(
+            makeSegment(layer, cut, options, {
+              points: pts,
+              isClosed: true,
+              bBoxArea: boundingArea(pts),
+              linkTolerance: 0,
+              tabs: cut.tabs ? planTabs(pathLength(pts)) : [],
+              finishPass: true,
+              leadIn: lead?.leadIn,
+              leadOut: lead?.leadOut,
+              /*
+               * Radially this pass is nothing — the allowance and no more, since
+               * the roughing passes took the rest — so it does not need the
+               * stepdowns that protect a full-width cut. What it does still
+               * have is *axial* engagement: taking 18 mm in one lap buries the
+               * whole flute length of a 1/8" cutter in the wall, which chatters
+               * and heats even at a light radial cut. Capped at a few
+               * diameters per lap for that reason alone.
+               */
+              depths: finishDepths(cut),
+            })
+          );
+        }
+        finished += finishOffset.contours.length;
+        finishedAllowance = allowance;
       }
     }
   }
@@ -979,6 +1377,60 @@ export function planToolpath(
     );
   }
 
+  /*
+   * After trimming, so an edge that only coincides once both paths have been
+   * cut back at the stock edge is still caught, and before the sort, so the
+   * fragments a broken contour leaves are ordered with everything else.
+   */
+  if (options.removeOverlaps !== false) {
+    const deduped = removeOverlapLines(segments);
+    if (deduped.affected > 0) {
+      segments.length = 0;
+      segments.push(...deduped.segments);
+      notes.push(
+        `${Math.round(deduped.removedMm)} mm of doubled-up line removed across ` +
+          `${deduped.affected} path${deduped.affected === 1 ? '' : 's'}: shapes that share an edge ` +
+          `now have it cut once. Cutting it twice ` +
+          `${options.laserMode ? 'comes out darker there, and burns through where nothing else does' : 'sends the cutter down a slot that is already air'}. ` +
+          `Turn this off in the advanced options if a doubled line was the intent.`
+      );
+    }
+  }
+
+  if (finished > 0) {
+    notes.push(
+      `${finished} through-cut${finished === 1 ? '' : 's'} ` +
+        `${finished === 1 ? 'is' : 'are'} roughed ${finishedAllowance.toFixed(2)} mm wide of the ` +
+        `line and then finished with one light lap at the line. A cutter deflects under load in a ` +
+        `deep cut, so a single pass leaves a wall that is neither straight nor square; the ` +
+        `finishing lap is barely loaded and takes the wall true. It also carries the tabs, since ` +
+        `it is the pass that frees the part.`
+    );
+  }
+
+  if (led > 0) {
+    notes.push(
+      `${led} finishing lap${led === 1 ? '' : 's'} curve${led === 1 ? 's' : ''} onto the wall along ` +
+        `a tangent rather than driving straight at it, so the cut begins with the tool already ` +
+        `moving along the edge. Driving at it leaves a dwell mark where the direction changes — ` +
+        `visible on a finished edge, measurable on a fitted one. The arcs run in waste; any ` +
+        `contour with no room for one is cut as it was.`
+    );
+  }
+
+  if (drilled.length > 0) {
+    const sizes = [...new Set(drilled.map((d) => `${d.drawn.toFixed(1)} mm`))].join(', ');
+    const made = [...new Set(drilled.map((d) => d.made.toFixed(2)))].join(', ');
+    notes.push(
+      `${drilled.length} hole${drilled.length === 1 ? '' : 's'} (${sizes}) ` +
+        `${drilled.length === 1 ? 'is' : 'are'} drilled by plunging rather than milled round, ` +
+        `because ${drilled.length === 1 ? 'it is' : 'they are'} the size of the cutter. ` +
+        `${drilled.length === 1 ? 'It comes' : 'They come'} out at ${made} mm — the cutter's own ` +
+        `diameter — and the cut is pecked so the chips clear. Draw the hole wider than the cutter ` +
+        `if you need it milled to an exact size.`
+    );
+  }
+
   if (widened > 0) {
     notes.push(
       `${widened} element${widened === 1 ? ' is' : 's are'} machined at ${widened === 1 ? 'its' : 'their'} ` +
@@ -1001,6 +1453,16 @@ export function planToolpath(
     if (opDelta !== 0) return opDelta;
     const layerDelta = (layerOrder.get(a.layerId) ?? 0) - (layerOrder.get(b.layerId) ?? 0);
     if (layerDelta !== 0) return layerDelta;
+    /*
+     * Rough the whole layer, then finish the whole layer.
+     *
+     * Not by enclosed area, which is what would otherwise decide it: an outside
+     * cut's roughing contour is *larger* than its finishing contour, so sorting
+     * on area alone would put the finishing lap first and then rough away the
+     * wall it had just made true. This has to be its own key.
+     */
+    const finishDelta = (a.finishPass ? 1 : 0) - (b.finishPass ? 1 : 0);
+    if (finishDelta !== 0) return finishDelta;
     return options.innerContourFirst ? a.bBoxArea - b.bBoxArea : 0;
   });
 
@@ -1026,6 +1488,69 @@ export function planToolpath(
 }
 
 /** Options with the document's own settings filled in for anything unstated. */
+/**
+ * How much wall to leave for the finishing pass, in mm. Zero means none.
+ *
+ * Derived, not asked: the app knows the cutter, the material and how deep the
+ * cut goes, which is everything the decision needs. Five percent of the cutter's
+ * diameter is about the deflection a hobby router develops at a full-width cut,
+ * and the clamp keeps it inside the range where the finishing pass stays a
+ * light one — too little and it rubs rather than cuts, too much and it is a
+ * second roughing pass with a roughing pass's deflection.
+ *
+ * See MACHINING.md; this is a Judgement value, not a sourced one.
+ */
+/**
+ * How much deeper one finishing lap may go than a roughing pass.
+ *
+ * The finishing pass is radially almost nothing — the allowance and no more —
+ * so the limit on it is not cutting load, which is what sets the roughing
+ * stepdown. It is how much of the cutter's flute length is buried in the wall
+ * at once, and a buried flute chatters and heats even when it is barely
+ * cutting. Twice the roughing step is a deliberate compromise between that and
+ * doubling the time of every profile cut.
+ */
+const FINISH_STEP_MULTIPLE = 2;
+
+/**
+ * And the hard ceiling on it, as a multiple of cutter diameter, for the case
+ * where the roughing stepdown is itself generous.
+ */
+const FINISH_AXIAL_DIAMETERS = 3;
+
+/**
+ * Depth levels for the finishing lap — usually one, more in deep stock.
+ *
+ * Both caps are conservative and both are Judgement values; see MACHINING.md.
+ * The roughing stepdown stays exactly as it was: this is a second, lighter cut
+ * with its own limit, not a relaxation of the one that stops a cutter being
+ * driven through 18 mm of ply in a single bite.
+ */
+function finishDepths(cut: LayerCutting): number[] {
+  const roughStep = cut.zDepth / Math.max(1, cut.depths.length);
+  const maxPerLap = Math.max(
+    0.5,
+    Math.min(roughStep * FINISH_STEP_MULTIPLE, cut.radius * 2 * FINISH_AXIAL_DIAMETERS)
+  );
+  const laps = Math.max(1, Math.ceil(cut.zDepth / maxPerLap - 1e-9));
+  const step = cut.zDepth / laps;
+  return Array.from({ length: laps }, (_, i) => -Number((step * (i + 1)).toFixed(4)));
+}
+
+function finishAllowanceFor(cut: LayerCutting, options: GCodeOptions): number {
+  // A laser has no side load and nothing to deflect; the beam is where it is.
+  if (options.laserMode) return 0;
+  if (options.finishPass === false) return 0;
+  if (cut.radius <= 0) return 0;
+  // One pass deep is a cut the tool is barely loaded in. See the caller.
+  if (cut.depths.length < 2) return 0;
+
+  const override = options.finishAllowanceMm;
+  if (override !== undefined) return Math.max(0, override);
+
+  return Math.min(0.3, Math.max(0.1, cut.radius * 2 * 0.05));
+}
+
 function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOptions {
   return {
     // Defaults to the document's own target, so an export driven from the MCP
@@ -1038,6 +1563,10 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     arcFitting: true,
     arcTolerance: 0.02,
     passOrder: 'per-level',
+    removeOverlaps: true,
+    finishPass: true,
+    leadInOut: true,
+    overscan: true,
     spindle: readSpindleRange(),
     laser: readLaserSource(),
     ...opts,
@@ -1340,6 +1869,11 @@ function makeSegment(
     tabs?: TabSpan[];
     intensities?: number[];
     shadePitch?: number;
+    drill?: GCodeSegment['drill'];
+    finishPass?: boolean;
+    depths?: number[];
+    leadIn?: Pt[];
+    leadOut?: Pt[];
   }
 ): GCodeSegment {
   const tabs = geom.tabs ?? [];
@@ -1353,8 +1887,8 @@ function makeSegment(
     plungeRate: cut.plungeRate,
     rampAngleDeg: cut.rampAngleDeg,
     zDepth: options.laserMode ? 0 : cut.zDepth,
-    depths: cut.depths,
-    passes: cut.depths.length,
+    depths: geom.depths ?? cut.depths,
+    passes: (geom.depths ?? cut.depths).length,
     tabs,
     tabHeight: tabs.length > 0 ? cut.tabHeight : 0,
     isClosed: geom.isClosed,
@@ -1364,6 +1898,9 @@ function makeSegment(
     fillGroup: geom.fillGroup ?? -1,
     points: geom.points,
     ...(geom.intensities ? { intensities: geom.intensities, shadePitch: geom.shadePitch } : {}),
+    ...(geom.drill ? { drill: geom.drill } : {}),
+    ...(geom.finishPass ? { finishPass: true } : {}),
+    ...(geom.leadIn ? { leadIn: geom.leadIn, leadOut: geom.leadOut } : {}),
   };
 }
 
@@ -1694,11 +2231,220 @@ function clipSegmentsToStock(
   return { segments: out, trimmed, dropped };
 }
 
+/**
+ * True when a contour is a hole that only a reference outline reveals.
+ *
+ * Two parity tests, in order. If the layer's own contours already enclose this
+ * one an odd number of times, its nesting was never in doubt and it is left to
+ * the ordinary path — this must not change what an existing drawing cuts. Only
+ * when the layer alone reads it as top-level does the reference geometry get a
+ * say, and then an odd enclosure count there makes it a hole.
+ */
+function isReferenceHole(contour: Pt[], siblings: Pt[][], reference: Pt[][]): boolean {
+  const start = contour[0];
+  if (!start) return false;
+  const withinSiblings = siblings.filter(
+    (other) => other !== contour && pointInPolygon(start, other)
+  ).length;
+  if (withinSiblings % 2 === 1) return false;
+  return reference.filter((ref) => pointInPolygon(start, ref)).length % 2 === 1;
+}
+
 function isClosedContour(pts: Pt[]): boolean {
   return (
     pts.length > 2 &&
     Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 1e-2
   );
+}
+
+/**
+ * The circle a contour describes, or null if it is not one.
+ *
+ * Used to find holes worth drilling. Deliberately strict: "round enough to
+ * plunge" has to mean round enough that a hole the size of the cutter is the
+ * hole the drawing asked for, and a rounded rectangle that passes a loose test
+ * would come out as a single round hole in the middle of it.
+ */
+function circleFromContour(pts: Pt[]): { cx: number; cy: number; r: number } | null {
+  if (!isClosedContour(pts) || pts.length < 8) return null;
+
+  const ring = pts.slice(0, -1);
+  let cx = 0;
+  let cy = 0;
+  for (const p of ring) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= ring.length;
+  cy /= ring.length;
+
+  let min = Infinity;
+  let max = 0;
+  let sum = 0;
+  for (const p of ring) {
+    const d = Math.hypot(p.x - cx, p.y - cy);
+    if (d < min) min = d;
+    if (d > max) max = d;
+    sum += d;
+  }
+  const r = sum / ring.length;
+  if (r <= 0) return null;
+
+  // Within 2% of a constant radius. A flattened circle is a polygon whose
+  // vertices sit on the circle and whose edge midpoints sit inside it, so the
+  // tolerance has to cover the chord sag — 0.02 mm at the flattener's own
+  // tolerance, which on any hole big enough to drill is well inside this.
+  if (max - min > r * 0.02 + 0.05) return null;
+
+  return { cx, cy, r };
+}
+
+/**
+ * How far a hole's diameter may be from the cutter's and still be drilled.
+ *
+ * The hole comes out at the cutter's size, not the drawn size, so this is a
+ * tolerance on the finished part. Ten percent of a 3 mm cutter is 0.3 mm, which
+ * is about the point where a hole stops being the hole that was drawn — and
+ * anything looser starts turning deliberately-undersized holes into
+ * accidentally-oversized ones.
+ */
+const DRILLABLE_TOLERANCE = 0.1;
+
+/**
+ * Whether a point lies inside a closed contour — the ray-crossing test.
+ *
+ * Used to tell a hole from a disc. Exactness at the boundary does not matter
+ * here: the point being tested is the centre of a circle, which is either well
+ * inside another contour or well outside it.
+ */
+/**
+ * Radius of the tangential lead, in mm.
+ *
+ * Half the cutter is the usual figure: big enough that the arc is a real curve
+ * rather than a corner, small enough to fit in the waste beside most parts. It
+ * scales with the tool because the thing it has to clear is the tool.
+ */
+function leadRadiusFor(cut: LayerCutting): number {
+  return Math.max(0.5, cut.radius);
+}
+
+/**
+ * Sample count for a quarter-circle lead. Eight segments puts the chord error
+ * on a 1.6 mm radius at about 0.01 mm — inside the tolerance budget, and the
+ * arc is short enough that the extra blocks cost nothing.
+ */
+const LEAD_ARC_STEPS = 8;
+
+/**
+ * A tangential lead-in and lead-out for one closed contour, or null.
+ *
+ * The arc curves onto the contour at its start point, from the waste side, so
+ * the cut begins with the tool already moving along the wall. Which side is
+ * waste is the thing that has to be right: for a part's outer profile the waste
+ * is outside the contour, and for a hole it is inside. That is decided by
+ * nesting — a contour enclosed by an odd number of the layer's other contours
+ * is a hole — rather than by winding, which clipper is free to choose.
+ *
+ * Returns null rather than a compromise whenever there is any doubt: a contour
+ * too short to lead onto, or a lead that would swing into material that is
+ * being kept, gets no lead at all and cuts exactly as it did before.
+ */
+function planLead(
+  contour: Pt[],
+  siblings: Pt[][],
+  keep: Pt[][],
+  radius: number
+): { leadIn: Pt[]; leadOut: Pt[] } | null {
+  if (radius <= 0 || contour.length < 4) return null;
+
+  const start = contour[0];
+  const perimeter = pathLength(contour);
+  // A lead is only sane on a contour substantially longer than the lead itself.
+  if (perimeter < radius * 8) return null;
+
+  const tangent = unitBetween(start, contour[1]);
+  const end = contour[contour.length - 1];
+  const outTangent = unitBetween(contour[contour.length - 2], end);
+  if (!tangent || !outTangent) return null;
+
+  // Inside-ness of the contour's own region, and then of the layer: an odd
+  // enclosure count makes this contour a hole, whose waste is on the inside.
+  const enclosingCount = siblings.filter(
+    (other) => other !== contour && pointInPolygon(start, other)
+  ).length;
+  const isHole = enclosingCount % 2 === 1;
+
+  // The normal pointing into the region the contour encloses.
+  const inward: Pt = { x: -tangent.y, y: tangent.x };
+  const probe = { x: start.x + inward.x * 1e-3, y: start.y + inward.y * 1e-3 };
+  const pointsIn = pointInPolygon(probe, contour);
+  const toEnclosed = pointsIn ? inward : { x: -inward.x, y: -inward.y };
+
+  // Waste is the enclosed side for a hole, and the other side for a part.
+  const waste = isHole ? toEnclosed : { x: -toEnclosed.x, y: -toEnclosed.y };
+
+  const arc = (at: Pt, along: Pt, entering: boolean): Pt[] => {
+    const centre = { x: at.x + waste.x * radius, y: at.y + waste.y * radius };
+    const pts: Pt[] = [];
+    for (let i = 0; i <= LEAD_ARC_STEPS; i++) {
+      const t = (i / LEAD_ARC_STEPS) * (Math.PI / 2);
+      // Sweeping from a quarter turn back along the travel direction, round to
+      // the contour point itself — reversed for the lead-out, which leaves it.
+      const a = entering ? Math.PI / 2 - t : t;
+      const radial = {
+        x: -waste.x * Math.cos(a) - along.x * Math.sin(a),
+        y: -waste.y * Math.cos(a) - along.y * Math.sin(a),
+      };
+      pts.push({ x: centre.x + radial.x * radius, y: centre.y + radial.y * radius });
+    }
+    return entering ? pts : pts.map((p) => p).reverse();
+  };
+
+  const leadIn = arc(start, tangent, true);
+  const leadOut = arc(end, outTangent, false).reverse();
+
+  /*
+   * Nothing may swing into material that is being kept — a neighbouring part
+   * half a lead radius away is exactly how a lead-in ruins the job beside it.
+   *
+   * Kept-ness is even-odd across the whole layer, not "inside any contour". A
+   * point in the middle of a hole is inside two contours — the part's outline
+   * and the hole's — and is nevertheless waste, which is the whole reason a
+   * hole's lead swings inward. Counting them as one region each would refuse
+   * every lead on every hole in the job.
+   */
+  for (const p of [...leadIn, ...leadOut]) {
+    let enclosing = 0;
+    for (const region of keep) {
+      if (pointInPolygon(p, region)) enclosing++;
+    }
+    if (enclosing % 2 === 1) return null;
+  }
+
+  return { leadIn, leadOut };
+}
+
+/** Unit vector from a to b, or null when they are the same point. */
+function unitBetween(a: Pt, b: Pt): Pt | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  return len < 1e-9 ? null : { x: dx / len, y: dy / len };
+}
+
+function pointInPolygon(pt: Pt, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (
+      a.y > pt.y !== b.y > pt.y &&
+      pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y || 1e-12) + a.x
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 function boundingArea(pts: Pt[]): number {
@@ -2258,6 +3004,8 @@ export function generateGCode(
     safeZ: SAFE_Z,
     toolChanges: new Map(toolChanges.map((c) => [c.segIndex, { tool: c.tool, from: c.from }])),
     passOrder: options.passOrder,
+    overscan: options.overscan,
+    stock: { width: doc.width, height: doc.height },
   });
 
   const material = findMaterial(doc.material);
@@ -2602,106 +3350,10 @@ export function planProgramMoves(
     safeZ: SAFE_Z,
     toolChanges: new Map(toolChanges.map((c) => [c.segIndex, { tool: c.tool, from: c.from }])),
     passOrder: options.passOrder,
+    overscan: options.overscan,
+    stock: { width: doc.width, height: doc.height },
   });
   return { moves: program.moves, segments };
-}
-
-/**
- * Samples an element into one or more bed-space contours.
- *
- * Local geometry goes through localToBed(), the same transform the canvas
- * renders with, so the toolpath is always what you saw on screen — the old
- * exporter rotated about the element's local origin while the canvas rotated
- * about something else entirely.
- */
-function extractElementContours(el: EtchElement): Pt[][] {
-  const xform = (lx: number, ly: number) => localToBed(el, lx, ly);
-
-  switch (el.type) {
-    case 'rect': {
-      const w = el.w || 50;
-      const h = el.h || 30;
-      const r = Math.min(el.rx || 0, w / 2, h / 2);
-      if (r <= 0) {
-        return [[xform(0, 0), xform(w, 0), xform(w, h), xform(0, h), xform(0, 0)]];
-      }
-      // Rounded corners were being cut square.
-      const pts: Pt[] = [];
-      const corners: Array<[number, number, number]> = [
-        [w - r, r, -Math.PI / 2],
-        [w - r, h - r, 0],
-        [r, h - r, Math.PI / 2],
-        [r, r, Math.PI],
-      ];
-      pts.push(xform(r, 0));
-      for (const [ccx, ccy, a0] of corners) {
-        for (let i = 0; i <= 8; i++) {
-          const a = a0 + (i * Math.PI) / 2 / 8;
-          pts.push(xform(ccx + r * Math.cos(a), ccy + r * Math.sin(a)));
-        }
-      }
-      pts.push(xform(r, 0));
-      return [pts];
-    }
-    case 'circle': {
-      const r = el.r || 25;
-      // Chord tolerance ~0.02mm, so big circles don't come out faceted.
-      const steps = arcSteps(r);
-      const pts: Pt[] = [];
-      for (let i = 0; i <= steps; i++) {
-        const a = (i * 2 * Math.PI) / steps;
-        pts.push(xform(r * Math.cos(a), r * Math.sin(a)));
-      }
-      return [pts];
-    }
-    case 'ellipse': {
-      const rx = el.rx2 || 30;
-      const ry = el.ry2 || 20;
-      const steps = arcSteps(Math.max(rx, ry));
-      const pts: Pt[] = [];
-      for (let i = 0; i <= steps; i++) {
-        const a = (i * 2 * Math.PI) / steps;
-        pts.push(xform(rx * Math.cos(a), ry * Math.sin(a)));
-      }
-      return [pts];
-    }
-    case 'line':
-      return [[xform(0, 0), xform(el.x2 ?? 40, el.y2 ?? 0)]];
-
-    case 'polygon': {
-      if (el.points && el.points.length > 0) {
-        const pts = el.points.map((p) => xform(p.x, p.y));
-        pts.push(xform(el.points[0].x, el.points[0].y));
-        return [pts];
-      }
-      const sides = el.sides || 6;
-      const r = el.r || 25; // was hard-coded to 25 — resized polygons cut wrong
-      const pts: Pt[] = [];
-      for (let i = 0; i <= sides; i++) {
-        const a = (i * 2 * Math.PI) / sides;
-        pts.push(xform(r * Math.cos(a), r * Math.sin(a)));
-      }
-      return [pts];
-    }
-
-    case 'text': {
-      // Reached only when outlines are fresh (checked by the caller).
-      return flattenPath(el.outlineD!).map((sp) => sp.points.map((p) => xform(p.x, p.y)));
-    }
-
-    case 'path':
-    case 'freehand':
-    case 'symbol':
-    case 'star':
-    case 'bezier': {
-      if (!el.d) return [];
-      // Shared flattener: handles C/S/Q/T/A as well as M/L/H/V/Z, so curves are
-      // actually machined instead of being skipped or mangled.
-      return flattenPath(el.d).map((sp) => sp.points.map((p) => xform(p.x, p.y)));
-    }
-  }
-
-  return [];
 }
 
 /** One contour of a dry run: the outline of something the job cuts. */
@@ -2888,9 +3540,3 @@ export function generateAirCutGCode(
 }
 
 
-/** Segment count for a full circle of radius r at ~0.02mm chord tolerance. */
-function arcSteps(r: number): number {
-  if (r <= 0) return 8;
-  const step = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - 0.02 / r)));
-  return Math.max(24, Math.min(720, Math.ceil((2 * Math.PI) / step)));
-}

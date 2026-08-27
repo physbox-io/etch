@@ -1,5 +1,5 @@
 import { SAFE_Z, planToolChanges, type GCodeSegment } from './gcodeExporter';
-import { planMoves, type MoveKind, type PassOrder } from './toolpathMoves';
+import { ASSUMED_ACCEL_MM_S2, planMoves, type MoveKind, type PassOrder } from './toolpathMoves';
 import type { Pt } from './pathFlatten';
 
 /**
@@ -25,6 +25,8 @@ export interface ToolMove {
   power: number;
   /** Index into the planned segments, so the preview can reveal that path. */
   segIndex: number;
+  /** An overscan run-up: at cutting feed, beam dark, outside the shape. */
+  dark?: boolean;
   pass: number;
   passes: number;
   /**
@@ -82,7 +84,7 @@ export interface Timeline {
  * hits hardest, so a preview that ignores it is most wrong about the jobs
  * people most want a number for.
  */
-const ACCEL_MM_S2 = 500;
+const ACCEL_MM_S2 = ASSUMED_ACCEL_MM_S2;
 
 /**
  * GRBL's junction deviation, mm. How far off the corner the machine is allowed
@@ -217,7 +219,14 @@ function planSpeeds(
  */
 export function buildTimeline(
   segments: GCodeSegment[],
-  opts: { travelSpeed: number; laserMode: boolean; passOrder?: PassOrder }
+  opts: {
+    travelSpeed: number;
+    laserMode: boolean;
+    passOrder?: PassOrder;
+    /** Both planned the same way as the file, or the preview is not the program. */
+    overscan?: boolean;
+    stock?: { width: number; height: number };
+  }
 ): Timeline {
   const travelSpeed = Math.max(1, opts.travelSpeed);
   const changes = planToolChanges(segments);
@@ -230,6 +239,8 @@ export function buildTimeline(
     // animation in a different pass order would show the tool visiting the work
     // in an order the machine never takes.
     passOrder: opts.passOrder,
+    overscan: opts.overscan,
+    stock: opts.stock,
   });
 
   const moves: ToolMove[] = [];
@@ -289,6 +300,7 @@ export function buildTimeline(
       layerId: m.layerId,
       type: m.type,
       power: m.power,
+      dark: m.dark,
       segIndex: m.segIndex,
       pass: m.pass,
       passes: m.passes,

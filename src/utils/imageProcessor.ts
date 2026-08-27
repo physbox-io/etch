@@ -34,7 +34,46 @@ export interface ImageProcessOptions {
   simplifyPx: number;
   /** Line pitch for `shade`, mm between sweeps across the picture. */
   shadePitch: number;
+  /**
+   * Midtone curve, 0.2–3. One leaves the picture alone.
+   *
+   * Brightness and contrast between them cannot do what this does: both are
+   * straight-line adjustments, so pulling a scorched sky back also flattens the
+   * shadows that were right. Engraving is where that shows, because material
+   * response is not linear either — most of the visible range of a laser on
+   * wood lives in the top third of the power scale, and gamma is the control
+   * that maps a photograph's midtones onto it.
+   *
+   * Above one lightens the midtones (less burning), below one deepens them.
+   */
+  gamma: number;
+  /**
+   * Turning continuous tone into dots, for `shade` only.
+   *
+   * A machine that modulates power well engraves the greys directly, and that
+   * is what `'none'` does. Many do not: a diode laser at 8% and at 12% marks
+   * the same, so the shadow detail of a photograph collapses into one flat
+   * grey. Dithering sidesteps the whole problem by firing at one power and
+   * varying *how many* dots land, the way a newspaper prints a photograph.
+   *
+   * The error-diffusion kernels differ in how far they push the error: Floyd–
+   * Steinberg is the sharpest and the noisiest, Stucki the smoothest, Jarvis
+   * between them. `'ordered'` is a fixed 8×8 threshold matrix — visibly
+   * patterned, but the pattern is regular, which some materials take better
+   * than scattered dots.
+   */
+  dither: DitherMode;
 }
+
+export type DitherMode = 'none' | 'floyd' | 'jarvis' | 'stucki' | 'ordered';
+
+export const DITHER_LABELS: Record<DitherMode, string> = {
+  none: 'None — engrave the greys',
+  floyd: 'Floyd–Steinberg (sharpest)',
+  jarvis: 'Jarvis (balanced)',
+  stucki: 'Stucki (smoothest)',
+  ordered: 'Ordered 8×8 (regular pattern)',
+};
 
 export const DEFAULT_IMAGE_OPTIONS: ImageProcessOptions = {
   brightness: 0,
@@ -50,6 +89,8 @@ export const DEFAULT_IMAGE_OPTIONS: ImageProcessOptions = {
   smoothing: true,
   simplifyPx: 0.75,
   shadePitch: DEFAULT_SHADE_PITCH_MM,
+  gamma: 1,
+  dither: 'none',
 };
 
 /**
@@ -115,6 +156,7 @@ export function processImageCanvas(
   // Apply Brightness & Contrast factor
   const contrastFactor = (259 * (options.contrast + 255)) / (255 * (259 - options.contrast));
   const brightnessOffset = (options.brightness / 100) * 255;
+  const gamma = options.gamma ?? 1;
 
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i];
@@ -127,6 +169,10 @@ export function processImageCanvas(
     gray += brightnessOffset;
     gray = contrastFactor * (gray - 128) + 128;
     gray = Math.max(0, Math.min(255, gray));
+    // Gamma last of the three, on the clamped value: it is a curve through
+    // black and white, so applying it before contrast would let contrast pull
+    // the ends back off the scale and clip the very detail gamma recovered.
+    if (gamma !== 1) gray = 255 * Math.pow(gray / 255, 1 / gamma);
 
     // Handle alpha channel (transparent treated as white)
     if (a < 128) {
@@ -142,8 +188,125 @@ export function processImageCanvas(
     data[i + 2] = gray;
   }
 
+  /*
+   * Dithering is for shading and nothing else. The other three modes decide at
+   * a threshold whether a pixel is dark, and handing a thresholder an image
+   * that is already pure black and white would trace the dot pattern itself —
+   * tens of thousands of tiny closed loops instead of an outline.
+   */
+  if (options.mode === 'shade' && options.dither && options.dither !== 'none') {
+    applyDither(data, w, h, options.dither);
+  }
+
   ctx.putImageData(imageData, 0, 0);
   return { canvas, ctx, imageData };
+}
+
+/**
+ * Error-diffusion weights: [dx, dy, weight], with the divisor.
+ *
+ * The classic three, in order of how widely they spread the error. Wider is
+ * smoother and blurrier; narrower keeps edges but leaves visible worming in
+ * flat areas.
+ */
+const DIFFUSION: Record<'floyd' | 'jarvis' | 'stucki', { divisor: number; taps: Array<[number, number, number]> }> = {
+  floyd: {
+    divisor: 16,
+    taps: [
+      [1, 0, 7],
+      [-1, 1, 3],
+      [0, 1, 5],
+      [1, 1, 1],
+    ],
+  },
+  jarvis: {
+    divisor: 48,
+    taps: [
+      [1, 0, 7], [2, 0, 5],
+      [-2, 1, 3], [-1, 1, 5], [0, 1, 7], [1, 1, 5], [2, 1, 3],
+      [-2, 2, 1], [-1, 2, 3], [0, 2, 5], [1, 2, 3], [2, 2, 1],
+    ],
+  },
+  stucki: {
+    divisor: 42,
+    taps: [
+      [1, 0, 8], [2, 0, 4],
+      [-2, 1, 2], [-1, 1, 4], [0, 1, 8], [1, 1, 4], [2, 1, 2],
+      [-2, 2, 1], [-1, 2, 2], [0, 2, 4], [1, 2, 2], [2, 2, 1],
+    ],
+  },
+};
+
+/** The 8×8 Bayer matrix, as thresholds in 0–63. */
+const BAYER_8 = [
+  [0, 32, 8, 40, 2, 34, 10, 42],
+  [48, 16, 56, 24, 50, 18, 58, 26],
+  [12, 44, 4, 36, 14, 46, 6, 38],
+  [60, 28, 52, 20, 62, 30, 54, 22],
+  [3, 35, 11, 43, 1, 33, 9, 41],
+  [51, 19, 59, 27, 49, 17, 57, 25],
+  [15, 47, 7, 39, 13, 45, 5, 37],
+  [63, 31, 55, 23, 61, 29, 53, 21],
+];
+
+/**
+ * Replaces the greyscale in place with pure black and white dots.
+ *
+ * The error is carried in a separate float buffer rather than by writing part-
+ * way values back into the byte array: the accumulated error routinely runs
+ * outside 0–255 and past the ends of the picture, and rounding it into a byte
+ * at every step is what makes a hand-rolled dither come out muddy with light
+ * bands down one side.
+ *
+ * Linear in the pixel count, like everything else in this file, because it all
+ * runs on the main thread — see the module note on the tracer.
+ */
+export function applyDither(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  mode: Exclude<DitherMode, 'none'>
+): void {
+  if (mode === 'ordered') {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        // +0.5 centres the matrix on the midpoint of its own step, so a flat
+        // 50% grey comes out as an even chequer rather than biased dark.
+        const limit = ((BAYER_8[y & 7][x & 7] + 0.5) / 64) * 255;
+        const v = data[i] > limit ? 255 : 0;
+        data[i] = data[i + 1] = data[i + 2] = v;
+      }
+    }
+    return;
+  }
+
+  const { divisor, taps } = DIFFUSION[mode];
+  const buf = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) buf[i] = data[i * 4];
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const old = buf[idx];
+      const v = old > 127.5 ? 255 : 0;
+      buf[idx] = v;
+      const err = old - v;
+      if (err !== 0) {
+        for (const [dx, dy, weight] of taps) {
+          const nx = x + dx;
+          const ny = y + dy;
+          // Error that falls off the edge is discarded rather than wrapped:
+          // wrapping puts the left margin's shadows into the right margin's
+          // highlights, which reads as a bright seam down one side.
+          if (nx < 0 || nx >= w || ny >= h) continue;
+          buf[ny * w + nx] += (err * weight) / divisor;
+        }
+      }
+      const o = idx * 4;
+      data[o] = data[o + 1] = data[o + 2] = v;
+    }
+  }
 }
 
 /**

@@ -4,12 +4,15 @@ import {
   loadImageElement,
   processImageCanvas,
   DEFAULT_IMAGE_OPTIONS,
+  DITHER_LABELS,
+  type DitherMode,
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
 import { camWorker } from '../utils/camWorkerClient';
 import { usePanZoom } from '../hooks/usePanZoom';
 import { ZoomControls } from './ZoomControls';
 import { BusyToast } from './BusyToast';
+import { DocsInfoButton } from './DocsModal';
 import { planImageImport } from '../utils/imageImport';
 import { machineKind } from '../utils/tooling';
 import {
@@ -358,7 +361,10 @@ export const ImageImportModal: React.FC = () => {
               <ImageIcon className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold">Import & Vectorize Image</h2>
+              <h2 className="text-lg font-bold flex items-center gap-1.5">
+                <span>Import &amp; Vectorize Image</span>
+                <DocsInfoButton tab="images" size="w-4 h-4" />
+              </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Convert raster images into vector traces, halftone grids, or engrave paths
               </p>
@@ -502,6 +508,31 @@ export const ImageImportModal: React.FC = () => {
                     onChange={(e) => setOptions({ ...options, contrast: Number(e.target.value) })}
                     className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
                   />
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      Gamma (midtones)
+                    </span>
+                    <span className="text-xs font-mono text-cyan-500">
+                      {options.gamma.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.2"
+                    max="3"
+                    step="0.05"
+                    value={options.gamma}
+                    onChange={(e) => setOptions({ ...options, gamma: Number(e.target.value) })}
+                    className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  />
+                  {/* The control brightness and contrast cannot substitute for:
+                      both are straight lines, so rescuing a scorched sky with
+                      either also flattens the shadows that were already right. */}
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug -mt-2">
+                    Bends the middle greys without moving black or white. Above 1 lightens them —
+                    the usual fix for a photograph coming out too dark — and below 1 deepens them.
+                  </p>
 
                   <div className="flex items-center gap-2 pt-1">
                     <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
@@ -658,7 +689,46 @@ export const ImageImportModal: React.FC = () => {
 
                   {options.mode === 'shade' && (
                     <div>
-                      <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-slate-500 block mb-1">
+                        Dithering
+                      </label>
+                      <select
+                        value={options.dither}
+                        onChange={(e) =>
+                          setOptions({ ...options, dither: e.target.value as DitherMode })
+                        }
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      >
+                        {(Object.keys(DITHER_LABELS) as DitherMode[]).map((m) => (
+                          <option key={m} value={m}>
+                            {DITHER_LABELS[m]}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[10px] text-slate-400 leading-snug">
+                        {options.dither === 'none'
+                          ? `Greys reach the machine as ${laserMode ? 'varying power' : 'varying depth'}. Right when the machine resolves them — and on a diode laser it often does not, because 8% and 12% mark the same and the shadows collapse into one flat tone.`
+                          : 'The picture becomes pure black-and-white dots, fired at one power, like a newspaper photograph. Sidesteps a machine that cannot hold a steady low power.'}
+                      </p>
+                      {/* A dithered picture *is* its dots, so sweeping coarser
+                          than the dots samples them almost at random: the tone
+                          comes out noisy and wrong rather than merely coarse.
+                          Pitch and pixel size have to be told to agree. */}
+                      {options.dither !== 'none' && mmPerPixel > 0 && options.shadePitch > mmPerPixel * 1.5 && (
+                        <button
+                          onClick={() =>
+                            setOptions({
+                              ...options,
+                              shadePitch: Math.max(0.05, Number(mmPerPixel.toFixed(2))),
+                            })
+                          }
+                          className="mt-1.5 w-full px-2 py-1 text-[10px] font-semibold rounded-lg border border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 cursor-pointer"
+                        >
+                          Line pitch is coarser than the dots — set it to {mmPerPixel.toFixed(2)} mm
+                        </button>
+                      )}
+
+                      <div className="flex items-center justify-between mb-1 mt-3">
                         <label className="text-xs font-semibold text-slate-500">Line Pitch</label>
                         <span className="text-xs font-mono text-cyan-500">{options.shadePitch} mm</span>
                       </div>

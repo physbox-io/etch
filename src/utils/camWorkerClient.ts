@@ -177,7 +177,15 @@ class CamWorkerClient {
           return Promise.resolve({
             plan,
             gcode: generateGCode(doc, opts, plan),
-            timeline: buildTimeline(plan.segments, { ...timeline, passOrder: opts?.passOrder }),
+            timeline: buildTimeline(plan.segments, {
+              ...timeline,
+              passOrder: opts?.passOrder,
+              // Derived here rather than asked of the caller: these have to
+              // match what the exporter used, and a second place to pass them
+              // is a second place to forget.
+              overscan: opts?.overscan,
+              stock: { width: doc.width, height: doc.height },
+            }),
           } as unknown as T);
         }
         case 'FIT_ARCS': {

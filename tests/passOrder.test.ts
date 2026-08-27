@@ -72,8 +72,13 @@ describe('pass order', () => {
   it('takes both parts to each level before deepening, by default', () => {
     const d = doc();
     const plan = planToolpath(d);
-    expect(plan.segments.length).toBe(2);
-    const passes = plan.segments[0].depths.length;
+    // Two parts, each roughed and then finished. Only the roughing passes are
+    // interleaved by level — the finishing laps come after all of it, since
+    // they are what frees the parts.
+    const rough = plan.segments.filter((s) => !s.finishPass);
+    expect(rough.length).toBe(2);
+    expect(plan.segments.filter((s) => s.finishPass).length).toBe(2);
+    const passes = rough[0].depths.length;
     // The point of the test is meaningless with a single pass.
     expect(passes).toBeGreaterThan(1);
 

@@ -70,13 +70,36 @@ describe('depth of cut', () => {
    */
   it('splits a deep cut into passes the cutter can survive, whatever the layer says', () => {
     const { segments } = planToolpath(doc([layer('cut', 'cut')], [rect('r', 'cut')]));
-    expect(segments.length).toBeGreaterThan(0);
-    for (const seg of segments) {
+    const rough = segments.filter((s) => !s.finishPass);
+    expect(rough.length).toBeGreaterThan(0);
+    for (const seg of rough) {
       expect(seg.passes).toBeGreaterThan(6);
       const steps = seg.depths.map((d, i) => Math.abs(d - (seg.depths[i - 1] ?? 0)));
       // Plywood with a 1/8" cutter takes about 2.5 mm at a time.
       for (const s of steps) expect(s).toBeLessThan(3);
     }
+  });
+
+  /**
+   * The finishing lap has its own, looser limit, and it must stay a limit.
+   *
+   * It is radially almost nothing — the allowance and no more — so cutting load
+   * is not what bounds it. What does is how much of the cutter's flute ends up
+   * buried in the wall, so it is allowed twice the roughing step and no more.
+   * The point of pinning it is that "radially light" must never be read as
+   * "take it all in one".
+   */
+  it('keeps the finishing lap inside its own depth limit', () => {
+    const { segments } = planToolpath(doc([layer('cut', 'cut')], [rect('r', 'cut')]));
+    const rough = segments.find((s) => !s.finishPass)!;
+    const finish = segments.find((s) => s.finishPass);
+    expect(finish).toBeTruthy();
+
+    const roughStep = Math.abs(rough.depths[0]);
+    const steps = finish!.depths.map((d, i) => Math.abs(d - (finish!.depths[i - 1] ?? 0)));
+    for (const s of steps) expect(s).toBeLessThanOrEqual(roughStep * 2 + 1e-6);
+    // And it still reaches the full depth, or the wall is only finished part way.
+    expect(finish!.depths[finish!.depths.length - 1]).toBeCloseTo(rough.depths[rough.depths.length - 1], 6);
   });
 
   it('says in the header that it overrode the pass count', () => {
@@ -211,10 +234,17 @@ describe('spindle speed', () => {
 });
 
 describe('holding tabs', () => {
-  it('leaves tabs on a through-cut by default', () => {
+  it('leaves tabs on a through-cut by default, on the pass that frees the part', () => {
     const { segments } = planToolpath(doc([layer('cut', 'cut')], [rect('r', 'cut')]));
-    expect(segments[0].tabs.length).toBeGreaterThanOrEqual(3);
-    expect(segments[0].tabHeight).toBeGreaterThan(0);
+    // Tabs belong on the finishing lap: nothing comes free until it has taken
+    // the last of the wall, and a tab on the roughing pass would be a lump of
+    // material the finishing pass then cuts away.
+    const freeing = segments.find((s) => s.finishPass) ?? segments[0];
+    expect(freeing.tabs.length).toBeGreaterThanOrEqual(3);
+    expect(freeing.tabHeight).toBeGreaterThan(0);
+    for (const rough of segments.filter((s) => !s.finishPass)) {
+      expect(rough.tabs).toEqual([]);
+    }
   });
 
   it('rides over the tabs only on the passes deep enough to reach them', () => {
@@ -252,11 +282,20 @@ describe('holding tabs', () => {
 describe('cutter radius compensation', () => {
   it('cuts outside a through-cut outline so the part is not undersized', () => {
     const { segments } = planToolpath(doc([layer('cut', 'cut')], [rect('r', 'cut')]));
-    const xs = segments.flatMap((s) => s.points.map((p) => p.x));
+    // The size of the part is set by the *finishing* lap — the roughing pass
+    // deliberately runs wider than the line and leaves a little wall for it.
+    const finish = segments.filter((s) => s.finishPass);
+    expect(finish.length).toBeGreaterThan(0);
+    const xs = finish.flatMap((s) => s.points.map((p) => p.x));
     // The rectangle is drawn from x=20 to x=100; a 3.175 mm cutter runs half a
     // diameter outside that.
     expect(Math.min(...xs)).toBeCloseTo(20 - 1.5875, 1);
     expect(Math.max(...xs)).toBeCloseTo(100 + 1.5875, 1);
+
+    // And the roughing pass is further out still, never inside the finished
+    // line — roughing into the part would leave nothing for finishing to true.
+    const roughXs = segments.filter((s) => !s.finishPass).flatMap((s) => s.points.map((p) => p.x));
+    expect(Math.min(...roughXs)).toBeLessThan(Math.min(...xs));
   });
 
   it('scores an etch on the line it was drawn on', () => {

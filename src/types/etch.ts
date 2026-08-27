@@ -406,6 +406,18 @@ export interface MachineStatus {
   feedRate: number;
   spindlePower: number;
   /**
+   * Live trim, as percentages of what the program asked for, from GRBL's `Ov:`
+   * field. 100 means untrimmed.
+   *
+   * They belong to the controller, not to the panel that pressed the buttons:
+   * an override survives a page reload, is cleared by a reset, and can be
+   * changed from a pendant. A UI that remembered what it last clicked would go
+   * on claiming the feed was at 80% after any of those.
+   */
+  feedOverride: number;
+  rapidOverride: number;
+  spindleOverride: number;
+  /**
    * Whether the guide spot is lit — the laser held at pointer power so the
    * operator can see where the head actually is while zeroing XY.
    *

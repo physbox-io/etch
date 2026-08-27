@@ -20,6 +20,7 @@ import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { warpGcode, getGridStats } from '../utils/bedLeveler';
 import type { PassOrder } from '../utils/toolpathMoves';
 import { BusyToast } from './BusyToast';
+import { JobOverridePanel } from './JobOverridePanel';
 import { DocsInfoButton } from './DocsModal';
 import { InfoTooltip } from './InfoTooltip';
 
@@ -87,6 +88,25 @@ export const GCodePreviewModal: React.FC = () => {
    * at the nearest point, which is where nearly all of the saving is.
    */
   const [travelOptimization, setTravelOptimization] = useState(2);
+  /**
+   * Whether a line two shapes share is cut once. On, because a doubled line is
+   * never what anyone drew — see `dedupeOverlaps.ts` — but switchable, since
+   * quietly changing what a file cuts is worse than offering the choice.
+   */
+  const [removeOverlaps, setRemoveOverlaps] = useState(true);
+  /**
+   * Run-up before the beam lights on each line of a fill. Laser only — a router
+   * would mill the run-up into material that is meant to survive.
+   */
+  const [overscan, setOverscan] = useState(true);
+  /**
+   * Both derived and both on by default — the planner decides whether they
+   * apply and how much, from the cutter, the material and the depth. These are
+   * here to override a derivation that is occasionally wrong, not to ask a
+   * question the app can answer.
+   */
+  const [finishPass, setFinishPass] = useState(true);
+  const [leadInOut, setLeadInOut] = useState(true);
   const [applyLevelling, setApplyLevelling] = useState(true);
   const [machine, setMachine] = useState<MachineStatus>(() => webSerialManager.getStatus());
   const [confirmRun, setConfirmRun] = useState(false);
@@ -131,9 +151,13 @@ export const GCodePreviewModal: React.FC = () => {
       travelSpeed,
       travelOptimization,
       passOrder,
+      removeOverlaps,
+      overscan,
+      finishPass,
+      leadInOut,
       customCncTools: cncTools,
     }),
-    [laserMode, innerContourFirst, travelSpeed, travelOptimization, passOrder, cncTools]
+    [laserMode, innerContourFirst, travelSpeed, travelOptimization, passOrder, removeOverlaps, overscan, finishPass, leadInOut, cncTools]
   );
 
   /**
@@ -425,6 +449,99 @@ export const GCodePreviewModal: React.FC = () => {
                   />
                 </div>
 
+                {/* Overlapping lines. Two shapes sharing an edge is the
+                    commonest way a job that looked right on screen comes out
+                    wrong on material. */}
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
+                  <div className="pr-3">
+                    <div className="font-semibold text-slate-800 dark:text-slate-200">
+                      Cut Shared Edges Once{' '}
+                      <InfoTooltip
+                        text={
+                          laserMode
+                            ? 'Two shapes that touch share a line, and it would otherwise be burned twice — darker there, and through the material where the rest of the outline is not. Fills, shading and different layers are left alone.'
+                            : 'Two shapes that touch share a line, and it would otherwise be cut twice — the second pass sends the cutter full depth down a slot that is already air. Fills, shading, tabbed cuts and different layers are left alone.'
+                        }
+                      />
+                    </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Remove doubled-up lines where shapes touch
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={removeOverlaps}
+                    onChange={(e) => setRemoveOverlaps(e.target.checked)}
+                    className="w-4 h-4 accent-red-500 rounded cursor-pointer"
+                  />
+                </div>
+
+                {/* Overscan. Laser only, and hidden rather than disabled on a
+                    router: it is not a setting a router has, and an unavailable
+                    switch invites the question of how to enable it. */}
+                {laserMode && (
+                  <div className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg">
+                    <div className="pr-3">
+                      <div className="font-semibold text-slate-800 dark:text-slate-200">
+                        Overscan Engraved Fills{' '}
+                        <InfoTooltip text="On each line of a fill the head starts outside the shape with the beam dark, so it is already at full speed when the beam lights. Without it the ends of every line get the same power over less distance while the head is still accelerating, and the fill comes out with a burnt border. Costs a little time per line. Photo Tone engraving does not need it — it already scales power with speed." />
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                        Stops fills burning darker at the edges
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={overscan}
+                      onChange={(e) => setOverscan(e.target.checked)}
+                      className="w-4 h-4 accent-red-500 rounded cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {/* Finishing and leads. Router-only, hidden on a laser rather
+                    than disabled: a beam has no side load to deflect and no
+                    wall to true, so neither is a setting it has. */}
+                {!laserMode && (
+                  <div className="p-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-lg space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="pr-3">
+                        <div className="font-semibold text-slate-800 dark:text-slate-200">
+                          Finishing Pass{' '}
+                          <InfoTooltip text="Rough a fraction of a millimetre wide of the line, then come back with one light lap at the line. A cutter deflects under load in a deep cut, so a single pass leaves a wall that is neither straight nor square. Applied only where it makes a difference — a cut that goes through in one pass is barely loaded and gets none. The allowance comes from the cutter's diameter." />
+                        </div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                          A light final lap for a straight, square wall
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={finishPass}
+                        onChange={(e) => setFinishPass(e.target.checked)}
+                        className="w-4 h-4 accent-red-500 rounded cursor-pointer"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="pr-3">
+                        <div className="font-semibold text-slate-800 dark:text-slate-200">
+                          Curve Onto the Wall{' '}
+                          <InfoTooltip text="Enter and leave the finished wall along a tangent arc in waste material, instead of driving straight at the line. Feeding straight at it leaves a dwell mark where the direction changes. Skipped by itself wherever there is no room to swing the arc — beside a neighbouring part, say." />
+                        </div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                          Keeps a dwell mark off the finished edge
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={leadInOut}
+                        disabled={!finishPass}
+                        onChange={(e) => setLeadInOut(e.target.checked)}
+                        className="w-4 h-4 accent-red-500 rounded cursor-pointer disabled:opacity-40"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {/* Travel optimisation. A traced image is hundreds of separate
                     loops sorted by enclosed area, which is very nearly random
                     on the material — this is the setting that stops most of
@@ -683,6 +800,11 @@ export const GCodePreviewModal: React.FC = () => {
                       {machine.pauseMessage}
                     </p>
                   )}
+                  {/* Beside the progress bar, because this is where the
+                      operator is looking when they notice the cut is running
+                      hot — and the whole value of a live trim is not having to
+                      go and find it. */}
+                  <JobOverridePanel status={machine} machine={machineKind(document)} />
                   <div className="flex gap-2">
                     <button
                       onClick={() =>

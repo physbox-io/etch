@@ -17,6 +17,13 @@ npm run lint     # eslint
 `npm run lint` currently reports ~55 pre-existing errors on a clean tree. Check
 the count before and after your change rather than trying to reach zero.
 
+Every number that decides what happens to material — a feed, a depth of cut, a
+laser power, a peck depth, a tolerance — is registered in **`MACHINING.md`**,
+with what it is, why, and how well it is sourced. Adding a machining constant
+means adding a row there: a magic number that reaches material with no line in
+that table is exactly what it exists to prevent. It is also the honest list of
+what this app has *not* validated against cut material.
+
 ## The one thing to understand first: coordinate spaces
 
 There are three, and confusing them is the source of the worst class of bug here
@@ -115,6 +122,20 @@ is what stops a rotated shape drifting away from its own selection box.
 - `bedBoxOfAll(els)` — union box, shared by the selection overlay and the canvas
   viewBox so the two cannot disagree about where content is.
 
+## Editing geometry
+
+`src/utils/booleanOps.ts` — union / subtract / intersect / exclude, in the
+sidebar when two or more elements are selected. It samples elements through
+`elementContours.ts`, the same bed-space sampler the toolpath planner uses, so a
+combined shape is exactly what would have been cut; the result is a plain `path`
+with the transform baked in, because a union of a rotated rect and an unrotated
+circle has no single rotation to inherit. The first-selected element is the key
+object (as in `centerSelected`), and it is the one `subtract` cuts into.
+
+Two fill rules, and both are load-bearing: even-odd *within* an element, so a
+traced glyph's counter stays a hole, then non-zero *between* elements, or two
+overlapping squares would "union" to a square with a hole in the overlap.
+
 ## Toolpath and G-code
 
 `src/utils/gcodeExporter.ts` is the big one. The pipeline:
@@ -159,6 +180,27 @@ way — a preview that does its own conversion will drift from the file.
   time and the drift starts showing up on fitted joints. The image tracer's
   simplification is the one deliberately outside it — it is a fidelity choice
   about a photograph, and it is a slider under Advanced in the import dialog.
+- **On a router, a cut is two passes and a pocket is rings.** `pocketOffset.ts`
+  clears an area with contour-parallel rings, innermost first, because a zig-zag
+  drives the cutter into the wall at full width twice per line — the engagement
+  swings between a stepover and a full slot, which is chatter and a short tool
+  life. A laser keeps hatch lines: it has no side load, and the scan *is* the
+  picture. A through-cut is roughed wide of the line and finished with one light
+  lap at it (`finishAllowanceFor`), because a loaded cutter deflects and springs
+  back; the finishing lap carries the tabs, since it is the pass that frees the
+  part, and it curves onto the wall along a tangent arc in waste (`planLead`)
+  rather than driving straight at it and leaving a dwell mark. A round hole
+  within a tenth of the cutter's own diameter is **drilled** — pecked as
+  explicit plunges and retracts, because GRBL implements no canned cycles — and
+  only when it is enclosed by another contour, since a lone small circle is a
+  disc to cut out and drilling it would destroy the part. All four are derived,
+  not asked: see `MACHINING.md`.
+- `dedupeOverlaps.ts` cuts a line two shapes share **once**. A doubled laser
+  line burns through thin ply where the rest of the outline does not, and a
+  doubled router pass drops the cutter full depth into a slot that is already
+  air. On by default (`removeOverlaps`), and deliberately blind to fills,
+  shading, tabbed cuts and anything on another layer — in each of those the
+  repetition either is the job or is a decision the planner cannot make.
 - `travelOptimization` (0–3, in the export dialog's advanced options) shortens
   the hops between **etched** paths only. Cuts keep inner-before-outer order
   because an outline releases the part; hatch fills and shaded sweeps keep
@@ -193,6 +235,14 @@ props — **pass them**; it shipped for a long time with nothing passing
 `showZProbe`, so its `= true` default won and laser users were shown a touch
 plate.
 
+`testGrid.ts` builds the grid of squares you cut on a scrap before the job: one
+layer per cell carrying an explicit `speedOverride`/`powerOverride` (laser) or
+`feedOverride`/`rpmOverride` (router), so the sweep goes past what `feeds.ts`
+would have chosen — including the parts of the range it would refuse. It keeps
+the stock and material of the document it was generated from, because a test cut
+for the wrong material tests nothing. Reached from the preset dropdown under
+Generators.
+
 ## Machine control
 
 `src/utils/webSerialManager.ts` is a singleton talking GRBL 1.1 / FluidNC /
@@ -204,6 +254,12 @@ jogging, probing and the pause/resume protocol.
 - The operator's workflow is home → jog → zero XY → (CNC) touch off Z. Homing is
   the step beginners skip; without it machine coordinates are wherever the
   machine happened to be switched on.
+- Feed, rapid and power can be trimmed **while the job runs** (`JobOverridePanel`),
+  via GRBL's real-time override bytes. Those bytes are 0x90 and up, which is why
+  the serial writer sends raw `Uint8Array`s rather than going through a
+  `TextEncoderStream` — UTF-8 turns each of them into two bytes and the
+  controller ignores the pair. The percentages shown come from the controller's
+  own `Ov:` field, never from a tally of what was clicked.
 - A job that pauses for a tool change needs Z re-zeroed against the *new* tool's
   length. `jobMachine` exists so the pause prompt can name what to reach for.
 
@@ -229,6 +285,15 @@ presets, adds elements and reads the document. Dev only.
   loop counts and the runtime. Output is always one compound `path` element, and
   it is simplified with Douglas–Peucker before emission because a marching-
   squares outline is a per-pixel staircase.
+
+  Brightness, contrast, gamma and invert are applied to the greyscale before any
+  of the four modes see it. **Dithering** (Floyd–Steinberg, Jarvis, Stucki,
+  ordered 8×8) is `shade`-only: it turns the picture into black-and-white dots
+  fired at one power, which is the answer for a machine that cannot hold a
+  steady low power — a diode laser marks the same at 8% and 12%, so a
+  photograph's shadows collapse into one flat grey. A dithered picture *is* its
+  dots, so the sweep pitch has to match the pixel size or the sweeps sample the
+  dots at random; the dialog offers the matching pitch when it does not.
 
 ### Shaded images — tone, not shapes
 

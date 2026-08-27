@@ -128,10 +128,12 @@ describe('Thai lotus relief tile', () => {
     expect(relief.zDepth).toBe(TILE_RELIEF_DEPTH_MM);
 
     const cuts = planToolpath(doc, {} as never).segments.filter((s) => s.type === 'cut');
-    // Eight leaves plus the tile itself. A piercing narrower than the cutter
-    // insets to nothing and is dropped, which is how this design fails
-    // silently: the tile comes out solid and looks fine until you hold it up.
-    expect(cuts.length).toBe(9);
+    // Eight leaves plus the tile itself, each roughed and then finished. A
+    // piercing narrower than the cutter insets to nothing and is dropped, which
+    // is how this design fails silently: the tile comes out solid and looks
+    // fine until you hold it up.
+    expect(cuts.filter((s) => !s.finishPass).length).toBe(9);
+    expect(cuts.filter((s) => s.finishPass).length).toBe(9);
     expect(cuts.every((s) => s.isClosed)).toBe(true);
     for (const s of cuts) {
       expect(s.depths[s.depths.length - 1]).toBeLessThanOrEqual(-doc.stockThickness);

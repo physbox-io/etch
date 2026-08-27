@@ -107,11 +107,49 @@ const INITIAL_STATUS: MachineStatus = {
   wz: 0,
   feedRate: 0,
   spindlePower: 0,
+  feedOverride: 100,
+  rapidOverride: 100,
+  spindleOverride: 100,
   guideSpot: false,
   jobRunning: false,
   jobPaused: false,
   currentLine: 0,
   totalLines: 0,
+};
+
+/** How far one press moves an override, as a percentage. */
+export type OverrideStep = 10 | 1 | -1 | -10;
+
+/**
+ * GRBL 1.1's real-time override commands, as byte values.
+ *
+ * Written as numbers because they are bytes and not characters: every one of
+ * them is above 0x7F, so a string carrying them through a text encoder arrives
+ * at the controller as two UTF-8 bytes and is ignored. Kept out of the class so
+ * a test can check them against the GRBL documentation, where a transposed
+ * value is not a bug that shows up as nothing happening — 0x9B is the spindle
+ * where 0x92 is the feed.
+ */
+export const FEED_OVERRIDE_BYTES: Record<OverrideStep | 'reset', number> = {
+  reset: 0x90,
+  10: 0x91,
+  [-10]: 0x92,
+  1: 0x93,
+  [-1]: 0x94,
+};
+
+export const RAPID_OVERRIDE_BYTES: Record<100 | 50 | 25, number> = {
+  100: 0x95,
+  50: 0x96,
+  25: 0x97,
+};
+
+export const SPINDLE_OVERRIDE_BYTES: Record<OverrideStep | 'reset', number> = {
+  reset: 0x99,
+  10: 0x9a,
+  [-10]: 0x9b,
+  1: 0x9c,
+  [-1]: 0x9d,
 };
 
 /**
@@ -154,7 +192,18 @@ export function classifyJobLine(line: string): 'tool-change' | 'stop' | 'motion'
 class WebSerialManager {
   private port: any = null;
   private reader: ReadableStreamDefaultReader<string> | null = null;
-  private writer: WritableStreamDefaultWriter<string> | null = null;
+  /**
+   * Raw bytes, not text.
+   *
+   * This used to be the writer of a TextEncoderStream, which was fine while
+   * everything sent was ASCII. GRBL's override commands are single bytes from
+   * 0x90 up, and UTF-8 encodes those as *two* bytes — so a feed-override nudge
+   * arrived at the controller as 0xC2 0x90 and did nothing at all. Commands are
+   * encoded here instead, where the difference between a character and a byte
+   * is visible.
+   */
+  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private readonly encoder = new TextEncoder();
   private statusListeners: Set<StatusListener> = new Set();
   private isReading = false;
   private statusPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -277,11 +326,7 @@ class WebSerialManager {
       });
       this.reader = textDecoder.readable.getReader();
 
-      const textEncoder = new TextEncoderStream();
-      textEncoder.readable.pipeTo(this.port.writable).catch(() => {
-        /* stream closes on disconnect */
-      });
-      this.writer = textEncoder.writable.getWriter();
+      this.writer = this.port.writable.getWriter();
 
       this.isReading = true;
       this.startReading();
@@ -369,17 +414,24 @@ class WebSerialManager {
     }
     const data = cmd.endsWith('\n') ? cmd : `${cmd}\n`;
     try {
-      await this.writer.write(data);
+      await this.writer.write(this.encoder.encode(data));
     } catch (err: any) {
       this.update({ lastError: err?.message || 'Serial write failed.' });
     }
   }
 
-  /** Writes a real-time byte, which GRBL acts on immediately and does not `ok`. */
-  private async writeRealtime(byte: string) {
+  /**
+   * Writes a real-time byte, which GRBL acts on immediately and does not `ok`.
+   *
+   * Takes a code rather than a character so the high commands (0x90 and up) are
+   * expressible: they are bytes, not text, and there is no string that survives
+   * an encoder on the way to them.
+   */
+  private async writeRealtime(byte: string | number) {
     if (!this.writer || !this.status.connected) return;
+    const code = typeof byte === 'number' ? byte : byte.charCodeAt(0);
     try {
-      await this.writer.write(byte);
+      await this.writer.write(new Uint8Array([code]));
     } catch {
       /* the read loop reports the disconnect */
     }
@@ -977,6 +1029,57 @@ class WebSerialManager {
   }
 
   /**
+   * Live feed and power trim, while the job runs.
+   *
+   * The thing this replaces is aborting a job because it is cutting a little
+   * too fast, changing a number, and starting the whole thing again — on a
+   * piece of material that has already been cut into and can no longer be
+   * re-registered. GRBL applies these to the motion it is already executing,
+   * so a job that is scorching can be backed off in the second it takes to
+   * notice.
+   *
+   * These are steps, not a slider, because that is what the protocol is: GRBL
+   * has no "set the feed to 87%" command, only nudges and a reset. A slider
+   * would have to walk there in ten-percent hops and would lie about where it
+   * had got to on the way.
+   *
+   * They are also real-time bytes, which means they are acted on immediately
+   * and are not queued behind the thousands of lines already sent — the whole
+   * point, since the buffered lines are exactly what needs slowing down.
+   */
+  public async nudgeFeedOverride(step: OverrideStep) {
+    await this.writeRealtime(FEED_OVERRIDE_BYTES[step]);
+  }
+
+  /** Back to the feed the program asked for. */
+  public async resetFeedOverride() {
+    await this.writeRealtime(FEED_OVERRIDE_BYTES.reset);
+  }
+
+  /**
+   * Laser power or spindle speed trim. Same contract as the feed.
+   *
+   * On a laser this is the one that matters: too dark is a scorched edge and
+   * too light is a cut that does not go through, and both are visible within a
+   * few centimetres of the start.
+   */
+  public async nudgeSpindleOverride(step: OverrideStep) {
+    await this.writeRealtime(SPINDLE_OVERRIDE_BYTES[step]);
+  }
+
+  public async resetSpindleOverride() {
+    await this.writeRealtime(SPINDLE_OVERRIDE_BYTES.reset);
+  }
+
+  /**
+   * Rapid traverse trim: full, half or quarter speed, and nothing between —
+   * those are the only three GRBL implements.
+   */
+  public async setRapidOverride(percent: 100 | 50 | 25) {
+    await this.writeRealtime(RAPID_OVERRIDE_BYTES[percent]);
+  }
+
+  /**
    * Stops the job now. This is the button someone reaches for when a cut is
    * going wrong, so it kills output first and tidies state after.
    */
@@ -1506,6 +1609,14 @@ class WebSerialManager {
         this.status.spindlePower = nums[1] || 0;
       } else if (key === 'F' && nums && nums.length >= 1) {
         this.status.feedRate = nums[0] || 0;
+      } else if (key === 'Ov' && nums && nums.length >= 3) {
+        // Reported only when it changes, and once every ~20 reports otherwise,
+        // so these are held rather than cleared when the field is absent —
+        // blanking them each poll would make the readout flicker back to 100%
+        // while the machine was in fact still trimmed.
+        this.status.feedOverride = nums[0] || 100;
+        this.status.rapidOverride = nums[1] || 100;
+        this.status.spindleOverride = nums[2] || 100;
       }
     }
 

@@ -119,10 +119,23 @@ describe('engrave fill efficiency', () => {
       'cnc'
     );
 
-  it('produces many hatch scanlines to begin with', () => {
+  it('clears the area as many passes, each linkable to the next', () => {
+    // On a router this is contour-parallel: rings following the wall, innermost
+    // first, rather than a zig-zag that drives the cutter into the wall at full
+    // width twice per line. Either way it is many passes over one area, and
+    // every one of them must be reachable from the last without lifting — which
+    // is what the retract test below is really about.
     const { segments } = planToolpath(filledText());
-    expect(segments.length).toBeGreaterThan(15);
+    expect(segments.length).toBeGreaterThan(5);
     expect(segments.every((s) => s.linkTolerance > 0)).toBe(true);
+    expect(segments.every((s) => s.isClosed)).toBe(true);
+  });
+
+  it('still hatches on a laser, which has no side load to keep steady', () => {
+    const doc = { ...filledText(), machine: 'laser' as const };
+    const { segments } = planToolpath(doc, { laserMode: true });
+    expect(segments.length).toBeGreaterThan(15);
+    expect(segments.every((s) => !s.isClosed)).toBe(true);
   });
 
   /**

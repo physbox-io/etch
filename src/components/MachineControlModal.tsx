@@ -8,6 +8,7 @@ import type { MachineStatus } from '../types/etch';
 import { X, Cpu, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
 import { MachineWorkOriginPanel } from './MachineWorkOriginPanel';
+import { JobOverridePanel } from './JobOverridePanel';
 
 /** Bounds of everything visible, in bed mm — what framing traces and probing covers. */
 function useJobBounds() {
@@ -188,6 +189,12 @@ export const MachineControlModal: React.FC = () => {
                 <span>E-STOP</span>
               </button>
             </div>
+
+            {/* Only while something is running: the overrides mean nothing to
+                an idle machine, and GRBL clears them on reset anyway. */}
+            {status.jobRunning && (
+              <JobOverridePanel status={status} machine={isLaser ? 'laser' : 'cnc'} />
+            )}
 
             {/* Probing covers the job, not the whole bed: measuring a grid over
                 300×200 mm to cut a 40 mm badge is minutes of the tool going up

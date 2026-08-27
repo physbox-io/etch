@@ -263,6 +263,53 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
     </div>
   ),
 
+  combine: (
+    <div className="flex flex-col gap-4">
+      <H>➕ Combining Shapes</H>
+      <P>
+        Select two or more shapes and the inspector offers <strong>Union</strong>,{' '}
+        <strong>Subtract</strong>, <strong>Intersect</strong> and <strong>Exclude</strong>. They
+        turn the selection into one path — which is how you draw a plate with a slot in it, or a
+        bracket with a rounded corner bitten out, without leaving for another program and coming
+        back through SVG import.
+      </P>
+      <Card>
+        <Step title="The first shape you clicked is the one that matters">
+          Order decides what happens, in the same way it does for the centre buttons: the{' '}
+          <em>first-selected</em> shape is the base, and everything selected after it acts on that
+          base. Subtract cuts the later shapes out of the first one — pick them the other way round
+          and you keep the offcut and lose the part. The inspector names the base in each button's
+          tooltip, so hover before clicking if you are unsure.
+        </Step>
+        <Step title="The inputs are used up">
+          A combine consumes the shapes it combined, rather than hiding them underneath. That is
+          deliberate: two shapes left stacked under their own union would have every shared edge
+          cut twice. One undo brings them all back.
+        </Step>
+        <Step title="Only closed outlines can take part">
+          A line or an unclosed pen path has no inside, so there is nothing to union or subtract.
+          Those shapes are left exactly where they were and named in a note under the buttons,
+          rather than being swallowed by an operation that could not use them.
+        </Step>
+        <Step title="Rotation and scale are baked in">
+          The result is a plain path in the position you saw on screen, carrying no rotation or
+          scale of its own — a union of a rotated rectangle and an unrotated circle has no single
+          angle to inherit. Resize and rotate still work on it afterwards; it simply starts from
+          square.
+        </Step>
+        <Step title="Holes survive">
+          A shape that already has holes in it — a traced logo, imported artwork, vectorized text —
+          keeps them. Unioning a ring to something else does not fill the ring.
+        </Step>
+      </Card>
+      <P>
+        If an operation would leave nothing at all — intersecting two shapes that do not overlap,
+        or subtracting something that covers the base completely — nothing happens and the note
+        says why. An empty path is indistinguishable from the tool having deleted your drawing.
+      </P>
+    </div>
+  ),
+
   fill: (
     <div className="flex flex-col gap-4">
       <H>🪡 Engrave Fill &amp; Hatch</H>
@@ -313,6 +360,67 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
     </div>
   ),
 
+  images: (
+    <div className="flex flex-col gap-4">
+      <H>🖼️ Photos &amp; Dithering</H>
+      <P>
+        The image dialog turns a photograph or a logo into something machinable in one of four
+        ways. Three of them decide, at import, that each pixel is either cut or not; the fourth
+        keeps the greys and lets darkness reach the machine as something that varies along the
+        move.
+      </P>
+      <Card>
+        <Step title="Trace, halftone, scanline">
+          <strong>Trace</strong> follows the outline between dark and light and gives you real
+          vector paths — the right choice for a logo or a silhouette.{' '}
+          <strong>Halftone</strong> and <strong>scanline</strong> approximate tone with dots or
+          lines of varying size at a spacing you choose. All three are governed by the threshold
+          slider: it is the line between "dark" and "light", and if the preview comes out empty it
+          is nearly always the setting to move first.
+        </Step>
+        <Step title="Photo Tone (or Carved Relief)">
+          The fourth mode does not trace anything. The pixels go into the document as an image, and
+          the exporter sweeps across them line by line, varying laser power — or, on a router,
+          cutter depth — with how dark the picture is at each point. Because the greys are kept
+          rather than baked into a toolpath, the size, sweep pitch, angle and depth all stay
+          editable afterwards.
+        </Step>
+      </Card>
+      <Card>
+        <Step title="Brightness, contrast and gamma">
+          Brightness and contrast are straight-line adjustments, which is their limitation: pulling
+          back a sky that is coming out scorched also flattens the shadows that were already right.{' '}
+          <strong>Gamma</strong> bends the middle greys without moving black or white — above 1
+          lightens them, which is the usual fix for a photograph engraving too dark, and below 1
+          deepens them. Most of what a laser visibly does to wood happens in a narrow part of the
+          power range, and gamma is the control that maps a photograph onto it.
+        </Step>
+        <Step title="Dithering — for machines that cannot hold a low power">
+          A diode laser at 8% and at 12% often marks the same, so a photograph's shadow detail
+          collapses into one flat grey however carefully it was adjusted. Dithering sidesteps the
+          problem entirely: the picture becomes pure black-and-white dots fired at a single power,
+          and tone comes from how many dots land — the way a newspaper prints a photograph.
+          Floyd–Steinberg is the sharpest and the noisiest, Stucki the smoothest, Jarvis between
+          them; Ordered 8×8 gives a visible regular pattern that some materials take better than
+          scattered dots. It applies to Photo Tone only.
+        </Step>
+        <Step title="Match the line pitch to the dots">
+          A dithered picture <em>is</em> its dots, so sweeping at a coarser pitch than the dots are
+          wide samples them almost at random — the result is noisy rather than merely coarse. The
+          dialog notices when the pitch is too coarse and offers the matching figure as a button.
+          Take it, and remember that a fine pitch is proportionally more sweeps and proportionally
+          more time.
+        </Step>
+      </Card>
+      <Warn title="⚠️ A photo on the wrong layer does nothing">
+        An image on a cut or etch layer is skipped by the planner with a note. &ldquo;Cut this photo
+        out&rdquo; and &ldquo;engrave it as tone&rdquo; are different jobs, and only one of them is
+        ever meant — so the dialog will only aim a Photo Tone import at a Shade layer, making one
+        if the document has none.
+      </Warn>
+    </div>
+  ),
+
   toolpaths: (
     <div className="flex flex-col gap-4">
       <H>🛠️ Toolpaths &amp; G-Code</H>
@@ -341,6 +449,35 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           cut so the part is not loose under a spinning bit on the last pass. Snap or pare them off
           afterwards. Both are per-layer settings if you want them off.
         </Step>
+        <Step title="Pockets are cleared in rings, not scanned">
+          On a router an engraved area is cleared with rings that follow its
+          walls, innermost first, so the last pass is the one against the wall and
+          the cutter never goes from a stepover to a full-width slot and back
+          twice per line — which is the chatter, the marked walls and the short
+          cutter life a zig-zag gives. A laser still scans: it has no side load,
+          and the scan is the engraving.
+        </Step>
+        <Step title="A through-cut is roughed, then finished">
+          A cutter in a deep cut deflects away from the wall under load and
+          springs back where the load eases, so one pass leaves a wall that is
+          neither straight nor square. Etch roughs a fraction of a millimetre wide
+          of the line and comes back with one light lap at it. That lap carries
+          the holding tabs, because it is the pass that frees the part, and it
+          curves onto the wall along an arc in waste material rather than driving
+          straight at it — feeding straight at the line leaves a dwell mark you
+          can see on a finished edge and measure on a fitted one. None of it is
+          asked for: it applies where the depth makes it worth having, and is
+          skipped where it is not. The switches are in the Run panel's advanced
+          options.
+        </Step>
+        <Step title="Holes the size of the cutter are drilled">
+          A hole cannot be milled round with a cutter the same size as itself, so
+          one within a tenth of the cutter's diameter is plunged instead, pecking
+          in stages so the chips clear. It comes out at the cutter's diameter, and
+          the plan says so. A small circle that is <em>not</em> inside anything is
+          a disc to be cut out, and the cutter goes round the outside of it as it
+          always did.
+        </Step>
         <Step title="What runs first">
           Order is by operation, not by where a layer sits in the list: shading and fills, then
           etching, then cuts. A through-cut releases the part from the stock, so anything engraved after it is
@@ -356,6 +493,16 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           Photo Tone (or Carved Relief) mode in the image dialog; the pixels stay in the document,
           so size, sweep pitch and depth are all still adjustable afterwards. On a router, a relief
           wants a ball nose — a flat cutter leaves each sweep as a terrace.
+        </Step>
+        <Step title="Shapes that touch, cut once">
+          Two shapes drawn edge to edge share a line, and the planner would otherwise drive it
+          twice: on a laser the doubled line comes out darker and burns through thin ply where the
+          rest of the outline does not, and on a router the second pass sends the cutter full depth
+          down a slot that is already air. Shared edges are cut once by default, and the plan notes
+          how much doubled line it removed. Fills, shading, tabbed cuts and lines shared between
+          two different layers are left alone — there the repetition is either the job itself or a
+          choice the planner is in no position to make. There is a switch in the Run panel's
+          advanced options if a doubled line was genuinely intended.
         </Step>
         <Step title="Reading the preview">
           The Run panel draws the real toolpath: cutting moves in their layer colours, rapids as
@@ -406,6 +553,16 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           tool there and hit <strong>Resume Job</strong> in the same panel. The work origin panel
           will tell you if you have not re-zeroed since the job stopped.
         </Step>
+        <Step title="Trimming feed and power while it runs">
+          The <strong>Live Trim</strong> controls beside the progress bar nudge feed rate, laser
+          power (or spindle speed) and rapid speed on the machine as it cuts, in 1% and 10% steps
+          with a button to go back to what the program asked for. This is what to reach for when a
+          cut is scorching or running slightly too fast — the alternative is stopping the job and
+          starting again on material that has already been cut into and can no longer be lined up.
+          The percentages shown are read back from the controller, not from what was clicked, so
+          they stay right if the machine is reset or trimmed from a pendant. They are steps rather
+          than a slider because that is exactly what the controller understands.
+        </Step>
         <Step title="When something goes wrong">
           If the controller refuses a line, the job stops rather than streaming the rest of the
           program into a machine that has lost the plot. Stop and E-STOP both reset the controller
@@ -417,6 +574,59 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         diameter, clamps, or whether the material is where you think it is. Frame the job on the
         machine before committing to it.
       </Warn>
+    </div>
+  ),
+
+  testgrid: (
+    <div className="flex flex-col gap-4">
+      <H>🧪 Material Test Grid</H>
+      <P>
+        A grid of squares, each cut at different settings, on a scrap of the material you are about
+        to use for real. Pick it from the preset dropdown under <strong>Generators</strong>. It is
+        the first thing to run on an unfamiliar sheet, and the honest answer to every question that
+        starts &ldquo;what power should I use for…&rdquo;.
+      </P>
+      <P>
+        Etch derives feeds and power from the material, the thickness and the machine, and that is
+        usually right. What it cannot know is this particular tube after two hundred hours, how
+        blunt this cutter has got, or what an unlabelled sheet off a market stall actually is. The
+        grid answers all three by measurement instead of estimate.
+      </P>
+      <Card>
+        <Step title="What the axes are">
+          On a laser, speed across and power down. On a router, feed rate across and spindle RPM
+          down. You give the two ends of each range and how many steps; the grid fills in evenly and
+          labels every row and column.
+        </Step>
+        <Step title="Filled or outline">
+          <strong>Filled</strong> squares are engraved solid, so the grid reads as a row of shades
+          (or depths) and you pick the one you wanted. <strong>Outline</strong> squares test whether
+          a setting cuts through — for that one, lift the material clear of the bed first, or every
+          square that does cut through cuts into whatever is underneath.
+        </Step>
+        <Step title="Each square really is cut at its label">
+          Every cell gets its own layer holding an explicit speed and power, overriding the derived
+          figures — including parts of the range the feeds model would have refused, which is the
+          whole point of a sweep. The labels are engraved on a separate layer at settings certain to
+          mark, because a label cut at the cell's own settings would be unreadable in exactly the
+          cells worth reading.
+        </Step>
+        <Step title="It replaces what is on the canvas">
+          The grid is a job of its own, not an addition to yours — save the open document first if
+          you want it back. It keeps that document's stock size, material and thickness, since a
+          test cut for the wrong material tests nothing you can use.
+        </Step>
+        <Step title="Check it fits">
+          The dialog shows the size the grid needs against the stock you have, and warns before
+          generating if it will not fit. Anything hanging over the edge is trimmed out of the
+          toolpath, so those cells would come back blank.
+        </Step>
+      </Card>
+      <P>
+        Read the result with a ruler and good light, then set the layer speed and power on the real
+        job to match the cell you liked. Keep the offcut — a labelled test grid taped to the sheet
+        it came from is worth more than any table of numbers.
+      </P>
     </div>
   ),
 

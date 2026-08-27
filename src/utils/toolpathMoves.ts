@@ -14,6 +14,28 @@ import type { GCodeSegment } from './gcodeExporter';
  * longer something either of them can do.
  */
 
+/**
+ * Acceleration the planner assumes, mm/s².
+ *
+ * Not a setting anyone has typed — it is the shape of a small belt-driven hobby
+ * machine. Two things depend on it and must not disagree: the job time estimate
+ * in `toolpathTimeline.ts`, and the length of an overscan run-up, which is
+ * precisely the distance needed to reach cutting feed under this figure. A
+ * lead-in sized against one acceleration and timed against another would
+ * describe a job that never happens.
+ */
+export const ASSUMED_ACCEL_MM_S2 = 500;
+
+/**
+ * Where a peck retracts to between bites, in mm above the work.
+ *
+ * Clear of the hole rather than just clear of the cut: the point of the retract
+ * is to let the chips out of the flutes, and a lift that leaves the cutter
+ * inside the hole carries them straight back down on the next peck. Deep holes
+ * in ply are where that ends in a snapped cutter or a scorched hole.
+ */
+const PECK_CLEARANCE_MM = 2;
+
 export type MoveKind =
   /** Rapid at clearance height, tool disengaged. */
   | 'travel'
@@ -53,6 +75,20 @@ export interface PlannedMove {
    */
   along0: number;
   along1: number;
+  /**
+   * An overscan run-up or run-out: the head is moving at cutting feed with the
+   * beam dark, outside the shape.
+   *
+   * It is a `cut` move rather than a `travel` one on purpose. Travel is emitted
+   * as G0 with the beam switched off by `M5`, and toggling the spindle state
+   * between every scanline of a fill makes GRBL sync its planner — the machine
+   * stops dead at the end of each line, which is worse than the artefact this
+   * was meant to remove. Staying in G1 and riding `S0` on the motion line
+   * changes nothing but the power, and GRBL's laser mode applies that without
+   * stopping. The flag is here so the preview can draw it as the travel it
+   * visually is, and so nothing mistakes it for engraving.
+   */
+  dark?: boolean;
 }
 
 export interface PlannedToolChange {
@@ -67,6 +103,17 @@ export interface PlanMoveOptions {
   laserMode: boolean;
   travelSpeed: number;
   safeZ: number;
+  /**
+   * Run the head up to speed outside the shape before lighting the beam, and
+   * carry it out past the far end before dimming it. Laser fills only, and
+   * undefined means on — see `overscanFor`.
+   */
+  overscan?: boolean;
+  /**
+   * The stock, so a run-up can be kept on the material rather than sent past
+   * the edge of the bed and into a limit switch.
+   */
+  stock?: { width: number; height: number };
   /** Segment indices at which the program stops to be re-tooled. */
   toolChanges: Map<number, { tool: number; from: number | null }>;
   /**
@@ -148,6 +195,21 @@ function planPassVisits(segments: GCodeSegment[], opts: PlanMoveOptions): PassVi
     // A tool change opens a new group: everything before it belongs to the bit
     // that is about to come out.
     if (group.length > 0 && opts.toolChanges.has(sIdx)) flush();
+    /*
+     * So does the first finishing lap.
+     *
+     * Levels are interleaved so that nothing is cut free while the tool is
+     * still working beside it — but a finishing lap is not another level of the
+     * same cut, it is the pass that trues the wall, and it has to come after
+     * *all* the roughing. Left in the same group it would be taken at level one
+     * and then roughed alongside at level two: the wall finished first, then
+     * the cutter loaded up against it, which is the deflection the finishing
+     * pass exists to remove. It also frees the part, and freeing it while there
+     * is roughing left to do is the thing level interleaving is for.
+     */
+    if (group.length > 0 && segments[sIdx].finishPass && !segments[group[group.length - 1]].finishPass) {
+      flush();
+    }
     group.push(sIdx);
   }
   flush();
@@ -341,6 +403,105 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       }
       toolChanges.push({ ...change, segIndex: sIdx, moveIndex: moves.length });
       repositionNeeded = true;
+    }
+
+    /**
+     * A hole made by plunging.
+     *
+     * Ahead of everything below because a hole has no path: there is nothing to
+     * ramp along, nothing to offset, nothing to tab, and its "contour" is one
+     * point written twice so the rest of the pipeline has a polyline to work
+     * with.
+     *
+     * The peck is emitted as the moves it is made of rather than as a canned
+     * cycle. GRBL 1.1 implements none — `G81` and `G83` are errors on it — and
+     * a cycle the controller expands by itself is one the preview cannot draw
+     * and the estimate cannot time. The retract between pecks is what lifts the
+     * chips out of the flutes; without it a deep hole in ply packs solid and
+     * the cutter snaps or burns.
+     */
+    if (seg.drill) {
+      /*
+       * Drilled whole, on the first visit, however the passes are ordered.
+       *
+       * Everything else is visited once per depth level so that no path is cut
+       * free while the tool is still working beside it. A hole has no such
+       * ordering to respect — nothing is released by drilling it — and taking
+       * one peck, going away, and coming back for the next would leave the
+       * chips to be re-cut and the point to be re-found each time.
+       */
+      if (passList[0] !== 0) continue;
+      const centre = seg.points[0];
+      if (!opts.laserMode && centre) {
+        if (engaged !== null || parkedZ < opts.safeZ) {
+          moves.push({
+            ...base,
+            pass: 1,
+            kind: 'retract',
+            x1: cx, y1: cy, z1: engaged ?? parkedZ,
+            x2: cx, y2: cy, z2: opts.safeZ,
+            feed: opts.travelSpeed,
+            beamOn: false,
+            along0: 0, along1: 0,
+          });
+          // `engaged` is not cleared here: nothing between this point and the
+          // end of the branch reads it, and the branch resets both it and the
+          // parked height once it is done drilling.
+          parkedZ = opts.safeZ;
+        }
+        if (Math.hypot(cx - centre.x, cy - centre.y) > 1e-9 || !started) {
+          moves.push({
+            ...base,
+            pass: 1,
+            kind: 'travel',
+            x1: cx, y1: cy, z1: parkedZ,
+            x2: centre.x, y2: centre.y, z2: parkedZ,
+            feed: opts.travelSpeed,
+            beamOn: false,
+            along0: 0, along1: 0,
+          });
+          cx = centre.x;
+          cy = centre.y;
+        }
+
+        /*
+         * One peck per depth level, using the same depths the layer would have
+         * been milled in. Those already account for the tool and the material,
+         * so a hole in 18 mm oak pecks as many times as a cut in it passes.
+         */
+        seg.depths.forEach((z, i) => {
+          moves.push({
+            ...base,
+            pass: i + 1,
+            passes: seg.depths.length,
+            kind: 'plunge',
+            x1: cx, y1: cy, z1: i === 0 ? parkedZ : PECK_CLEARANCE_MM,
+            x2: cx, y2: cy, z2: z,
+            feed: seg.plungeRate,
+            beamOn: false,
+            along0: 0, along1: 0,
+          });
+          // Out of the hole between pecks, and clear of the work after the
+          // last one. Retracting only to the top of the hole would carry the
+          // chips back down with the next peck.
+          moves.push({
+            ...base,
+            pass: i + 1,
+            passes: seg.depths.length,
+            kind: 'retract',
+            x1: cx, y1: cy, z1: z,
+            x2: cx, y2: cy, z2: i === seg.depths.length - 1 ? opts.safeZ : PECK_CLEARANCE_MM,
+            feed: opts.travelSpeed,
+            beamOn: false,
+            along0: 0, along1: 0,
+          });
+        });
+
+        engaged = null;
+        parkedZ = opts.safeZ;
+        started = true;
+      }
+      continue;
     }
 
     /**
@@ -548,14 +709,29 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       const z = opts.laserMode ? 0 : seg.depths[passIdx];
       const common = { ...base, pass, beamOn: opts.laserMode };
 
+      /*
+       * With a run-up, the head is sent to a point short of the line and
+       * arrives at the line already at feed. `approach` is therefore where the
+       * positioning below aims; `first` stays the point the beam lights at.
+       */
+      const over = overscanFor(seg, opts);
       const first = seg.points[0];
+      /*
+       * A tangential lead means the tool starts in waste, a lead radius off the
+       * contour, and curves on. The two are mutually exclusive by machine —
+       * overscan is a laser's and leads are a router's — but both answer the
+       * same question, which is where the tool has to be before the cut proper
+       * begins.
+       */
+      const lead = !opts.laserMode && seg.leadIn && seg.leadIn.length > 1 ? seg.leadIn : null;
+      const approach = over ? over.lead : lead ? lead[0] : first;
       /**
        * Distance to this segment's start. Infinite before the first move of the
        * job: wherever the head is sitting when the program is loaded is not
        * something the planner knows, so the first thing any program does is
        * rapid to a known point.
        */
-      const gap = started ? Math.hypot(cx - first.x, cy - first.y) : Infinity;
+      const gap = started ? Math.hypot(cx - approach.x, cy - approach.y) : Infinity;
 
       /**
        * A hop the tool can make without leaving the work: the next scanline of
@@ -572,7 +748,15 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
        * the previous group happened to finish.
        */
       const linksFrom = started && sameSpot(seg.linkFrom, { x: cx, y: cy });
+      /*
+       * A run-up replaces the link, and must: the link is a *lit* hop from the
+       * end of one scanline to the start of the next, which is harmless while
+       * it stays inside the region being engraved and is exactly what an
+       * overscanned turn no longer does — it now happens out beyond the edge,
+       * where a lit move would burn a fringe around the whole fill.
+       */
       const isLink =
+        !over &&
         prev !== null &&
         !repositionNeeded &&
         pass === 1 &&
@@ -600,7 +784,41 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         cx = first.x;
         cy = first.y;
       } else {
-        if (gap > 0.01 || repositionNeeded) {
+        /**
+         * The turn from one overscanned scanline to the next, taken dark.
+         *
+         * It has to be a `cut` move at zero power rather than a rapid. A rapid
+         * carries `beamOn: false`, which the emitter writes as `M5` — and GRBL
+         * syncs its planner on a spindle state change, so the machine would
+         * come to a dead stop at the end of every line of every fill. That is a
+         * far worse job than the burnt border overscan was added to remove.
+         * Staying in G1 and riding `S0` changes the power and nothing else,
+         * which laser mode applies without stopping.
+         */
+        const darkHop =
+          over !== null &&
+          opts.laserMode &&
+          prev !== null &&
+          !repositionNeeded &&
+          seg.layerId === prev.layerId &&
+          seg.fillGroup >= 0 &&
+          seg.fillGroup === prev.fillGroup;
+
+        if (darkHop && gap > 1e-9) {
+          moves.push({
+            ...common,
+            kind: 'cut',
+            x1: cx, y1: cy, z1: 0,
+            x2: approach.x, y2: approach.y, z2: 0,
+            // The beam is dark, so there is no reason to cross at cutting feed.
+            feed: opts.travelSpeed,
+            power: 0,
+            dark: true,
+            along0: 0, along1: 0,
+          });
+          cx = approach.x;
+          cy = approach.y;
+        } else if (gap > 0.01 || repositionNeeded) {
           /**
            * How high this hop has to go.
            *
@@ -654,20 +872,20 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
           // because the first segment of a job reports an infinite gap so that
           // the program always begins by going to a known point, and that point
           // is often exactly where the machine is parked.
-          if (Math.hypot(cx - first.x, cy - first.y) > 1e-9) {
+          if (Math.hypot(cx - approach.x, cy - approach.y) > 1e-9) {
             const travelZ = opts.laserMode ? clearanceZ : parkedZ;
             moves.push({
               ...common,
               kind: 'travel',
               x1: cx, y1: cy, z1: travelZ,
-              x2: first.x, y2: first.y, z2: travelZ,
+              x2: approach.x, y2: approach.y, z2: travelZ,
               feed: opts.travelSpeed,
               beamOn: false,
               along0: 0, along1: 0,
             });
           }
-          cx = first.x;
-          cy = first.y;
+          cx = approach.x;
+          cy = approach.y;
           repositionNeeded = false;
         }
       }
@@ -683,7 +901,54 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
        */
       let startAlong = 0;
 
-      if (!opts.laserMode && !isLink && Math.abs(z - (engaged ?? 0)) > 1e-6) {
+      if (lead && !opts.laserMode) {
+        /*
+         * Down through air, then round onto the wall.
+         *
+         * This descent is a rapid, and it does not break the rule that a cutter
+         * is never driven straight down into material — because there is no
+         * material here. A lead is only ever planned on a finishing lap, which
+         * by definition follows a roughing pass that ran a whole tool-width
+         * wide of this line: the arc sits inside the slot roughing already cut,
+         * to full depth, and the tool is descending into an existing pocket.
+         *
+         * The ordinary entry ramps along the contour instead, which is safe but
+         * does it *on the part* — the first stretch of wall ends up cut at a
+         * rising depth. Coming down out here means arriving at the wall already
+         * at full depth and full feed.
+         */
+        const fromZ = engaged ?? parkedZ;
+        if (Math.abs(fromZ - z) > 1e-6) {
+          moves.push({
+            ...common,
+            kind: 'travel',
+            x1: cx, y1: cy, z1: fromZ,
+            x2: cx, y2: cy, z2: z,
+            feed: opts.travelSpeed,
+            beamOn: false,
+            along0: 0, along1: 0,
+          });
+        }
+        engaged = z;
+
+        let lx = cx;
+        let ly = cy;
+        for (const p of lead.slice(1)) {
+          if (Math.hypot(p.x - lx, p.y - ly) < 1e-9) continue;
+          moves.push({
+            ...common,
+            kind: 'cut',
+            x1: lx, y1: ly, z1: z,
+            x2: p.x, y2: p.y, z2: z,
+            feed: seg.speed,
+            along0: 0, along1: 0,
+          });
+          lx = p.x;
+          ly = p.y;
+        }
+        cx = lx;
+        cy = ly;
+      } else if (!opts.laserMode && !isLink && Math.abs(z - (engaged ?? 0)) > 1e-6) {
         let from = engaged ?? 0;
 
         if (engaged === null) {
@@ -790,6 +1055,24 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         seg.isClosed ? geom.length : Math.max(0, geom.length - startAlong)
       );
 
+      if (over && (cx !== first.x || cy !== first.y)) {
+        // At cutting feed with S0. By the time the beam lights at `first` the
+        // head is up to speed, so the first millimetres of the line get the
+        // same energy per millimetre as the rest of it.
+        moves.push({
+          ...common,
+          kind: 'cut',
+          x1: cx, y1: cy, z1: 0,
+          x2: first.x, y2: first.y, z2: 0,
+          feed: seg.speed,
+          power: 0,
+          dark: true,
+          along0: 0, along1: 0,
+        });
+        cx = first.x;
+        cy = first.y;
+      }
+
       let px = cx;
       let py = cy;
       let pz: number = opts.laserMode ? 0 : z;
@@ -817,6 +1100,47 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
 
       cx = px;
       cy = py;
+
+      if (seg.leadOut && seg.leadOut.length > 1 && !opts.laserMode && lead) {
+        // Off the wall along a tangent, for the same reason as on: stopping the
+        // feed dead at the end point marks it exactly as starting there does.
+        let lx = cx;
+        let ly = cy;
+        for (const p of seg.leadOut.slice(1)) {
+          if (Math.hypot(p.x - lx, p.y - ly) < 1e-9) continue;
+          moves.push({
+            ...common,
+            kind: 'cut',
+            x1: lx, y1: ly, z1: pz,
+            x2: p.x, y2: p.y, z2: pz,
+            feed: seg.speed,
+            along0: 0, along1: 0,
+          });
+          lx = p.x;
+          ly = p.y;
+        }
+        cx = lx;
+        cy = ly;
+      }
+
+      if (over && (cx !== over.tail.x || cy !== over.tail.y)) {
+        // Carrying on past the end rather than stopping on it: decelerating
+        // with the beam still lit is the same artefact as accelerating into it,
+        // and it is the end of the line that shows it worst.
+        moves.push({
+          ...common,
+          kind: 'cut',
+          x1: cx, y1: cy, z1: 0,
+          x2: over.tail.x, y2: over.tail.y, z2: 0,
+          feed: seg.speed,
+          power: 0,
+          dark: true,
+          along0: 0, along1: 0,
+        });
+        cx = over.tail.x;
+        cy = over.tail.y;
+      }
+
       if (!opts.laserMode) engaged = pz;
     }
   }
@@ -834,6 +1158,96 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
   }
 
   return { moves, toolChanges, notes: [...new Set(notes)] };
+}
+
+/**
+ * The run-up and run-out for one scanline, or null if it gets none.
+ *
+ * **Laser only, and that is not a simplification.** On a laser the beam is dark
+ * outside the shape, so running past the ends costs a little time and nothing
+ * else. On a router the cutter is *down at depth*: extending the pass past the
+ * boundary would mill a groove through material that is meant to survive, on
+ * every line of every pocket. The same idea inverted — which is exactly why
+ * this is gated on the machine rather than on a preference.
+ *
+ * Only open, unclosed runs qualify: a closed contour ends where it began, so
+ * there is no end to run out of, and firing outside it would cut into the shape
+ * next door.
+ *
+ * The distance is what the head needs to reach cutting feed under the assumed
+ * acceleration — `v²/2a` — which is the whole point. Anything shorter and the
+ * beam still lights during the ramp; anything longer is time spent in the dark.
+ */
+function overscanFor(
+  seg: GCodeSegment,
+  opts: PlanMoveOptions
+): { lead: Pt; tail: Pt } | null {
+  // Undefined means on, matching the exporter's default: the preview plans
+  // through this same function, and a default that differed between them would
+  // animate a job the file does not describe.
+  if (opts.overscan === false || !opts.laserMode) return null;
+  if (seg.isClosed || seg.points.length < 2) return null;
+  /*
+   * Hatch fills only.
+   *
+   * A fill is many short lit runs at constant power (`M3`), and their ends are
+   * exactly where the artefact shows: while the head is accelerating, the same
+   * power is delivered over less distance, so every scanline comes out darker
+   * at both ends and the fill has a burnt border. An etched outline is one
+   * continuous path whose ends are meant to be where they are.
+   *
+   * Shaded images are deliberately excluded. They are emitted under `M4`, where
+   * the controller scales power with actual velocity, so the acceleration is
+   * already compensated at source — adding a run-up would buy nothing and cost
+   * a dark move at the end of every sweep of a photograph.
+   */
+  if (seg.type !== 'fill') return null;
+
+  const mmPerSec = seg.speed / 60;
+  const distance = (mmPerSec * mmPerSec) / (2 * ASSUMED_ACCEL_MM_S2);
+  if (!(distance > 0.01)) return null;
+
+  const pts = seg.points;
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+
+  const back = unit(pts[1], first);
+  const fwd = unit(pts[pts.length - 2], last);
+  if (!back || !fwd) return null;
+
+  return {
+    // `back` already points away from the line — it is measured from the second
+    // point towards the first — so the run-up is that direction *added*.
+    lead: clampToStock({ x: first.x + back.x * distance, y: first.y + back.y * distance }, opts),
+    tail: clampToStock({ x: last.x + fwd.x * distance, y: last.y + fwd.y * distance }, opts),
+  };
+}
+
+/** Unit vector from a to b, or null when the two are the same point. */
+function unit(a: Pt, b: Pt): Pt | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  return len < 1e-9 ? null : { x: dx / len, y: dy / len };
+}
+
+/**
+ * Keeps a run-up on the material.
+ *
+ * A fill that reaches the edge of the stock would otherwise be given a run-up
+ * that starts beyond it, and a job set up at the edge of the bed answers that
+ * with a soft limit alarm — the whole job lost to a refinement. The cost of
+ * clamping is that the very edge of such a fill keeps the darker end this
+ * exists to remove, which is the right way round: a slightly uneven edge beats
+ * a crashed job.
+ */
+function clampToStock(p: Pt, opts: PlanMoveOptions): Pt {
+  const stock = opts.stock;
+  if (!stock) return p;
+  return {
+    x: Math.min(Math.max(p.x, 0), stock.width),
+    y: Math.min(Math.max(p.y, 0), stock.height),
+  };
 }
 
 /**

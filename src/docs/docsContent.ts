@@ -18,14 +18,17 @@ export const DOCS_TABS = [
     items: [
       { id: 'workspace', label: '🖥️ Stock, Layers & Units' },
       { id: 'text', label: '🔤 Text & Vectorizing' },
+      { id: 'combine', label: '➕ Combining Shapes' },
       { id: 'fill', label: '🪡 Engrave Fill & Hatch' },
       { id: 'import', label: '📥 SVG Import' },
+      { id: 'images', label: '🖼️ Photos & Dithering' },
     ],
   },
   {
     group: 'Fabrication',
     items: [
       { id: 'toolpaths', label: '🛠️ Toolpaths & G-Code' },
+      { id: 'testgrid', label: '🧪 Material Test Grid' },
       { id: 'zeroing', label: '🎯 Machine Setup & Zeroing' },
       { id: 'levelling', label: '📐 Bed Levelling' },
     ],

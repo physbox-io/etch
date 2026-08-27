@@ -116,8 +116,14 @@ export const ToolpathPreview: React.FC<{
   const [speed, setSpeed] = useState(1);
 
   const timeline = useMemo(
-    () => precomputed ?? buildTimeline(segments, { travelSpeed, laserMode }),
-    [precomputed, segments, travelSpeed, laserMode]
+    () =>
+      precomputed ??
+      buildTimeline(segments, {
+        travelSpeed,
+        laserMode,
+        stock: { width: doc.width, height: doc.height },
+      }),
+    [precomputed, segments, travelSpeed, laserMode, doc.width, doc.height]
   );
 
   const colourFor = useCallback(
@@ -166,7 +172,18 @@ export const ToolpathPreview: React.FC<{
     return [...byColour.entries()];
   }, [segments, colourFor]);
 
-  const travels = useMemo(() => timeline.moves.filter((m) => m.kind === 'travel'), [timeline]);
+  /*
+   * Rapids, plus the overscan run-ups.
+   *
+   * A run-up is a cutting-feed move with the beam dark, and it is drawn with
+   * the travel because that is what it visually is: the head crossing ground it
+   * does not mark. Left out entirely, the preview would show the head jumping
+   * a gap it actually drives across.
+   */
+  const travels = useMemo(
+    () => timeline.moves.filter((m) => m.kind === 'travel' || m.dark),
+    [timeline]
+  );
 
   const travelPathD = useMemo(() => {
     if (!showTravel || !travels.length) return '';

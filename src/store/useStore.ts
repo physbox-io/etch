@@ -23,6 +23,13 @@ import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type T
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 import { getBedBBox } from '../utils/geom';
+import {
+  BOOLEAN_OP_LABEL,
+  MIN_FEATURE_MM,
+  booleanElements,
+  isBooleanFailure,
+  type BooleanOp,
+} from '../utils/booleanOps';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -106,6 +113,15 @@ function releaseUnusedAnchors(doc: EtchDocument): EtchDocument {
 
 interface EtchStore {
   document: EtchDocument;
+  /**
+   * How many MCP bridge commands are in flight right now.
+   *
+   * A count rather than a boolean because commands overlap: the hub can have
+   * several in flight, and a boolean would be cleared by whichever finished
+   * first while the others were still running. Mesh keeps the same counter for
+   * the same reason.
+   */
+  mcpActiveCount: number;
   activeTool: ToolMode;
   activeLayerId: string;
   selectedIds: string[];
@@ -153,6 +169,8 @@ interface EtchStore {
 
   // Actions
   setDocument: (doc: EtchDocument) => void;
+  incrementMcpActive: () => void;
+  decrementMcpActive: () => void;
   setToolMode: (tool: ToolMode) => void;
   setActiveLayer: (layerId: string) => void;
   setSelectedIds: (ids: string[]) => void;
@@ -170,6 +188,9 @@ interface EtchStore {
   toggleGCodeModal: () => void;
   toggleMachineModal: () => void;
   toggleClipArtModal: () => void;
+  /** The material test grid generator — see `utils/testGrid.ts`. */
+  isTestGridOpen: boolean;
+  toggleTestGridModal: () => void;
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
@@ -235,6 +256,16 @@ interface EtchStore {
   deleteElements: (ids: string[]) => void;
   duplicateSelected: () => void;
   centerSelected: (axis: 'horizontal' | 'vertical') => void;
+  /**
+   * Union / subtract / intersect / exclude the selection into one path.
+   * The first-selected element is the key object; see `booleanOps.ts`.
+   */
+  combineSelected: (op: BooleanOp) => void;
+  /**
+   * Why the last combine did nothing. Cleared by the next selection change, so
+   * it cannot outlive the shapes it is talking about.
+   */
+  combineNotice: string | null;
   nudgeSelected: (dx: number, dy: number) => void;
   clearCanvas: () => void;
 
@@ -242,7 +273,16 @@ interface EtchStore {
   applyRadialSymmetryToSelected: () => void;
 
   // Layer Operations
-  addLayer: (layer: EtchLayer) => void;
+  /**
+   * Appends a layer, minting an id when the caller has not got one.
+   *
+   * The id is made here rather than at the call site because a call site is
+   * usually a render — an `onClick` built while the component renders — and a
+   * clock read there is exactly what React's purity rule objects to. It also
+   * takes the collision-resistant form the element ids use, instead of a bare
+   * millisecond that two layers added in the same tick would share.
+   */
+  addLayer: (layer: Omit<EtchLayer, 'id'> & { id?: string }) => void;
   updateLayer: (layerId: string, updates: Partial<EtchLayer>, transient?: boolean) => void;
   deleteLayer: (layerId: string) => void;
 
@@ -254,12 +294,47 @@ interface EtchStore {
 
 const defaultDoc: EtchDocument = cloneDoc(DEFAULT_PRESET.doc);
 
+/**
+ * What to tell the operator after a combine, or nothing.
+ *
+ * The fragment count is the one worth the words. A subtract between two shapes
+ * that were meant to line up and are a hundredth of a millimetre apart leaves a
+ * hairline or a speck of the original standing, and at any workable zoom it
+ * looks like the tool malfunctioned. Naming it turns a mystery into a
+ * measurement.
+ */
+function combineNoticeFor(result: {
+  skipped: Array<{ name: string }>;
+  slivers: number;
+  fragments: number;
+}): string | null {
+  const parts: string[] = [];
+  if (result.skipped.length) {
+    parts.push(`Left out ${result.skipped.map((s) => s.name).join(', ')} — no closed outline.`);
+  }
+  if (result.fragments > 0) {
+    parts.push(
+      `${result.fragments} leftover piece${result.fragments === 1 ? ' is' : 's are'} under 1 mm ` +
+        `across — the shapes almost, but not quite, lined up. Nudge them together and combine again ` +
+        `if that was not intended.`
+    );
+  }
+  if (result.slivers > 0) {
+    parts.push(
+      `${result.slivers} hairline thinner than ${MIN_FEATURE_MM} mm removed — nothing can cut it.`
+    );
+  }
+  return parts.length ? parts.join(' ') : null;
+}
+
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
+  mcpActiveCount: 0,
   activeTool: 'select',
   activeLayerId: 'cut',
   selectedIds: [],
   clipboard: null,
+  combineNotice: null,
   history: [defaultDoc],
   historyIndex: 0,
   zoom: 1.0,
@@ -279,6 +354,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isGCodeModalOpen: false,
   isMachineModalOpen: false,
   isClipArtModalOpen: false,
+  isTestGridOpen: false,
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
@@ -336,9 +412,16 @@ export const useStore = create<EtchStore>((set, get) => ({
     }));
   },
 
+  incrementMcpActive: () => set((state) => ({ mcpActiveCount: state.mcpActiveCount + 1 })),
+  // Floored at zero: an ERROR reply and the finally-block must not be able to
+  // drive the count negative and leave the pill stuck off.
+  decrementMcpActive: () => set((state) => ({ mcpActiveCount: Math.max(0, state.mcpActiveCount - 1) })),
   setToolMode: (tool) => set({ activeTool: tool }),
   setActiveLayer: (layerId) => set({ activeLayerId: layerId }),
-  setSelectedIds: (ids) => set({ selectedIds: ids }),
+  // Clearing the combine notice here rather than on a timer: it explains why
+  // *these* shapes would not combine, and once the selection moves on it is
+  // talking about something that is no longer on screen.
+  setSelectedIds: (ids) => set({ selectedIds: ids, combineNotice: null }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
   setCursor: (cursor) => set({ cursor }),
@@ -524,6 +607,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleGCodeModal: () => set((state) => ({ isGCodeModalOpen: !state.isGCodeModalOpen })),
   toggleMachineModal: () => set((state) => ({ isMachineModalOpen: !state.isMachineModalOpen })),
   toggleClipArtModal: () => set((state) => ({ isClipArtModalOpen: !state.isClipArtModalOpen })),
+  toggleTestGridModal: () => set((state) => ({ isTestGridOpen: !state.isTestGridOpen })),
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
@@ -926,6 +1010,85 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
   },
 
+  /**
+   * Combines the selection into a single path.
+   *
+   * The inputs are consumed rather than hidden: a union that left its two
+   * halves underneath would double every cut along the seam, which is the exact
+   * failure `dedupeOverlaps` exists to clean up after. Anything that had no
+   * closed outline to contribute is left where it was and named in the notice.
+   *
+   * The result takes the base element's place in document order, so it keeps
+   * the z-position — and therefore the drawn appearance — of the shape it grew
+   * out of.
+   */
+  combineSelected: (op) => {
+    const { document, selectedIds, history, historyIndex } = get();
+    if (selectedIds.length < 2) {
+      set({ combineNotice: 'Select two or more shapes to combine.' });
+      return;
+    }
+
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds
+      .map((id) => byId.get(id))
+      .filter((el): el is EtchElement => !!el);
+    if (selected.length < 2) return;
+
+    const [base, ...others] = selected;
+    const result = booleanElements(base, others, op);
+    if (isBooleanFailure(result)) {
+      set({ combineNotice: result.error });
+      return;
+    }
+
+    const skippedIds = new Set(result.skipped.map((s) => s.id));
+    const consumed = new Set([base.id, ...others.filter((e) => !skippedIds.has(e.id)).map((e) => e.id)]);
+
+    const combined: EtchElement = {
+      // Transforms are already baked into `d` by the bed-space sampler, so the
+      // new element must start from an identity one or the shape would be
+      // rotated or scaled a second time.
+      id: `bool_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: `${BOOLEAN_OP_LABEL[op]} of ${base.name}`,
+      type: 'path',
+      layerId: base.layerId,
+      x: result.x,
+      y: result.y,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: base.opacity,
+      strokeWidth: base.strokeWidth,
+      strokeColor: base.strokeColor,
+      strokeDash: base.strokeDash,
+      fillColor: base.fillColor,
+      visible: true,
+      locked: false,
+      d: result.d,
+      machining: base.machining,
+    };
+
+    const baseIndex = document.elements.findIndex((el) => el.id === base.id);
+    const kept = document.elements.filter((el) => !consumed.has(el.id));
+    const insertAt = document.elements
+      .slice(0, baseIndex)
+      .filter((el) => !consumed.has(el.id)).length;
+    const newElements = [...kept.slice(0, insertAt), combined, ...kept.slice(insertAt)];
+
+    const newDoc = releaseUnusedAnchors({ ...document, elements: newElements });
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: [combined.id],
+      combineNotice: combineNoticeFor(result),
+    });
+  },
+
   clearCanvas: () => {
     const { document, history, historyIndex } = get();
     const newDoc = { ...document, elements: [] };
@@ -987,7 +1150,8 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   addLayer: (layer) => {
     const { document } = get();
-    set({ document: { ...document, layers: [...document.layers, layer] } });
+    const id = layer.id ?? `layer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    set({ document: { ...document, layers: [...document.layers, { ...layer, id }] } });
     get().commitHistory();
   },
 

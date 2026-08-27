@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ReactDOM from 'react-dom';
 import { useStore } from '../store/useStore';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
@@ -44,6 +45,7 @@ export const TopNavbar: React.FC = () => {
     toggleAiPanel,
     toggleGCodeModal,
     toggleMachineModal,
+    toggleTestGridModal,
     toggleSettings,
     isSettingsOpen,
     undo,
@@ -224,7 +226,12 @@ export const TopNavbar: React.FC = () => {
           <select
             value=""
             onChange={(e) => {
-              if (e.target.value) loadPreset(e.target.value);
+              // The generator is not a preset — it opens a dialog and builds a
+              // document from the stock and material already loaded. It lives
+              // in this list because that is where someone looks for "start a
+              // new job from a template", which is what it is.
+              if (e.target.value === 'generator:test-grid') toggleTestGridModal();
+              else if (e.target.value) loadPreset(e.target.value);
             }}
             className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem] max-lg:flex-1 max-lg:min-w-0 max-lg:max-w-none"
           >
@@ -237,6 +244,9 @@ export const TopNavbar: React.FC = () => {
                   {p.name} ({p.category})
                 </option>
               ))}
+            </optgroup>
+            <optgroup label="🔧 Generators" className="bg-white dark:bg-slate-900">
+              <option value="generator:test-grid">Material Test Grid…</option>
             </optgroup>
             {userPresetNames.length > 0 && (
               <optgroup label="📁 Saved Documents" className="bg-white dark:bg-slate-900">
@@ -469,8 +479,20 @@ export const TopNavbar: React.FC = () => {
         </div>
       )}
 
-      {/* Save / Save As name modal */}
-      {isSaveModalOpen && (
+      {/*
+        Save / Save As name modal.
+
+        Portalled to the body, like the login modal in UserProfileButton, and
+        for the same reason: this navbar is `backdrop-blur-md`, and a
+        backdrop-filter makes an element the containing block for its
+        `position: fixed` descendants. Rendered in place, `fixed inset-0`
+        resolved against the 3.5rem header instead of the viewport, so
+        `items-center` centred the dialog on the navbar and left its top half
+        above the top of the window, out of reach. Nothing about the dialog's
+        own classes was wrong — the ancestor was.
+      */}
+      {isSaveModalOpen &&
+        ReactDOM.createPortal(
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 flex flex-col gap-4">
             <div className="flex items-center gap-3">
@@ -517,7 +539,10 @@ export const TopNavbar: React.FC = () => {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        // `window.document` deliberately: `document` in this file is the
+        // EtchDocument destructured from the store, not the DOM one.
+        window.document.body
       )}
     </header>
   );

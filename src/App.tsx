@@ -7,6 +7,7 @@ import { EtchCanvas } from './components/EtchCanvas';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { BottomStatusBar } from './components/BottomStatusBar';
 import { ClipArtModal } from './components/ClipArtModal';
+import { MaterialTestModal } from './components/MaterialTestModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { JobPauseBanner } from './components/JobPauseBanner';
@@ -16,6 +17,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ToolConfigModal } from './components/ToolConfigModal';
 import { ImageImportModal } from './components/ImageImportModal';
 import { prefetchClipArt } from './utils/clipArtLibrary';
+import { Zap } from 'lucide-react';
 
 /**
  * Which way each arrow key moves the selection, in document space.
@@ -45,6 +47,7 @@ export const App: React.FC = () => {
     vectorizeText,
     isPropertiesOpen,
     setPropertiesOpen,
+    mcpActiveCount,
   } = useStore();
 
   /**
@@ -178,6 +181,28 @@ export const App: React.FC = () => {
         {/* Center SVG Interactive Bed Canvas */}
         <div className="flex-1 h-full relative">
           <EtchCanvas />
+
+          {/*
+            MCP activity pill — the same one Mesh floats over its viewport.
+
+            An agent driving the app through the bridge otherwise changes the
+            drawing with nothing to say where it came from: shapes appear, the
+            stock resizes, and from the operator's side it reads as the app
+            doing it by itself. `pointer-events-none` on the rail so it never
+            takes a click meant for the canvas underneath.
+          */}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-col gap-2 items-center pointer-events-none">
+            {mcpActiveCount > 0 && (
+              <div className="bg-white/90 dark:bg-slate-900/90 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800/80 px-3.5 py-1.5 rounded-full shadow-md flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md transition-all duration-300">
+                <div className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </div>
+                <Zap className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+                <span className="tracking-wide">MCP Active</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Dimmer behind the inspector drawer. Only exists below `lg`, where
@@ -205,6 +230,7 @@ export const App: React.FC = () => {
 
       {/* Modals */}
       <ClipArtModal />
+      <MaterialTestModal />
       <ImageImportModal />
       <GCodePreviewModal />
       <MachineControlModal />

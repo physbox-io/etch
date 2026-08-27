@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
+import { DocsInfoButton } from './DocsModal';
 import {
   DEFAULT_TOOL,
   toolCatalog,
@@ -44,6 +45,7 @@ import { readSpindleRange, describeLaserSource, type LaserSource } from '../util
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { DEFAULT_SHADE_PITCH_MM } from '../utils/rasterImage';
 import type { EtchElement } from '../types/etch';
+import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
 
 const NUM_INPUT =
   'w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono';
@@ -320,7 +322,7 @@ const CncLayerCutting: React.FC<{
             className="cursor-pointer text-indigo-600 rounded"
           />
           <span>3D V-Carve (Variable depth for sharp corners)</span>
-          <InfoTooltip text="V-carves along the medial axis where bit depth tracks width, lifting to Z=0 at sharp corner tips." />
+          <InfoTooltip text="V-carves along the medial axis where bit depth tracks width, lifting to Z=0 at sharp corner tips. The bit's tip flat is taken off the width first, so a bit that is not truly sharp is not driven too deep. Anywhere too wide for the bit to reach the bottom of at the depth ceiling has its floor cleared flat, and the export says so." />
         </label>
       )}
 
@@ -455,6 +457,18 @@ function canBeFilled(el: EtchElement): boolean {
   return true;
 }
 
+/**
+ * What each boolean does, phrased around the key object, because the buttons
+ * themselves cannot say it: "subtract" from a shape you did not mean is a
+ * deletion, and the only defence is naming the base before the click.
+ */
+const COMBINE_HINT: Record<BooleanOp, (base: string) => string> = {
+  union: (base) => `Merge everything selected into ${base}`,
+  subtract: (base) => `Cut the other shapes out of ${base}`,
+  intersect: (base) => `Keep only where the shapes overlap ${base}`,
+  exclude: (base) => `Keep everything except where the shapes overlap ${base}`,
+};
+
 export const PropertiesSidebar: React.FC = () => {
   const {
     document,
@@ -463,6 +477,8 @@ export const PropertiesSidebar: React.FC = () => {
     mandalaSettings,
     updateElement,
     centerSelected,
+    combineSelected,
+    combineNotice,
     setActiveLayer,
     addLayer,
     updateLayer,
@@ -522,7 +538,7 @@ export const PropertiesSidebar: React.FC = () => {
       a preset name got longer.
     */
     <aside
-      className={`w-72 h-[calc(100dvh-3.5rem)] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-y-auto transition-colors max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:h-auto max-lg:w-80 max-lg:max-w-[85vw] max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200 ${
+      className={`w-72 h-full min-h-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-hidden transition-colors max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:h-auto max-lg:w-80 max-lg:max-w-[85vw] max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200 ${
         isPropertiesOpen ? 'max-lg:translate-x-0' : 'max-lg:translate-x-full max-lg:pointer-events-none'
       }`}
     >
@@ -542,6 +558,9 @@ export const PropertiesSidebar: React.FC = () => {
         </button>
       </div>
 
+      {/* The inspector body scrolls on its own so that however long a
+          selection's fields get, the layer manager below stays on screen. */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
       {selectedElement ? (
         <div className="p-4 space-y-4 text-xs">
           {/* Which of a multiple selection these fields are editing. Without
@@ -625,6 +644,42 @@ export const PropertiesSidebar: React.FC = () => {
                 Center V
               </button>
             </div>
+
+            {/*
+              Boolean combining. Only offered with two or more selected, because
+              with one shape there is nothing to combine it with and a row of
+              dead buttons reads as a broken feature.
+
+              The wording says which shape is the base rather than leaving it to
+              be discovered: "subtract" is the only one where the order matters,
+              and getting it backwards silently deletes the wrong shape.
+            */}
+            {selectedIds.length > 1 && (
+              <div className="col-span-2">
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold flex items-center gap-1">
+                  <span>Combine Shapes</span>
+                  <DocsInfoButton tab="combine" size="w-3 h-3" />
+                </label>
+                <div className="grid grid-cols-2 gap-1 mt-1">
+                  {(['union', 'subtract', 'intersect', 'exclude'] as const).map((op) => (
+                    <button
+                      key={op}
+                      onClick={() => combineSelected(op)}
+                      className="flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                      title={COMBINE_HINT[op](anchorElement?.name ?? 'the first shape')}
+                    >
+                      {BOOLEAN_OP_LABEL[op]}
+                    </button>
+                  ))}
+                </div>
+                {combineNotice && (
+                  <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                    <span>{combineNotice}</span>
+                  </div>
+                )}
+              </div>
+            )}
             {selectedElement.w !== undefined && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Width (mm)</label>
@@ -1110,9 +1165,10 @@ export const PropertiesSidebar: React.FC = () => {
           Select any element on the canvas to inspect and edit properties.
         </div>
       )}
+      </div>
 
       {/* Layer Manager */}
-      <div className="mt-auto border-t border-slate-200 dark:border-slate-800/80 p-4">
+      <div className="shrink-0 max-h-[45%] overflow-y-auto border-t border-slate-200 dark:border-slate-800/80 p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2">
             <Layers className="w-3.5 h-3.5 text-cyan-500" />
@@ -1121,7 +1177,6 @@ export const PropertiesSidebar: React.FC = () => {
           <button
             onClick={() =>
               addLayer({
-                id: `layer_${Date.now()}`,
                 name: 'New Cut Layer',
                 color: '#ec4899',
                 operation: 'cut',

@@ -28,18 +28,31 @@ import type { Pt } from './pathFlatten';
  */
 const SCALE = 1000;
 
-/** Arc tolerance for rounded offset corners, in scaled units (0.01 mm). */
-const ARC_TOLERANCE = 0.01 * SCALE;
+/**
+ * The same quantum, exported so boolean clipping rounds identically.
+ *
+ * Two modules that both feed clipper but scale differently produce geometry
+ * that disagrees in the last micron, and the disagreement surfaces as a hairline
+ * sliver where a unioned edge meets an offset one.
+ */
+export const CLIPPER_SCALE = SCALE;
+
+/**
+ * Arc tolerance for rounded offset corners, in scaled units (0.01 mm).
+ * Exported so the boolean sliver test offsets to the same fineness — a coarser
+ * one there would round a thin shape away and call a real feature noise.
+ */
+export const ARC_TOLERANCE = 0.01 * SCALE;
 
 export type OffsetSide = 'outside' | 'inside' | 'on';
 
-function toClipper(contours: Pt[][]): ClipperLib.Paths {
+export function toClipperPaths(contours: Pt[][]): ClipperLib.Paths {
   return contours.map((c) =>
     c.map((p) => ({ X: Math.round(p.x * SCALE), Y: Math.round(p.y * SCALE) }))
   );
 }
 
-function fromClipper(paths: ClipperLib.Paths): Pt[][] {
+export function fromClipperPaths(paths: ClipperLib.Paths): Pt[][] {
   return paths.map((p) => p.map((pt) => ({ x: pt.X / SCALE, y: pt.Y / SCALE })));
 }
 
@@ -101,7 +114,7 @@ export function offsetContours(contours: Pt[][], radius: number, side: OffsetSid
     return { contours, dropped: 0 };
   }
 
-  const subject = toClipper(usable);
+  const subject = toClipperPaths(usable);
 
   // Union first, so nesting and orientation are resolved before offsetting.
   // Even-odd matches how the canvas and the hatch filler decide what is inside,
@@ -126,7 +139,7 @@ export function offsetContours(contours: Pt[][], radius: number, side: OffsetSid
   const solution: ClipperLib.Paths = [];
   co.Execute(solution, (side === 'outside' ? radius : -radius) * SCALE);
 
-  const result = fromClipper(solution)
+  const result = fromClipperPaths(solution)
     .filter((c) => c.length >= 3)
     .map(close);
 
@@ -220,7 +233,7 @@ export function strokeBandPasses(
   const band: ClipperLib.Paths = [];
   const bandOffset = new ClipperLib.ClipperOffset(2, ARC_TOLERANCE);
   bandOffset.AddPaths(
-    toClipper([usable]),
+    toClipperPaths([usable]),
     ClipperLib.JoinType.jtRound,
     isClosed ? ClipperLib.EndType.etClosedLine : ClipperLib.EndType.etOpenRound
   );
@@ -237,7 +250,7 @@ export function strokeBandPasses(
     co.AddPaths(band, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
     co.Execute(ring, -inset * SCALE);
     if (ring.length === 0) break;
-    for (const p of fromClipper(ring)) {
+    for (const p of fromClipperPaths(ring)) {
       if (p.length >= 3) passes.push(close(p));
     }
   }
