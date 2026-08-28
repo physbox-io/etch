@@ -136,6 +136,79 @@ Two fill rules, and both are load-bearing: even-odd *within* an element, so a
 traced glyph's counter stays a hole, then non-zero *between* elements, or two
 overlapping squares would "union" to a square with a hole in the overlap.
 
+`src/utils/beautify.ts` — the "Make Pretty" button, next to the boolean ops in
+the sidebar. It regularises a hand-drawn selection in four passes, and the order
+is load-bearing:
+
+1. Recognise each outline as the primitive it was trying to be — circle,
+   ellipse, rectangle, regular polygon, straight line, spiral — or smooth it.
+2. Make lines that were meant to be parallel parallel, and square them to the
+   grid when they are nearly there.
+3. Find the shapes that are *the same shape* — at any size, angle or handedness
+   — unify them onto one outline, and check the group for an arrangement (a ring
+   about a common centre, an even row, a mirror axis) to snap onto exactly.
+4. Line up whatever is left: centre a shape in the shape drawn around it, and
+   bring near-equal edges and centres onto one line.
+
+`beautifyElements(selection, context)` takes the rest of the drawing as
+`context`: never modified, but read, so that selecting two lines of text and
+pressing the button centres them in the border they sit inside. Nobody selects
+the border to do that, and without it the button looked like it did nothing.
+
+Nothing in it knows about any particular kind of drawing. Everything is
+"shapes"; the flowers and keychains in the comments are the failures the rules
+were set from, not cases the code tests for.
+
+- It never adds or removes an element. Every element comes back with its own id,
+  layer and place in z-order, which is what makes it one undo with the selection
+  intact.
+- Shapes are compared by a **radial descriptor** — the distance from the
+  centroid at 64 equal angles, divided by the shape's own RMS radius — so
+  matching is scale- and rotation-free by construction and a mirror needs no
+  axis to be guessed. Every measurement is taken from an outline re-spaced
+  evenly along its own length (`resampleByArc`); measuring the points as they
+  arrive makes a five-point rectangle "smaller" than an ellipse inside it.
+- A near-symmetrical shape matches itself at several angles. The group picks the
+  reading that makes it *a group* (`consensusTurns`), preferring one handedness
+  throughout — letting each shape choose for itself left a ring whose members
+  each leaned a different way while every individual choice was defensible.
+- A group's outline is smoothed **once**, normalised, and then transformed per
+  member — cubic control points transform affinely. Smoothing each rotated copy
+  separately gave copies that were each a slightly different shape, which is the
+  one thing the pass exists to prevent.
+- Closure is judged against the stroke's own length, generously: a hand rarely
+  comes back exactly to where it set off, and a shape counted as open has no
+  interior to describe and so cannot be matched to anything. A hand that goes
+  *past* the start instead leaves a tail across the top, and `closeAtCrossing`
+  cuts both ends where they cross — the two ends only, so a figure of eight
+  survives.
+- A spiral is checked for before anything else, because it is neither open in
+  the way a stroke is nor closed in the way an outline is, and every other test
+  reads it as a bad version of something else — including the closure test,
+  which would otherwise join the two ends of a three-turn spiral. The radius is
+  fitted against the unwrapped angle, both steady-per-turn and multiplying-per-
+  turn, and the centre is searched for rather than assumed: a spiral's centroid
+  sits well outside its eye, pulled there by the outer turns.
+- Smoothing **blurs along the curve**; it does not decimate. Douglas–Peucker is
+  a decimator — it keeps the points that stick out furthest — so fitting through
+  what it leaves gives long flat runs meeting at visible angles. `smoothPolyline`
+  resamples evenly and runs a Gaussian along the arc instead.
+- Everything emitted is then fitted at `IDEAL_FIT_TOLERANCE_MM` rather than at
+  the wobble tolerance. Two different questions — how much of the drawing is
+  hand, and how faithfully to reproduce what is left — and answering both with
+  one number is what made the second answer badly: `fitCubics` calls any run
+  flat within its tolerance a straight line, and at 3 mm that is a sixteen
+  millimetre stretch of a gentle arc.
+- Lines get their own pass for the same reason — no interior, no descriptor —
+  and because a line's direction lives in `x2`/`y2` rather than in `rotation`.
+- Every tolerance scales off the drawing rather than being a figure in
+  millimetres, and they are editing tolerances: they are outside the 0.05 mm
+  machining budget below, and registered separately in `MACHINING.md`.
+- The guard tests in `tests/beautify.test.ts` matter as much as the positive
+  ones. A scatter must stay a scatter, a key-ring hole must stay off-centre, an
+  alignment must never create an overlap, and text and images are moved but
+  never re-shaped.
+
 ## Toolpath and G-code
 
 `src/utils/gcodeExporter.ts` is the big one. The pipeline:

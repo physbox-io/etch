@@ -587,11 +587,21 @@ export const EtchCanvas: React.FC = () => {
       return;
     }
 
-    // Freehand: intermediate points follow the cursor, but the stroke STARTS on
-    // a grid intersection (and ends on one — see handleMouseUp).
+    /*
+     * Freehand. The grid-snapped pencil starts on a grid intersection and ends
+     * on one (see handleMouseUp); the fluid pencil starts and ends exactly
+     * where the pointer was.
+     *
+     * Both used to snap their two end points while taking every point between
+     * them raw, which put a hard tick of up to half a grid square on the front
+     * and back of every fluid stroke — the "weird uptick at the start" — and
+     * made a stroke drawn straight fail every straightness test afterwards,
+     * because the line it is measured against is the one through those two
+     * displaced ends.
+     */
     if (activeTool === 'freehand' || activeTool === 'grid-freehand') {
       setIsFreehandDrawing(true);
-      setFreehandPoints([coords]);
+      setFreehandPoints([activeTool === 'grid-freehand' ? coords : toBed(e)]);
       return;
     }
 
@@ -838,8 +848,9 @@ export const EtchCanvas: React.FC = () => {
 
     if (isFreehandDrawing) {
       setIsFreehandDrawing(false);
-      // Snap the final point to match the snapped start point.
-      const endPt = toBedSnapped(e);
+      // Snapped to match the snapped start point, but only for the pencil whose
+      // whole point is the grid. See handleMouseDown.
+      const endPt = activeTool === 'grid-freehand' ? toBedSnapped(e) : toBed(e);
       const pts = [...freehandPoints, endPt];
       if (pts.length > 1) {
         const ox = pts[0].x;

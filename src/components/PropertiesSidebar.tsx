@@ -20,6 +20,7 @@ import {
   X,
   AlignHorizontalJustifyCenter,
   AlignVerticalJustifyCenter,
+  Wand2,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -479,6 +480,8 @@ export const PropertiesSidebar: React.FC = () => {
     centerSelected,
     combineSelected,
     combineNotice,
+    beautifySelected,
+    beautifyNotice,
     setActiveLayer,
     addLayer,
     updateLayer,
@@ -643,6 +646,39 @@ export const PropertiesSidebar: React.FC = () => {
                 <AlignVerticalJustifyCenter className="w-3.5 h-3.5" />
                 Center V
               </button>
+            </div>
+
+            {/*
+              Make Pretty. Offered from one shape upwards: with one selected it
+              is "what was this circle trying to be", and with several it is
+              also "these were meant to match, and to be arranged".
+
+              No options and no dialog. Everything it needs — how much wobble to
+              take out, what counts as the same shape, what counts as the same
+              size — scales off the drawing itself, and a slider for any of it
+              would be asking the operator a question the geometry has already
+              answered. It says what it did afterwards instead, and it is one
+              undo.
+            */}
+            <div className="col-span-2">
+              <button
+                onClick={beautifySelected}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                title={
+                  selectedIds.length > 1
+                    ? 'Straighten and smooth these shapes, match the ones that are the same, and even up how they are arranged'
+                    : 'Straighten and smooth this shape — a drawn circle becomes a circle, a drawn box becomes a rectangle'
+                }
+              >
+                <Wand2 className="w-3.5 h-3.5" />
+                Make Pretty
+              </button>
+              {beautifyNotice && (
+                <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-slate-600 dark:text-slate-400">
+                  <Wand2 className="w-3 h-3 shrink-0 mt-px" />
+                  <span>{beautifyNotice}</span>
+                </div>
+              )}
             </div>
 
             {/*

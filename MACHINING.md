@@ -127,6 +127,48 @@ are meant to total under 0.05 mm from the drawn shape.
 | `MIN_FEATURE_MM = 0.05` (boolean sliver removal) | `booleanOps.ts` | Equal to the tolerance budget above: a feature thinner than the app's own geometric error is indistinguishable from it, and nothing here can cut it. | **Derived** (from the budget) |
 | `OVERLAP_TOLERANCE_MM = 0.05` | `dedupeOverlaps.ts` | Above the 0.02 mm chord tolerance so two copies of one curve land on the same key; below anything a hobby machine positions to. | **Derived** |
 
+### Make Pretty (`beautify.ts`)
+
+These are **editing** tolerances and deliberately sit outside the budget above.
+They apply to the drawing, at the operator's request, before the planner ever
+sees it — the same category as the image tracer's simplification, which is also
+a fidelity choice rather than a machining one. They are listed here because the
+drawing is what reaches material, and because a value that decides a hole is
+"really" a circle is a value someone should be able to argue with.
+
+Every one is a fraction of something the drawing itself supplies. Hand wobble
+scales with what is being drawn, so an absolute figure in millimetres is wrong
+at one end of the range or the other.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `WOBBLE_FRACTION = 0.025` of a shape's bbox diagonal | `beautify.ts` | ~1 mm on a 30 mm shape, which is an unsteady mouse line at normal zoom. Clamped to 0.1–3 mm. | **Judgement** |
+| `POLYGON_FIT_MARGIN = 0.35` | `beautify.ts` | The simplifier *guarantees* its output is within tolerance, so "within tolerance" is no evidence of corners. A shape with real straight sides fits them to its own wobble, a fraction of the tolerance. Set from the failure: an ellipse claimed as a ten-gon. | **Derived** (from what RDP guarantees), **Judgement** (0.35) |
+| `CIRCLE_RMS_FRACTION = 0.09` of the fitted radius | `beautify.ts` | An **RMS**, not the furthest point: a drawn circle is lumpy the whole way round and usually has one flat worse than the rest. Judging it by its single worst point meant next to nothing anyone drew came back a circle. | **Judgement** |
+| `CIRCLE_MAX_FRACTION = 0.25` | `beautify.ts` | The worst point still has a veto, so one spike cannot be averaged into acceptability. | **Judgement** |
+| `CIRCLE_ASPECT = 1.2`, `ELLIPSE_RMS_FRACTION = 0.07` | `beautify.ts` | What separates a circle drawn badly from an oval drawn deliberately. Deliberately generous: a round shape drawn freehand is wider than it is tall as often as not, and a circle is what was meant. Having the second reading is what makes the loose circle test safe. | **Judgement** |
+| `CLOSE_GAP_FRACTION = 0.15` of the stroke's own **length** | `beautify.ts` | Did the hand come back round to where it set off? Against length, not the bounding box, so a long thin shape and a round one are asked the same question. A half circle's ends are two thirds of its length apart and stay open, as does anything missing more than about a sixth of itself. Judging closure at the wobble tolerance left almost every drawn outline "open", which excluded it from shape matching entirely. | **Derived** (from the geometry of an open arc), **Judgement** (0.08) |
+| Tail trim: first/last step > 3× the median step **and** turning > 40° | `beautify.ts` | Both conditions, never length alone, or the deliberate long first stroke of an L would go. Set from the fluid pencil's old grid-snapped end points, which left a tick of up to half a grid square. | **Derived** (from the failure), **Judgement** |
+| Overshoot cut: crossings searched in the first and last quarter of a stroke | `beautify.ts` | A hand drawing a circle comes round and keeps going, leaving a tail. Cutting both ends at the crossing closes it exactly. Bounded to the two ends so a shape that genuinely crosses itself in the middle — a figure of eight — is left alone. | **Derived** |
+| `SPIRAL_MIN_TURNS = 1.4`, `SPIRAL_RMS_FRACTION = 0.08` of the mean radius | `beautify.ts` | Below 1.4 turns a stroke is an arc, not a spiral, and the fit would have almost nothing to go on. The same figure is what stops a multi-turn stroke being called a closed outline: its two ends are near each other because it wound, not because it met. | **Judgement** |
+| `IDEAL_FIT_TOLERANCE_MM = 0.05` | `beautify.ts` | The *only* absolute figure here, and it applies to a curve this module computed rather than one a hand drew. There is no wobble in a fitted spiral to throw away, so it is reproduced to the app's own geometry budget instead of to the wobble tolerance — which on a large spiral is 3 mm. | **Derived** (from the geometry budget) |
+| `SHAPE_MATCH_TOL = 0.14` (normalised RMS of two shape descriptors) | `beautify.ts` | Looser and one shape matches an unrelated one; tighter and two copies drawn by the same unsteady hand fail to match each other. | **Judgement** |
+| `SIZE_EQ_TOL = 0.06`, `MAX_SIZE_CLUSTER_SPREAD = 0.25` | `beautify.ts` | Sorted sizes are cut where consecutive ones differ by more than the first; the second stops that chaining from walking a deliberately graduated series into one size. | **Judgement** |
+| `NICE_RATIOS`, `RATIO_SNAP_TOL = 0.05` | `beautify.ts` | A deliberately smaller copy within 5% of a half, third or quarter was meant to be that fraction. Anything else keeps the size it was drawn at. | **Judgement** |
+| `ANGLE_TOL_DEG = 7`, `ORTHO_SNAP_DEG = 4` | `beautify.ts` | What a hand misses a right angle, an even spacing or a parallel by, and no more. | **Judgement** |
+| `ARRANGE_FRACTION = 0.07` of the arrangement's span | `beautify.ts` | Whether a ring of shapes is a ring depends on how big the ring is, not on millimetres. Clamped to 0.1–6 mm. | **Judgement** |
+| `UNIFY_DRIFT_LIMIT = 0.3` | `beautify.ts` | The rebuilt outline may not sit further than this from the one drawn, or the alignment search got it wrong and the shape is refused rather than shipped. | **Judgement** |
+| Ring fold search: `count`…`2 × count`, capped at 12; exactly `count` when `count === 3` | `beautify.ts` | At most half the ring may be missing, or the lattice fits anything. Any three points lie on a circle exactly, so with three shapes the spacing is the only evidence — they are a ring at 120° or they are a scatter. | **Derived** |
+| Mirror pairs must be congruent to `SIZE_EQ_TOL`, and not concentric | `beautify.ts` | A reflection is the same size as what it reflects. Without it, three boxes of different widths stacked down a page — a left-aligned list — read as a mirrored pair plus a stray. | **Derived** |
+| `FRAME_CENTRE_FRACTION = 0.15` of the enclosing shape's width or height | `beautify.ts` | Against the frame, not against the room the shape has to move in: a small hole 35 mm off centre has used up nearly all its room and by that reading looks as "nearly centred" as a line of text 9 mm out. Against the frame the two are 43% and 11%, which is the distinction wanted. Below about an eighth a wide line of text in a narrow border cannot be off by enough to be caught; above about a quarter the hole starts to look reachable. | **Judgement** |
+| `FRAME_CONTAIN_FRACTION = 0.9` | `beautify.ts` | How much of a shape must be inside another before that one counts as its frame. Not all of it: a line of text nearly as wide as its border and pushed to one side pokes a hair past the edge, and that is precisely the drawing that wants fixing. | **Derived** (from the failure) |
+| `SMOOTH_BLUR_TOLERANCES = 2` | `beautify.ts` | Smoothing blurs along the curve rather than decimating it. A Gaussian of σ pulls a curve of radius R inward by about σ²/2R, so two tolerances of blur costs about half a millimetre of a 3 mm tolerance on a 50 mm curve — well inside what it is allowed to spend. Decimation instead kept the drawing's worst excursions as corners. | **Derived** (σ²/2R), **Judgement** (2) |
+| Smoothed outlines are fitted at `IDEAL_FIT_TOLERANCE_MM`, not at the wobble tolerance | `beautify.ts` | `fitCubics` emits a straight line for any run flat within the tolerance it is given. At 3 mm, a 16 mm stretch of a 67 mm arc counts as flat and comes back a chord — and a chord meeting a curve is a visible corner. The blur has already dealt with the wobble; spending accuracy here buys nothing but kinks. | **Derived** |
+| Spiral lead-in: retried at 15% trimmed from either end | `beautify.ts` | A spiral is nearly always drawn with a tail where the pen arrived or left. It runs almost straight out from the shape, so the radius grows while the angle barely advances — the one thing a spiral never does — and it fails the whole fit. The full stroke is tried first, so the tail is only given up when it has to be. | **Derived** |
+| `ALIGN_FRACTION = 0.06` of the median sibling box diagonal, capped at 8 mm | `beautify.ts` | Mutual alignment is only ever between siblings — shapes inside the same shape — because otherwise a 6 mm hole gets its edge lined up with the 82 mm border it sits in. | **Judgement** |
+| A shared **centre** needs 2 shapes, a shared **edge** needs 3 | `beautify.ts` | Two shapes on a common centre line is a layout. Two shapes with a common edge is very often a coincidence. Missing an alignment is a much smaller failure here than inventing one. | **Judgement** |
+| No alignment may create an overlap that did not exist | `beautify.ts` | Both lines of a stacked title are within tolerance of the middle of the tag; centring both vertically would put one on top of the other. | **Derived** |
+
 ## 8. Machine dynamics and time
 
 | Value | Where | Basis | Source |

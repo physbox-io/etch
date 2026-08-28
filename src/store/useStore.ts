@@ -30,6 +30,7 @@ import {
   isBooleanFailure,
   type BooleanOp,
 } from '../utils/booleanOps';
+import { beautifyElements } from '../utils/beautify';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -266,6 +267,15 @@ interface EtchStore {
    * it cannot outlive the shapes it is talking about.
    */
   combineNotice: string | null;
+  /**
+   * Regularise the selected shapes: recognise the primitives they were trying
+   * to be, smooth the rest, and snap repeated shapes onto the sizes, angles and
+   * arrangement they were reaching for. See `beautify.ts`.
+   */
+  beautifySelected: () => void;
+  /** What the last Make Pretty did, or why it did nothing. Cleared with the
+   *  selection, so it cannot outlive the shapes it is talking about. */
+  beautifyNotice: string | null;
   nudgeSelected: (dx: number, dy: number) => void;
   clearCanvas: () => void;
 
@@ -335,6 +345,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   selectedIds: [],
   clipboard: null,
   combineNotice: null,
+  beautifyNotice: null,
   history: [defaultDoc],
   historyIndex: 0,
   zoom: 1.0,
@@ -421,7 +432,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   // Clearing the combine notice here rather than on a timer: it explains why
   // *these* shapes would not combine, and once the selection moves on it is
   // talking about something that is no longer on screen.
-  setSelectedIds: (ids) => set({ selectedIds: ids, combineNotice: null }),
+  setSelectedIds: (ids) => set({ selectedIds: ids, combineNotice: null, beautifyNotice: null }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
   setCursor: (cursor) => set({ cursor }),
@@ -1086,6 +1097,53 @@ export const useStore = create<EtchStore>((set, get) => ({
       historyIndex: newHistory.length - 1,
       selectedIds: [combined.id],
       combineNotice: combineNoticeFor(result),
+    });
+  },
+
+  /*
+   * One history entry for the whole thing, and every element keeps its id: this
+   * is a single Ctrl+Z, and the selection survives it. `beautifyElements` never
+   * adds or removes anything, so the document can be rebuilt by lookup rather
+   * than by splicing, and elements it did not touch keep their identity — which
+   * is what lets React skip re-rendering them.
+   */
+  beautifySelected: () => {
+    const { document, selectedIds, history, historyIndex } = get();
+    if (selectedIds.length === 0) {
+      set({ beautifyNotice: 'Select the shapes to tidy up.' });
+      return;
+    }
+    const picked = document.elements.filter((el) => selectedIds.includes(el.id));
+    if (picked.length === 0) return;
+
+    /*
+     * Everything unselected goes in as context: it is never modified, but it is
+     * what the selection gets lined up against. Selecting two lines of text and
+     * pressing the button should centre them in the border they sit inside,
+     * and nobody selects the border to do that.
+     */
+    const result = beautifyElements(
+      picked,
+      document.elements.filter((el) => !selectedIds.includes(el.id))
+    );
+    if (result.changed === 0) {
+      set({ beautifyNotice: 'Nothing to tidy — these shapes are already regular.' });
+      return;
+    }
+
+    const replaced = new Map(result.elements.map((el) => [el.id, el]));
+    const newDoc = {
+      ...document,
+      elements: document.elements.map((el) => replaced.get(el.id) ?? el),
+    };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      beautifyNotice: result.notes.join(' ') || null,
     });
   },
 
