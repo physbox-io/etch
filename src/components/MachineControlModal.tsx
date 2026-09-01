@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
+import type { TransportMode } from '../utils/webSerialManager';
+import { TeknoBoxPicker } from './TeknoBoxPicker';
 import { getBedBBox } from '../utils/geom';
 import { boundsToMachine } from '../utils/machineCoords';
 import { machineKind, machineWords } from '../utils/tooling';
@@ -46,6 +48,15 @@ export const MachineControlModal: React.FC = () => {
   const isLaser = machineKind(document) === 'laser';
   const words = machineWords(machineKind(document));
   const [status, setStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
+
+  // How the machine is reached, remembered between sessions.
+  const [transportMode, setTransportMode] = useState<TransportMode>(
+    () => (localStorage.getItem('etchTransport') as TransportMode) || 'usb'
+  );
+  const [cloudDeviceId, setCloudDeviceId] = useState(
+    () => localStorage.getItem('etchCloudDeviceId') || ''
+  );
+
   const [consoleInput, setConsoleInput] = useState('');
   const [log, setLog] = useState<string[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -128,13 +139,55 @@ export const MachineControlModal: React.FC = () => {
                 </button>
               ) : (
                 <button
-                  onClick={() => webSerialManager.connect(115200)}
-                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-lg shadow-md shadow-amber-500/20 transition-all cursor-pointer"
+                  onClick={() => {
+                    webSerialManager.setTransport(transportMode, cloudDeviceId);
+                    void webSerialManager.connect(115200);
+                  }}
+                  disabled={transportMode === 'wifi' && !cloudDeviceId}
+                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs rounded-lg shadow-md shadow-amber-500/20 transition-all cursor-pointer"
                 >
-                  Connect Web Serial
+                  {transportMode === 'wifi' ? 'Connect over WiFi' : 'Connect Web Serial'}
                 </button>
               )}
             </div>
+
+            {/* How the machine is reached. WiFi is a Tekno Box, reached through
+                physbox rather than by address — the box is behind the router
+                with nothing to dial, and a page on https may not open a plain
+                connection to a home network anyway. */}
+            {!status.connected && (
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-xl space-y-2">
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(['usb', 'wifi'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => {
+                        setTransportMode(mode);
+                        localStorage.setItem('etchTransport', mode);
+                      }}
+                      className={`py-1.5 rounded text-[11px] font-semibold border cursor-pointer ${
+                        transportMode === mode
+                          ? 'bg-amber-100 dark:bg-amber-600/30 border-amber-500 text-amber-700 dark:text-amber-300'
+                          : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {mode === 'usb' ? 'USB cable' : 'Tekno Box (WiFi)'}
+                    </button>
+                  ))}
+                </div>
+
+                {transportMode === 'wifi' && (
+                  <TeknoBoxPicker
+                    value={cloudDeviceId}
+                    onChange={(deviceId) => {
+                      setCloudDeviceId(deviceId);
+                      localStorage.setItem('etchCloudDeviceId', deviceId);
+                    }}
+                    accentClass="bg-amber-500 hover:bg-amber-600 text-white"
+                  />
+                )}
+              </div>
+            )}
 
             {!status.connected && (
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">

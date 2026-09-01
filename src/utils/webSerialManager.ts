@@ -12,6 +12,10 @@ import {
   writeLaserModeBorrowed,
 } from './machineSettings';
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
+import { CloudTransport, WebSerialTransport, type GrblTransport } from './grblTransport';
+
+/** Which wire reaches the machine: a cable here, or a Tekno Box over WiFi. */
+export type TransportMode = 'usb' | 'wifi';
 
 type StatusListener = (status: MachineStatus) => void;
 
@@ -190,22 +194,16 @@ export function classifyJobLine(line: string): 'tool-change' | 'stop' | 'motion'
  * returning the moment the bytes are written.
  */
 class WebSerialManager {
-  private port: any = null;
-  private reader: ReadableStreamDefaultReader<string> | null = null;
-  /**
-   * Raw bytes, not text.
-   *
-   * This used to be the writer of a TextEncoderStream, which was fine while
-   * everything sent was ASCII. GRBL's override commands are single bytes from
-   * 0x90 up, and UTF-8 encodes those as *two* bytes — so a feed-override nudge
-   * arrived at the controller as 0xC2 0x90 and did nothing at all. Commands are
-   * encoded here instead, where the difference between a character and a byte
-   * is visible.
-   */
-  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
-  private readonly encoder = new TextEncoder();
   private statusListeners: Set<StatusListener> = new Set();
-  private isReading = false;
+
+  /** The active byte pipe — a USB cable, or a Tekno Box reached over WiFi. */
+  private transport: GrblTransport | null = null;
+  /** Which wire to open. Set by `setTransport` before `connect`. */
+  private transportMode: TransportMode = 'usb';
+  /** The paired machine to reach in WiFi mode, from `fetchMachineDevices`. */
+  private cloudDeviceId = '';
+  /** Accumulates RX across chunks; parsed line by line on each newline. */
+  private rxBuffer = '';
   private statusPollTimer: ReturnType<typeof setInterval> | null = null;
   private status: MachineStatus = { ...INITIAL_STATUS };
   /**
@@ -302,98 +300,98 @@ class WebSerialManager {
     return typeof navigator !== 'undefined' && 'serial' in navigator;
   }
 
+  /**
+   * Chooses how the machine is reached. Call before `connect`.
+   *
+   * USB is a cable to this computer. WiFi is a Tekno Box, reached through
+   * api.physbox.io rather than by address: the box sits behind the customer's
+   * router with nothing to dial, and a page served over https may not open a
+   * plain connection to a home network anyway. So the box connects out to
+   * physbox, and this meets it there.
+   */
+  public setTransport(mode: TransportMode, deviceId?: string): void {
+    this.transportMode = mode;
+    if (deviceId !== undefined) this.cloudDeviceId = deviceId;
+  }
+
+  public getTransportMode(): TransportMode {
+    return this.transportMode;
+  }
+
   public async connect(baudRate: number = 115200): Promise<boolean> {
-    if (!this.isSupported()) {
+    if (this.transportMode === 'usb' && !this.isSupported()) {
       this.update({
-        lastError: 'Web Serial is not supported in this browser. Use Chrome, Edge, or Opera.',
+        lastError: 'Web Serial is not supported in this browser. Use Chrome, Edge, or Opera — or cut over WiFi with a Tekno Box.',
       });
       return false;
     }
 
-    // A second connect while one is open would overwrite the port, reader and
-    // writer, leaking a port the OS still holds and leaving the first read loop
-    // spinning on a reader nothing can cancel.
-    if (this.port) await this.disconnect();
+    // A second connect while one is open would overwrite the transport, leaking
+    // whatever the first is still holding.
+    if (this.transport) await this.disconnect();
+
+    const transport: GrblTransport =
+      this.transportMode === 'wifi'
+        ? new CloudTransport(this.cloudDeviceId, baudRate)
+        : new WebSerialTransport(baudRate);
 
     try {
       this.update({ state: 'Connecting' });
-      this.port = await (navigator as any).serial.requestPort();
-      await this.port.open({ baudRate });
-
-      const textDecoder = new TextDecoderStream();
-      this.port.readable.pipeTo(textDecoder.writable).catch(() => {
-        /* stream closes on disconnect */
+      transport.onData((chunk) => this.handleData(chunk));
+      transport.onDisconnect?.(() => {
+        void this.disconnect();
       });
-      this.reader = textDecoder.readable.getReader();
+      await transport.connect();
 
-      this.writer = this.port.writable.getWriter();
-
-      this.isReading = true;
-      this.startReading();
+      this.transport = transport;
+      this.rxBuffer = '';
       this.startStatusPolling();
 
       this.update({
         connected: true,
         baudRate,
         state: 'Idle',
-        portName: 'USB Machine',
+        portName: this.transportMode === 'wifi' ? 'Tekno Box (WiFi)' : 'USB Machine',
         lastError: undefined,
       });
-      // Ask the controller what it is set to. Nothing blocks on the reply — the
-      // settings are read opportunistically and every caller has a fallback —
-      // but asking once here means the guide spot knows this machine's full
-      // scale before anyone presses the button.
-      void this.sendCommand('$$');
       return true;
     } catch (err: any) {
-      // The port picker being dismissed lands here too, which is not an error
-      // worth shouting about.
-      this.port = null;
-      this.update({
-        connected: false,
-        state: 'Disconnected',
-        lastError: err?.name === 'NotFoundError' ? undefined : err?.message || 'Failed to connect.',
-      });
+      await transport.disconnect().catch(() => {});
+      this.update({ connected: false, state: 'Disconnected', lastError: err?.message || 'Failed to connect.' });
       return false;
     }
   }
 
+  /** Splits incoming chunks into whole lines. */
+  private handleData(chunk: string) {
+    this.rxBuffer += chunk;
+    const lines = this.rxBuffer.split('\n');
+    this.rxBuffer = lines.pop() || '';
+    for (const line of lines) this.handleIncomingLine(line.trim());
+  }
+
   public async disconnect() {
     this.stopStatusPolling();
-    this.isReading = false;
     this.failPendingWaiters();
     // Ordered before the port is torn down so the M5 actually reaches the
     // controller: a guide spot lit when the browser lets go of the port would
     // otherwise stay lit, with nothing left able to command it out.
     await this.guideSpotOff();
 
-    // Each step is guarded separately. On an unplug the piped streams have
-    // already errored, so `writer.close()` rejects — and sharing one try block
-    // would skip `port.close()`, leaving the port held by a page whose UI says
-    // it is disconnected and unable to re-acquire it.
-    const attempt = async (fn: () => Promise<unknown> | unknown) => {
+    // The transport owns the tear-down of whatever it is holding — a serial
+    // port's reader, writer and port each need their own guarded close, and a
+    // socket needs none of that. Cleanup errors are not actionable here either
+    // way: the wire is going away regardless.
+    if (this.transport) {
       try {
-        await fn();
+        await this.transport.disconnect();
       } catch {
-        // Cleanup errors are not actionable — the port is going away regardless.
+        // As above.
       }
-    };
-
-    if (this.reader) {
-      await attempt(() => this.reader!.cancel());
-      await attempt(() => this.reader!.releaseLock());
-    }
-    if (this.writer) {
-      await attempt(() => this.writer!.close());
-      await attempt(() => this.writer!.releaseLock());
-    }
-    if (this.port) {
-      await attempt(() => this.port.close());
     }
 
-    this.port = null;
-    this.reader = null;
-    this.writer = null;
+    this.transport = null;
+    this.rxBuffer = '';
     // The datum belonged to the machine that just went away; carrying it into
     // the next connection would reference a heightmap to a point on a different
     // setup entirely.
@@ -408,15 +406,15 @@ class WebSerialManager {
   }
 
   public async sendCommand(cmd: string) {
-    if (!this.writer || !this.status.connected) {
+    if (!this.transport || !this.status.connected) {
       this.update({ lastError: 'Not connected to a machine.' });
       return;
     }
-    const data = cmd.endsWith('\n') ? cmd : `${cmd}\n`;
     try {
-      await this.writer.write(this.encoder.encode(data));
+      // Bare: each transport terminates the line the way its own wire needs.
+      await this.transport.writeLine(cmd.replace(/\n+$/, ''));
     } catch (err: any) {
-      this.update({ lastError: err?.message || 'Serial write failed.' });
+      this.update({ lastError: err?.message || 'Write to the machine failed.' });
     }
   }
 
@@ -428,12 +426,12 @@ class WebSerialManager {
    * an encoder on the way to them.
    */
   private async writeRealtime(byte: string | number) {
-    if (!this.writer || !this.status.connected) return;
+    if (!this.transport || !this.status.connected) return;
     const code = typeof byte === 'number' ? byte : byte.charCodeAt(0);
     try {
-      await this.writer.write(new Uint8Array([code]));
+      await this.transport.writeRealtime(code);
     } catch {
-      /* the read loop reports the disconnect */
+      /* the transport reports the disconnect */
     }
   }
 
@@ -1116,7 +1114,7 @@ class WebSerialManager {
    * move still happens after it.
    */
   private sendAndWait(command: string, timeoutMs = 30000): Promise<void> {
-    if (!this.writer || !this.status.connected) return Promise.resolve();
+    if (!this.transport || !this.status.connected) return Promise.resolve();
     return new Promise<void>((resolve) => {
       let done = false;
       const finish = () => {
@@ -1153,7 +1151,7 @@ class WebSerialManager {
    * set — under G90 a `Z-20` on a machine zeroed high is a 20 mm dive past it.
    */
   public async probePoint(searchDepthMm = 20, feedRate = 50, timeoutMs = 120000): Promise<number | null> {
-    if (!this.writer || !this.status.connected) return null;
+    if (!this.transport || !this.status.connected) return null;
 
     let settle: (z: number | null) => void;
     const reported = new Promise<number | null>((resolve) => {
@@ -1474,7 +1472,7 @@ class WebSerialManager {
   private startStatusPolling() {
     this.stopStatusPolling();
     this.statusPollTimer = setInterval(() => {
-      if (this.status.connected && this.writer) {
+      if (this.status.connected && this.transport) {
         this.writeRealtime('?');
       }
     }, 300);
@@ -1485,31 +1483,6 @@ class WebSerialManager {
       clearInterval(this.statusPollTimer);
       this.statusPollTimer = null;
     }
-  }
-
-  private async startReading() {
-    let buffer = '';
-
-    while (this.isReading && this.reader) {
-      try {
-        const { value, done } = await this.reader.read();
-        if (done) break;
-        if (value) {
-          buffer += value;
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            this.handleIncomingLine(line.trim());
-          }
-        }
-      } catch {
-        break;
-      }
-    }
-
-    // The machine went away (unplugged mid-job, or disconnect()). Either way
-    // nothing should still be waiting on a reply that is never coming.
-    this.failPendingWaiters();
   }
 
   private handleIncomingLine(line: string) {
