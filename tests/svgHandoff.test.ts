@@ -9,10 +9,8 @@ import type { EtchElement } from '../src/types/etch';
  * stroke colour and the apertures in another, drawn at their finished size.
  */
 const STENCIL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="30.000mm" height="20.000mm" viewBox="0 0 30.000 20.000">
-  <g fill="none" stroke="#0000ff" stroke-width="0.05">
-    <path d="M0.000 0.000L30.000 0.000L30.000 20.000L0.000 20.000Z"/>
-  </g>
   <g fill="none" stroke="#ff0000" stroke-width="0.05">
+    <path d="M0.000 0.000L30.000 0.000L30.000 20.000L0.000 20.000Z"/>
     <path d="M10.000 9.000L11.000 9.000L11.000 10.300L10.000 10.300Z"/>
     <path d="M12.900 9.000L13.900 9.000L13.900 10.300L12.900 10.300Z"/>
   </g>
@@ -92,11 +90,13 @@ describe('a handed-over stencil survives the trip', () => {
     expect(result.bounds!.height).toBeCloseTo(20, 3);
   });
 
-  it('splits the outline and the apertures into their own layers', async () => {
+  // One layer, deliberately: kerf compensation offsets to the waste side, and
+  // which side that is comes from nesting — an aperture is a hole and shrinks,
+  // the outline is the part's edge and grows. Split across two layers each is
+  // offset alone, and the apertures grow instead of shrinking.
+  it('arrives as a single layer, so nesting is visible to the offsetter', () => {
     const result = importSVG(STENCIL_SVG);
-    // Two stroke colours, so the outline can be cut last and to the other side
-    // of the line from the apertures.
-    expect(new Set(result.layers.map((l) => l.id)).size).toBe(2);
+    expect(new Set(result.layers.map((l) => l.id)).size).toBe(1);
   });
 });
 

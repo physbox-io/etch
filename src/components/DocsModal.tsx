@@ -378,16 +378,17 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         on another, so they can be cut to opposite sides of the line and in the right order.
       </P>
       <Card>
-        <Step title="Cut the apertures first, the outline last">
-          The outline releases the part. Cut it first and every remaining aperture is being cut in
-          a sheet that is free to move. Apertures want the cut on the <em>inside</em> of the line
-          and the outline on the <em>outside</em>, which is what the two stroke colours are for.
+        <Step title="Both of these happen on their own">
+          The apertures are cut before the outline, because contours are ordered innermost first
+          and the outline is what frees the sheet. And each is offset to its own waste side —
+          apertures shrink, the outline grows — because they arrive as one layer, so their nesting
+          is visible. Splitting them across two layers breaks both.
         </Step>
-        <Step title="Set the kerf yourself">
-          Laser cuts here are not kerf-compensated: the beam is driven down the line, so it removes
-          material either side and every aperture finishes about one kerf oversize. On a stencil
-          that is the difference between a clean joint and a bridge. Offset the aperture layer
-          inward by half your measured kerf — typically 0.05mm on a 0.1mm beam — before cutting.
+        <Step title="Measure your kerf once">
+          Cuts are offset by half the kerf in the status bar, which defaults to 0.1mm. On a stencil
+          the figure earns its keep: it is the difference between a clean joint and a bridge. Cut a
+          square of a known size, measure what comes out, halve the difference, and put that
+          number in.
         </Step>
         <Step title="Never scale it">
           Artwork handed over by link is placed at true size and never fitted to the bed. If you
@@ -397,21 +398,36 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       </Card>
       <H>What to cut it from</H>
       <Card>
-        <Step title="Polyimide (Kapton) film, 0.05–0.125mm">
-          The usual answer. The amber film absorbs blue well enough that a 12W diode goes through
-          it in a couple of fast passes with air assist, and at 0.1mm you are in the same thickness
-          range as a commercial foil. It holds roughly 0.65mm pitch, about twice as fine as a
-          printed stencil manages.
+        <Step title="Black, if you are on a diode">
+          A 450nm beam cuts what absorbs blue, and black absorbs it. Two things qualify: a printed
+          shim — Volt exports a blank single-layer one, and it is free, already the right thickness
+          and guaranteed to be a plastic you can cut — or <strong>black polyester (PET / Mylar)
+          sheet</strong>, which gives a cleaner aperture wall. Buy 5 mil (0.125mm) if you have the
+          choice — that is the commercial stencil gauge. 7.5 mil (0.19mm) is the other common size
+          and works, but it lays down half as much paste again, which caps it at about SOIC/1.27mm
+          pitch: finer than that and the area ratio falls through the floor. It has to be properly
+          opaque, too — film that only looks dark, or is tinted translucent, passes enough blue
+          through to cut badly or not at all.
         </Step>
-        <Step title="A printed black shim">
-          Volt also exports a blank single-layer shim to cut instead — thin dark film is a nuisance
-          to buy in ones, and one layer of black filament is the same thing. It must be black: this
-          is a blue light source, and it passes straight through natural or light-coloured plastic
-          without depositing the energy that cuts it.
+        <Step title="Never PVC — read the label, not the word &quot;stencil&quot;">
+          Craft and airbrush shops sell &quot;stencil film&quot; that is vinyl, which is PVC.
+          Lasering PVC releases hydrogen chloride: it corrodes the machine from the inside out and
+          is genuinely dangerous to breathe. Mylar and polyester are the words you want; vinyl and
+          PVC are the ones you do not. Unlabelled film is not worth the risk — or identify it
+          outdoors with the copper-wire test, where a green flame means chlorine, means do not cut
+          it.
+        </Step>
+        <Step title="Polyimide (Kapton): skip it, on a diode">
+          The material a CO2 reaches for, and the one the internet will tell you to use. On a
+          450nm diode the amber film only part-absorbs, so it is marginal rather than easy — thin
+          gauges, several passes, air assist, and some films simply will not take. Its real
+          advantage is heat resistance, which a paste stencil never needs: the stencil is lifted
+          off before the board ever sees reflow. Black polyester does the same job for less
+          trouble. Keep it in mind if you get a CO2.
         </Step>
         <Step title="What will not work">
           Clear PET and Mylar transmit 450nm almost perfectly and simply do not cut. Neither does
-          the stainless or brass shim a commercial stencil is made from — that needs a fiber laser.
+          the stainless or brass shim a commercial stencil is made from — that needs a fibre laser.
           Cardstock cuts easily and works once, then fuzzes at the apertures and drinks flux.
         </Step>
       </Card>
@@ -516,6 +532,16 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           Closed cuts also get holding tabs — short bridges of material left at the bottom of the
           cut so the part is not loose under a spinning bit on the last pass. Snap or pare them off
           afterwards. Both are per-layer settings if you want them off.
+        </Step>
+        <Step title="A laser is offset too, by half its kerf">
+          A beam is not a line either: it takes material off both sides of where it was pointed, so
+          a part cut down its own outline finishes one kerf small and every hole one kerf large.
+          The same correction applies, at a tenth of the size — the kerf figure is in the status
+          bar beside the laser, it defaults to 0.1 mm, and it is stored against the machine that is
+          connected, so two lasers on one account keep their own. Measure yours once: cut a square
+          of a known size, and half the difference is the number. Set it to 0 to drive the beam
+          down the line, and note that scored and engraved layers stay on the line regardless — a
+          scored line is meant to be where it was drawn.
         </Step>
         <Step title="Pockets are cleared in rings, not scanned">
           On a router an engraved area is cleared with rings that follow its

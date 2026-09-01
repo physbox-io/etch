@@ -9,6 +9,7 @@ import {
   readGuideJiggle,
   readGuidePower,
   readLaserModeBorrowed,
+  writeActiveMachineId,
   writeLaserModeBorrowed,
 } from './machineSettings';
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
@@ -252,6 +253,11 @@ class WebSerialManager {
    */
   private grblSettings = new Map<number, number>();
 
+  /** From `$I`: the firmware version, its compile options, and the owner's name for it. */
+  private grblVersion = '';
+  private grblOptions = '';
+  private grblBuildName = '';
+
   /**
    * Set while the guide spot has laser mode switched off underneath it, so it
    * can be switched back on afterwards and nothing else has to know.
@@ -353,7 +359,25 @@ class WebSerialManager {
         state: 'Idle',
         portName: this.transportMode === 'wifi' ? 'Tekno Box (WiFi)' : 'USB Machine',
         lastError: undefined,
+        // A box has a real id. A USB controller has to be asked, below.
+        machineId: this.transportMode === 'wifi' && this.cloudDeviceId
+          ? `box:${this.cloudDeviceId}`
+          : undefined,
+        machineName: undefined,
       });
+      this.publishMachineId();
+
+      /*
+       * Ask GRBL what it is.
+       *
+       * `$I` costs one line and answers the only question the controller can
+       * answer about its own identity: firmware version, compile options, and
+       * the build-info string an owner can write with `$I=`. Settings that
+       * describe the machine rather than the job — the beam's kerf — are keyed
+       * on the answer, so two machines on one account stop overwriting each
+       * other's numbers.
+       */
+      void this.sendCommand('$I');
       return true;
     } catch (err: any) {
       await transport.disconnect().catch(() => {});
@@ -399,10 +423,55 @@ class WebSerialManager {
     // The settings described the controller that just went away, and the next
     // one plugged in may be a different machine entirely.
     this.grblSettings.clear();
+    this.grblVersion = '';
+    this.grblOptions = '';
+    this.grblBuildName = '';
+    writeActiveMachineId(null);
     this.guideSpotRestoreLaserMode = false;
     this.workOffset = [0, 0, 0];
     this.status = { ...INITIAL_STATUS };
     this.notify();
+  }
+
+  /**
+   * Publishes which machine is on the other end, for anything keyed on it.
+   *
+   * Written to the machine settings as well as the status, because the G-code
+   * exporter reads its machine-level figures straight from there rather than
+   * being handed the serial manager — the same way it reads the spindle range
+   * and the laser source.
+   */
+  private publishMachineId(): void {
+    const id =
+      this.transportMode === 'wifi' && this.cloudDeviceId
+        ? `box:${this.cloudDeviceId}`
+        : this.grblBuildName
+          ? `name:${this.grblBuildName}`
+          : this.grblVersion
+            ? `grbl:${this.grblVersion}/${this.grblOptions}`
+            : undefined;
+    writeActiveMachineId(id ?? null);
+    this.update({ machineId: id, machineName: this.grblBuildName || undefined });
+  }
+
+  /**
+   * Writes a name into the controller's own EEPROM, so this machine is
+   * recognisable next time and on any other computer.
+   *
+   * Deliberately not automatic. It is a write to the controller's memory, and
+   * a machine that already carries a name — from its maker, or from another
+   * app — should not have it taken away by something the user did not ask for.
+   */
+  public async nameMachine(name: string): Promise<void> {
+    const safe = name.replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 32);
+    if (!safe) {
+      this.update({ lastError: 'A machine name needs some letters or digits in it.' });
+      return;
+    }
+    await this.sendCommand(`$I=${safe}`);
+    // Read it back rather than assuming: if the controller refused the write,
+    // the name it reports is still the old one and the id should say so.
+    await this.sendCommand('$I');
   }
 
   public async sendCommand(cmd: string) {
@@ -1514,6 +1583,32 @@ class WebSerialManager {
       }
       // No `return`: a `$$` line is followed by its own `ok`, and the waiter
       // logic below is what pairs that up.
+    }
+
+    /*
+     * `$I` reply: `[VER:1.1h.20190830:BUILD STRING]` and `[OPT:VZ,15,128]`.
+     *
+     * The third field of VER is free text the owner writes with `$I=`, and it
+     * is empty on every machine that has never been named. When it is there it
+     * identifies this machine exactly; when it is not, the version and options
+     * together identify the *model*, which still tells a diode engraver from a
+     * CO2 tube but cannot tell two identical machines apart. Named beats
+     * derived, which is why the UI offers to write one.
+     */
+    if (line.startsWith('[VER:')) {
+      const body = line.slice(5).replace(/\]$/, '');
+      const firstColon = body.indexOf(':');
+      const version = firstColon >= 0 ? body.slice(0, firstColon) : body;
+      const name = firstColon >= 0 ? body.slice(firstColon + 1).trim() : '';
+      this.grblVersion = version;
+      this.grblBuildName = name;
+      this.publishMachineId();
+      return;
+    }
+    if (line.startsWith('[OPT:')) {
+      this.grblOptions = line.slice(5).replace(/\]$/, '');
+      this.publishMachineId();
+      return;
     }
 
     // Probe result: [PRB:0.000,0.000,-12.345:1] — where the probe triggered,

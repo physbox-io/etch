@@ -427,6 +427,19 @@ export interface MachineStatus {
    * on claiming the spot is lit after any of those.
    */
   guideSpot: boolean;
+  /**
+   * Which machine this is, as stably as the controller can say.
+   *
+   * A Tekno Box has a real device id. Over USB there is only what GRBL will
+   * tell you: `$I` reports its firmware version, its compile options, and a
+   * build-info string the owner can write to it — so a named machine is known
+   * for certain and an unnamed one is only known by its model. It matters
+   * because settings that describe the machine rather than the job — the kerf
+   * its beam burns, above all — are wrong when carried to a different one.
+   */
+  machineId?: string;
+  /** The name written into the controller with `$I=`, if it has one. */
+  machineName?: string;
   lastResponse?: string;
   /** Last refusal or probe failure, for surfacing in the UI rather than the console. */
   lastError?: string;

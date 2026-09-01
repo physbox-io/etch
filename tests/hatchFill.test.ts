@@ -143,7 +143,12 @@ const baseRect: EtchElement = {
 
 describe('G-code machining modes', () => {
   it('outline mode cuts only the contour', () => {
-    const g = generateGCode(docWith({ ...baseRect, machining: 'outline' }), { laserMode: true });
+    // Kerf off: compensation rounds the corners, and a rounded rectangle is
+    // not four moves. Kerf has its own tests.
+    const g = generateGCode(docWith({ ...baseRect, machining: 'outline' }), {
+      laserMode: true,
+      laserKerfMm: 0,
+    });
     expect(g.split('\n').filter((l) => l.startsWith('G1 X')).length).toBe(4);
   });
 
@@ -160,11 +165,11 @@ describe('G-code machining modes', () => {
   it('honours "outline off" for a filled element', () => {
     const withOutline = generateGCode(
       docWith({ ...baseRect, machining: 'filled', hatchSpacing: 1, hatchOutline: true }),
-      { laserMode: true }
+      { laserMode: true, laserKerfMm: 0 }
     );
     const without = generateGCode(
       docWith({ ...baseRect, machining: 'filled', hatchSpacing: 1, hatchOutline: false }),
-      { laserMode: true }
+      { laserMode: true, laserKerfMm: 0 }
     );
     const count = (s: string) => s.split('\n').filter((l) => l.startsWith('G1 X')).length;
     expect(count(withOutline) - count(without)).toBe(4);
@@ -189,7 +194,10 @@ describe('G-code machining modes', () => {
     };
     // Use the real signature function rather than restating its format here.
     const sig = outlineSignature(text);
-    const g = generateGCode(docWith({ ...text, outlineSig: sig }), { laserMode: true });
+    const g = generateGCode(docWith({ ...text, outlineSig: sig }), {
+      laserMode: true,
+      laserKerfMm: 0,
+    });
     expect(g).not.toMatch(/SKIPPED/);
     expect(g.split('\n').filter((l) => l.startsWith('G1 X')).length).toBeGreaterThan(3);
   });

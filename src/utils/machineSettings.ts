@@ -75,6 +75,8 @@ export const SYNCED_MACHINE_PARAMETER_KEYS: readonly string[] = [
   'etch_spindle_min_rpm',
   'etch_spindle_max_rpm',
   'etch_laser_source',
+  'etch_laser_kerf_mm',
+  'etch_laser_kerf_by_machine',
 ];
 
 /**
@@ -111,6 +113,134 @@ export function writeShimThickness(value: number): number {
   try {
     localStorage.setItem(SHIM_THICKNESS_KEY, String(clamped));
     syncCloudParameters('etch', { [SHIM_THICKNESS_KEY]: clamped });
+  } catch {
+    // Non-fatal: the setting just won't survive a reload.
+  }
+  return clamped;
+}
+
+const LASER_KERF_BY_MACHINE_KEY = 'etch_laser_kerf_by_machine';
+const ACTIVE_MACHINE_KEY = 'etch_active_machine_id';
+
+/**
+ * Which machine is on the other end right now, as `webSerialManager` last
+ * reported it — `box:<id>` for a Tekno Box, `name:<what the owner wrote with
+ * $I=>`, or `grbl:<version>/<options>` for a controller that has never been
+ * named.
+ *
+ * Kept in localStorage rather than passed around because the readers here are
+ * called from the G-code exporter, which reads the spindle range and the laser
+ * source the same way and has no business holding a reference to the serial
+ * manager. Not synced to the account: it describes what is plugged into *this*
+ * computer at *this* moment.
+ */
+export function writeActiveMachineId(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_MACHINE_KEY, id);
+    else localStorage.removeItem(ACTIVE_MACHINE_KEY);
+  } catch {
+    // Non-fatal: settings just fall back to the account-wide default.
+  }
+}
+
+export function readActiveMachineId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_MACHINE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function readKerfByMachine(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(LASER_KERF_BY_MACHINE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
+}
+
+const LASER_KERF_KEY = 'etch_laser_kerf_mm';
+
+/**
+ * How wide a slot the beam burns, in mm.
+ *
+ * A beam is not a line. It takes material off both sides of where it was
+ * pointed, so a part cut on its own outline finishes one kerf undersized and
+ * every hole one kerf oversized — exactly the error a router's cutter radius
+ * compensation exists to remove, at a tenth of the size. Small enough to
+ * ignore on a bracket; on a solder paste stencil it is the difference between
+ * a joint and a bridge.
+ *
+ * 0.1 mm is a focused diode's slot in thin stock, and a fair starting point
+ * for a small tube. It is not a constant of the machine, though — it widens
+ * with thicker stock, a defocused head and a slower pass — so it is offered as
+ * a setting and worth measuring: cut a square of a known size, measure what
+ * comes out, and the difference divided by two is this number.
+ */
+export const DEFAULT_LASER_KERF_MM = 0.1;
+
+/** Beyond this it is not a kerf, it is a slot being cut on purpose. */
+export const MAX_LASER_KERF_MM = 2;
+
+export function clampLaserKerf(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_LASER_KERF_MM;
+  return Math.min(MAX_LASER_KERF_MM, value);
+}
+
+/**
+ * The kerf for the machine currently connected, or the account-wide figure
+ * when nothing is connected or this machine has never been measured.
+ *
+ * Two lasers on one account do not burn the same slot — a 5 W diode and a
+ * 40 W tube are not close — so the number is stored per machine as well as
+ * once for everything. The plain figure stays the fallback: a machine that has
+ * never been measured should still get a sane offset rather than none.
+ */
+export function readLaserKerf(machineId: string | null = readActiveMachineId()): number {
+  if (machineId) {
+    const perMachine = readKerfByMachine()[machineId];
+    if (Number.isFinite(perMachine)) return clampLaserKerf(perMachine);
+  }
+  try {
+    const raw = localStorage.getItem(LASER_KERF_KEY);
+    if (raw === null) return DEFAULT_LASER_KERF_MM;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? clampLaserKerf(parsed) : DEFAULT_LASER_KERF_MM;
+  } catch {
+    return DEFAULT_LASER_KERF_MM;
+  }
+}
+
+/**
+ * Records a measured kerf.
+ *
+ * Against the connected machine when there is one, so plugging the other laser
+ * in brings its own figure back rather than inheriting a number measured on a
+ * different beam. With nothing connected there is nothing to key it to, so it
+ * sets the fallback — which is also what a machine that has never been
+ * measured will use.
+ *
+ * Both go to the account: the map is one JSON parameter, so a second computer
+ * signing in gets every machine's figure, and recognises them by the same ids.
+ */
+export function writeLaserKerf(
+  value: number,
+  machineId: string | null = readActiveMachineId()
+): number {
+  const clamped = clampLaserKerf(value);
+  try {
+    if (machineId) {
+      const next = { ...readKerfByMachine(), [machineId]: clamped };
+      const encoded = JSON.stringify(next);
+      localStorage.setItem(LASER_KERF_BY_MACHINE_KEY, encoded);
+      syncCloudParameters('etch', { [LASER_KERF_BY_MACHINE_KEY]: encoded });
+    } else {
+      localStorage.setItem(LASER_KERF_KEY, String(clamped));
+      syncCloudParameters('etch', { [LASER_KERF_KEY]: clamped });
+    }
   } catch {
     // Non-fatal: the setting just won't survive a reload.
   }

@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { NumberInput } from './NumberInput';
-import { LASER_SOURCES, describeLaserSource } from '../utils/machineSettings';
+import {
+  LASER_SOURCES,
+  describeLaserSource,
+  readLaserKerf,
+  writeLaserKerf,
+  MAX_LASER_KERF_MM,
+} from '../utils/machineSettings';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
 import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
@@ -14,6 +20,52 @@ import {
   type MaterialId,
 } from '../utils/materials';
 import { toolRackLabel, machineKind as machineKindOf, machineWords } from '../utils/tooling';
+
+/**
+ * The kerf field, beside the laser it belongs to.
+ *
+ * Re-read whenever the connected machine changes: the figure is stored against
+ * the machine, and plugging in the other laser has to bring that laser's number
+ * back rather than leave the last one on screen.
+ */
+const KerfField: React.FC<{ machineId?: string; machineName?: string }> = ({
+  machineId,
+  machineName,
+}) => {
+  // Initialised from the machine and never synchronised afterwards: the parent
+  // keys this component on the machine id, so connecting a different laser
+  // mounts a fresh field holding that laser's figure.
+  const [kerf, setKerf] = useState(() => readLaserKerf(machineId ?? null));
+
+  const scope = machineId
+    ? `Saved for ${machineName || 'this machine'} and synced to your account.`
+    : 'No machine connected, so this sets your account-wide default.';
+
+  return (
+    <div
+      className="flex items-center gap-1"
+      title={
+        'Width of the slot the beam burns. Cuts are offset half of it to the waste side, so parts ' +
+        'come out the size they were drawn — without it every part is a kerf undersized and every ' +
+        'hole a kerf oversized. Measure it: cut a square of a known size, and the difference ' +
+        `divided by two is this number. 0 drives the beam down the line. ${scope}`
+      }
+    >
+      <span className="text-slate-500 dark:text-slate-400">kerf</span>
+      <NumberInput
+        value={kerf}
+        min={0}
+        max={MAX_LASER_KERF_MM}
+        step={0.01}
+        fallbackOnBlur={kerf}
+        onChange={(v) => setKerf(v ?? 0)}
+        onCommit={() => setKerf(writeLaserKerf(kerf, machineId ?? null))}
+        className="w-12 bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none border-none"
+      />
+      <span className="text-slate-500 dark:text-slate-400">mm</span>
+    </div>
+  );
+};
 
 /** Common machining grid pitches, in mm. */
 const GRID_PRESETS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -224,6 +276,14 @@ export const BottomStatusBar: React.FC = () => {
                 </option>
               ))}
             </select>
+          )}
+
+          {machineKind === 'laser' && (
+            <KerfField
+              key={machineStatus.machineId ?? 'no-machine'}
+              machineId={machineStatus.machineId}
+              machineName={machineStatus.machineName}
+            />
           )}
 
           {machineKind === 'cnc' && (

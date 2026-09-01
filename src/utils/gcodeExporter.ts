@@ -37,7 +37,13 @@ import {
   type SpindleRange,
 } from './feeds';
 import { DEFAULT_STOCK_THICKNESS_MM, findMaterial } from './materials';
-import { readSpindleRange, readLaserSource, describeLaserSource, type LaserSource } from './machineSettings';
+import {
+  readSpindleRange,
+  readLaserSource,
+  readLaserKerf,
+  describeLaserSource,
+  type LaserSource,
+} from './machineSettings';
 import { strokeBandPasses, offsetContours, type OffsetSide } from './contourOffset';
 import { planMoves, type PlannedMove, type PassOrder } from './toolpathMoves';
 import { removeOverlapLines } from './dedupeOverlaps';
@@ -131,6 +137,15 @@ export interface GCodeOptions {
   /** Override the derived allowance, in mm. Advanced use only. */
   finishAllowanceMm?: number;
   /**
+   * Width of the slot the beam burns, in mm. Read from the machine settings.
+   *
+   * The laser's answer to cutter radius compensation: the path is offset by
+   * half of it, to the waste side, so the part comes out the size it was
+   * drawn. 0 drives the beam down the centreline, which is what a scored line
+   * wants and what a cut part does not.
+   */
+  laserKerfMm?: number;
+  /**
    * Curve onto the finished wall along a tangent instead of driving straight at
    * it. On by default, and skipped by itself wherever there is no room in
    * waste — see `planLead`.
@@ -138,9 +153,12 @@ export interface GCodeOptions {
   leadInOut?: boolean;
 }
 // Kerf compensation is no longer an option because it is no longer optional:
-// cutting on the centreline makes every part undersized by half the cutter, so
-// the offset is applied by default and `cutSide: 'on'` is how you opt out. See
-// utils/contourOffset.ts.
+// cutting on the centreline makes every part undersized by half the cutter —
+// or, on a laser, by half the slot the beam burns — so the offset is applied
+// by default on both machines and `cutSide: 'on'` is how you opt out. The
+// laser's figure comes from the machine settings (`readLaserKerf`), because a
+// beam's kerf depends on the stock and the focus in a way a cutter's diameter
+// does not. See utils/contourOffset.ts.
 
 /** A stretch of a contour left uncut, holding the part in the stock. */
 export interface TabSpan {
@@ -771,6 +789,7 @@ export function planToolpath(
       material,
       options.spindle,
       options.laser,
+      options.laserKerfMm ?? 0,
       stock,
       options.customCncTools
     );
@@ -1569,6 +1588,7 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     overscan: true,
     spindle: readSpindleRange(),
     laser: readLaserSource(),
+    laserKerfMm: readLaserKerf(),
     ...opts,
   };
 }
@@ -1657,6 +1677,8 @@ function resolveLayerCutting(
   material: ReturnType<typeof findMaterial>,
   spindle: SpindleRange,
   laser: LaserSource,
+  /** Width of the slot the beam burns, mm. Ignored on a router. */
+  laserKerfMm: number,
   stock: StockSettings,
   customCncTools?: ToolProfile[]
 ): LayerCutting {
@@ -1708,6 +1730,32 @@ function resolveLayerCutting(
       );
     }
 
+    /*
+     * Kerf compensation, which is cutter radius compensation with a smaller
+     * radius.
+     *
+     * The beam removes material either side of where it is pointed, so a part
+     * cut down its own outline finishes a kerf undersized and every hole a
+     * kerf oversized. Half the kerf, offset to the waste side, puts both back
+     * — the same correction the router has always had, and the same reason:
+     * driving the centre of the cut down the drawn line is not the same as
+     * cutting to the line.
+     *
+     * `grooveRadius` stays 0. That one is how wide a pass *covers* for fill
+     * and engrave spacing, and the visible mark a beam leaves is wider than
+     * the slot it cuts — the two numbers are not the same measurement.
+     */
+    const kerf = Math.max(0, laserKerfMm);
+    const side = resolveCutSide(layer);
+    if (kerf > 0 && side !== 'on') {
+      notes.push(
+        `Layer "${layer.name}" is offset ${(kerf / 2).toFixed(3)}mm to the ` +
+          `${side === 'outside' ? 'outside' : 'inside'} for a ${kerf}mm kerf, so it finishes the ` +
+          `size it was drawn. Measure a test cut and set the kerf in the status bar if parts come ` +
+          `out over or under.`
+      );
+    }
+
     return {
       speed,
       power,
@@ -1717,10 +1765,10 @@ function resolveLayerCutting(
       zDepth: 0,
       depths: new Array(passes).fill(0),
       stepover: 0,
-      radius: 0,
+      radius: kerf / 2,
       grooveRadius: 0,
       flatBottomed: false,
-      side: 'on',
+      side,
       tabs: false,
       tabHeight: 0,
       toolName,
@@ -1934,6 +1982,8 @@ function roughingPlan(
     material,
     options.spindle,
     options.laser,
+    // A rougher is a router by definition; the kerf figure never reaches it.
+    0,
     stock,
     options.customCncTools
   );

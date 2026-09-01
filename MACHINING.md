@@ -113,6 +113,9 @@ grid, read the cell you like, and the numbers in §5 can be corrected against it
 | Overscan is **laser-only** | `overscanFor` | On a laser the beam is dark outside the shape. On a router the cutter is at depth, so a run-up would mill a groove through material meant to survive. | **Derived** |
 | Run-up emitted as `G1` at `S0`, never `G0`+`M5` | `toolpathMoves.ts` | A spindle state change syncs GRBL's planner — the machine would stop dead at the end of every scanline. Riding `S0` changes power without stopping. | **Documented** (GRBL laser mode) |
 | Run-up clamped to the stock | `clampToStock` | A fill at the bed edge would otherwise be given a run-up past it, and the job dies on a soft-limit alarm. | **Derived** |
+| Cuts offset by **half the kerf**, to the waste side | `resolveLayerCutting`, `contourOffset.ts` | A beam removes material either side of where it is pointed, so a part cut on its outline finishes a kerf under and its holes a kerf over. Same correction as a router's cutter radius, at a tenth of the size. Scored and engraved layers stay on the line (`cutSide: 'on'`). | **Derived** |
+| `DEFAULT_LASER_KERF_MM = 0.1` | `machineSettings.ts` | A focused diode's slot in thin stock, and a fair start for a small tube. It is not a constant — it widens with thicker stock, a defocused head and a slower pass — so it is a setting, and the UI says to measure it from a test cut. | **Judgement** — the default only. The number in use should be measured. |
+| Kerf stored per machine, keyed on `$I` | `machineSettings.ts`, `webSerialManager.ts` | A 5 W diode and a 40 W tube do not burn the same slot, and one account can have both. GRBL's `$I` carries a build-info string the owner can write with `$I=`, which is the only stable identity a controller offers; unnamed, it falls back to version and options, which identify the model but not the individual machine. | **Documented** (GRBL 1.1 `$I` / `$I=`) |
 
 ## 7. Geometry tolerances
 

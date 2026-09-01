@@ -56,6 +56,8 @@ export const MachineControlModal: React.FC = () => {
   const [cloudDeviceId, setCloudDeviceId] = useState(
     () => localStorage.getItem('etchCloudDeviceId') || ''
   );
+  /** What to write into the controller with `$I=`, before it is written. */
+  const [machineNameDraft, setMachineNameDraft] = useState('');
 
   const [consoleInput, setConsoleInput] = useState('');
   const [log, setLog] = useState<string[]>([]);
@@ -150,6 +152,68 @@ export const MachineControlModal: React.FC = () => {
                 </button>
               )}
             </div>
+
+            {/*
+              Which machine this is, and a way to make it recognisable.
+
+              Only over USB, and only when the controller has not been named
+              already. A Tekno Box has a real device id and needs none of this;
+              a GRBL controller has nothing to identify it but its firmware
+              version, which is the same on every machine of that model. Naming
+              it writes a string into the controller's own EEPROM with `$I=`,
+              so it stays named for every app on every computer — which is what
+              lets two lasers on one account keep their own kerf.
+            */}
+            {status.connected && transportMode === 'usb' && (
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-xl space-y-2">
+                <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                  This machine
+                  {status.machineName ? (
+                    <span className="ml-1 font-mono text-amber-600 dark:text-amber-400">
+                      {status.machineName}
+                    </span>
+                  ) : (
+                    <span className="ml-1 font-normal text-slate-500 dark:text-slate-400">
+                      unnamed
+                    </span>
+                  )}
+                </div>
+                {status.machineName ? (
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Settings measured on this machine — its kerf above all — are stored against
+                    that name and follow it to any computer you sign in on.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      Name it and its own settings stay its own. Without a name it is known only
+                      by its firmware version, which every machine of this model shares — so a
+                      second laser would quietly inherit this one&apos;s kerf. The name is written
+                      into the controller itself.
+                    </p>
+                    <div className="flex gap-1.5">
+                      <input
+                        value={machineNameDraft}
+                        onChange={(e) => setMachineNameDraft(e.target.value)}
+                        placeholder="Big CO2, Diode on the bench…"
+                        maxLength={32}
+                        className="flex-1 min-w-0 px-2 py-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-[11px] text-slate-800 dark:text-slate-200 outline-none"
+                      />
+                      <button
+                        onClick={() => {
+                          void webSerialManager.nameMachine(machineNameDraft);
+                          setMachineNameDraft('');
+                        }}
+                        disabled={!machineNameDraft.trim()}
+                        className="px-2 py-1 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-40 text-slate-800 dark:text-slate-200 text-[11px] font-semibold rounded cursor-pointer"
+                      >
+                        Name it
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* How the machine is reached. WiFi is a Tekno Box, reached through
                 physbox rather than by address — the box is behind the router
