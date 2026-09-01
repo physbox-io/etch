@@ -21,8 +21,19 @@ const HANDOFF_VERSION = '1';
 
 export interface SvgHandoff {
   svg: string;
-  /** What the sender called it, for the import report. */
+  /** What the sender called it — the document's name, not just a note. */
   name: string | null;
+  /**
+   * What the sender expects it to be cut from, if it knows.
+   *
+   * Feeds are derived from the material and the stock thickness, so artwork
+   * that arrives without them is planned against whatever the last document
+   * happened to be set to — plywood, usually, which is not what a 0.2mm
+   * stencil is cut from. Validated on arrival: an id this build does not know
+   * is ignored rather than written into the document.
+   */
+  material: string | null;
+  thicknessMm: number | null;
 }
 
 function fromBase64Url(data: string): Uint8Array {
@@ -79,9 +90,12 @@ export async function readSvgHandoff(): Promise<SvgHandoff | null> {
   }
 
   const bytes = fromBase64Url(data);
+  const thickness = Number(params.get('thickness'));
   return {
     svg: params.get('gz') === '1' ? await gunzip(bytes) : new TextDecoder().decode(bytes),
     name: params.get('name'),
+    material: params.get('material'),
+    thicknessMm: Number.isFinite(thickness) && thickness > 0 ? thickness : null,
   };
 }
 

@@ -217,7 +217,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
   let count = 0;
   const seenUse = new Set<Element>();
 
-  const layerFor = (colour: string): string => {
+  const layerFor = (colour: string, label?: string): string => {
     const key = colour.toLowerCase();
     const existing = byColour.get(key);
     if (existing) return existing;
@@ -227,7 +227,10 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     // stroke colour in the file becomes its own cut/etch layer.
     layers.push({
       id,
-      name: `Imported ${colour}`,
+      // "Imported #ff0000" tells the operator nothing about which layer is
+      // which. A drawing program that named its groups — Inkscape's labels,
+      // an SVG <title>, a hand-written id — has already said something better.
+      name: label || `Imported ${colour}`,
       color: colour,
       operation: 'cut',
       visible: true,
@@ -240,7 +243,35 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     return id;
   };
 
-  const walk = (node: Element, parentMatrix: Matrix, inherited: InheritedStyle, depth: number) => {
+  /**
+   * What a container calls itself, if anything worth repeating.
+   *
+   * `<title>` is the standard way an SVG names a group, `inkscape:label` is
+   * what the drawing program most people export from writes, and an `id` is a
+   * fair third — except that Illustrator and friends emit ids like "g4721",
+   * which is worse than no name at all.
+   */
+  const labelOf = (node: Element): string | undefined => {
+    for (const child of Array.from(node.children)) {
+      if (child.tagName.toLowerCase() === 'title') {
+        const text = (child.textContent || '').trim();
+        if (text) return text;
+      }
+    }
+    const inkscape = node.getAttribute('inkscape:label');
+    if (inkscape?.trim()) return inkscape.trim();
+    const id = node.getAttribute('id')?.trim();
+    if (id && !/^(g|layer|path|svg|group)[-_]?\d+$/i.test(id)) return id;
+    return undefined;
+  };
+
+  const walk = (
+    node: Element,
+    parentMatrix: Matrix,
+    inherited: InheritedStyle,
+    depth: number,
+    label?: string
+  ) => {
     if (depth > 64) {
       warnings.push('Stopped at 64 levels of nesting (possible cyclic <use>).');
       return;
@@ -259,7 +290,10 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     // sheet resolves to — without it the whole referenced subtree fell through
     // to the shape branch and was dropped without a warning.
     if (tag === 'g' || tag === 'svg' || tag === 'a' || tag === 'switch' || tag === 'symbol') {
-      for (const child of Array.from(node.children)) walk(child, matrix, style, depth + 1);
+      // The nearest named container wins, so a named group inside an unnamed
+      // one still names its own layer.
+      const here = labelOf(node) ?? label;
+      for (const child of Array.from(node.children)) walk(child, matrix, style, depth + 1, here);
       return;
     }
 
@@ -274,7 +308,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
       seenUse.add(target);
       const ux = parseFloat(node.getAttribute('x') || '0') || 0;
       const uy = parseFloat(node.getAttribute('y') || '0') || 0;
-      walk(target, multiply(matrix, [1, 0, 0, 1, ux, uy]), style, depth + 1);
+      walk(target, multiply(matrix, [1, 0, 0, 1, ux, uy]), style, depth + 1, label);
       seenUse.delete(target);
       return;
     }
@@ -293,7 +327,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
           id: `imported_text_${++count}_${Date.now()}`,
           name: `Imported Text ${count}`,
           type: 'text',
-          layerId: layerFor(stroke),
+          layerId: layerFor(stroke, label),
           x: matrix[0] * origin.x + matrix[2] * origin.y + matrix[4],
           y: matrix[1] * origin.x + matrix[3] * origin.y + matrix[5],
           text: content,
@@ -327,7 +361,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
       id: `imported_${++count}_${Date.now()}`,
       name: `Imported ${node.tagName.toLowerCase()} ${count}`,
       type: 'path',
-      layerId: layerFor(stroke),
+      layerId: layerFor(stroke, label),
       x: 0,
       y: 0,
       d: bakedD,

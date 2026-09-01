@@ -10,6 +10,7 @@ import type { EtchElement } from '../src/types/etch';
  */
 const STENCIL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="30.000mm" height="20.000mm" viewBox="0 0 30.000 20.000">
   <g fill="none" stroke="#ff0000" stroke-width="0.05">
+    <title>Solder paste stencil</title>
     <path d="M0.000 0.000L30.000 0.000L30.000 20.000L0.000 20.000Z"/>
     <path d="M10.000 9.000L11.000 9.000L11.000 10.300L10.000 10.300Z"/>
     <path d="M12.900 9.000L13.900 9.000L13.900 10.300L12.900 10.300Z"/>
@@ -21,12 +22,17 @@ function toBase64Url(bytes: Uint8Array): string {
 }
 
 /** The fragment Volt builds, as `encodeSvgHandoff` builds it. */
-function fragment(svg: string, opts: { gz?: boolean; v?: string; name?: string } = {}): string {
+function fragment(
+  svg: string,
+  opts: { gz?: boolean; v?: string; name?: string; material?: string; thickness?: string } = {}
+): string {
   const gz = opts.gz ?? true;
   const params = new URLSearchParams({
     v: opts.v ?? '1',
     name: opts.name ?? 'PCB paste stencil 24x22',
     gz: gz ? '1' : '0',
+    ...(opts.material ? { material: opts.material } : {}),
+    ...(opts.thickness ? { thickness: opts.thickness } : {}),
     data: toBase64Url(gz ? gzipSync(Buffer.from(svg)) : Buffer.from(svg)),
   });
   return params.toString();
@@ -73,6 +79,21 @@ describe('readSvgHandoff', () => {
     expect(await readSvgHandoff()).toBeNull();
   });
 
+  // Feeds come from the material and the thickness, so artwork that arrives
+  // without them is planned against whatever document was last open — 6mm
+  // plywood, by default, which is not a 0.2mm stencil.
+  it('carries the stock the sender expects', async () => {
+    setHash(fragment(STENCIL_SVG, { material: 'film', thickness: '0.2' }));
+    const handoff = await readSvgHandoff();
+    expect(handoff?.material).toBe('film');
+    expect(handoff?.thicknessMm).toBe(0.2);
+  });
+
+  it('ignores a thickness that is not one', async () => {
+    setHash(fragment(STENCIL_SVG, { material: 'film', thickness: 'thick' }));
+    expect((await readSvgHandoff())?.thicknessMm).toBeNull();
+  });
+
   it('refuses a version it does not know', async () => {
     setHash(fragment(STENCIL_SVG, { v: '2' }));
     await expect(readSvgHandoff()).rejects.toThrow(/newer version/);
@@ -98,6 +119,11 @@ describe('a handed-over stencil survives the trip', () => {
     const result = importSVG(STENCIL_SVG);
     expect(new Set(result.layers.map((l) => l.id)).size).toBe(1);
   });
+
+  // "Imported #ff0000" tells an operator nothing about which layer is which.
+  it('takes its layer name from the artwork', () => {
+    expect(importSVG(STENCIL_SVG).layers[0].name).toBe('Solder paste stencil');
+  });
 });
 
 describe('placeUnscaled', () => {
@@ -120,5 +146,37 @@ describe('placeUnscaled', () => {
     const xs = [...elements[0].d!.matchAll(/[-\d.]+ [-\d.]+/g)].map((m) => parseFloat(m[0]));
     expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(200, 3);
     expect(note).toMatch(/true size/);
+  });
+});
+
+describe('layer names from the file', () => {
+  // The Inkscape namespace is declared because a real Inkscape file declares
+  // it — an undeclared prefix is an XML parse error, not a stray attribute.
+  const g = (attrs: string, inner = '<path d="M0 0L10 0L10 10Z"/>') =>
+    `<svg xmlns="http://www.w3.org/2000/svg" ` +
+    `xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" ` +
+    `width="20mm" height="20mm" viewBox="0 0 20 20">` +
+    `<g fill="none" stroke="#00ff00" ${attrs}>${inner}</g></svg>`;
+
+  it('prefers an SVG <title>', () => {
+    expect(importSVG(g('', '<title>Score lines</title><path d="M0 0L10 0L10 10Z"/>')).layers[0].name)
+      .toBe('Score lines');
+  });
+
+  it("falls back to Inkscape's label", () => {
+    expect(importSVG(g('inkscape:label="Cut through"')).layers[0].name).toBe('Cut through');
+  });
+
+  it('takes a hand-written id', () => {
+    expect(importSVG(g('id="outer-profile"')).layers[0].name).toBe('outer-profile');
+  });
+
+  // Illustrator and friends emit ids like "g4721", which is worse than no name.
+  it('ignores an auto-generated id', () => {
+    expect(importSVG(g('id="g4721"')).layers[0].name).toBe('Imported #00ff00');
+  });
+
+  it('still names a layer when the file says nothing', () => {
+    expect(importSVG(g('')).layers[0].name).toBe('Imported #00ff00');
   });
 });

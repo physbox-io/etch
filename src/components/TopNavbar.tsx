@@ -4,7 +4,8 @@ import { useStore } from '../store/useStore';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
-import { readSvgHandoff, placeUnscaled } from '../utils/svgHandoff';
+import { readSvgHandoff, placeUnscaled, type SvgHandoff } from '../utils/svgHandoff';
+import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
 import { UserProfileButton } from './UserProfileButton';
@@ -161,7 +162,10 @@ export const TopNavbar: React.FC = () => {
    * differ only in whether the artwork may be resized to fit the bed: a
    * drawing may, a part whose size is the point may not.
    */
-  const applyImportedSvg = (content: string, opts: { mayScale: boolean }) => {
+  const applyImportedSvg = (
+    content: string,
+    opts: { mayScale: boolean; handoff?: SvgHandoff; replace?: boolean }
+  ) => {
     const doc = useStore.getState().document;
     const result = importSVG(content);
     const placed = opts.mayScale
@@ -173,19 +177,51 @@ export const TopNavbar: React.FC = () => {
       return;
     }
 
-    // Merge in the layers the file's stroke colours implied, skipping any
-    // whose id is already present.
-    const existingIds = new Set(doc.layers.map((l) => l.id));
-    const newLayers = result.layers.filter((l) => !existingIds.has(l.id));
-
-    setDocument({
-      ...doc,
-      layers: [...doc.layers, ...newLayers],
-      elements: [...doc.elements, ...placed.elements],
-    });
-
     const notes = [...result.warnings];
     if (placed.note) notes.push(placed.note);
+
+    // What the sender says the stock is. Checked against the catalogue rather
+    // than trusted: an id from a newer sibling app would otherwise be written
+    // into the document and derive nothing.
+    const material = opts.handoff?.material;
+    const known = material ? materialCatalog().find((m) => m.id === material) : undefined;
+    if (material && !known) {
+      notes.push(`Ignored an unknown material "${material}" — set the stock yourself before cutting.`);
+    }
+    const stock = {
+      ...(known ? { material: known.id } : {}),
+      ...(opts.handoff?.thicknessMm ? { stockThickness: opts.handoff.thicknessMm } : {}),
+    };
+    if (known) {
+      notes.push(
+        `Stock set to ${known.name}` +
+          (opts.handoff?.thicknessMm ? ` at ${opts.handoff.thicknessMm}mm` : '') +
+          ' — check it matches what is on the bed.'
+      );
+    }
+
+    if (opts.replace) {
+      setDocument({
+        ...doc,
+        ...stock,
+        name: opts.handoff?.name || doc.name,
+        layers: result.layers,
+        elements: placed.elements,
+        selectedIds: [],
+      });
+    } else {
+      // Merge in the layers the file's stroke colours implied, skipping any
+      // whose id is already present.
+      const existingIds = new Set(doc.layers.map((l) => l.id));
+      const newLayers = result.layers.filter((l) => !existingIds.has(l.id));
+      setDocument({
+        ...doc,
+        ...stock,
+        layers: [...doc.layers, ...newLayers],
+        elements: [...doc.elements, ...placed.elements],
+      });
+    }
+
     setImportReport({
       count: placed.elements.length,
       size: result.bounds
@@ -212,7 +248,15 @@ export const TopNavbar: React.FC = () => {
    * Volt, say. Read once on mount; the fragment is cleared as it is read, so a
    * reload does not import it again.
    *
-   * Never scaled to the bed. What arrives this way is a part that has to match
+   * It arrives as a *document*, not as an addition to one. A stencil merged
+   * into whatever happened to be open comes up on top of somebody's keychain,
+   * sharing its layers and its material, and the first thing it does is derive
+   * feeds for 6mm plywood. So the open document is replaced — but only ever
+   * with a yes, because replacing resets the history and there is no undo back
+   * across it. Saying no still gets the artwork, alongside what is already
+   * there.
+   *
+   * Never scaled to the bed either way: what arrives this way has to match
    * something physical, and a stencil quietly resized to 95% lines up with
    * nothing while looking perfectly correct on screen.
    */
@@ -220,8 +264,15 @@ export const TopNavbar: React.FC = () => {
     readSvgHandoff()
       .then((handoff) => {
         if (!handoff) return;
-        applyImportedSvg(handoff.svg, { mayScale: false });
-        if (handoff.name) useStore.getState().setDocumentName(handoff.name);
+        const open = useStore.getState().document;
+        const replace =
+          open.elements.length === 0 ||
+          window.confirm(
+            `Replace "${open.name}" with ${handoff.name || 'the imported artwork'}?\n\n` +
+              'OK replaces it — the current document is not recoverable afterwards.\n' +
+              'Cancel keeps it and brings the artwork in alongside.'
+          );
+        applyImportedSvg(handoff.svg, { mayScale: false, handoff, replace });
       })
       .catch((err) => {
         setImportReport({

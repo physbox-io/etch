@@ -25,7 +25,8 @@ export type MaterialId =
   | 'aluminium'
   | 'glass'
   | 'stone'
-  | 'ceramic';
+  | 'ceramic'
+  | 'film';
 
 export interface MaterialProfile {
   id: MaterialId;
@@ -257,6 +258,38 @@ const MATERIALS: MaterialProfile[] = [
       // Dark cast acrylic takes a diode well; the clear stock most people have
       // does not, which is what the warning is for.
       diodeFactor: 1.5,
+    },
+  },
+  {
+    id: 'film',
+    name: 'Plastic film (stencil stock)',
+    // A router cannot hold film at all, so these exist only because every
+    // profile has them. See the note.
+    chiploadAt3mm: 0.02,
+    rpmAt3mm: 16000,
+    stepdownRatio: 0.5,
+    note:
+      'Not routable. A tenth of a millimetre of film cannot be clamped flat enough for a cutter ' +
+      'to shear it — it lifts into the tool and tears. This is laser stock.',
+    laser: {
+      note:
+        'Black polyester (PET/Mylar) at 0.1-0.15mm, or a printed single-layer shim. Cuts fast and ' +
+        'clean with air assist; the whole sheet is through in one pass, so watch for it lifting.',
+      warning:
+        'Only dark film cuts on a diode — clear PET and Mylar pass a blue beam straight through. ' +
+        'And never cut vinyl or PVC film: it releases hydrogen chloride, which corrodes the ' +
+        'machine and is dangerous to breathe. Extraction, not an open window.',
+      // By analogy with acrylic: the same order of polymer, vaporising rather
+      // than charring. Thin stock means the derived speed will hit the
+      // machine's ceiling long before the dose runs out, which is the right
+      // failure — it means "as fast as the gantry goes".
+      etchDoseJPerMm: 0.2,
+      fillDoseJPerMm2: 0.8,
+      cutDoseJPerMm2: 1.0,
+      maxPowerFraction: 1,
+      // Better than acrylic's 1.5: the point of black film is that it absorbs
+      // blue, which is the wavelength a diode has.
+      diodeFactor: 1.1,
     },
   },
   {
