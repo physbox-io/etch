@@ -351,12 +351,80 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           cutting, because a drawing that came out at 1/25 scale looks perfectly reasonable on
           screen.
         </Step>
+        <Step title="Artwork can also arrive by link">
+          A sibling app can hand a document straight over: Volt sends a PCB paste stencil as a
+          link that opens here with the artwork already loaded. It travels in the URL fragment, so
+          it never reaches a server or a log, and it is cleared from the address bar as it is read
+          — a reload will not import it twice. Artwork that arrives this way is never scaled to the
+          bed, because its size is the whole point of it; if it is bigger than the stock it is
+          placed at true size and reported, rather than quietly shrunk to fit.
+        </Step>
         <Step title="What is skipped">
           Embedded images, filters, gradients and text nodes have no toolpath equivalent and are
           reported as skipped rather than dropped in silence. Convert text to paths in your drawing
           program first, or retype it here.
         </Step>
       </Card>
+    </div>
+  ),
+
+  stencils: (
+    <div className="flex flex-col gap-4">
+      <H>🩹 Solder Paste Stencils</H>
+      <P>
+        A stencil is a thin sheet with an aperture over every SMD pad: lay it on the board,
+        squeegee paste across it, lift it off, place the parts, reflow. Physbox Volt generates them
+        from a milled PCB and sends them here to be cut — the apertures on one layer, the outline
+        on another, so they can be cut to opposite sides of the line and in the right order.
+      </P>
+      <Card>
+        <Step title="Cut the apertures first, the outline last">
+          The outline releases the part. Cut it first and every remaining aperture is being cut in
+          a sheet that is free to move. Apertures want the cut on the <em>inside</em> of the line
+          and the outline on the <em>outside</em>, which is what the two stroke colours are for.
+        </Step>
+        <Step title="Set the kerf yourself">
+          Laser cuts here are not kerf-compensated: the beam is driven down the line, so it removes
+          material either side and every aperture finishes about one kerf oversize. On a stencil
+          that is the difference between a clean joint and a bridge. Offset the aperture layer
+          inward by half your measured kerf — typically 0.05mm on a 0.1mm beam — before cutting.
+        </Step>
+        <Step title="Never scale it">
+          Artwork handed over by link is placed at true size and never fitted to the bed. If you
+          resize or scale it here, it lines up with nothing — and it will look perfectly correct on
+          screen while doing it.
+        </Step>
+      </Card>
+      <H>What to cut it from</H>
+      <Card>
+        <Step title="Polyimide (Kapton) film, 0.05–0.125mm">
+          The usual answer. The amber film absorbs blue well enough that a 12W diode goes through
+          it in a couple of fast passes with air assist, and at 0.1mm you are in the same thickness
+          range as a commercial foil. It holds roughly 0.65mm pitch, about twice as fine as a
+          printed stencil manages.
+        </Step>
+        <Step title="A printed black shim">
+          Volt also exports a blank single-layer shim to cut instead — thin dark film is a nuisance
+          to buy in ones, and one layer of black filament is the same thing. It must be black: this
+          is a blue light source, and it passes straight through natural or light-coloured plastic
+          without depositing the energy that cuts it.
+        </Step>
+        <Step title="What will not work">
+          Clear PET and Mylar transmit 450nm almost perfectly and simply do not cut. Neither does
+          the stainless or brass shim a commercial stencil is made from — that needs a fiber laser.
+          Cardstock cuts easily and works once, then fuzzes at the apertures and drinks flux.
+        </Step>
+      </Card>
+      <div className="rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 p-4">
+        <strong className="text-xs text-amber-900 dark:text-amber-200">
+          Extraction, not ventilation
+        </strong>
+        <p className="text-xs text-amber-800 dark:text-amber-300/90 mt-1 leading-relaxed">
+          Cutting polyimide and other plastic film produces fumes you should not be breathing.
+          Run it with a proper extractor ducted outside and the enclosure shut. An open window and
+          a desk fan are not the same thing.
+        </p>
+      </div>
     </div>
   ),
 

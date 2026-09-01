@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useStore } from '../store/useStore';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
+import { readSvgHandoff, placeUnscaled } from '../utils/svgHandoff';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
 import { UserProfileButton } from './UserProfileButton';
@@ -153,46 +154,85 @@ export const TopNavbar: React.FC = () => {
     downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.svg`);
   };
 
+  /**
+   * Merges an imported SVG into the document and reports what happened.
+   *
+   * Shared by the file picker and by artwork handed over in the URL. The two
+   * differ only in whether the artwork may be resized to fit the bed: a
+   * drawing may, a part whose size is the point may not.
+   */
+  const applyImportedSvg = (content: string, opts: { mayScale: boolean }) => {
+    const doc = useStore.getState().document;
+    const result = importSVG(content);
+    const placed = opts.mayScale
+      ? fitToBed(result.elements, result.bounds, doc.width, doc.height)
+      : placeUnscaled(result.elements, result.bounds, doc.width, doc.height);
+
+    if (placed.elements.length === 0) {
+      alert(result.warnings.join('\n') || 'Nothing could be imported from that SVG.');
+      return;
+    }
+
+    // Merge in the layers the file's stroke colours implied, skipping any
+    // whose id is already present.
+    const existingIds = new Set(doc.layers.map((l) => l.id));
+    const newLayers = result.layers.filter((l) => !existingIds.has(l.id));
+
+    setDocument({
+      ...doc,
+      layers: [...doc.layers, ...newLayers],
+      elements: [...doc.elements, ...placed.elements],
+    });
+
+    const notes = [...result.warnings];
+    if (placed.note) notes.push(placed.note);
+    setImportReport({
+      count: placed.elements.length,
+      size: result.bounds
+        ? `${result.bounds.width.toFixed(1)} × ${result.bounds.height.toFixed(1)} mm`
+        : null,
+      notes,
+    });
+  };
+
   const handleImportSvg = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (evt) => {
       const content = evt.target?.result as string;
-      if (!content) return;
-
-      const result = importSVG(content);
-      const fitted = fitToBed(result.elements, result.bounds, document.width, document.height);
-
-      if (fitted.elements.length === 0) {
-        alert(result.warnings.join('\n') || 'Nothing could be imported from that SVG.');
-        return;
-      }
-
-      // Merge in the layers the file's stroke colours implied, skipping any
-      // whose id is already present.
-      const existingIds = new Set(document.layers.map((l) => l.id));
-      const newLayers = result.layers.filter((l) => !existingIds.has(l.id));
-
-      setDocument({
-        ...document,
-        layers: [...document.layers, ...newLayers],
-        elements: [...document.elements, ...fitted.elements],
-      });
-
-      const notes = [...result.warnings];
-      if (fitted.note) notes.push(fitted.note);
-      setImportReport({
-        count: fitted.elements.length,
-        size: result.bounds
-          ? `${result.bounds.width.toFixed(1)} × ${result.bounds.height.toFixed(1)} mm`
-          : null,
-        notes,
-      });
+      if (content) applyImportedSvg(content, { mayScale: true });
     };
     reader.readAsText(file);
     e.target.value = '';
   };
+
+  /**
+   * Artwork handed over in the URL by a sibling app — a paste stencil from
+   * Volt, say. Read once on mount; the fragment is cleared as it is read, so a
+   * reload does not import it again.
+   *
+   * Never scaled to the bed. What arrives this way is a part that has to match
+   * something physical, and a stencil quietly resized to 95% lines up with
+   * nothing while looking perfectly correct on screen.
+   */
+  useEffect(() => {
+    readSvgHandoff()
+      .then((handoff) => {
+        if (!handoff) return;
+        applyImportedSvg(handoff.svg, { mayScale: false });
+        if (handoff.name) useStore.getState().setDocumentName(handoff.name);
+      })
+      .catch((err) => {
+        setImportReport({
+          count: 0,
+          size: null,
+          notes: [err?.message || 'That link could not be read.'],
+        });
+      });
+    // Once, on mount: the fragment is consumed by the first read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <header className="h-14 shrink-0 w-full bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between z-30 select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1.5 max-lg:gap-x-2 max-lg:gap-y-1.5">

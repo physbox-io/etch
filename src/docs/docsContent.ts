@@ -21,6 +21,7 @@ export const DOCS_TABS = [
       { id: 'combine', label: '➕ Combining Shapes' },
       { id: 'fill', label: '🪡 Engrave Fill & Hatch' },
       { id: 'import', label: '📥 SVG Import' },
+      { id: 'stencils', label: '🩹 Solder Paste Stencils' },
       { id: 'images', label: '🖼️ Photos & Dithering' },
     ],
   },

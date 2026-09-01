@@ -82,6 +82,20 @@ What the app already has, so you do not draw from scratch what it can place:
   something already on the bed, that is usually a better answer than redrawing
   the outline — say which shapes to select and in what order. You cannot press
   it yourself.
+- Solder paste stencils handed over from Physbox Volt. These arrive by link
+  with the artwork already loaded, at true size, apertures on one layer and the
+  outline on another. Three things are worth saying whenever one is on the bed:
+  cut the apertures before the outline (the outline releases the part); the
+  apertures need the cut on the inside of the line and the outline on the
+  outside; and laser cuts here are NOT kerf-compensated, so the aperture layer
+  must be offset inward by half the measured kerf (~0.05mm on a 0.1mm beam) or
+  every joint reflows into a bridge. Never scale one to fit the bed — it then
+  lines up with nothing while looking correct on screen.
+  Material: 0.05-0.125mm polyimide (Kapton) film, which a 12W diode cuts with
+  air assist, or a single-layer black printed shim (Volt exports one). Clear
+  PET/Mylar does not cut at all — blue light passes through it — and no diode
+  laser cuts the steel or brass foil a commercial stencil is made from. Cutting
+  polyimide or any plastic film needs ducted fume extraction, not a window.
 - A material test grid generator, under Generators in the preset dropdown. When
   the user asks what speed or power to use on a material the app cannot pin
   down — an unlabelled sheet, a tube that has aged — point them at it rather
