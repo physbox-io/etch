@@ -25,7 +25,6 @@ import {
   FolderInput,
   Info,
   Settings,
-  Image as ImageIcon,
   PanelRight,
 } from 'lucide-react';
 
@@ -57,7 +56,6 @@ export const TopNavbar: React.FC = () => {
     saveUserPresetByName,
     deleteUserPreset,
     openDocs,
-    openImageImport,
     isPropertiesOpen,
     setPropertiesOpen,
   } = useStore();
