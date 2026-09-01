@@ -372,82 +372,35 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
     <div className="flex flex-col gap-4">
       <H>🩹 Solder Paste Stencils</H>
       <P>
-        A stencil is a thin sheet with an aperture over every SMD pad: lay it on the board,
-        squeegee paste across it, lift it off, place the parts, reflow. Physbox Volt generates them
-        from a milled PCB and sends them here to be cut — the apertures on one layer, the outline
-        on another, so they can be cut to opposite sides of the line and in the right order.
+        A thin sheet with an aperture over every SMD pad: lay it on the board, squeegee paste
+        through it, lift it off, place the parts, reflow. Physbox Volt generates them from a milled
+        PCB and sends them here as a single layer — which is what lets the offsetter tell an
+        aperture from the outline, and what cuts the apertures before the outline frees the sheet.
       </P>
       <Card>
-        <Step title="Both of these happen on their own">
-          The apertures are cut before the outline, because contours are ordered innermost first
-          and the outline is what frees the sheet. And each is offset to its own waste side —
-          apertures shrink, the outline grows — because they arrive as one layer, so their nesting
-          is visible. Splitting them across two layers breaks both.
-        </Step>
         <Step title="Measure your kerf once">
           Cuts are offset by half the kerf in the status bar, which defaults to 0.1mm. On a stencil
-          the figure earns its keep: it is the difference between a clean joint and a bridge. Cut a
-          square of a known size, measure what comes out, halve the difference, and put that
-          number in.
+          that figure is the difference between a joint and a bridge. Cut a square of a known size,
+          measure it, halve the difference.
         </Step>
         <Step title="Never scale it">
-          Artwork handed over by link is placed at true size and never fitted to the bed. If you
-          resize or scale it here, it lines up with nothing — and it will look perfectly correct on
-          screen while doing it.
+          Handed-over artwork is placed at true size and never fitted to the bed. Resize it and it
+          lines up with nothing, while looking perfectly correct on screen.
+        </Step>
+        <Step title="Stock">
+          Thin, flat and opaque, 0.1–0.15mm; 5 mil is the commercial gauge. It has to absorb your
+          wavelength: a CO2 or UV laser takes almost any polymer, a blue diode needs dark stock —
+          black polyester, or the single-layer shim Volt exports — and a fibre laser should cut
+          0.1mm stainless instead. Unsure about a film? Lay it on black card and fire one low-power
+          line; if the card marks and the film does not, the beam went through it.
         </Step>
       </Card>
-      <H>What to cut it from</H>
-      <Card>
-        <Step title="Black, if you are on a diode">
-          A 450nm beam cuts what absorbs blue, and black absorbs it. Two things qualify: a printed
-          shim — Volt exports a blank single-layer one, and it is free, already the right thickness
-          and guaranteed to be a plastic you can cut — or <strong>black polyester (PET / Mylar)
-          sheet</strong>, which gives a cleaner aperture wall. Buy 5 mil (0.125mm) if you have the
-          choice — that is the commercial stencil gauge. 7.5 mil (0.19mm) is the other common size
-          and works, but it lays down half as much paste again, which caps it at about SOIC/1.27mm
-          pitch: finer than that and the area ratio falls through the floor. It has to be properly
-          opaque, too — film that only looks dark, or is tinted translucent, passes enough blue
-          through to cut badly or not at all.
-        </Step>
-        <Step title="Never PVC — read the label, not the word &quot;stencil&quot;">
-          Craft and airbrush shops sell &quot;stencil film&quot; that is vinyl, which is PVC.
-          Lasering PVC releases hydrogen chloride: it corrodes the machine from the inside out and
-          is genuinely dangerous to breathe. Mylar and polyester are the words you want; vinyl and
-          PVC are the ones you do not. Unlabelled film is not worth the risk — or identify it
-          outdoors with the copper-wire test, where a green flame means chlorine, means do not cut
-          it.
-        </Step>
-        <Step title="Polyimide (Kapton): skip it, on a diode">
-          The material a CO2 reaches for, and the one the internet will tell you to use. On a
-          450nm diode the amber film only part-absorbs, so it is marginal rather than easy — thin
-          gauges, several passes, air assist, and some films simply will not take. Its real
-          advantage is heat resistance, which a paste stencil never needs: the stencil is lifted
-          off before the board ever sees reflow. Black polyester does the same job for less
-          trouble. Keep it in mind if you get a CO2.
-        </Step>
-        <Step title="What will not work">
-          Clear PET and Mylar do not cut on a diode, whatever you are told. PET's absorption edge
-          is in the ultraviolet, below about 320nm; at 450nm a 5 mil sheet passes something like
-          85–90% of the beam straight through to whatever is underneath. The claim that "PET
-          lasers beautifully" is true — of a CO2, whose 10.6µm is absorbed by essentially every
-          polymer — and that is where the confusion comes from. Nor does the stainless or brass
-          shim a commercial stencil is made from; that needs a fibre laser. Cardstock cuts easily
-          and works once, then fuzzes at the apertures and drinks flux.
-        </Step>
-        <Step title="Settling it in thirty seconds">
-          Lay the film over a scrap of black card and fire one low-power line. If the card scorches
-          and the film is untouched, the beam went through it. Worth doing on any film you are told
-          is suitable, including a black one — "dark" and "opaque at 450nm" are not the same claim.
-        </Step>
-      </Card>
-      <div className="rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 p-4">
-        <strong className="text-xs text-amber-900 dark:text-amber-200">
-          Extraction, not ventilation
-        </strong>
-        <p className="text-xs text-amber-800 dark:text-amber-300/90 mt-1 leading-relaxed">
-          Cutting polyimide and other plastic film produces fumes you should not be breathing.
-          Run it with a proper extractor ducted outside and the enclosure shut. An open window and
-          a desk fan are not the same thing.
+      <div className="rounded-xl border border-red-300 dark:border-red-700/60 bg-red-50 dark:bg-red-950/30 p-4">
+        <strong className="text-xs text-red-900 dark:text-red-200">Never cut PVC, on any machine</strong>
+        <p className="text-xs text-red-800 dark:text-red-300/90 mt-1 leading-relaxed">
+          Much craft &quot;stencil film&quot; is vinyl, and lasering it releases hydrogen chloride —
+          it corrodes the machine from the inside out and is dangerous to breathe. Cut film with
+          ducted extraction and the enclosure shut.
         </p>
       </div>
     </div>
