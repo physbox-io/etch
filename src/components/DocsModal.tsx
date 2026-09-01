@@ -426,9 +426,18 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           trouble. Keep it in mind if you get a CO2.
         </Step>
         <Step title="What will not work">
-          Clear PET and Mylar transmit 450nm almost perfectly and simply do not cut. Neither does
-          the stainless or brass shim a commercial stencil is made from — that needs a fibre laser.
-          Cardstock cuts easily and works once, then fuzzes at the apertures and drinks flux.
+          Clear PET and Mylar do not cut on a diode, whatever you are told. PET's absorption edge
+          is in the ultraviolet, below about 320nm; at 450nm a 5 mil sheet passes something like
+          85–90% of the beam straight through to whatever is underneath. The claim that "PET
+          lasers beautifully" is true — of a CO2, whose 10.6µm is absorbed by essentially every
+          polymer — and that is where the confusion comes from. Nor does the stainless or brass
+          shim a commercial stencil is made from; that needs a fibre laser. Cardstock cuts easily
+          and works once, then fuzzes at the apertures and drinks flux.
+        </Step>
+        <Step title="Settling it in thirty seconds">
+          Lay the film over a scrap of black card and fire one low-power line. If the card scorches
+          and the film is untouched, the beam went through it. Worth doing on any film you are told
+          is suitable, including a black one — "dark" and "opaque at 450nm" are not the same claim.
         </Step>
       </Card>
       <div className="rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 p-4">
