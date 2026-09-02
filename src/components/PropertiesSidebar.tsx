@@ -145,7 +145,7 @@ const LaserLayerCutting: React.FC<{
                 Speed (mm/min) <InfoTooltip text="Laser traverse speed. Higher speed cuts shallower and reduces thermal charring." />
               </label>
               <NumberInput
-                step="50"
+                step={50}
                 min={1}
                 allowEmpty
                 placeholder={String(recipe?.speed ?? '')}
@@ -160,7 +160,7 @@ const LaserLayerCutting: React.FC<{
                 Power (%) <InfoTooltip text="Laser diode/tube output power (0–100%). Higher power burns deeper into stock." />
               </label>
               <NumberInput
-                step="5"
+                step={5}
                 min={0}
                 max={100}
                 allowEmpty
@@ -176,7 +176,7 @@ const LaserLayerCutting: React.FC<{
                 Passes <InfoTooltip text="Number of repeated laser passes over the vector path to achieve full cut depth." />
               </label>
               <NumberInput
-                step="1"
+                step={1}
                 min={1}
                 fallbackOnBlur={1}
                 value={layer.passes ?? 1}
@@ -258,7 +258,7 @@ const CncLayerCutting: React.FC<{
           )}
         </div>
         <NumberInput
-          step="0.1"
+          step={0.1}
           min={0}
           fallbackOnBlur={1}
           value={layer.zDepth ?? 1}
@@ -346,7 +346,7 @@ const CncLayerCutting: React.FC<{
                 Feed (mm/min) <InfoTooltip text="Horizontal cutting speed through material. Leave blank to use derived tool & material feeds." />
               </label>
               <NumberInput
-                step="50"
+                step={50}
                 min={1}
                 allowEmpty
                 placeholder={String(recipe?.feed ?? '')}
@@ -361,7 +361,7 @@ const CncLayerCutting: React.FC<{
                 Spindle (RPM) <InfoTooltip text="Rotational speed of cutter spindle in RPM. Calculated from material surface speed and tool diameter." />
               </label>
               <NumberInput
-                step="1000"
+                step={1000}
                 min={1000}
                 allowEmpty
                 placeholder={String(recipe?.rpm ?? '')}
@@ -376,7 +376,7 @@ const CncLayerCutting: React.FC<{
                 Stepdown (mm) <InfoTooltip text="Maximum depth cut in a single pass (mm/pass). Total depth divided by stepdown determines the number of passes calculated for this layer." />
               </label>
               <NumberInput
-                step="0.1"
+                step={0.1}
                 min={0.05}
                 allowEmpty
                 placeholder={String(recipe?.stepdown ?? '')}
@@ -749,7 +749,7 @@ export const PropertiesSidebar: React.FC = () => {
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius (mm)</label>
                 <NumberInput
-                  step="0.5"
+                  step={0.5}
                   min={0.1}
                   fallbackOnBlur={0.1}
                   value={round1(selectedElement.r)}
@@ -775,7 +775,7 @@ export const PropertiesSidebar: React.FC = () => {
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius X (mm)</label>
                 <NumberInput
-                  step="0.5"
+                  step={0.5}
                   min={0.1}
                   fallbackOnBlur={0.1}
                   value={round1(selectedElement.rx2)}
@@ -788,7 +788,7 @@ export const PropertiesSidebar: React.FC = () => {
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius Y (mm)</label>
                 <NumberInput
-                  step="0.5"
+                  step={0.5}
                   min={0.1}
                   fallbackOnBlur={0.1}
                   value={round1(selectedElement.ry2)}
@@ -803,7 +803,7 @@ export const PropertiesSidebar: React.FC = () => {
                   Corner Radius <InfoTooltip text="Rounds rectangle corners to specified radius (mm)." />
                 </label>
                 <NumberInput
-                  step="0.5"
+                  step={0.5}
                   min={0}
                   fallbackOnBlur={0}
                   value={round1(selectedElement.rx || 0)}
@@ -816,7 +816,7 @@ export const PropertiesSidebar: React.FC = () => {
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Font Size (mm)</label>
                 <NumberInput
-                  step="1"
+                  step={1}
                   min={1}
                   fallbackOnBlur={14}
                   value={round1(selectedElement.fontSize || 14)}
@@ -859,7 +859,7 @@ export const PropertiesSidebar: React.FC = () => {
                 Line Thickness (mm) <InfoTooltip text="Visual stroke width on canvas. Tool diameter determines physical cut width." />
               </label>
               <NumberInput
-                step="0.1"
+                step={0.1}
                 min={0.1}
                 fallbackOnBlur={0.1}
                 value={selectedElement.strokeWidth}
@@ -932,7 +932,7 @@ export const PropertiesSidebar: React.FC = () => {
                     <div>
                       <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Start Offset (mm)</label>
                       <NumberInput
-                        step="1"
+                        step={1}
                         value={selectedElement.textPathOffset || 0}
                         onChange={(val) => updateElement(selectedElement.id, { textPathOffset: val ?? 0 })}
                         className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
@@ -1054,7 +1054,7 @@ export const PropertiesSidebar: React.FC = () => {
                     Sweep Angle <InfoTooltip text="Direction the machine sweeps across the picture, in degrees. 0 is left-to-right." />
                   </label>
                   <NumberInput
-                    step="5"
+                    step={5}
                     value={selectedElement.hatchAngle ?? 0}
                     onChange={(val) => updateElement(selectedElement.id, { hatchAngle: val ?? 0 })}
                     className={NUM_INPUT}
@@ -1065,7 +1065,7 @@ export const PropertiesSidebar: React.FC = () => {
                     Pitch (mm) <InfoTooltip text="Distance between sweeps. Finer resolves more tone and takes proportionally longer — halving it doubles the job." />
                   </label>
                   <NumberInput
-                    step="0.05"
+                    step={0.05}
                     min={0.02}
                     fallbackOnBlur={0.02}
                     value={selectedElement.hatchSpacing ?? DEFAULT_SHADE_PITCH_MM}
@@ -1138,7 +1138,7 @@ export const PropertiesSidebar: React.FC = () => {
                         Hatch Angle <InfoTooltip text="Scanline angle (in degrees) used for raster engrave fill paths." />
                       </label>
                       <NumberInput
-                        step="5"
+                        step={5}
                         value={selectedElement.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE}
                         onChange={(val) =>
                           updateElement(selectedElement.id, {
@@ -1153,7 +1153,7 @@ export const PropertiesSidebar: React.FC = () => {
                         Spacing (mm) <InfoTooltip text="Distance between parallel raster passes. Match tool/beam diameter for 100% overlap coverage." />
                       </label>
                       <NumberInput
-                        step="0.05"
+                        step={0.05}
                         min={0.02}
                         fallbackOnBlur={0.02}
                         value={selectedElement.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING}
@@ -1429,7 +1429,7 @@ export const PropertiesSidebar: React.FC = () => {
                               Leave (mm)
                             </label>
                             <NumberInput
-                              step="0.1"
+                              step={0.1}
                               min={0.05}
                               fallbackOnBlur={0.5}
                               value={layer.roughLeaveMm ?? 0.5}

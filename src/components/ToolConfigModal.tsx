@@ -389,7 +389,7 @@ export const ToolConfigModal: React.FC = () => {
                       Cutter Diameter (mm) <InfoTooltip text="Outer kerf width of tool. Used for kerf offset & feed rate physics." />
                     </label>
                     <NumberInput
-                      step="0.05"
+                      step={0.05}
                       min={0.05}
                       fallbackOnBlur={3.175}
                       value={selectedTool.diameter ?? 3.175}
@@ -411,7 +411,7 @@ export const ToolConfigModal: React.FC = () => {
                       Tip Angle (deg) <span className="text-slate-400 font-normal">(V-Bit)</span> <InfoTooltip text="V-carving taper angle. 0° is flat endmill; 30°/60°/90° V-bits widen kerf dynamically with depth." />
                     </label>
                     <NumberInput
-                      step="5"
+                      step={5}
                       min={0}
                       max={MAX_TIP_ANGLE_DEG}
                       allowEmpty
@@ -435,7 +435,7 @@ export const ToolConfigModal: React.FC = () => {
                       Minimum Detail (mm) <InfoTooltip text="Smallest inner corner radius or narrow slot this tool can carve without over-cutting." />
                     </label>
                     <NumberInput
-                      step="0.05"
+                      step={0.05}
                       min={0.01}
                       fallbackOnBlur={0.01}
                       value={selectedTool.minDetailMm}
@@ -490,12 +490,11 @@ export const ToolConfigModal: React.FC = () => {
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
                       Flute Count <InfoTooltip text="Number of cutting edges on bit. Multiplies chip load to determine overall feed rate." />
                     </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
+                    <NumberInput
+                      min={1}
+                      max={10}
                       value={selectedTool.cutting?.flutes ?? 2}
-                      onChange={(e) => updateCuttingSpec({ flutes: Math.max(1, parseInt(e.target.value) || 1) })}
+                      onChange={v => updateCuttingSpec({ flutes: v ?? 1 })}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
                     />
                   </div>
@@ -520,7 +519,7 @@ export const ToolConfigModal: React.FC = () => {
                       Max Stepdown (× Dia) <InfoTooltip text="Max pass depth as a factor of tool diameter (e.g. 1.0 = 1x diameter depth per pass)." />
                     </label>
                     <NumberInput
-                      step="0.1"
+                      step={0.1}
                       min={0.1}
                       max={3.0}
                       fallbackOnBlur={1.0}
@@ -537,7 +536,7 @@ export const ToolConfigModal: React.FC = () => {
                       Max Plunge (mm/min) <InfoTooltip text="Maximum Z-axis downward feed rate when entering material vertically." />
                     </label>
                     <NumberInput
-                      step="50"
+                      step={50}
                       min={10}
                       max={2000}
                       fallbackOnBlur={300}
@@ -556,7 +555,7 @@ export const ToolConfigModal: React.FC = () => {
                       Max Stepover Ratio (Pocket Clearing) <InfoTooltip text="Sideways tool overlap between adjacent passes during pocket clearing (0.45 = 45% tool diameter)." />
                     </label>
                     <NumberInput
-                      step="0.05"
+                      step={0.05}
                       min={0.05}
                       max={0.9}
                       fallbackOnBlur={0.45}
@@ -573,7 +572,7 @@ export const ToolConfigModal: React.FC = () => {
                       Max Pass Depth (Absolute mm Cap) <InfoTooltip text="Absolute millimeter upper limit on depth per pass regardless of cutter diameter ratio." />
                     </label>
                     <NumberInput
-                      step="0.5"
+                      step={0.5}
                       min={0.1}
                       allowEmpty
                       placeholder="No hard cap"
@@ -594,7 +593,7 @@ export const ToolConfigModal: React.FC = () => {
                       Engaged Width for Feeds (mm) <InfoTooltip text="Effective cutting width used to calculate chip load & feeds. Essential for tapered V-bits where width changes with depth." />
                     </label>
                     <NumberInput
-                      step="0.1"
+                      step={0.1}
                       min={0.05}
                       allowEmpty
                       placeholder={

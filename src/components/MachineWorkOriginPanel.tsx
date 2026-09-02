@@ -37,6 +37,7 @@ import {
 import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
+import { NumberInput } from './NumberInput';
 
 /**
  * Setting the job's origin on a live machine: jog the tool where you want it,
@@ -491,15 +492,14 @@ export const MachineWorkOriginPanel: React.FC<{
               <div>
                 <span className={`${fieldLabel} mb-1`}>Feed Rate</span>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
+                  <NumberInput
                     min={10}
                     max={5000}
                     step={50}
                     value={feedRate}
-                    onChange={(e) => setFeedRate(Math.max(10, parseInt(e.target.value) || 1000))}
-                    className={`flex-1 min-w-0 ${numInput}`}
-                  />
+                    onChange={v => setFeedRate(v ?? 1000)}
+                      className={`flex-1 min-w-0 ${numInput}`}
+                    />
                   <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">mm/min</span>
                 </div>
               </div>
@@ -553,23 +553,21 @@ export const MachineWorkOriginPanel: React.FC<{
                 <span>{status.guideSpot ? 'Guide Spot On — Switch Off' : 'Guide Spot'}</span>
               </button>
               <div className="flex items-center gap-1.5">
-                <input
-                  type="number"
+                <NumberInput
                   min={0.1}
                   max={MAX_GUIDE_POWER_PCT}
                   step={0.1}
                   value={guidePower}
-                  onChange={(e) => {
-                    const next = writeGuidePower(parseFloat(e.target.value) || 0);
+                  onChange={v => {
+                    const next = writeGuidePower(v ?? 0);
                     setGuidePower(next);
                     // Re-fire at the new power while it is lit, so "raise it
                     // until you can see the dot" is one number box rather than
                     // a toggle-off-edit-toggle-on cycle.
                     if (status.guideSpot) webSerialManager.guideSpotOn(next);
-                  }}
-                  title={`Pointer power, as a percentage of your controller's full scale ($30). Capped at ${MAX_GUIDE_POWER_PCT}%. Also used for Frame Job. Remembered between sessions.`}
+                  }} title={`Pointer power, as a percentage of your controller's full scale ($30). Capped at ${MAX_GUIDE_POWER_PCT}%. Also used for Frame Job. Remembered between sessions.`}
                   className={`w-16 ${numInput}`}
-                />
+                    />
                 {/* The S word as well as the percentage: it is what actually
                     goes down the wire, and it is the number every other laser
                     tool and forum post is quoted in. */}
@@ -633,18 +631,15 @@ export const MachineWorkOriginPanel: React.FC<{
                 <span className={`${fieldLabel} mb-1`}>
                   Plate (mm) <InfoTooltip text="Thickness of touch plate used for Z zero probe. Work Z0 is placed this far below the plate's top face." />
                 </span>
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   max={100}
                   step={0.1}
                   value={touchPlateThickness}
-                  onChange={(e) =>
-                    setTouchPlateThickness(parseFloat(e.target.value) || 0)
-                  }
-                  title="Touch plate thickness — work Z 0 ends up this far below the plate's top face. Remembered between sessions."
+                  onChange={v => setTouchPlateThickness(v ?? 0)
+                  } title="Touch plate thickness — work Z 0 ends up this far below the plate's top face. Remembered between sessions."
                   className={`w-20 ${numInput}`}
-                />
+                    />
               </div>
               <button onClick={handleZeroZ} disabled={busy} className={actionBtn}>
                 <ChevronsDown className="w-3.5 h-3.5 text-amber-500" />
@@ -676,18 +671,15 @@ export const MachineWorkOriginPanel: React.FC<{
                   <div className="flex items-end gap-2 max-w-md">
                     <div className="shrink-0">
                       <span className={`${fieldLabel} mb-1`}>Shim (mm)</span>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={0}
                         max={MAX_SHIM_THICKNESS_MM}
                         step={0.01}
                         value={shimThickness}
-                        onChange={(e) =>
-                          setShimThickness(writeShimThickness(parseFloat(e.target.value) || 0))
-                        }
-                        title="Thickness of whatever is under the tool — 0.1 mm is copier paper. Set 0 if the tool is touching the work itself. Remembered between sessions."
+                        onChange={v => setShimThickness(writeShimThickness(v ?? 0))
+                        } title="Thickness of whatever is under the tool — 0.1 mm is copier paper. Set 0 if the tool is touching the work itself. Remembered between sessions."
                         className={`w-20 ${numInput}`}
-                      />
+                    />
                     </div>
                     <button onClick={handleManualZeroZ} disabled={busy} className={actionBtn}>
                       <Hand className="w-3.5 h-3.5 text-cyan-500" />

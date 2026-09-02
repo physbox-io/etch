@@ -23,6 +23,7 @@ import { BusyToast } from './BusyToast';
 import { JobOverridePanel } from './JobOverridePanel';
 import { DocsInfoButton } from './DocsModal';
 import { InfoTooltip } from './InfoTooltip';
+import { NumberInput } from './NumberInput';
 
 /**
  * Stands in for the plan while one is being made.
@@ -608,12 +609,11 @@ export const GCodePreviewModal: React.FC = () => {
                       }
                     />
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={travelSpeed}
-                    onChange={(e) => setTravelSpeed(parseInt(e.target.value) || 3000)}
-                    className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
-                  />
+                    onChange={v => setTravelSpeed(v ?? 3000)}
+                      className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                    />
                 </div>
 
                 {/* Engrave-fill defaults for this document. Individual elements can
@@ -625,26 +625,24 @@ export const GCodePreviewModal: React.FC = () => {
                       <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
                         Hatch Angle
                       </label>
-                      <input
-                        type="number"
-                        step="5"
+                      <NumberInput
+                        step={5}
                         value={document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE}
-                        onChange={(e) => setHatchDefaults({ angle: parseFloat(e.target.value) || 0 })}
-                        className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
-                      />
+                        onChange={v => setHatchDefaults({ angle: v ?? 0 })}
+                      className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                    />
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
                         Spacing (mm)
                       </label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        min="0.02"
+                      <NumberInput
+                        step={0.05}
+                        min={0.02}
                         value={document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING}
-                        onChange={(e) => setHatchDefaults({ spacing: parseFloat(e.target.value) || 0.02 })}
-                        className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
-                      />
+                        onChange={v => setHatchDefaults({ spacing: v ?? 0.02 })}
+                      className="w-full mt-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
+                    />
                     </div>
                   </div>
                   <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
@@ -833,15 +831,14 @@ export const GCodePreviewModal: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
                       <label htmlFor="air-cut-z-offset" className="font-medium">Offset:</label>
-                      <input
+                      <NumberInput
                         id="air-cut-z-offset"
-                        type="number"
-                        min="1"
-                        max="100"
+                        min={1}
+                        max={100}
                         value={airCutZOffset}
-                        onChange={(e) => setAirCutZOffset(Math.max(1, parseInt(e.target.value) || 20))}
-                        className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-center font-mono text-[10px]"
-                      />
+                        onChange={v => setAirCutZOffset(v ?? 20)}
+                      className="w-12 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-center font-mono text-[10px]"
+                    />
                       <span>mm</span>
                     </div>
                   </div>
