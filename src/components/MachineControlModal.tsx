@@ -247,6 +247,14 @@ export const MachineControlModal: React.FC = () => {
                       setCloudDeviceId(deviceId);
                       localStorage.setItem('etchCloudDeviceId', deviceId);
                     }}
+                    onPaired={(deviceId) => {
+                      // Straight on to the machine: having just proved you are
+                      // standing in front of it, being asked to press Connect
+                      // is a step with nothing behind it.
+                      localStorage.setItem('etchCloudDeviceId', deviceId);
+                      webSerialManager.setTransport('wifi', deviceId);
+                      void webSerialManager.connect(115200);
+                    }}
                     accentClass="bg-amber-500 hover:bg-amber-600 text-white"
                   />
                 )}
