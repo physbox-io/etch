@@ -142,7 +142,7 @@ export const UserProfileButton: React.FC = () => {
         title={user ? `Account (${user.email})` : 'Sign In / Early Access'}
       >
         {user?.picture ? (
-          <img src={user.picture} alt="Avatar" className="w-5 h-5 rounded-full" />
+          <img src={user.picture} alt="Avatar" className="absolute inset-0 h-full w-full rounded-full object-cover" />
         ) : (
           <User className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
         )}

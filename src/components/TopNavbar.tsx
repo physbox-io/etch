@@ -429,14 +429,6 @@ export const TopNavbar: React.FC = () => {
             <SaveAll className="w-3.5 h-3.5" />
           </button>
 
-          <button
-            onClick={handleExportJson}
-            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
-            title="JSON (.json)"
-          >
-            <FileJson className="w-3.5 h-3.5" />
-          </button>
-
           <label
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-cyan-600 dark:text-cyan-400 transition-colors cursor-pointer"
             title="Import SVG"
@@ -452,6 +444,14 @@ export const TopNavbar: React.FC = () => {
             <FolderInput className="w-3.5 h-3.5" />
             <input type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
           </label>
+
+          <button
+            onClick={handleExportJson}
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
+            title="Export JSON (.json)"
+          >
+            <FileJson className="w-3.5 h-3.5" />
+          </button>
 
           <button
             onClick={handleExportSvg}
@@ -527,7 +527,7 @@ export const TopNavbar: React.FC = () => {
 
           {/* GitHub Repository Link */}
           <a
-            href="https://github.com"
+            href="https://github.com/physbox-io/etch"
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"

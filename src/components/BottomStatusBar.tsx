@@ -10,7 +10,7 @@ import {
 } from '../utils/machineSettings';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
-import { Grid3x3, Magnet, ZoomIn, ZoomOut, Maximize, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
+import { Grid3x3, Magnet, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
 import {
   materialCatalog,
   findMaterial,
@@ -79,8 +79,6 @@ export const BottomStatusBar: React.FC = () => {
     setGridSize,
     setDocumentSize,
     toggleSnapToGrid,
-    setZoom,
-    setPan,
     setMachineTarget,
     setMaterial,
     setStockThickness,
@@ -89,6 +87,7 @@ export const BottomStatusBar: React.FC = () => {
     setLaserSource,
     cncTools,
     openToolConfigModal,
+    toggleMachineModal,
   } = useStore();
 
   // Seeded from the manager rather than a literal, so a bar that mounts after a
@@ -345,6 +344,16 @@ export const BottomStatusBar: React.FC = () => {
           <span className={machineStatus.connected ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-slate-400'}>
             {machineStatus.state}
           </span>
+          {/* Next to the status it acts on. A disconnected machine is the
+              moment someone wants this button, and it is no use sitting over
+              in the material group. */}
+          <button
+            onClick={toggleMachineModal}
+            className="p-1 rounded text-amber-600 dark:text-amber-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            title="Connect the machine, home it, and set the work origin"
+          >
+            <Wrench className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {/* A running job must stay visible and stoppable with every panel
@@ -393,35 +402,14 @@ export const BottomStatusBar: React.FC = () => {
 
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
 
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setZoom(zoom * 0.9)}
-            className="p-0.5 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-            title="Zoom out"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <span className="text-slate-800 dark:text-slate-200 w-10 text-center">
-            {Math.round(zoom * 100)}%
-          </span>
-          <button
-            onClick={() => setZoom(zoom * 1.1)}
-            className="p-0.5 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-            title="Zoom in"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => {
-              setZoom(1);
-              setPan({ x: 0, y: 0 });
-            }}
-            className="p-0.5 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-            title="Reset view to 100%"
-          >
-            <Maximize className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        {/*
+          Zoom is driven by the mouse wheel, as it is in Mesh and Volt. The
+          readout stays — knowing the scale you are drawing at is worth a
+          bottom-bar slot; three buttons duplicating the wheel are not.
+        */}
+        <span className="text-slate-800 dark:text-slate-200 w-10 text-center" title="Zoom — scroll to change">
+          {Math.round(zoom * 100)}%
+        </span>
       </div>
     </footer>
   );
