@@ -276,10 +276,8 @@ const MATERIALS: MaterialProfile[] = [
         'Black polyester (PET/Mylar) at 0.1-0.15mm, or a printed single-layer shim. Cuts fast and ' +
         'clean with air assist; the whole sheet is through in one pass, so watch for it lifting.',
       warning:
-        'Only dark film cuts on a diode. Clear PET and Mylar pass a blue beam straight through — ' +
-        "PET's absorption edge is in the UV, so 450nm is ~90% transmitted; it is a CO2 those " +
-        'films cut well on. And never cut vinyl or PVC film: it releases hydrogen chloride, ' +
-        'which corrodes the machine and is dangerous to breathe. Extraction, not an open window.',
+        'Only dark film cuts on a diode. Clear PET and Mylar require a CO2 laser. ' +
+        'Do not laser cut vinyl or PVC film; use polyester, Mylar, or dark polymer film with ducted extraction.',
       // By analogy with acrylic: the same order of polymer, vaporising rather
       // than charring. Thin stock means the derived speed will hit the
       // machine's ceiling long before the dose runs out, which is the right

@@ -395,12 +395,10 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           line; if the card marks and the film does not, the beam went through it.
         </Step>
       </Card>
-      <div className="rounded-xl border border-red-300 dark:border-red-700/60 bg-red-50 dark:bg-red-950/30 p-4">
-        <strong className="text-xs text-red-900 dark:text-red-200">Never cut PVC, on any machine</strong>
-        <p className="text-xs text-red-800 dark:text-red-300/90 mt-1 leading-relaxed">
-          Much craft &quot;stencil film&quot; is vinyl, and lasering it releases hydrogen chloride —
-          it corrodes the machine from the inside out and is dangerous to breathe. Cut film with
-          ducted extraction and the enclosure shut.
+      <div className="rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 p-4">
+        <strong className="text-xs text-amber-900 dark:text-amber-200">Material note: Vinyl and PVC</strong>
+        <p className="text-xs text-amber-800 dark:text-amber-300/90 mt-1 leading-relaxed">
+          Do not laser cut vinyl or PVC film; use polyester, Mylar, or stencil film with ducted extraction.
         </p>
       </div>
     </div>

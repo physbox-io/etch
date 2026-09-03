@@ -485,7 +485,7 @@ export const GCodePreviewModal: React.FC = () => {
                     <div className="pr-3">
                       <div className="font-semibold text-slate-800 dark:text-slate-200">
                         Overscan Engraved Fills{' '}
-                        <InfoTooltip text="On each line of a fill the head starts outside the shape with the beam dark, so it is already at full speed when the beam lights. Without it the ends of every line get the same power over less distance while the head is still accelerating, and the fill comes out with a burnt border. Costs a little time per line. Photo Tone engraving does not need it — it already scales power with speed." />
+                        <InfoTooltip text="Extends laser raster lines beyond shape boundaries so the laser reaches full speed before firing, preventing dark burned edges." />
                       </div>
                       <div className="text-[10px] text-slate-500 dark:text-slate-400">
                         Stops fills burning darker at the edges
@@ -509,7 +509,7 @@ export const GCodePreviewModal: React.FC = () => {
                       <div className="pr-3">
                         <div className="font-semibold text-slate-800 dark:text-slate-200">
                           Finishing Pass{' '}
-                          <InfoTooltip text="Rough a fraction of a millimetre wide of the line, then come back with one light lap at the line. A cutter deflects under load in a deep cut, so a single pass leaves a wall that is neither straight nor square. Applied only where it makes a difference — a cut that goes through in one pass is barely loaded and gets none. The allowance comes from the cutter's diameter." />
+                          <InfoTooltip text="Runs a final light pass along the perimeter at full depth for clean, square edges." />
                         </div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400">
                           A light final lap for a straight, square wall

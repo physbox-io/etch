@@ -323,7 +323,7 @@ const CncLayerCutting: React.FC<{
             className="cursor-pointer text-indigo-600 rounded"
           />
           <span>3D V-Carve (Variable depth for sharp corners)</span>
-          <InfoTooltip text="V-carves along the medial axis where bit depth tracks width, lifting to Z=0 at sharp corner tips. The bit's tip flat is taken off the width first, so a bit that is not truly sharp is not driven too deep. Anywhere too wide for the bit to reach the bottom of at the depth ceiling has its floor cleared flat, and the export says so." />
+          <InfoTooltip text="V-carves along the medial axis, raising the bit at sharp corners and clearing wide flat areas at maximum depth." />
         </label>
       )}
 
