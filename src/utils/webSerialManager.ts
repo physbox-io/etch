@@ -987,7 +987,18 @@ class WebSerialManager {
     if (this.status.guideSpot) await this.guideSpotOff();
 
     await this.sendCommand('G21 G90');
-    if (!laserMode) await this.sendCommand(`G0 Z${safeZ.toFixed(3)}`);
+    if (!laserMode) {
+      // `safeZ` is a *work* height, so it only means "clear of the job" when Z0
+      // belongs to the stock that is clamped down now. Against a zero left over
+      // from an earlier run it can sit below the tool, and the retract that is
+      // meant to make framing safe becomes a plunge followed by a lap dragging
+      // the bit through the work. Framing may only ever move Z away from it, so
+      // the retract is clamped to where the tool already is: a stale reading can
+      // leave it higher than asked for, never lower.
+      await this.nextStatusReport();
+      const retractZ = Math.max(safeZ, this.status.wz);
+      await this.sendCommand(`G0 Z${retractZ.toFixed(3)}`);
+    }
     await this.sendCommand(`G0 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
 
     if (laserMode) {
