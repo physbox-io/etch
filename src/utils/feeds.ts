@@ -232,6 +232,90 @@ export function deriveFeeds(
  * in this file rather than by the beam or the belts. 12,000 is what a hobby
  * gantry will actually hold a straight raster line at.
  */
+/**
+ * How much of the cutter's width is buried in the cut, as a fraction of its
+ * diameter. 1 is a slot; a ring clearing beside an already-cut one is the
+ * stepover's share of the diameter.
+ */
+export type Engagement = number;
+
+/**
+ * The chip-thinning factor at a given radial engagement.
+ *
+ * A tooth's bite is thickest where its own radius points along the feed and
+ * tapers to nothing at the edges of the arc it is engaged over. Take a
+ * narrower bite and the tooth spends its whole time in the tapered part, so
+ * the chip it makes is thinner than the feed per tooth says — and a chip
+ * thinner than the edge radius is not cut at all, it is rubbed, which is heat
+ * in the tool instead of heat in the swarf.
+ *
+ * For a radial engagement `a` on a cutter of radius `r` the ratio is
+ * `sqrt(1 − (1 − a/r)²)`, which is 1 at half the diameter and above — a tooth
+ * engaged that far round already passes through its thickest point — and falls
+ * away below it. At a tenth of the diameter it is 0.6, so the same feed makes
+ * chips a little over half the thickness they were calculated for.
+ */
+function chipFactor(engagement: Engagement): number {
+  const a = Math.max(1e-4, Math.min(1, engagement)) * 2; // of diameter → of radius
+  const inner = Math.max(0, 1 - Math.min(1, a));
+  return Math.sqrt(Math.max(1e-6, 1 - inner * inner));
+}
+
+/**
+ * How much faster this pass may be fed than the recipe's, for taking a
+ * narrower bite than the recipe assumed.
+ *
+ * The chiploads in `materials.ts` are the figures for a **full-width slot** —
+ * `stepdownRatio` says as much — so a slot is the reference and this is only
+ * ever a boost, never a slowdown. A pass that engages less than half the
+ * cutter has to be fed proportionally faster to cut the same chip, and a pass
+ * that is not fed faster is one that rubs.
+ *
+ * Capped, because the formula runs away as engagement approaches nothing, and
+ * because a boost is only as safe as the gantry that has to hold the line. 1.6
+ * is reached at about a tenth of the diameter, which is as light a bite as this
+ * app ever plans.
+ */
+export const MAX_FEED_BOOST = 1.6;
+
+export function feedForEngagement(baseFeedMmMin: number, engagement: Engagement): number {
+  const boost = Math.min(MAX_FEED_BOOST, 1 / chipFactor(engagement));
+  return Math.round(Math.max(MIN_CUTTING_FEED_MM_MIN, Math.min(MAX_CUTTING_FEED_MM_MIN, baseFeedMmMin * boost)));
+}
+
+/**
+ * How deep this pass may go, for taking a narrower bite than the recipe
+ * assumed — the half of adaptive clearing that actually saves time.
+ *
+ * A lighter radial cut fed faster is not, on its own, a win: a narrower bite
+ * means proportionally more path to walk, and the two roughly cancel. What
+ * makes the method come out ahead is that the sideways load on the cutter
+ * falls off faster than the engagement does, so the depth can go up by more
+ * than the width came down. Hence the 1.5 power.
+ *
+ * Hence also the cap. Below about a quarter of the diameter the thing limiting
+ * the cut stops being force and becomes how much flute the cutter has, and
+ * this knows nothing about how far any particular tool is hanging out of its
+ * collet. A diameter and a half is a depth every stub-length end mill has.
+ *
+ * The baseline is the material's slotting depth, so a slot comes back
+ * unchanged and every lighter pass comes back deeper.
+ */
+export const MAX_ADAPTIVE_DEPTH_DIAMETERS = 1.5;
+
+export function stepdownForEngagement(
+  toolDiameterMm: number,
+  engagement: Engagement,
+  slottingStepdownMm: number
+): number {
+  const e = Math.max(0.02, Math.min(1, engagement));
+  const gain = Math.pow(1 / e, 1.5);
+  return Math.min(
+    toolDiameterMm * MAX_ADAPTIVE_DEPTH_DIAMETERS,
+    Math.max(slottingStepdownMm, slottingStepdownMm * gain)
+  );
+}
+
 export const MAX_LASER_SPEED_MM_MIN = 12000;
 export const MIN_LASER_SPEED_MM_MIN = 120;
 

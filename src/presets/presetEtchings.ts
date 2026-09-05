@@ -627,7 +627,7 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       stockThickness: 3,
       notecard: `### Vintage Hotel Key Tag Preset
 - **Cut Layer (Red)**: Outer diamond outline (80x45mm) & 5mm key-ring mounting hole.
-- **Etch Layer (Blue)**: Decorative inner border line & room number typography.
+- **Etch Layer (Blue)**: Decorative inner border, corner filigree & centred room number typography.
 - **Recommended Material**: 3mm Birch Plywood or Acrylic.`,
       layers: [
         { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3.3 },
@@ -641,10 +641,38 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
         { id: 'tag_outer', name: 'Tag Outer Boundary', type: 'rect', layerId: 'cut', x: 60, y: 75, w: 90, h: 50, rx: 8, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.2, strokeColor: '#ef4444', fillColor: 'none', visible: true, locked: false },
         // Inner etch border
         { id: 'tag_border', name: 'Inner Etch Border', type: 'rect', layerId: 'etch', x: 64, y: 79, w: 82, h: 42, rx: 5, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', strokeDash: 'solid', fillColor: 'none', visible: true, locked: false },
-        // Text "ROOM 404"
-        { id: 'text_room', name: 'Room Number Text', type: 'text', layerId: 'etch', x: 80, y: 102, text: 'ROOM 404', fontFamily: 'Orbitron', fontSize: 11, fontWeight: '800', rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: '#3b82f6', machining: 'filled', hatchOutline: false, visible: true, locked: false },
-        // Text "PHYSBOX HOTEL"
-        { id: 'text_hotel', name: 'Hotel Title Text', type: 'text', layerId: 'etch', x: 78, y: 92, text: 'PHYSBOX HOTEL', fontFamily: 'Outfit', fontSize: 7, fontWeight: '600', rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: '#3b82f6', machining: 'filled', hatchOutline: false, visible: true, locked: false },
+        /**
+         * Both lines are centred on x = 110, which is the middle of the space
+         * the border leaves *after* the key-ring hole — not the middle of the
+         * tag. Text has no anchor here: `x` is the left edge of the first
+         * glyph, so centring means subtracting half the measured advance width
+         * of the string in its own font and weight (Orbitron 800 at 10 mm is
+         * 60.2 mm wide, Outfit 600 at 6 mm is 48.2 mm). Eyeballed values are
+         * what left the two lines starting at 80 and 78 and reading as a
+         * mistake. Change the words or the size and these numbers must be
+         * re-measured, or the lines drift apart again.
+         */
+        // Text "ROOM 404" — 60.2 mm wide, so 110 - 30.1
+        { id: 'text_room', name: 'Room Number Text', type: 'text', layerId: 'etch', x: 79.9, y: 98.5, text: 'ROOM 404', fontFamily: 'Orbitron', fontSize: 10, fontWeight: '800', rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: '#3b82f6', machining: 'filled', hatchOutline: false, visible: true, locked: false },
+        // Text "PHYSBOX HOTEL" — 48.2 mm wide, so 110 - 24.1
+        { id: 'text_hotel', name: 'Hotel Title Text', type: 'text', layerId: 'etch', x: 85.9, y: 89.5, text: 'PHYSBOX HOTEL', fontFamily: 'Outfit', fontSize: 6, fontWeight: '600', rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: '#3b82f6', machining: 'filled', hatchOutline: false, visible: true, locked: false },
+        /**
+         * Filigree. Every ornament is a closed outline rather than a stroked
+         * squiggle: an etch layer cuts the path it is given, and a hairline
+         * scroll drawn as a single open line comes off the machine as one thin
+         * scratch instead of a shape with a thick and a thin end.
+         *
+         * The corner curls sit 3.5 mm inside the etched border so the two lines
+         * stay separate at the 0.2 mm kerf of a diode laser, and the pair of
+         * leaves flanks the title in the 8 mm the shortened title line leaves
+         * on each side.
+         */
+        { id: 'curl_tl', name: 'Corner Curl (Top Left)', type: 'path', layerId: 'etch', x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', d: 'M 74 81.6 C 70 81.6 67.6 83.2 67.6 87 C 68.6 84.6 70.4 83.6 73 83.4 C 71.6 82.8 71.6 82 74 81.6 Z', visible: true, locked: false },
+        { id: 'curl_tr', name: 'Corner Curl (Top Right)', type: 'path', layerId: 'etch', x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', d: 'M 136 81.6 C 140 81.6 142.4 83.2 142.4 87 C 141.4 84.6 139.6 83.6 137 83.4 C 138.4 82.8 138.4 82 136 81.6 Z', visible: true, locked: false },
+        { id: 'curl_bl', name: 'Corner Curl (Bottom Left)', type: 'path', layerId: 'etch', x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', d: 'M 74 118.4 C 70 118.4 67.6 116.8 67.6 113 C 68.6 115.4 70.4 116.4 73 116.6 C 71.6 117.2 71.6 118 74 118.4 Z', visible: true, locked: false },
+        { id: 'curl_br', name: 'Corner Curl (Bottom Right)', type: 'path', layerId: 'etch', x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', d: 'M 136 118.4 C 140 118.4 142.4 116.8 142.4 113 C 141.4 115.4 139.6 116.4 137 116.6 C 138.4 117.2 138.4 118 136 118.4 Z', visible: true, locked: false },
+        { id: 'leaf_l', name: 'Title Flourish (Left)', type: 'path', layerId: 'etch', x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', d: 'M 78.2 93.5 C 80 91.9 82.2 92.1 84.2 93.5 C 82.2 94.9 80 95.1 78.2 93.5 Z', visible: true, locked: false },
+        { id: 'leaf_r', name: 'Title Flourish (Right)', type: 'path', layerId: 'etch', x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', d: 'M 141.8 93.5 C 140 91.9 137.8 92.1 135.8 93.5 C 137.8 94.9 140 95.1 141.8 93.5 Z', visible: true, locked: false },
       ]
     }
   },

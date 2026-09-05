@@ -297,7 +297,7 @@ const MATERIALS: MaterialProfile[] = [
     chiploadAt3mm: 0.025,
     rpmAt3mm: 12000,
     stepdownRatio: 0.15,
-    note: 'Shallow steps only, and it needs lubricant. A hobby router is at its limit here.',
+    note: 'Shallow steps only, and it needs lubricant. A hobby router is at its limit here — pockets go deeper than this, because clearing them takes a narrower bite than a slot.',
     laser: {
       note: 'Ablates the anodised layer to expose the metal under it, so the mark is white and permanent. Bare mill-finish stock needs a marking spray instead.',
       /**

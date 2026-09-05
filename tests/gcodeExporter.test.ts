@@ -269,7 +269,18 @@ describe('glyph counters survive engraving', () => {
     expect(distanceToCounter(segments)).toBeGreaterThanOrEqual(0.38);
   });
 
-  /** Filled means filled: nothing should trace the outline once it is off. */
+  /**
+   * Filled means filled: nothing should trace the outline once it is off.
+   *
+   * "Nothing closed" used to stand in for that, and it stopped being a fair
+   * test the moment a router's fill became concentric rings rather than hatch
+   * lines — rings are closed, and the outermost of them runs parallel to the
+   * outline whether or not an outline pass was asked for. What separates them
+   * is *where*: the fill is planned against a region inset by half the groove,
+   * so no part of it reaches the drawn edge, while an outline pass would sit
+   * on it. So the outline's absence is measured as clearance from the glyph's
+   * own bounds, exactly as the counter above is.
+   */
   it('traces no outline when hatchOutline is off', () => {
     const d = doc(
       [vBitEtchLayer(0.5)],
@@ -277,7 +288,21 @@ describe('glyph counters survive engraving', () => {
       'cnc'
     );
     const { segments } = planToolpath(d);
-    expect(segments.every((s) => !s.isClosed)).toBe(true);
+    expect(segments.length).toBeGreaterThan(0);
+
+    // 0.78 mm groove at 0.5 mm deep ⇒ 0.39 mm of overhang either side.
+    const GLYPH = { minX: 0, maxX: 2.6, minY: 0, maxY: 5 };
+    let nearest = Infinity;
+    for (const s of segments) {
+      for (const p of s.points) {
+        nearest = Math.min(
+          nearest,
+          p.x - GLYPH.minX, GLYPH.maxX - p.x,
+          p.y - GLYPH.minY, GLYPH.maxY - p.y
+        );
+      }
+    }
+    expect(nearest).toBeGreaterThanOrEqual(0.38);
   });
 
   /**

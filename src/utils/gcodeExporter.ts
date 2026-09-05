@@ -14,7 +14,7 @@ import {
 import { hasFreshOutline } from './textVectorizer';
 import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
 import { pocketRings } from './pocketOffset';
-import { docToMachine, describeOrigin } from './machineCoords';
+import { docToMachine, describeOrigin, originFlipsY } from './machineCoords';
 import {
   DEFAULT_TOOL,
   cutWidthAtDepth,
@@ -32,6 +32,8 @@ import {
   feedsOperation,
   laserRefusal,
   planPasses,
+  feedForEngagement,
+  stepdownForEngagement,
   formatRpm,
   RAMP_ANGLE_DEG,
   type SpindleRange,
@@ -44,7 +46,12 @@ import {
   describeLaserSource,
   type LaserSource,
 } from './machineSettings';
-import { strokeBandPasses, offsetContours, type OffsetSide } from './contourOffset';
+import {
+  strokeBandPasses,
+  offsetContours,
+  orientForClimb,
+  type OffsetSide,
+} from './contourOffset';
 import { planMoves, type PlannedMove, type PassOrder } from './toolpathMoves';
 import { removeOverlapLines } from './dedupeOverlaps';
 import { fitArcsToPolyline, arcToMachineGCode } from './arcFitting';
@@ -607,6 +614,13 @@ export function planToolpath(
   const segments: GCodeSegment[] = [];
   const skipped: string[] = [];
   const notes: string[] = [];
+  /**
+   * Whether the emit mirrors Y, which decides which winding climb-mills. Read
+   * once here rather than at each site that orients a loop: half the document
+   * origins mirror and half do not, and a job that climbs on one and cuts
+   * conventional on the other looks identical in every preview.
+   */
+  const flipsY = originFlipsY(doc);
   /** Elements machined at their stroke width, and the job time that costs. */
   let widened = 0;
   /** Holes plunged rather than milled, for the note that has to name the size. */
@@ -616,6 +630,16 @@ export function planToolpath(
   let finishedAllowance = 0;
   /** Contours the finishing lap curves onto rather than driving straight at. */
   let led = 0;
+  /**
+   * The lightest bite any pocket ring takes, and how much it bought.
+   *
+   * Reported because the numbers in the header would otherwise disagree with
+   * the numbers in the file: the recipe says one depth per pass and the rings
+   * are cut at another, and an operator reading a stepdown they did not get is
+   * an operator who cannot check this app's arithmetic against their own.
+   */
+  let adaptiveEngagement = 1;
+  let adaptiveDeepest = 0;
   /**
    * Elements drawn with a stroke wide enough to be visibly thicker than one
    * pass, but left machining as an outline.
@@ -1015,13 +1039,34 @@ export function planToolpath(
          * steady instead.
          */
         fillGroup++;
-        const pocket = options.laserMode ? null : pocketRings(region, pitch);
+        const pocket = options.laserMode
+          ? null
+          : pocketRings(region, pitch, fillCut.grooveRadius * 2, flipsY);
         let hatch: ReturnType<typeof hatchRegion> = [];
 
         if (pocket) {
           pocket.rings.forEach((ring, i) => {
+            /*
+             * A ring the previous one has opened the way for is cutting a
+             * stepover, not a slot, and the recipe it inherited was calculated
+             * for a slot. Fed at the slot's rate it makes chips thinner than
+             * the edge can shear, which is the rubbing that overheats a cutter
+             * in aluminium and burnishes rather than cuts in everything else.
+             * Held to the slot's depth it also walks the long way round the
+             * pocket for no reason: at this engagement the tool could have
+             * taken the whole thing in a third of the passes.
+             */
+            const adaptive = adaptiveRingCutting(
+              fillCut,
+              layer,
+              pocket.engagement[i]
+            );
+            if (adaptive !== fillCut) {
+              adaptiveEngagement = Math.min(adaptiveEngagement, pocket.engagement[i]);
+              adaptiveDeepest = Math.max(adaptiveDeepest, Math.abs(adaptive.depths[0] ?? 0));
+            }
             segments.push(
-              makeSegment(layer, fillCut, options, {
+              makeSegment(layer, adaptive, options, {
                 points: ring,
                 isClosed: true,
                 /*
@@ -1159,7 +1204,15 @@ export function planToolpath(
           }
           pendingCuts.push(pts);
         } else if (stroked) {
-          for (const band of strokeBandPasses(pts, strokeWidth, cutWidth)) {
+          /*
+           * The band's passes step inward from its edge, so each one after the
+           * first has open air outside it and stock within — the opposite hand
+           * from a pocket, which clears outward from a slot. Climb-milling one
+           * is therefore clockwise, and getting it backwards on a widened
+           * stroke shows up as the fuzzy edge the widening was meant to avoid.
+           */
+          for (const raw of strokeBandPasses(pts, strokeWidth, cutWidth)) {
+            const band = orientForClimb(raw, 'inside', flipsY);
             segments.push(
               makeSegment(layer, strokeCut, options, {
                 points: band,
@@ -1273,7 +1326,7 @@ export function planToolpath(
           ? offsetContours(referenceHoles, cut.radius + allowance, holeSide)
           : { contours: [] as Pt[][], dropped: 0 };
       const roughOffset = {
-        contours: [...roughParts.contours, ...roughHoles.contours],
+        contours: orientSetForClimb([...roughParts.contours, ...roughHoles.contours], flipsY),
         dropped: roughParts.dropped + roughHoles.dropped,
       };
       if (roughOffset.dropped > 0) {
@@ -1306,7 +1359,7 @@ export function planToolpath(
             ? offsetContours(referenceHoles, cut.radius, holeSide)
             : { contours: [] as Pt[][], dropped: 0 };
         const finishOffset = {
-          contours: [...finishParts.contours, ...finishHoles.contours],
+          contours: orientSetForClimb([...finishParts.contours, ...finishHoles.contours], flipsY),
           dropped: finishParts.dropped + finishHoles.dropped,
         };
         for (const pts of finishOffset.contours) {
@@ -1434,6 +1487,17 @@ export function planToolpath(
         `moving along the edge. Driving at it leaves a dwell mark where the direction changes — ` +
         `visible on a finished edge, measurable on a fitted one. The arcs run in waste; any ` +
         `contour with no room for one is cut as it was.`
+    );
+  }
+
+  if (adaptiveEngagement < 1) {
+    notes.push(
+      `Pockets are cleared at ${Math.round(adaptiveEngagement * 100)}% of the cutter's width ` +
+        `rather than the full slot the feeds were derived for, so the rings are fed faster and ` +
+        `cut ${adaptiveDeepest} mm at a time. A narrower bite makes a thinner chip at the same ` +
+        `feed, and a chip too thin to shear is rubbed instead of cut — which is heat in the tool, ` +
+        `and in aluminium is what welds swarf to the flutes. The opening ring of each pocket is ` +
+        `still a slot and is still cut like one.`
     );
   }
 
@@ -1900,6 +1964,61 @@ function resolveCutSide(layer: EtchLayer): OffsetSide {
   const explicit = layer.cutSide ?? 'auto';
   if (explicit !== 'auto') return explicit;
   return layer.operation === 'cut' ? 'outside' : 'on';
+}
+
+/**
+ * A ring's cutting values corrected for the bite it is really taking.
+ *
+ * `materials.ts` is calibrated on a full-width slot — the limiting case, and
+ * the one a cutter has to survive — so everything derived from it is a slot's
+ * feed and a slot's depth. A ring clearing beside one already cut is not a
+ * slot. It is engaging a stepover, and two things follow that nothing else in
+ * the exporter was doing:
+ *
+ * **It has to be fed faster.** Below half the diameter the chip a tooth makes
+ * is thinner than the feed per tooth says, and a chip thinner than the edge
+ * radius is rubbed rather than cut. Rubbing is heat in the tool. In aluminium
+ * that heat is what welds swarf onto the flutes and turns a clean pocket into
+ * a snapped cutter, which is why this matters most on the material it is least
+ * intuitive for — the cure for a burning cut is a *faster* feed, not a slower
+ * one.
+ *
+ * **It can go deeper.** Side load falls off faster than engagement does, so
+ * trading width for depth removes the same material in fewer laps. Without
+ * this half, a light radial cut is just a slower job.
+ *
+ * Three things switch it off, each because the number it would correct is not
+ * ours to correct:
+ *
+ * - A tool that is not flat-bottomed. A V-bit's cutting width *is* its depth;
+ *   deepening a pass widens the groove and the pocket comes out wrong.
+ * - A speed the operator typed. They have measured something we have not.
+ * - A stepdown or pass count the operator typed, for the same reason.
+ */
+function adaptiveRingCutting(
+  cut: LayerCutting,
+  layer: MachinedLayer,
+  engagement: number
+): LayerCutting {
+  if (!cut.flatBottomed || !(engagement > 0) || engagement >= 1) return cut;
+
+  const next = { ...cut };
+
+  if (layer.speedOverride === undefined) {
+    next.speed = feedForEngagement(cut.speed, engagement);
+  }
+
+  const pinned = layer.stepdownOverride !== undefined || (layer.passes ?? 0) > 1;
+  if (!pinned && cut.zDepth > 0 && cut.depths.length > 0) {
+    const slotting = Math.abs(cut.depths[0]);
+    const deeper = stepdownForEngagement(cut.radius * 2, engagement, slotting);
+    // Only ever fewer passes than the slot plan. Equal is the common outcome
+    // on stock thin enough that one pass already went through it.
+    const plan = planPasses(cut.zDepth, deeper);
+    if (plan.depths.length < cut.depths.length) next.depths = plan.depths;
+  }
+
+  return next;
 }
 
 /** Assembles a segment from the layer's resolved cutting values. */
@@ -2399,6 +2518,36 @@ const LEAD_ARC_STEPS = 8;
  * too short to lead onto, or a lead that would swing into material that is
  * being kept, gets no lead at all and cuts exactly as it did before.
  */
+/**
+ * A set of tool-centre paths wound so the cutter climb-mills every one of them.
+ *
+ * Which winding that is depends on which side of each path the material sits,
+ * and for a profile cut the material that matters is the part — the side that
+ * ends up as a finished wall someone looks at. So this is the nesting question
+ * `planLead` asks, and it is asked the same way: a contour enclosed by an odd
+ * number of the others is a hole, whose material is on the outside of it, and
+ * everything else is a part outline or a boss inside a hole, whose material is
+ * on the inside. Winding is no use for deciding this, because clipper is free
+ * to hand back whichever winding it likes.
+ *
+ * Out of that fall the two rules a machinist would state directly: clockwise
+ * around the outside of a part, anti-clockwise around a hole.
+ *
+ * It has to run before leads are planned. A lead curves on tangentially to the
+ * contour's own direction of travel, so a lead planned against a path that is
+ * then reversed arrives from the wrong side.
+ */
+function orientSetForClimb(contours: Pt[][], emitFlipsY: boolean): Pt[][] {
+  return contours.map((c) => {
+    if (c.length < 4) return c;
+    const enclosing = contours.filter(
+      (other) => other !== c && pointInPolygon(c[0], other)
+    ).length;
+    const isHole = enclosing % 2 === 1;
+    return orientForClimb(c, isHole ? 'outside' : 'inside', emitFlipsY);
+  });
+}
+
 function planLead(
   contour: Pt[],
   siblings: Pt[][],

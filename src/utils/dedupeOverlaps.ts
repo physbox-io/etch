@@ -47,15 +47,27 @@ export interface OverlapResult {
 /**
  * True when this segment's geometry may be broken up.
  *
- * Shading carries a value per point, fills are a serpentine whose order is the
- * fill, and a tabbed cut measures its tabs along its own length. Each of those
- * is a reason the pieces would no longer mean what the whole did.
+ * Shading carries a value per point, fills are a serpentine or a set of
+ * concentric rings whose order is the fill, and a tabbed cut measures its tabs
+ * along its own length. Each of those is a reason the pieces would no longer
+ * mean what the whole did.
+ *
+ * Membership of a fill group is the test for the middle case, and `linkFrom`
+ * is not. Every member of a group but the *first* carries a link, so testing
+ * the link excludes all of them except the one whose end the second one is
+ * about to be linked to — and breaking that one up moves the end away from
+ * where the link expects the tool to be. The link is then silently dropped and
+ * the tool retracts and re-plunges between two rings a stepover apart, which is
+ * the bobbing up and down that linking exists to stop. It survived this long
+ * because the pieces of a broken sliver happened to come back in an order that
+ * left the end where it started.
  */
 function isEligible(seg: GCodeSegment): boolean {
   return (
     (seg.type === 'cut' || seg.type === 'etch') &&
     !seg.intensities &&
     seg.tabs.length === 0 &&
+    seg.fillGroup < 0 &&
     seg.linkFrom === null &&
     seg.points.length >= 2
   );

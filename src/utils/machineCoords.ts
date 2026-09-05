@@ -34,6 +34,25 @@ export function docToMachine(doc: EtchDocument, x: number, y: number): Pt {
 }
 
 /**
+ * Whether the mapping to machine space mirrors the Y axis.
+ *
+ * It does for every origin but `bottom-left`, and what hangs on it is anything
+ * whose meaning is *handed* rather than positional: which way round an arc is
+ * cut, and which way round a closed contour is cut. Both come out as their own
+ * opposite when a mirror is applied to them and nothing accounts for it — a
+ * G2 arc becomes the complementary 270 degrees, and a climb-milled profile
+ * becomes a conventional-milled one.
+ *
+ * Neither of those is visible in the preview, which is drawn in document space
+ * where the numbers still say what was intended. They are only visible in the
+ * cut, which is the reason this is a named function rather than an inline
+ * comparison in each of the places that needs it.
+ */
+export function originFlipsY(doc: EtchDocument): boolean {
+  return doc.origin !== 'bottom-left';
+}
+
+/**
  * Machine space → document space.
  *
  * The inverse of `docToMachine`, and it exists for one job: putting the

@@ -1,6 +1,6 @@
 import { simplifyPolyline, type Pt } from './pathFlatten';
 import type { EtchDocument } from '../types/etch';
-import { docToMachine } from './machineCoords';
+import { docToMachine, originFlipsY } from './machineCoords';
 
 export interface LinearMove {
   type: 'line';
@@ -281,8 +281,7 @@ export function arcToMachineGCode(
   const i = centerM.x - startM.x;
   const j = centerM.y - startM.y;
 
-  // Determine whether docToMachine flips the Y axis (top-left and center flip Y; bottom-left does not)
-  const flipsY = doc.origin !== 'bottom-left';
+  const flipsY = originFlipsY(doc);
 
   // Mirroring Y restores the machine's numeric sense; leaving it alone preserves
   // the document's, which is the inverse of how the arc looks on screen.

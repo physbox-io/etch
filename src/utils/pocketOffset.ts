@@ -1,5 +1,11 @@
 import ClipperLib from 'clipper-lib';
-import { ARC_TOLERANCE, CLIPPER_SCALE, fromClipperPaths, toClipperPaths } from './contourOffset';
+import {
+  ARC_TOLERANCE,
+  CLIPPER_SCALE,
+  fromClipperPaths,
+  orientForClimb,
+  toClipperPaths,
+} from './contourOffset';
 import type { Pt } from './pathFlatten';
 
 /**
@@ -26,6 +32,22 @@ import type { Pt } from './pathFlatten';
 export interface PocketPlan {
   /** Closed rings, innermost first. Empty when the tool does not fit. */
   rings: Pt[][];
+  /**
+   * How much of the cutter's diameter is buried in material along each ring,
+   * as a fraction, aligned one-for-one with `rings`.
+   *
+   * `stepover / diameter` for a ring the previous one has already opened the
+   * way for, and 1 for a ring that is cutting a slot — which is every ring that
+   * starts a fresh part of the pocket, not merely the first one in the list. A
+   * pocket with an island in it closes round the island from two sides, and
+   * each of those has its own innermost ring with uncut material on both sides.
+   *
+   * This is the number the feed and the depth of cut are scaled by, and it is
+   * the whole reason clearing this way is worth the trouble. It is also why
+   * getting it wrong is worse than not having it: feeding a slot at a light
+   * cut's rate is how a cutter is snapped.
+   */
+  engagement: number[];
   /**
    * True when the region had area but no ring fitted inside it — a pocket
    * narrower than the cutter. The caller has to say so; silence here reads as
@@ -58,9 +80,27 @@ function stripClosingPoint(c: Pt[]): Pt[] {
  * a drift in the stepover — which shows up on the floor as ridges where the
  * passes stopped overlapping.
  */
-export function pocketRings(region: Pt[][], stepover: number): PocketPlan {
+export function pocketRings(
+  region: Pt[][],
+  stepover: number,
+  /**
+   * The cutter's diameter, mm, used only to express the stepover as a fraction
+   * of it for `engagement`. Omitted, the engagement of an opened ring is
+   * reported as the stepover's share of a notional slot the stepover's own
+   * width — which is 1, i.e. no scaling, which is what the caller that does not
+   * know its tool should get.
+   */
+  toolDiameter?: number,
+  /**
+   * Whether the mapping to machine space mirrors Y — `originFlipsY`. Decides
+   * which winding climb-mills; see `orientForClimb`.
+   */
+  emitFlipsY = false
+): PocketPlan {
   const usable = region.map(stripClosingPoint).filter((c) => c.length >= 3);
-  if (usable.length === 0 || !(stepover > 0)) return { rings: [], tooNarrow: false };
+  if (usable.length === 0 || !(stepover > 0)) {
+    return { rings: [], engagement: [], tooNarrow: false };
+  }
 
   // Resolved under even-odd first, so islands inside the pocket are holes to
   // be cut round rather than solid ground to be cleared.
@@ -73,9 +113,11 @@ export function pocketRings(region: Pt[][], stepover: number): PocketPlan {
     ClipperLib.PolyFillType.pftEvenOdd,
     ClipperLib.PolyFillType.pftEvenOdd
   );
-  if (base.length === 0) return { rings: [], tooNarrow: false };
+  if (base.length === 0) return { rings: [], engagement: [], tooNarrow: false };
 
   const rings: Pt[][] = [];
+  /** Which offset step each ring came from, so slotting rings can be found. */
+  const levels: number[] = [];
   /*
    * The wall pass is the region itself — the caller has already inset it — and
    * every ring after it steps one stepover further in. The loop is bounded by
@@ -102,12 +144,24 @@ export function pocketRings(region: Pt[][], stepover: number): PocketPlan {
     if (paths.length === 0) break;
     const converted = fromClipperPaths(paths).filter((c) => c.length >= 3);
     if (converted.length === 0) break;
-    for (const c of converted) rings.push(close(c));
+    for (const c of converted) {
+      /*
+       * Every ring but the one that opens the cut has stock on its outer side
+       * only, because the ring inside it has already gone. Material outside
+       * means the loop is cut anti-clockwise to climb-mill — see
+       * `orientForClimb`. The opening ring is a slot with stock on both sides,
+       * where neither direction is climb and this one is simply consistent
+       * with the rest.
+       */
+      rings.push(orientForClimb(close(c), 'outside', emitFlipsY));
+      levels.push(i);
+    }
   }
 
   // Innermost first: the rings were generated outermost first, and the order
   // they are cut in is the whole argument above.
   rings.reverse();
+  levels.reverse();
 
   /*
    * Start each ring at the point nearest where the last one finished.
@@ -124,7 +178,62 @@ export function pocketRings(region: Pt[][], stepover: number): PocketPlan {
     rings[i] = rotateToNearest(rings[i], rings[i - 1][0]);
   }
 
-  return { rings, tooNarrow: rings.length === 0 };
+  return {
+    rings,
+    engagement: engagementOf(rings, levels, stepover, toolDiameter),
+    tooNarrow: rings.length === 0,
+  };
+}
+
+/**
+ * The fraction of the cutter buried in material along each ring.
+ *
+ * A ring is running in a slot unless something it encloses was cut before it,
+ * and "before it" is the ring order this function is handed: rings come
+ * innermost first, so a ring at offset level `k` was preceded by the rings at
+ * level `k + 1`. If one of those lies inside this one, this ring's inner side
+ * is already open and it is taking a stepover. If none does — the innermost
+ * ring of the pocket, and the innermost ring of each lobe a pocket splits into
+ * around an island — it is cutting a slot and must be fed like one.
+ *
+ * Testing enclosure rather than assuming it matters because the assumption
+ * fails on exactly the shapes people mill: a dogbone, a slot with a boss in
+ * it, a letter with a counter. Every one of those has more than one innermost
+ * ring, and every one of them would have had a slot fed at a light cut's rate.
+ */
+function engagementOf(
+  rings: Pt[][],
+  levels: number[],
+  stepover: number,
+  toolDiameter?: number
+): number[] {
+  const opened =
+    toolDiameter && toolDiameter > 0
+      ? Math.max(0.01, Math.min(1, stepover / toolDiameter))
+      : 1;
+
+  return rings.map((ring, i) => {
+    const inner = levels[i] + 1;
+    for (let j = 0; j < rings.length; j++) {
+      if (levels[j] !== inner) continue;
+      if (encloses(ring, rings[j][0])) return opened;
+    }
+    return 1;
+  });
+}
+
+/** True when `pt` lies inside the closed loop `ring`. */
+function encloses(ring: Pt[], pt: Pt): boolean {
+  const path = toClipperPaths([stripClosingPoint(ring)])[0];
+  if (!path || path.length < 3) return false;
+  // Non-zero means outside, so a point on the boundary (-1) counts as inside;
+  // consecutive rings are a stepover apart and never share one anyway.
+  return (
+    ClipperLib.Clipper.PointInPolygon(
+      { X: Math.round(pt.x * CLIPPER_SCALE), Y: Math.round(pt.y * CLIPPER_SCALE) },
+      path
+    ) !== 0
+  );
 }
 
 /** Re-starts a closed ring at whichever of its own points is nearest `target`. */

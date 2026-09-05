@@ -363,7 +363,7 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
 
   for (let vIdx = 0; vIdx < visits.length; vIdx++) {
     const { sIdx, passes: passList } = visits[vIdx];
-    const seg = segments[sIdx];
+    let seg = segments[sIdx];
     // The segment cut *before* this one, which under a per-level order is not
     // `sIdx - 1`. Every link and fill-hop test below asks "did the tool just
     // come off something it can stay down for", and that is a question about
@@ -702,6 +702,45 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
       continue;
     }
 
+    /*
+     * A ring of a pocket starts wherever the tool already is.
+     *
+     * Concentric clearing rings are cut innermost first and are one stepover
+     * apart, so the hop from one to the next ought to be a short cut through a
+     * stepover of material at depth rather than a retract, a descent and a
+     * fresh ramped entry into ground that has just been cleared. What decides
+     * whether that hop happens is `linkFrom` — the point the exporter says the
+     * tool will be standing on when this segment begins.
+     *
+     * The exporter cannot know that point. A closed loop entered by a ramp is
+     * left part-way round itself, at wherever the ramp landed, and the ramp's
+     * length is decided here from the depth and the ramp angle. So the
+     * exporter's guess — the previous ring's own start — is wrong for every
+     * ring after a ramped one, the link is silently dropped, and the tool
+     * ramps into every ring of every pocket. On aluminium that is a spiral cut
+     * through cleared air once per ring, and the passes it replaces were the
+     * point of clearing this way.
+     *
+     * Rotating the ring here instead of guessing there is what makes it true
+     * rather than hopeful: the entry point is chosen against where the tool
+     * actually is, so the hop is the distance to the nearest point of the next
+     * ring — one stepover, by construction, which is the claim the link needs
+     * and the only claim it needs. `linkFrom` still gates it, because it is
+     * what says these two segments are neighbours in one region's clearing and
+     * not two unrelated paths that happen to be close.
+     */
+    if (
+      started &&
+      seg.isClosed &&
+      seg.fillGroup >= 0 &&
+      seg.linkFrom !== null &&
+      prev !== null &&
+      prev.fillGroup === seg.fillGroup &&
+      !opts.laserMode
+    ) {
+      seg = { ...seg, points: rotateClosedToNearest(seg.points, { x: cx, y: cy }) };
+    }
+
     const geom = measurePath(seg.points, seg.isClosed);
 
     for (const passIdx of passList) {
@@ -747,7 +786,22 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
        * honoured after a regroup would be a cut across the work from wherever
        * the previous group happened to finish.
        */
-      const linksFrom = started && sameSpot(seg.linkFrom, { x: cx, y: cy });
+      /*
+       * For a hatch fill this is the hatcher's own certificate: `linkFrom` is
+       * the point it decided the hop from, checked against where the tool
+       * really is because segments are regrouped by tool in between.
+       *
+       * For a pocket ring the ring has just been rotated to start at the tool,
+       * so the certificate is the pairing rather than the point — the same
+       * fill group, and a gap the tolerance below has to accept. Asking for an
+       * exact match here would be asking the exporter for a number it cannot
+       * have.
+       */
+      const linksFrom = started && (
+        sameSpot(seg.linkFrom, { x: cx, y: cy }) ||
+        (seg.isClosed && seg.fillGroup >= 0 && seg.linkFrom !== null &&
+          prev !== null && prev.fillGroup === seg.fillGroup)
+      );
       /*
        * A run-up replaces the link, and must: the link is a *lit* hop from the
        * end of one scanline to the start of the next, which is harmless while
@@ -1521,4 +1575,34 @@ function withTabBreaks(
   merged.sort((a, b) => a.along - b.along);
   for (const s of merged) s.z = zAt(s.along);
   return merged;
+}
+
+/**
+ * A closed loop re-entered at whichever of its own points is nearest `target`.
+ *
+ * Direction is untouched — this rotates, it never reverses. Reversing a ring
+ * would swap climb milling for conventional, which is a different cut and a
+ * different finish, not a different entry point.
+ */
+function rotateClosedToNearest(points: Pt[], target: Pt): Pt[] {
+  const ring =
+    points.length > 2 &&
+    Math.hypot(points[0].x - points[points.length - 1].x, points[0].y - points[points.length - 1].y) < 1e-9
+      ? points.slice(0, -1)
+      : points;
+  if (ring.length < 3) return points;
+
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const d = (ring[i].x - target.x) ** 2 + (ring[i].y - target.y) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  if (best === 0) return points;
+  const rotated = [...ring.slice(best), ...ring.slice(0, best)];
+  rotated.push({ ...rotated[0] });
+  return rotated;
 }

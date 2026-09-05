@@ -172,6 +172,79 @@ export function isCounterClockwise(contour: Pt[]): boolean {
   return sum < 0;
 }
 
+/**
+ * Which side of a closed loop holds the material the tool is about to cut.
+ *
+ * Not the same question as "which side is the part". A pocket ring cut after
+ * the ring inside it has open air on its inner side and stock on its outer,
+ * whichever of those the finished part is made of.
+ */
+export type MaterialSide = 'inside' | 'outside';
+
+/**
+ * A closed loop wound so the cutter climb-mills it.
+ *
+ * Climb milling means the tooth enters the cut at full chip thickness and
+ * leaves at zero. The chip carries the heat out with it, and the edge never
+ * skids along the surface before it bites. Conventional milling is the other
+ * way round: every tooth rubs its way in at zero thickness, and the heat that
+ * rubbing makes has nowhere to go but the tool and the work. In aluminium
+ * that is precisely how material welds itself to the flutes.
+ *
+ * Which winding gives it follows from the rotation. A router spindle turns a
+ * right-hand cutter clockwise seen from above, and working through the chip
+ * geometry for that rotation gives one rule: the tooth enters thick when the
+ * material being cut lies to the **right** of the direction of travel. The
+ * interior of a loop is on the right when the loop is travelled clockwise, so:
+ *
+ * - material inside the loop  → cut it clockwise
+ * - material outside the loop → cut it counter-clockwise
+ *
+ * Everything else is a special case of those two. A part's outer profile keeps
+ * the material inside, so it is cut clockwise; a hole keeps it outside, so it
+ * is cut anti-clockwise. Concentric rings clearing outward from a slot have
+ * stock outside them; rings closing inward have it inside.
+ *
+ * This is *not* the same as the historical advice to conventional-mill. That
+ * advice is about acme leadscrews with backlash, where a climbing cutter can
+ * pull the table into the work. A machine with ballscrews or a toothed belt
+ * under closed-ish load has no such slack to take up, and climb is right for
+ * every material this app cuts.
+ */
+export function orientForClimb(
+  contour: Pt[],
+  material: MaterialSide,
+  /**
+   * Whether the mapping to machine space mirrors Y — `originFlipsY`.
+   *
+   * Contours are planned in document space, where Y points down, and are
+   * mirrored on their way into G-code for every origin but `bottom-left`. A
+   * mirror reverses handedness, so a loop wound clockwise in the numbers a
+   * preview draws arrives at the machine anti-clockwise. Climb is a property
+   * of the cut, not of the drawing, so the frame that decides it is the
+   * machine's.
+   *
+   * There is no safe default. Guessing here is a job that mills conventional
+   * on half of all documents and looks identical in the preview for both.
+   */
+  emitFlipsY: boolean
+): Pt[] {
+  if (contour.length < 4) return contour;
+  // In the machine's frame, which is the only one that decides how a tooth
+  // meets material.
+  const ccw = isCounterClockwise(contour) !== emitFlipsY;
+  const wantCcw = material === 'outside';
+  if (ccw === wantCcw) return contour;
+
+  // Reversing a closed loop keeps its start point where it was, so anything
+  // already positioned to start here — a rotated ring, a planned lead — stays
+  // correct. The duplicated closing point is dropped and re-appended, or the
+  // seam lands in the middle of the path.
+  const ring = stripClosingPoint(contour);
+  const flipped = [ring[0], ...ring.slice(1).reverse()];
+  return ring.length === contour.length ? flipped : close(flipped);
+}
+
 /** Signed area of a closed contour, in mm². Positive for clockwise. */
 export function contourArea(contour: Pt[]): number {
   const c = stripClosingPoint(contour);
