@@ -146,3 +146,149 @@ describe('MCP: etch_list_capabilities', () => {
     expect(r.tools).toEqual([]);
   });
 });
+
+describe('MCP: note card', () => {
+  it('reads back an empty card on a document that has none', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_get_note_card', {});
+    expect(r.ok).toBe(true);
+    expect(r.markdown).toBe('');
+  });
+
+  it('writes the card onto the document, where it survives into a save', async () => {
+    load([]);
+    const md = '### Coaster\n- 100mm round, 3mm plywood.';
+    const w = await handleMCPCommand('etch_set_note_card', { markdown: md });
+    expect(w.ok).toBe(true);
+    expect(useStore.getState().document.notecard).toBe(md);
+    expect((await handleMCPCommand('etch_get_note_card', {})).markdown).toBe(md);
+  });
+
+  it('rejects a non-string rather than writing junk onto the document', async () => {
+    load([], { notecard: '### Kept' });
+    const r = await handleMCPCommand('etch_set_note_card', { markdown: { md: 'no' } });
+    expect(r.ok).toBe(false);
+    expect(useStore.getState().document.notecard).toBe('### Kept');
+  });
+
+  it('clears the card when handed an empty string', async () => {
+    load([], { notecard: '### Old' });
+    expect((await handleMCPCommand('etch_set_note_card', { markdown: '' })).ok).toBe(true);
+    expect(useStore.getState().document.notecard).toBe('');
+  });
+});
+
+describe('MCP: etch_get_summary', () => {
+  it('reports the bed-space box of a rotated element, not its unrotated one', async () => {
+    // A 40x10 bar turned 90° occupies 10x40 on the sheet. The summary is what an
+    // agent lays out from, so it has to be the space the part actually takes.
+    load([{ ...rect('bar', 10, 10, 40, 10), rotation: 90 } as EtchElement]);
+    const r = await handleMCPCommand('etch_get_summary', {});
+    expect(r.ok).toBe(true);
+    expect(r.elements).toHaveLength(1);
+    expect(r.elements[0].width).toBeCloseTo(10, 3);
+    expect(r.elements[0].height).toBeCloseTo(40, 3);
+  });
+
+  it('counts elements per layer and names the stock', async () => {
+    load([rect('a', 0, 0, 10, 10), rect('b', 20, 0, 10, 10)]);
+    const r = await handleMCPCommand('etch_get_summary', {});
+    expect(r.document.stock).toEqual({ width: 300, height: 200, units: 'mm' });
+    expect(r.layers[0]).toMatchObject({ id: 'cut', elementCount: 2 });
+    expect(r.extent).toMatchObject({ x: 0, y: 0, width: 30, height: 10 });
+  });
+
+  it('leaves out the path data that makes get_state heavy', async () => {
+    load([rect('a', 0, 0, 10, 10)]);
+    const r = await handleMCPCommand('etch_get_summary', {});
+    expect(JSON.stringify(r)).not.toContain('"d"');
+  });
+});
+
+describe('MCP: etch_validate_document', () => {
+  it('fails a document whose geometry hangs off the stock', async () => {
+    load([rect('over', 290, 10, 40, 10)]);
+    const r = await handleMCPCommand('etch_validate_document', {});
+    expect(r.ok).toBe(false);
+    expect(r.errorCount).toBe(1);
+    expect(r.problems[0].elementId).toBe('over');
+  });
+
+  it('fails an element pointing at a layer that does not exist', async () => {
+    load([{ ...rect('orphan', 10, 10, 10, 10), layerId: 'nope' } as EtchElement]);
+    const r = await handleMCPCommand('etch_validate_document', {});
+    expect(r.ok).toBe(false);
+    expect(r.problems.some((p: { message: string }) => p.message.includes('does not exist'))).toBe(true);
+  });
+
+  it('warns, but does not fail, on a hidden layer that will still be cut', async () => {
+    load([rect('a', 10, 10, 10, 10)], {
+      layers: [
+        { id: 'cut', name: 'Cut', color: '#f00', operation: 'cut', visible: false, locked: false, speed: 500, power: 80, passes: 1, zDepth: 3 },
+      ],
+    } as never);
+    const r = await handleMCPCommand('etch_validate_document', {});
+    expect(r.ok).toBe(true);
+    expect(r.warningCount).toBeGreaterThan(0);
+  });
+
+  it('passes a clean document', async () => {
+    load([rect('a', 10, 10, 10, 10)]);
+    const r = await handleMCPCommand('etch_validate_document', {});
+    expect(r.ok).toBe(true);
+    expect(r.errorCount).toBe(0);
+  });
+});
+
+describe('MCP: etch_update_element', () => {
+  it('moves one element and leaves the rest alone', async () => {
+    load([rect('a', 0, 0, 10, 10), rect('b', 20, 0, 10, 10)]);
+    const r = await handleMCPCommand('etch_update_element', { id: 'a', updates: { x: 55 } });
+    expect(r.ok).toBe(true);
+    const els = useStore.getState().document.elements;
+    expect(els.find((e) => e.id === 'a')).toMatchObject({ x: 55 });
+    expect(els.find((e) => e.id === 'b')).toMatchObject({ x: 20 });
+  });
+
+  it('refuses to change identity rather than leaving a rect with a circle’s fields', async () => {
+    load([rect('a', 0, 0, 10, 10)]);
+    expect((await handleMCPCommand('etch_update_element', { id: 'a', updates: { type: 'circle' } })).ok).toBe(false);
+    expect((await handleMCPCommand('etch_update_element', { id: 'a', updates: { id: 'z' } })).ok).toBe(false);
+    expect(useStore.getState().document.elements[0].type).toBe('rect');
+  });
+
+  it('reports an unknown id instead of silently doing nothing', async () => {
+    load([rect('a', 0, 0, 10, 10)]);
+    const r = await handleMCPCommand('etch_update_element', { id: 'ghost', updates: { x: 1 } });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('ghost');
+  });
+});
+
+describe('MCP: user presets', () => {
+  it('saves, lists and reloads a document, note card and all', async () => {
+    load([rect('a', 5, 5, 10, 10)]);
+    await handleMCPCommand('etch_set_note_card', { markdown: '### Saved piece' });
+
+    expect((await handleMCPCommand('etch_save_preset', { name: 'my-jig' })).ok).toBe(true);
+    const listed = await handleMCPCommand('etch_list_presets', {});
+    expect(listed.userPresets.map((p: { id: string }) => p.id)).toContain('user:my-jig');
+
+    // Wipe the canvas, then bring it back by id.
+    load([]);
+    expect(useStore.getState().document.elements).toHaveLength(0);
+    const loaded = await handleMCPCommand('etch_load_preset', { preset: 'user:my-jig' });
+    expect(loaded.ok).toBe(true);
+    expect(useStore.getState().document.elements).toHaveLength(1);
+    expect(useStore.getState().document.notecard).toBe('### Saved piece');
+
+    expect((await handleMCPCommand('etch_delete_preset', { name: 'user:my-jig' })).ok).toBe(true);
+    expect((await handleMCPCommand('etch_list_presets', {})).userPresets).toHaveLength(0);
+  });
+
+  it('reports a preset that is not there rather than loading nothing', async () => {
+    load([]);
+    expect((await handleMCPCommand('etch_load_preset', { preset: 'user:absent' })).ok).toBe(false);
+    expect((await handleMCPCommand('etch_delete_preset', { name: 'absent' })).ok).toBe(false);
+  });
+});

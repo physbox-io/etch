@@ -31,6 +31,7 @@ import {
   type BooleanOp,
 } from '../utils/booleanOps';
 import { beautifyElements } from '../utils/beautify';
+import { cloudAutosave } from '../utils/cloudDocuments';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -172,6 +173,7 @@ interface EtchStore {
   setDocument: (doc: EtchDocument) => void;
   incrementMcpActive: () => void;
   decrementMcpActive: () => void;
+  resetMcpActive: () => void;
   setToolMode: (tool: ToolMode) => void;
   setActiveLayer: (layerId: string) => void;
   setSelectedIds: (ids: string[]) => void;
@@ -183,6 +185,7 @@ interface EtchStore {
   setHatchDefaults: (v: { angle?: number; spacing?: number }) => void;
   toggleSnapToGrid: () => void;
   setDocumentName: (name: string) => void;
+  setNotecard: (markdown: string) => void;
   setMandalaSettings: (settings: Partial<MandalaSettings>) => void;
   toggleDarkMode: () => void;
   toggleAiPanel: () => void;
@@ -427,6 +430,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   // Floored at zero: an ERROR reply and the finally-block must not be able to
   // drive the count negative and leave the pill stuck off.
   decrementMcpActive: () => set((state) => ({ mcpActiveCount: Math.max(0, state.mcpActiveCount - 1) })),
+  resetMcpActive: () => set({ mcpActiveCount: 0 }),
   setToolMode: (tool) => set({ activeTool: tool }),
   setActiveLayer: (layerId) => set({ activeLayerId: layerId }),
   // Clearing the combine notice here rather than on a timer: it explains why
@@ -492,6 +496,17 @@ export const useStore = create<EtchStore>((set, get) => ({
   setDocumentName: (name) =>
     set((state) => ({ document: { ...state.document, name } })),
 
+  /**
+   * The document's note card — what the piece is, its size, the stock, what each
+   * layer does. Every preset has carried one since the app shipped, but nothing
+   * displayed it and nothing but a preset could set one; DocumentNoteCard now
+   * renders it and the MCP bridge writes it. Not pushed onto history: editing a
+   * caption is not a drawing operation, and an undo aimed at a cut should not
+   * take the label back with it.
+   */
+  setNotecard: (markdown) =>
+    set((state) => ({ document: { ...state.document, notecard: markdown } })),
+
   saveUserPresetByName: (name) => {
     const trimmed = name.trim();
     if (!trimmed) return;
@@ -502,6 +517,9 @@ export const useStore = create<EtchStore>((set, get) => ({
       presets[trimmed] = newDoc;
       writeUserPresets(presets);
       saveCloudPreset(trimmed, newDoc);
+      // A deliberate save is also a revision worth keeping by name, so it survives
+      // the pruning that automatic checkpoints are subject to.
+      void cloudAutosave.saveExplicit(trimmed, newDoc, `Saved as “${trimmed}”`);
       set({
         activePreset: `user:${trimmed}`,
         userPresetNames: Object.keys(presets).sort(),
@@ -1301,3 +1319,25 @@ export const useStore = create<EtchStore>((set, get) => ({
 if (typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).__ETCH_STORE__ = useStore;
 }
+
+
+/*
+ * Cloud auto-save.
+ *
+ * The document is the one piece of state this app has never persisted anywhere:
+ * presets are saved on purpose, but the drawing being worked on lives only in
+ * memory, and a reload drops straight back to `defaultDoc`. This offers it to the
+ * account after every change.
+ *
+ * Subscribing here rather than from a component: the document outlives any
+ * particular view, and a `useEffect` somewhere would tie saving to whether that
+ * view happened to be mounted.
+ *
+ * Nothing about this is load-bearing. `cloudAutosave` does nothing at all unless
+ * the account is signed in and has Pro, every existing local save path is
+ * untouched, and a failed write leaves the work exactly where it already was.
+ */
+useStore.subscribe((state, previous) => {
+  if (state.document === previous.document) return;
+  cloudAutosave.schedule(state.document.name || 'Untitled', state.document);
+});

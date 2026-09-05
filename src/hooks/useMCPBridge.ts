@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { getStoredAuthToken } from '../utils/apiClient';
 import { useStore } from '../store/useStore';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
@@ -18,6 +19,11 @@ import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
 import { DEFAULT_TEST_GRID, buildTestGrid, type TestGridOptions } from '../utils/testGrid';
 import { DITHER_LABELS } from '../utils/imageProcessor';
 import { webSerialManager, type OverrideStep } from '../utils/webSerialManager';
+import { buildSnapshotSvg, rasterizeSvg } from '../utils/svgSnapshot';
+import { getBedBBox, bedBoxOfAll, isOutsideStock } from '../utils/geom';
+
+/** Millimetres, to the micron — past that it is float noise, not a dimension. */
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 /**
  * One MCP command, applied to the store.
@@ -56,6 +62,198 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
       return { ok: true, elementCount: next.elements.length, document: next };
     }
 
+    /*
+      The lightweight read, and the one to reach for first.
+
+      etch_get_state hands back the whole document, and that document carries
+      every path's `d` string and every imported picture's base64 — a sheet with
+      one photograph on it runs to megabytes, most of which tells an agent
+      nothing it can act on. This is the shape of the job: what is on it, how big
+      each thing is, where it sits, and which layer will machine it.
+    */
+    case 'etch_get_summary':
+    case 'GET_SUMMARY': {
+      const doc = store.document;
+      const byLayer = new Map<string, number>();
+      for (const el of doc.elements) byLayer.set(el.layerId, (byLayer.get(el.layerId) || 0) + 1);
+
+      return {
+        ok: true,
+        document: {
+          name: doc.name,
+          stock: { width: doc.width, height: doc.height, units: 'mm' },
+          material: doc.material,
+          stockThickness: doc.stockThickness,
+          machine: doc.machine,
+          origin: doc.origin,
+          hasNoteCard: Boolean(doc.notecard),
+        },
+        layers: doc.layers.map((l) => ({
+          id: l.id,
+          name: l.name,
+          operation: l.operation,
+          visible: l.visible,
+          locked: l.locked,
+          elementCount: byLayer.get(l.id) || 0,
+        })),
+        elements: doc.elements.map((el) => {
+          const b = getBedBBox(el);
+          return {
+            id: el.id,
+            name: el.name,
+            type: el.type,
+            layerId: el.layerId,
+            // Rounded to a micron: these are millimetres, and a reader chasing
+            // float noise at the 12th decimal is reading nothing.
+            x: round3(b.minX),
+            y: round3(b.minY),
+            width: round3(b.width),
+            height: round3(b.height),
+            rotation: el.rotation || 0,
+            ...(el.type === 'text' ? { text: (el as { text?: string }).text } : {}),
+          };
+        }),
+        extent: (() => {
+          const box = bedBoxOfAll(doc.elements);
+          if (!box) return null;
+          return {
+            x: round3(box.minX),
+            y: round3(box.minY),
+            width: round3(box.maxX - box.minX),
+            height: round3(box.maxY - box.minY),
+          };
+        })(),
+        elementCount: doc.elements.length,
+      };
+    }
+
+    /*
+      The pre-flight check, and the counterpart to Mesh's collision check: the
+      faults that make a job come out wrong but leave the canvas looking fine.
+      Every one of these still exports happily to G-code, which is exactly why
+      they are worth being told about before the machine runs.
+    */
+    case 'etch_validate_document':
+    case 'VALIDATE_DOCUMENT': {
+      const doc = store.document;
+      const layerIds = new Set(doc.layers.map((l) => l.id));
+      const problems: { severity: 'error' | 'warning'; elementId?: string; message: string }[] = [];
+
+      for (const el of doc.elements) {
+        if (!layerIds.has(el.layerId)) {
+          problems.push({
+            severity: 'error',
+            elementId: el.id,
+            message: `'${el.name || el.id}' is on layer '${el.layerId}', which does not exist — it has no operation, speed or power and will not machine.`,
+          });
+          continue;
+        }
+        if (isOutsideStock(el, doc.width, doc.height)) {
+          problems.push({
+            severity: 'error',
+            elementId: el.id,
+            message: `'${el.name || el.id}' extends past the ${doc.width}x${doc.height}mm stock. It is still exported, so the machine will drive to coordinates with no material under them.`,
+          });
+        }
+        const layer = doc.layers.find((l) => l.id === el.layerId)!;
+        if (!layer.visible) {
+          problems.push({
+            severity: 'warning',
+            elementId: el.id,
+            message: `'${el.name || el.id}' is on hidden layer '${layer.name}'. Hiding is a view setting, not an exclusion — it will still be cut.`,
+          });
+        }
+        const b = getBedBBox(el);
+        if (b.width < 0.01 && b.height < 0.01) {
+          problems.push({
+            severity: 'warning',
+            elementId: el.id,
+            message: `'${el.name || el.id}' is smaller than 0.01mm in both directions — most likely a stray click rather than geometry.`,
+          });
+        }
+      }
+
+      for (const layer of doc.layers) {
+        // Only when the stock thickness is actually set — an unset thickness is
+        // its own problem and not one to report as a shallow cut.
+        if (layer.operation === 'cut' && doc.machine === 'cnc' && doc.stockThickness && layer.zDepth < doc.stockThickness) {
+          problems.push({
+            severity: 'warning',
+            message: `Cut layer '${layer.name}' goes ${layer.zDepth}mm deep into ${doc.stockThickness}mm stock, so it will score rather than cut through.`,
+          });
+        }
+      }
+
+      if (doc.elements.length === 0) {
+        problems.push({ severity: 'warning', message: 'The document is empty — there is nothing to machine.' });
+      }
+
+      return {
+        ok: problems.every((p) => p.severity !== 'error'),
+        problems,
+        errorCount: problems.filter((p) => p.severity === 'error').length,
+        warningCount: problems.filter((p) => p.severity === 'warning').length,
+      };
+    }
+
+    /*
+      One element, changed in place. Without this the only way to nudge a single
+      shape was to send the whole elements array back through etch_set_document,
+      which silently discards anything that changed on the canvas in between.
+    */
+    case 'etch_update_element':
+    case 'UPDATE_ELEMENT': {
+      const id = msg.id || msg.elementId;
+      if (typeof id !== 'string' || !id) return { ok: false, error: 'id is required' };
+      const updates = msg.updates;
+      if (!updates || typeof updates !== 'object') return { ok: false, error: 'updates must be an object of element fields' };
+      const existing = store.document.elements.find((el) => el.id === id);
+      if (!existing) return { ok: false, error: `No element with id '${id}'` };
+      // id and type are identity, not properties: changing either in place
+      // would leave a rect carrying a circle's fields.
+      if ('id' in updates || 'type' in updates) {
+        return { ok: false, error: "An element's id and type cannot be changed — delete it and add the replacement" };
+      }
+      store.updateElement(id, updates);
+      const next = useStore.getState().document.elements.find((el) => el.id === id);
+      return { ok: true, element: next };
+    }
+
+    case 'etch_get_screenshot':
+    case 'SCREENSHOT': {
+      const svg = window.document.querySelector('svg[data-etch-canvas]') as SVGSVGElement | null;
+      if (!svg) return { ok: false, error: 'Canvas not mounted' };
+      const doc = store.document;
+      const scale = typeof msg.scale === 'number' && msg.scale > 0 ? Math.min(msg.scale, 8) : 2;
+      try {
+        const prepared = buildSnapshotSvg(svg, {
+          bedWidth: doc.width,
+          bedHeight: doc.height,
+          scale,
+          background: '#ffffff',
+        });
+        const dataUrl = await rasterizeSvg(prepared);
+        return { ok: true, dataUrl, width: prepared.width, height: prepared.height };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    }
+
+    case 'etch_get_note_card':
+    case 'GET_NOTE_CARD':
+      return { ok: true, markdown: store.document.notecard || '' };
+
+    // One card per document, not the positioned array Mesh and Volt keep: an
+    // Etch card is a field ON the document, so it travels with the piece into a
+    // preset and back out again rather than living in a session's overlays.
+    case 'etch_set_note_card':
+    case 'SET_NOTE_CARD': {
+      const markdown = msg.markdown;
+      if (typeof markdown !== 'string') return { ok: false, error: 'markdown must be a string' };
+      store.setNotecard(markdown);
+      return { ok: true };
+    }
+
     case 'etch_set_svg':
     case 'SET_SVG': {
       const svgContent = msg.svg || msg.svgContent;
@@ -91,16 +289,57 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
           category: p.category,
           description: p.description,
         })),
+        // The operator's own saved documents were missing here, so an agent
+        // could neither see nor reload work the user had saved — it only ever
+        // knew about the built-in templates.
+        userPresets: store.userPresetNames.map((name) => ({
+          id: `user:${name}`,
+          name,
+          category: 'Saved',
+        })),
       };
 
     case 'etch_load_preset':
     case 'LOAD_PRESET': {
       const presetId = msg.presetId || msg.preset;
-      const preset = PRESET_ETCHINGS.find((p) => p.id === presetId);
-      if (!preset) return { ok: false, error: `Preset '${presetId}' not found` };
+      if (typeof presetId !== 'string' || !presetId) return { ok: false, error: 'preset is required' };
 
-      store.setDocument(preset.doc);
-      return { ok: true, loadedPreset: preset.name };
+      // Through the store rather than setDocument directly: loadPreset clones
+      // the template (so later edits are not edits of the preset itself) and
+      // records which preset is active, and it is the one path that knows about
+      // 'user:' saves.
+      const known =
+        presetId.startsWith('user:')
+          ? store.userPresetNames.includes(presetId.slice('user:'.length))
+          : PRESET_ETCHINGS.some((p) => p.id === presetId);
+      if (!known) return { ok: false, error: `Preset '${presetId}' not found` };
+
+      store.loadPreset(presetId);
+      const loaded = useStore.getState().document;
+      return { ok: true, loadedPreset: loaded.name, elementCount: loaded.elements.length };
+    }
+
+    case 'etch_save_preset':
+    case 'SAVE_PRESET': {
+      const name = String(msg.name || msg.preset || '').trim();
+      if (!name) return { ok: false, error: 'name is required' };
+      store.saveUserPresetByName(name);
+      const saved = useStore.getState().userPresetNames.includes(name);
+      if (!saved) return { ok: false, error: `Could not save preset '${name}'` };
+      return { ok: true, preset: `user:${name}`, userPresets: useStore.getState().userPresetNames };
+    }
+
+    case 'etch_delete_preset':
+    case 'DELETE_PRESET': {
+      const raw = String(msg.name || msg.preset || '').trim();
+      if (!raw) return { ok: false, error: 'name is required' };
+      // Accepts either form, since list and load both speak in 'user:' ids.
+      const name = raw.startsWith('user:') ? raw.slice('user:'.length) : raw;
+      if (!store.userPresetNames.includes(name)) {
+        return { ok: false, error: `No saved preset named '${name}'` };
+      }
+      store.deleteUserPreset(name);
+      return { ok: true, deleted: name, userPresets: useStore.getState().userPresetNames };
     }
 
     case 'etch_add_element':
@@ -497,7 +736,23 @@ export function useMCPBridge() {
       ws = new WebSocket(`ws://localhost:${wsPort}`);
 
       ws.onopen = () => {
-        ws?.send(JSON.stringify({ event: 'HELLO', app: 'etch', port: location.port }));
+        /*
+         * The handshake also offers this tab's session, as a fallback
+         * credential for the MCP server's cloud tools — the ones that read the
+         * run archive over HTTPS rather than driving this tab. It means an
+         * agent can answer a question about last month's job with no setup at
+         * all, as long as the app is open.
+         *
+         * The server treats it as a last resort behind PHYSBOX_API_TOKEN and its
+         * config file, because this socket has no origin check. It is localhost
+         * only, and the server binds loopback.
+         */
+        ws?.send(JSON.stringify({
+          event: 'HELLO',
+          app: 'etch',
+          port: location.port,
+          token: getStoredAuthToken() ?? undefined,
+        }));
         console.log('[Physbox Etch] MCP Bridge WebSocket connected');
       };
 
@@ -552,6 +807,9 @@ export function useMCPBridge() {
       dead = true;
       clearTimeout(retryTimer);
       ws?.close();
+      // Nothing can reply for a command once the bridge is gone, so don't leave
+      // its pill behind (a dev-time remount would otherwise strand it).
+      useStore.getState().resetMcpActive();
     };
   }, []);
 }

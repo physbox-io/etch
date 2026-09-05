@@ -6,6 +6,7 @@ import { LeftToolbar } from './components/LeftToolbar';
 import { EtchCanvas } from './components/EtchCanvas';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { BottomStatusBar } from './components/BottomStatusBar';
+import { DocumentNoteCard } from './components/DocumentNoteCard';
 import { ClipArtModal } from './components/ClipArtModal';
 import { MaterialTestModal } from './components/MaterialTestModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
@@ -213,6 +214,11 @@ export const App: React.FC = () => {
             onClick={() => setPropertiesOpen(false)}
           />
         )}
+
+        {/* The document's note card — what this piece is, floating over the bed.
+            A sibling of the canvas rather than a child of it so it stays put
+            while the drawing is panned and zoomed underneath. */}
+        <DocumentNoteCard />
 
         {/* Right Properties Inspector & Layer Manager */}
         <PropertiesSidebar />

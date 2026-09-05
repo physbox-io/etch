@@ -36,7 +36,27 @@ WebSerial machine control requires a Chromium-based browser (Chrome, Edge, Opera
 
 ### Account sign-in
 
-Everything in the app works signed out, entirely in the browser. Signing in adds cloud sync of machine settings, copilot keys and saved presets, plus remote telemetry.
+Everything in the app works signed out, entirely in the browser — including driving a
+machine over WebSerial. Signing in adds cloud sync of machine settings, copilot keys
+and saved presets.
+
+A **PhysBox Pro** account adds three more things on top of that:
+
+* **Remote monitoring** — the running job's progress, position, feed and faults,
+  readable from any other device you are signed in on. Driving the machine is not
+  gated; being somewhere else while it runs is.
+* **Cloud documents** — the drawing you are working on is auto-saved against the
+  account, with revisions to fall back on. Distinct from preset sync above, which
+  only ever held documents you deliberately named and saved; nothing has ever kept
+  the *open* one, so a reload has always dropped back to the default document.
+* **Job history** — every run is archived instead of overwritten: duration,
+  progress, the feed/spindle/position trace, the line an alarm stopped it on, and
+  the material and per-layer settings it was cut at. Readable from the account menu
+  (**Job History**), from physbox.io, or by an agent over MCP.
+
+The free product is untouched otherwise: local save and load, WebSerial machine
+control, and preset and parameter sync all behave exactly as they did, and a free
+session makes no request it is going to be refused.
 
 Sign-in uses Google Identity Services, and **needs no setup for a normal checkout** — the OAuth client id is committed in `src/utils/googleAuth.ts`. There is no `.env` to create; `.env` and `.env.*` are gitignored precisely so nothing that *is* secret gets committed by habit.
 

@@ -15,6 +15,24 @@ import {
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
 import { CloudTransport, WebSerialTransport, type GrblTransport } from './grblTransport';
 
+/**
+ * How often the machine's state is reported to the account, at most.
+ *
+ * Mesh has used two seconds since remote monitoring shipped, and there is no
+ * reason for Etch to differ: a dashboard refreshing every three seconds cannot
+ * show more than this anyway.
+ */
+const TELEMETRY_INTERVAL_MS = 2000;
+
+/** What a run is, beyond the G-code — see `webSerialManager.jobContext`. */
+export interface JobContext {
+  name?: string;
+  documentId?: string | null;
+  documentRevision?: number | null;
+  /** Material, per-layer power/speed/passes, machine profile. No fixed shape. */
+  settings?: Record<string, unknown> | null;
+}
+
 /** Which wire reaches the machine: a cable here, or a Tekno Box over WiFi. */
 export type TransportMode = 'usb' | 'wifi';
 
@@ -267,6 +285,21 @@ class WebSerialManager {
   /** Guard against two jiggle loops racing each other into the same buffer. */
   private guideJiggleRunning = false;
 
+  /** Telemetry pacing — see `publishTelemetry`. */
+  private lastTelemetryAt = 0;
+  private lastTelemetryState = '';
+  private telemetryInFlight = false;
+
+  /**
+   * What the program being cut is, for whoever is watching it remotely and for
+   * the run archive afterwards.
+   *
+   * The machine layer cannot work any of this out: it is handed a string of
+   * G-code. The run panel knows which document produced it and what it was
+   * planned at, and passes it to `startJob`.
+   */
+  private jobContext: JobContext = {};
+
   public subscribe(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
     listener({ ...this.status });
@@ -280,9 +313,44 @@ class WebSerialManager {
     for (const listener of this.statusListeners) {
       listener(snapshot);
     }
-    // Stream machine telemetry to api.physbox.io
-    postMachineTelemetry('etch', {
+    this.publishTelemetry(snapshot);
+  }
+
+  /**
+   * Reports the machine's state to api.physbox.io, for a phone or a second
+   * workstation to watch a running job from.
+   *
+   * This used to fire on every single `notify()` — the 5 Hz status poll *plus*
+   * every acknowledged line of the program, so a job cutting at a few hundred
+   * lines a minute meant a POST per line — with no interval floor, no in-flight
+   * guard, and no check that a machine was even connected, so a browser sitting
+   * on the page with nothing plugged in posted zeroes forever. The throttle below
+   * is the same one Mesh has always had.
+   *
+   * A change of state jumps the floor. A job finishing, a tool-change pause or an
+   * alarm are precisely the moments somebody is watching for, and making them
+   * wait out an interval is how a delay becomes the reason nobody trusts the
+   * dashboard.
+   */
+  private publishTelemetry(snapshot: MachineStatus) {
+    if (!snapshot.connected) return;
+
+    const now = Date.now();
+    const changed = snapshot.state !== this.lastTelemetryState;
+    if (!changed && now - this.lastTelemetryAt < TELEMETRY_INTERVAL_MS) return;
+    // One at a time: a stalled network would otherwise queue a backlog of stale
+    // positions that all land at once when it recovers.
+    if (this.telemetryInFlight) return;
+
+    this.lastTelemetryAt = now;
+    this.lastTelemetryState = snapshot.state;
+    this.telemetryInFlight = true;
+
+    void postMachineTelemetry('etch', {
       status: snapshot.state,
+      // What the job is called, so the archive has something to search by. Only
+      // the run panel knows it; the machine layer is handed it when a job starts.
+      jobName: this.jobContext.name,
       progressPercent: snapshot.totalLines > 0 ? (snapshot.currentLine / snapshot.totalLines) * 100 : 0,
       currentLine: snapshot.currentLine,
       totalLines: snapshot.totalLines,
@@ -290,6 +358,11 @@ class WebSerialManager {
       spindleSpeed: snapshot.spindlePower,
       feedRate: snapshot.feedRate,
       lastError: snapshot.lastError,
+      documentId: this.jobContext.documentId ?? null,
+      documentRevision: this.jobContext.documentRevision ?? null,
+      settings: this.jobContext.settings ?? null,
+    }).finally(() => {
+      this.telemetryInFlight = false;
     });
   }
 
@@ -948,7 +1021,7 @@ class WebSerialManager {
    */
   public startJob(
     gcode: string,
-    opts: { machine?: MachineKind } = {}
+    opts: { machine?: MachineKind; job?: JobContext } = {}
   ): { started: boolean; message: string } {
     if (!this.status.connected) {
       return { started: false, message: 'Connect to a machine first.' };
@@ -985,6 +1058,10 @@ class WebSerialManager {
     if (lines.length === 0) {
       return { started: false, message: 'That program has no machine commands in it.' };
     }
+
+    // Recorded before the first line goes out, so the very first telemetry frame
+    // already says what this run is — that frame is what opens the archived run.
+    this.jobContext = opts.job ?? {};
 
     this.gcodeQueue = lines;
     this.queueIndex = 0;

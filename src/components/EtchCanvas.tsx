@@ -1105,6 +1105,9 @@ export const EtchCanvas: React.FC = () => {
     <div className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors">
       <svg
         ref={svgRef}
+        // How the MCP bridge finds the canvas to photograph it. A ref is no use
+        // there: the bridge is a plain function with no view of this component.
+        data-etch-canvas
         className={`w-full h-full touch-none select-none ${
           activeTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
         }`}

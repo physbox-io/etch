@@ -1,0 +1,222 @@
+{
+  "overview": "PhysBox: Etch (etch.physbox.io) is a 2D vector CAD & manufacturing studio for laser cutting, vector etching, and CNC milling/carving. The document model is SVG-native and measured in millimetres: a document is a piece of stock (width x height, material, stockThickness) carrying layers (cut / etch / fill / shade) and elements (rect, circle, ellipse, line, polygon, star, text, symbol, bezier, freehand, path, image). It supports Google Fonts text, a clip-art symbol library, parametric mandala & radial symmetry tools, raster image import in four modes (traced vector, halftone, scanline, greyscale shade), and direct GRBL/Marlin G-code toolpath export with Web Serial streaming.",
+  "workflow": [
+    "1. Call etch_get_schema for the document/element/layer schema and preset list, then etch_get_state to see the document currently on the canvas.",
+    "2. Call etch_list_capabilities for what this machine actually has — its tool rack, the material list, the layer operations and the image modes. The rack is user-editable, so advising a tool from memory advises fitting one they may not own.",
+    "3. Set up the job with etch_set_document (stock size, material, stockThickness, machine, layers) — fields you omit are kept from the current document.",
+    "4. Build geometry: etch_add_element for one shape at a time, etch_set_svg to drop a whole SVG onto the canvas at once, etch_add_clipart to place a library symbol (etch_list_clipart names them), or etch_add_image to bring in a raster picture, then etch_combine to cut one shape out of another — that is how a plate with a slot or a bracket with a bite taken out of it gets made, rather than by drawing the outline by hand.",
+    "5. Change one shape with etch_update_element rather than resending the whole elements array — a wholesale write discards anything that moved in between.",
+    "6. Or start from a template with etch_list_presets and etch_load_preset — note that loading a preset replaces the whole document.",
+    "7. On an unfamiliar material, offer etch_make_test_grid before the real job: it cuts a square per speed/power combination so the settings come from measurement rather than from the feeds model's estimate. It replaces the open document, so say so first.",
+    "8. Set the note card with etch_set_note_card once the geometry is final — what the piece is, its finished size in mm, the stock it is cut from, and what each layer does. The job is not finished without it.",
+    "9. Export with etch_export_svg (clean SVG XML) or etch_generate_gcode (GRBL/Marlin toolpath, inner-contour-first, kerf-compensated).",
+    "10. While a job runs, etch_machine_status reports progress and etch_machine_trim nudges feed or power if the user says it is cutting too hot or too slow. Neither can start or stop anything.",
+    "11. Before generating G-code, call etch_validate_document — off-stock geometry, dead layer references and shallow cuts all export without complaint.",
+    "12. etch_get_screenshot shows you what you drew; etch_get_summary is the cheap numeric read of the same thing."
+  ],
+  "gotchas": [
+    "THE BRIDGE IS A LOCAL HUB, NOT THE DEV SERVER: Etch dials the physbox_mcp hub on ws://localhost:3142 directly, so these tools work against a hosted build as well as a local one — what has to be running is the hub and a browser tab with Etch open in it. Nothing reaches a tab that is closed.",
+    "EVERYTHING IS MILLIMETRES, ORIGIN TOP-LEFT: x increases right, y increases down, from the top-left corner of the stock. The document's `origin` field ('top-left' | 'center' | 'bottom-left') controls where machine X0 Y0 sits for the G-code, not where the canvas draws.",
+    "ELEMENT x/y IS THE LOCAL ORIGIN, AND WHERE THAT SITS DEPENDS ON THE TYPE: circle and ellipse are drawn about it (x/y is the centre); rect is drawn from it (x/y is the top-left corner); line starts there and ends at x2/y2 relative to it; text hangs down from it; polygon/star/path/symbol are drawn from it in their own local coordinates. Rotation always pivots about the element's own bounding-box centre.",
+    "PARTIAL DOCUMENTS ARE MERGED, PRESETS ARE NOT: etch_set_document merges the fields you send onto the current document, so sending only {width, height} resizes the stock and keeps the drawing. etch_load_preset replaces the document outright — anything unsaved on the canvas is gone.",
+    "ELEMENTS NEED A LAYER THAT EXISTS: layerId defaults to 'cut'. If you sent a document whose layers do not include that id, the element will not be machined. The stock two layers are 'cut' (through-cut contours) and 'etch' (surface engraving).",
+    "SIZE FIELDS ARE PER TYPE: rect uses w/h (rx/ry for corner radius), circle uses r, ellipse uses rx2/ry2, line uses x2/y2, polygon uses points, text uses text/fontSize/fontFamily, path/bezier/freehand use d or bezierNodes. Sending w/h on a circle does nothing.",
+    "STAR AND PATH ARE DRAWN FROM `d`: etch_add_element stores what you send verbatim, so an element of those types with no `d` renders and machines as nothing. Send explicit SVG path data, or use rect/circle/ellipse/line/polygon, which are generated from their own fields. A `symbol` is the exception: send a symbolId from etch_list_clipart and the path data is filled in from the library.",
+    "MACHINE KIND DECIDES WHETHER Z EXISTS: document.machine 'laser' modulates power at a fixed height and ignores per-layer zDepth; 'cnc' cuts in passes to zDepth. Set material and stockThickness — feeds, spindle speed and depth-per-pass are all derived from them, and 'cut through' is meaningless without a thickness.",
+    "KERF IS NOT OPTIONAL: contour offset is applied by default so parts come out to size; opt out per element with cutSide 'on' rather than by disabling it globally.",
+    "TEXT IS OUTLINED BEFORE IT IS CUT: a text element machines from its generated outline, which is regenerated when the text or font changes. A font that has not loaded yet can briefly outline differently from what the canvas shows.",
+    "AN IMAGE IS TONE, NOT A SHAPE: etch_add_image has four modes. 'vector' traces an outline, 'halftone' makes a dot grid and 'scanline' makes engrave lines — all three decide at import that a pixel is either cut or not, and land as one compound path element. 'shade' does not: it puts the greyscale pixels in the document as an `image` element and lets darkness vary along the move, so pitch, angle, depth and size stay editable afterwards. Shading needs a layer whose operation is 'shade' — the import makes one if the document has none, and the planner skips an image on any other kind of layer.",
+    "ONLY IMAGE BYTES, NOT URLS: etch_add_image takes base64 (or a data: URL). A remote URL drawn into a canvas taints it and the pixels become unreadable, so an http source cannot work.",
+    "CLIP ART IS PLACED BY ID: etch_add_clipart (or etch_add_element with type 'symbol' and a symbolId) fills in the path data and the viewBox scale for you. The library mixes a legacy 24-unit grid with a newer 100-unit one, so a symbol assembled by hand with a fixed scale comes out four times the size of its neighbours.",
+    "TEXT IS OUTLINED FOR YOU: add a `text` element with text/fontSize/fontFamily and the app vectorizes it — any Google Font. Do not send letterforms as path data.",
+    "BOOLEANS CONSUME THEIR INPUTS, AND ORDER DECIDES THE RESULT: etch_combine's first element id is the base and the rest act on it, so a subtract done the other way round keeps the offcut and destroys the part. The inputs are removed from the document; one undo in the UI brings them back. Open paths cannot take part and are left where they were.",
+    "A COMBINE THAT LEAVES SPECKS MEANS THE SHAPES DID NOT LINE UP: hairlines thinner than 0.05 mm are dropped as arithmetic noise, but a leftover of, say, 0.3 mm is real geometry and is kept and reported in the note. It is nearly always two edges meant to be flush and drawn a fraction of a millimetre apart — move them together and combine again rather than deleting the speck.",
+    "THE TEST GRID REPLACES THE DOCUMENT: etch_make_test_grid is not an addition to the drawing. Call etch_get_state and keep the result first if the current document matters, or tell the user what is about to happen.",
+    "DITHERING IS FOR SHADE MODE ONLY: the other three image modes threshold the picture, and handing a thresholder an already-dithered image traces the dot pattern itself — tens of thousands of tiny loops instead of an outline.",
+    "YOU CANNOT START THE MACHINE: etch_machine_trim adjusts a job already running and etch_machine_status reads it, and that is the whole machine surface. Homing, jogging, zeroing, framing and running are done by the person standing next to the machine, in the app. Ask them to press it; do not look for a tool that does it."
+  ],
+  "coordinateSystem": "Millimetres, origin at the top-left of the stock, x right and y down. An element's geometry is drawn in its own local coordinates and then translated by x/y, scaled by scaleX/scaleY and rotated by `rotation` degrees clockwise about its bounding-box centre — so x/y is the centre of a circle but the top-left corner of a rect. Default stock is 300 x 200 mm.",
+  "tools": {
+    "etch_get_state": "Return the full PhysBox: Etch state — document (dimensions, material, machine, layers, elements), selectedIds, activeTool and elementCount.",
+    "etch_set_document": "Merge an EtchDocument (or any subset of its fields) onto the active document. Use for stock size, material, stockThickness, machine, gridSize, origin, layers, or to replace the whole elements array. Omitted fields are kept. The document's `notecard` can be set here too, but etch_set_note_card is the direct route and documents what a good card contains.",
+    "etch_set_svg": "Import a raw SVG XML string onto the canvas, replacing the current elements and adding any layers the SVG implies. Returns importedCount and per-shape warnings.",
+    "etch_export_svg": "Export the active design as a clean, styled SVG XML string.",
+    "etch_list_presets": "List the built-in vector manufacturing presets (id, name, category, description). Returns built-in templates under `presets` and the user's own saved documents under `userPresets`, whose ids are of the form 'user:<name>'; either id can be passed to etch_load_preset.",
+    "etch_load_preset": "Load a built-in preset by id, replacing the entire active document. Ids: blank, hotel-keychain, mandala-coaster, intricate-mandala-art, box-joint-panel, spur-gear-set, wooden-desk-sign, cyberpunk-badge.",
+    "etch_add_element": "Add one vector shape, text, path, symbol or image to the canvas. Only `type` is really needed; x/y default to the centre of the stock, layerId to 'cut', and stroke/fill to the cut-layer defaults. A `symbol` sent with a symbolId and no `d` is resolved from the clip-art library. Returns the new element's id.",
+    "etch_generate_gcode": "Generate a GRBL/Marlin G-code toolpath for the active document — inner contours first, kerf-compensated, using the tool rack and machine settings currently loaded in the app. Options may override laserMode, spindleSpeedMax, travelSpeed and innerContourFirst. `options.removeOverlaps` (default true) makes a line two shapes share get cut once instead of twice; the returned program's header comments say how much doubled line was removed.",
+    "etch_get_schema": "Return this reference: the document/element/layer schema, coordinate system, workflow and gotchas.",
+    "etch_list_clipart": "List the built-in vector clip-art symbols (id, name, category). They are line art designed to be machined, so prefer one over generating your own version of the same subject.",
+    "etch_add_clipart": "Place a clip-art symbol by id. Path data and the per-symbol viewBox scale are filled in for you; x/y default to centred on the stock and `size` to a bounding size that fits it. Returns the new element's id and the size used.",
+    "etch_add_image": "Import a raster image (base64 or data: URL) in one of four modes: 'vector' (marching-squares outline trace), 'halftone' (dot grid), 'scanline' (engraved lines) or 'shade' (greyscale tone). `options` accepts mode, threshold, brightness, contrast, gamma, invert, dither, smoothing, targetWidth, targetHeight, halftoneSpacing, scanlineSpacing, shadePitch and simplifyPx; sizes default to an aspect-preserving fit on the stock. A shade import lands on a shade layer, creating one if the document has none. Returns the new element's id, the layer it landed on, and any shade layer created.",
+    "etch_list_capabilities": "List what this machine and build actually offer: the loaded tool rack (empty on a laser — that is how 'no tools to change' is expressed), the material catalogue, the layer operations, the four image modes, and the drawing tools in the UI. Also reports the boolean operations, the image dither modes and the document generators available in this build.",
+    "etch_combine": "Combine two or more shapes into one path with a boolean operation: 'union', 'subtract', 'intersect' or 'exclude'. ORDER MATTERS — elementIds[0] is the base, and the shapes after it act on it, so 'subtract' cuts the later shapes out of the first one. The inputs are consumed, not hidden underneath (shapes left stacked under their own union would have every shared edge cut twice). Shapes with no closed outline — a line, an unclosed path — cannot take part; they are left in the drawing and named in the returned note. The result is a plain path with any rotation and scale baked in, at the position the shapes were drawn. Returns the new element's id, which of the inputs were consumed, and a note when anything needs saying — including when leftover pieces under 1 mm survived, which almost always means two edges were meant to line up and are a fraction of a millimetre apart.",
+    "etch_make_test_grid": "Generate a material test grid: one square per settings combination, on a scrap of the stock. REPLACES THE OPEN DOCUMENT — it is a job of its own, not an addition — but keeps the current stock size, material and thickness, since a test cut for the wrong material tests nothing. `options` accepts cols and rows (steps across and down), minSpeed/maxSpeed (mm/min, across), minPower/maxPower (laser: % of the tube; CNC: spindle RPM, down), cellSize and gap in mm, operation ('fill' for how dark or deep, 'cut' for whether it cuts through) and labels. Each cell gets its own layer holding explicit speed and power that override the derived feeds — including parts of the range the feeds model would refuse, which is the point of a sweep. Returns the size the grid needs and a warning when it will not fit the stock, since anything hanging off the edge is trimmed out of the toolpath and those cells come back blank.",
+    "etch_machine_status": "Report the machine connected over Web Serial: whether it is connected at all, its GRBL state, whether a job is running or paused and how far through, work and machine coordinates, the live feed rate, and the current trim percentages for feed, rapid and power. Read-only. The trim figures come from the controller's own status report, so they are right even if it was reset or adjusted from a pendant.",
+    "etch_machine_trim": "Trim the running machine: `feed` and `power` take a step of 10, 1, -1 or -10 (percent) or the string 'reset' to return to what the program asked for; `rapid` takes 100, 50 or 25. This is what to reach for when a cut is scorching or running hot — it changes an already-running job without stopping it, where the alternative is aborting and restarting on material that has been cut into and can no longer be registered. STEPS, NOT TARGETS: GRBL has no command to set a figure, so 87 is rejected rather than silently ignored; nudge and check with etch_machine_status, which the controller updates a moment later. There is deliberately no way to start, resume, stop or jog a machine from MCP — trimming a job someone chose to run is a different thing from starting one.",
+    "etch_get_note_card": "Return the active document's note card as { ok, markdown }. Empty string when the document has none.",
+    "etch_set_note_card": "Set the active document's note card — the markdown label shown on a card floating over the canvas. Call this on every document you build, and again when the design changes; nothing writes one for you, and a document without one arrives at the machine unlabelled. Unlike Mesh and Volt, whose cards are a positioned overlay array, Etch has exactly one card and it lives ON the document — so it is saved with a preset and comes back with it.\n\nThe markdown is the label for the piece, in the presets' house style (etch_load_preset one and etch_get_note_card to read it):\n- `### Title` naming the actual object (\"Vintage Hotel Key Tag\").\n- A bullet giving the finished size in mm and the stock it is cut from — material and thickness.\n- A bullet per layer: what the operation is and what geometry sits on it.\n- Any hole diameter, slot width, or spacing the maker would otherwise have to measure off the canvas.\n\nQuote the numbers you placed the elements at, in mm.",
+    "etch_get_screenshot": "Capture the document as a PNG — the stock and everything on it, with the editing chrome (selection handles, node editor, guides) left out. The frame is the STOCK, not the viewport, so the picture does not depend on where the user has panned and two calls of the same document give the same image. scale is output pixels per mm (default 2, max 8): a 300x200mm sheet at scale 2 is 600x400. Returns { ok, dataUrl, width, height }.\n\nUse it to check what you have drawn actually looks like the thing you meant — spacing, overlaps, whether text fits inside its border. Text is rendered with whatever font the browser has; an unusual face may fall back.",
+    "etch_get_summary": "The lightweight read of the document, and the one to reach for before etch_get_state. Returns the stock and material, every layer with its operation and element count, and one line per element: id, name, type, layer, and its position and size on the bed in mm (post-rotation, so it is the space the part actually occupies), plus the overall extent of the drawing. Carries none of the path data or embedded images that make etch_get_state large — a sheet with one photograph on it runs to megabytes there.",
+    "etch_validate_document": "Pre-flight the document and return { ok, problems, errorCount, warningCount }. Catches the faults that still export happily to G-code and only show up at the machine: geometry hanging off the stock (the machine drives to coordinates with no material under them), elements pointing at a layer that does not exist (no operation, speed or power — they never machine), elements on a hidden layer (hiding is a view setting, not an exclusion: they are still cut), sub-0.01mm strays from an accidental click, and a CNC cut layer whose zDepth is shallower than the stock, which scores instead of cutting through. Call it before etch_generate_gcode. ok is false only when there are errors; warnings are worth reading to the user.",
+    "etch_update_element": "Change one element in place: etch_update_element(id, updates), where updates holds any element fields (x, y, w, h, rotation, layerId, strokeColor, text, …). Prefer this over sending a whole elements array through etch_set_document, which discards anything that changed on the canvas between your read and your write. An element's id and type are identity, not properties — to change the type, delete it and add the replacement.",
+    "etch_save_preset": "Save the current document as a user preset under a name, alongside the built-in templates. It is stored with everything the document carries, the note card included, so the description comes back with it. etch_list_presets returns it under userPresets with the id 'user:<name>', which is what etch_load_preset takes.",
+    "etch_delete_preset": "Delete a saved user preset by name (with or without the 'user:' prefix). Built-in templates cannot be deleted. Destructive and not undoable — confirm with the user first."
+  },
+  "schema": {
+    "document": {
+      "id": "string",
+      "name": "string",
+      "width": "number (mm, stock width)",
+      "height": "number (mm, stock height)",
+      "gridSize": "number (mm, e.g. 10)",
+      "units": "'mm'",
+      "origin": "where machine X0 Y0 sits relative to the stock, e.g. 'top-left'",
+      "machine": "'laser' | 'cnc'",
+      "material": "'mdf' | 'plywood' | 'softwood' | 'hardwood' | 'acrylic' | 'aluminium' | 'glass' | 'stone' | 'ceramic'",
+      "stockThickness": "number (mm)",
+      "thickTabs": "boolean — leave more material at each holding tab",
+      "defaultHatchAngle": "number (degrees), applied when an element is switched to filled machining",
+      "defaultHatchSpacing": "number (mm)",
+      "layers": "EtchLayer[]",
+      "elements": "EtchElement[]",
+      "selectedIds": "string[]",
+      "notecard": "markdown string — the piece's label, shown on a card floating over the canvas. Set it with etch_set_note_card on every document you build. Travels with the document into a preset and back out."
+    },
+    "layer": {
+      "id": "string (elements reference this via layerId)",
+      "name": "string",
+      "color": "hex string",
+      "operation": "'cut' | 'etch' | 'fill' | 'shade' — shade machines an image as varying tone and takes only `image` elements",
+      "visible": "boolean",
+      "locked": "boolean",
+      "speed": "number (mm/min) — laser fallback when the material profile does not decide it",
+      "power": "number (0-100) — laser fallback",
+      "passes": "number",
+      "zDepth": "number (mm) — CNC only; ignored on a laser"
+    },
+    "elementTypes": [
+      "rect",
+      "circle",
+      "ellipse",
+      "line",
+      "polygon",
+      "star",
+      "text",
+      "symbol",
+      "bezier",
+      "freehand",
+      "path",
+      "image"
+    ],
+    "elementCommonFields": {
+      "id": "string",
+      "name": "string",
+      "type": "ElementType",
+      "layerId": "string (default 'cut')",
+      "x": "number (mm, centre)",
+      "y": "number (mm, centre)",
+      "rotation": "number (degrees)",
+      "scaleX": "number",
+      "scaleY": "number",
+      "opacity": "number 0-1",
+      "strokeColor": "hex string",
+      "strokeWidth": "number (mm)",
+      "strokeDash": "'solid' | 'dashed' | 'dotted'",
+      "fillColor": "'none' or hex/rgba",
+      "visible": "boolean",
+      "locked": "boolean",
+      "machining": "'outline' | 'filled' — filled additionally hatches the interior",
+      "hatchAngle": "number (degrees)",
+      "hatchSpacing": "number (mm)",
+      "hatchOutline": "boolean — whether a filled element also cuts its outline"
+    },
+    "elementTypeFields": {
+      "rect": "w, h, rx, ry",
+      "circle": "r",
+      "ellipse": "rx2, ry2",
+      "line": "x2, y2",
+      "polygon": "points (array of {x, y} in local mm); sides records how many the app generated",
+      "star": "d (SVG path data); pointsCount, innerRadius, outerRadius describe the path the app generated",
+      "text": "text, fontFamily, fontSize, fontWeight, letterSpacing, textPathId, textPathOffset, textPathAlign, textPathSide",
+      "symbol": "symbolId (from etch_list_clipart); d and scaleX/scaleY are filled in from the library when omitted",
+      "bezier / freehand / path": "bezierNodes (x, y, handleIn, handleOut) or d (SVG path data)",
+      "image": "imageGray (base64 greyscale samples, one byte per pixel, row-major, 0 black), imgW/imgH (the sample grid), w/h (size on the material in mm), hatchSpacing (tone line pitch in mm), hatchAngle. Produced by etch_add_image in 'shade' mode — not something to hand-assemble."
+    },
+    "gcodeOptions": {
+      "laserMode": "boolean — true for GRBL laser M3/M5, false for CNC Z-axis passes",
+      "spindleSpeedMax": "number — maximum S value (e.g. 1000 on GRBL)",
+      "travelSpeed": "number (mm/min) for rapids",
+      "innerContourFirst": "boolean — cut internal holes before outer boundaries",
+      "removeOverlaps": "boolean, default true — cut a line two shapes share once rather than twice. A doubled laser line burns through thin ply where the rest of the outline does not; a doubled router pass sends the cutter full depth down a slot that is already air. Fills, shading, tabbed cuts and lines shared between two different layers are deliberately left alone."
+    },
+    "imageOptions": {
+      "mode": "'vector' | 'halftone' | 'scanline' | 'shade'",
+      "threshold": "0-255 — what counts as dark. The first knob to turn when a trace comes back empty.",
+      "contrast": "-100 to 100, applied before thresholding",
+      "invert": "boolean — for light artwork on a dark background",
+      "targetWidth": "number (mm on the material); targetHeight is derived from the aspect ratio when omitted",
+      "targetHeight": "number (mm on the material)",
+      "halftoneSpacing": "number (mm between dots, halftone mode)",
+      "scanlineSpacing": "number (mm between lines, scanline mode)",
+      "shadePitch": "number (mm between tone sweeps, shade mode) — a finer pitch costs proportionally more machining time",
+      "brightness": "-100 to 100, a straight-line lift applied before thresholding",
+      "gamma": "0.2-3, default 1 — bends the middle greys without moving black or white. Above 1 lightens them, the usual fix for a photograph engraving too dark. Brightness and contrast cannot substitute: both are straight lines, so rescuing a scorched highlight with either also flattens the shadows that were already right.",
+      "dither": "'none' | 'floyd' | 'jarvis' | 'stucki' | 'ordered', SHADE MODE ONLY — turns the picture into pure black-and-white dots fired at one power, the way a newspaper prints a photograph. The answer for a machine that cannot hold a steady low power: a diode laser marks the same at 8% and 12%, so a photograph's shadows otherwise collapse into one flat grey. Floyd-Steinberg is sharpest, Stucki smoothest, 'ordered' a regular 8x8 pattern. Set shadePitch to the pixel size when using it (targetWidth divided by the traced pixel width, which is capped at 300 px on the long side) — a dithered picture IS its dots, and sweeping coarser samples them at random.",
+      "smoothing": "boolean — fit curves to a traced outline instead of leaving the pixel staircase",
+      "simplifyPx": "number (source pixels) — Douglas-Peucker tolerance on traced outlines"
+    }
+  },
+  "examples": {
+    "resizeStockKeepingTheDrawing": {
+      "tool": "etch_set_document",
+      "args": {
+        "document": {
+          "width": 120,
+          "height": 120,
+          "material": "plywood",
+          "stockThickness": 3,
+          "machine": "laser"
+        }
+      }
+    },
+    "addACutCircle": {
+      "tool": "etch_add_element",
+      "args": {
+        "element": {
+          "type": "circle",
+          "name": "Mount Hole",
+          "layerId": "cut",
+          "x": 60,
+          "y": 60,
+          "r": 4
+        }
+      }
+    },
+    "addEngravedText": {
+      "tool": "etch_add_element",
+      "args": {
+        "element": {
+          "type": "text",
+          "layerId": "etch",
+          "x": 60,
+          "y": 100,
+          "text": "PHYSBOX",
+          "fontSize": 12,
+          "fontFamily": "Inter",
+          "machining": "filled"
+        }
+      }
+    },
+    "exportALaserToolpath": {
+      "tool": "etch_generate_gcode",
+      "args": {
+        "options": {
+          "laserMode": true,
+          "travelSpeed": 3000,
+          "innerContourFirst": true
+        }
+      }
+    }
+  }
+}

@@ -94,12 +94,26 @@ class CamWorkerClient {
         };
         this.worker.onerror = (err) => {
           console.warn('CAM Worker error, falling back to main thread:', err);
+          // A worker that died this way will never post a reply, so anything
+          // already awaiting one has to be settled here — left pending, the
+          // caller hangs forever (and the MCP bridge's "MCP Active" pill, which
+          // is lowered in that caller's `finally`, stays up for the rest of the
+          // session). Dropping the worker also sends the next request down the
+          // main-thread path rather than into a corpse.
+          this.failPending(new Error(`CAM worker failed: ${err.message || 'unknown error'}`));
+          this.worker?.terminate();
+          this.worker = null;
         };
       } catch (err) {
         console.warn('Failed to initialize CAM Worker, using main thread:', err);
         this.worker = null;
       }
     }
+  }
+
+  private failPending(err: Error) {
+    for (const handler of this.pending.values()) handler.reject(err);
+    this.pending.clear();
   }
 
   private sendRequest<T>(req: CamRequestPayload): Promise<T> {
