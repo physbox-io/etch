@@ -203,7 +203,9 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
     */
     case 'etch_update_element':
     case 'UPDATE_ELEMENT': {
-      const id = msg.id || msg.elementId;
+      // elementId first: 'id' is also the request envelope's own key, and a
+      // payload that carried one used to overwrite it.
+      const id = msg.elementId || msg.id;
       if (typeof id !== 'string' || !id) return { ok: false, error: 'id is required' };
       const updates = msg.updates;
       if (!updates || typeof updates !== 'object') return { ok: false, error: 'updates must be an object of element fields' };
