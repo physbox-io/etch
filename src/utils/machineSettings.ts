@@ -9,6 +9,7 @@
  */
 
 import { syncCloudParameters } from './apiClient';
+import { DEFAULT_MOTION_PROFILE, type MotionProfile } from './motionProfile';
 
 const PLATE_THICKNESS_KEY = 'etch_touch_sensor_height_mm';
 
@@ -159,6 +160,64 @@ function readKerfByMachine(): Record<string, number> {
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, number>) : {};
   } catch {
     return {};
+  }
+}
+
+const MOTION_BY_MACHINE_KEY = 'etch_motion_profile_by_machine';
+
+function readMotionByMachine(): Record<string, MotionProfile> {
+  try {
+    const raw = localStorage.getItem(MOTION_BY_MACHINE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, MotionProfile>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * What the connected machine said it could do, last time it was asked.
+ *
+ * Kept per machine and remembered between sessions, for the same reason the
+ * kerf is: two machines on one account do not share an acceleration, and the
+ * job most worth an accurate estimate is the one being planned at a desk with
+ * nothing plugged in. Without this, unplugging the machine silently puts every
+ * feed and every time back onto invented figures.
+ *
+ * There is deliberately no account-wide fallback. A kerf measured on one laser
+ * is at least a kerf; an acceleration copied from another machine is a claim
+ * about hardware that is not there, and the assumed profile is the honest
+ * answer instead — it says `source: 'assumed'`, and the UI can say so too.
+ */
+export function readMotionProfile(
+  machineId: string | null = readActiveMachineId()
+): MotionProfile {
+  if (!machineId) return DEFAULT_MOTION_PROFILE;
+  const stored = readMotionByMachine()[machineId];
+  if (!stored || typeof stored !== 'object') return DEFAULT_MOTION_PROFILE;
+  // Merged over the default rather than trusted whole: this came out of storage
+  // that an older version of the app wrote, and a profile missing a field it
+  // did not know about would divide the estimate by undefined.
+  return { ...DEFAULT_MOTION_PROFILE, ...stored };
+}
+
+/** Records what a machine reported, against the machine that reported it. */
+export function writeMotionProfile(
+  profile: MotionProfile,
+  machineId: string | null = readActiveMachineId()
+): void {
+  // Nothing to key it to, and nothing worth storing: an assumed profile is what
+  // the reader already returns when it finds nothing.
+  if (!machineId || profile.source !== 'machine') return;
+  try {
+    const map = { ...readMotionByMachine(), [machineId]: profile };
+    const encoded = JSON.stringify(map);
+    localStorage.setItem(MOTION_BY_MACHINE_KEY, encoded);
+    syncCloudParameters('etch', { [MOTION_BY_MACHINE_KEY]: encoded });
+  } catch {
+    // Storage full or unavailable: the profile is still live on the status
+    // object for this session, which is the case that matters most.
   }
 }
 

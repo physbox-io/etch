@@ -1,5 +1,11 @@
 import { SAFE_Z, planToolChanges, type GCodeSegment } from './gcodeExporter';
-import { ASSUMED_ACCEL_MM_S2, planMoves, type MoveKind, type PassOrder } from './toolpathMoves';
+import { planMoves, type MoveKind, type PassOrder } from './toolpathMoves';
+import {
+  DEFAULT_MOTION_PROFILE,
+  accelAlong,
+  maxRateAlong,
+  type MotionProfile,
+} from './motionProfile';
 import type { Pt } from './pathFlatten';
 
 /**
@@ -72,26 +78,22 @@ export interface Timeline {
   toolChanges: TimelineToolChange[];
 }
 
-/**
- * Machine dynamics the estimate assumes, in the absence of anything better.
+/*
+ * Machine dynamics come from `motionProfile`, which reads them off the
+ * controller's own `$$`.
  *
- * These are not settings anyone has typed. They are the shape of a small
- * belt-driven hobby machine, and they exist because `distance / feed` is not an
- * estimate of anything a real controller does: it says a job of ten thousand
- * 0.03 mm moves at 3000 mm/min takes the same time as one 300 mm move at
- * 3000 mm/min, when in practice the first never gets anywhere near 3000 and can
- * run five times longer. That error is exactly the one an engraved photograph
- * hits hardest, so a preview that ignores it is most wrong about the jobs
- * people most want a number for.
+ * They matter because `distance / feed` is not an estimate of anything a real
+ * controller does: it says a job of ten thousand 0.03 mm moves at 3000 mm/min
+ * takes the same time as one 300 mm move at 3000 mm/min, when in practice the
+ * first never gets anywhere near 3000 and can run five times longer. That error
+ * is the one an engraved photograph hits hardest, so a preview that ignores it
+ * is most wrong about the jobs people most want a number for.
+ *
+ * They used to be two constants here — 500 mm/s² and a 0.01 mm junction
+ * deviation — which made the estimate wrong by up to a factor of fifty on
+ * acceleration alone, and blind to the single setting that most decides how
+ * long a traced outline takes.
  */
-const ACCEL_MM_S2 = ASSUMED_ACCEL_MM_S2;
-
-/**
- * GRBL's junction deviation, mm. How far off the corner the machine is allowed
- * to cut in exchange for carrying speed through it — a corner is taken at the
- * speed a circular arc of that sagitta could hold.
- */
-const JUNCTION_DEVIATION_MM = 0.01;
 
 /**
  * Blocks per second the controller can accept and plan.
@@ -110,14 +112,19 @@ const BLOCKS_PER_SECOND = 450;
  * estimate slows down in the places the machine actually slows down — which on
  * a traced outline is every single point.
  */
-function junctionSpeed(prev: Pt | null, next: Pt | null): number {
+function junctionSpeed(
+  prev: Pt | null,
+  next: Pt | null,
+  accel: number,
+  junctionDeviationMm: number
+): number {
   if (!prev || !next) return 0;
   const cosTheta = prev.x * next.x + prev.y * next.y;
   // Doubling back: a full stop, and the formula below would divide by zero.
   if (cosTheta <= -0.999999) return 0;
   if (cosTheta >= 0.999999) return Infinity;
   const sinHalf = Math.sqrt((1 - cosTheta) / 2);
-  return Math.sqrt((ACCEL_MM_S2 * JUNCTION_DEVIATION_MM * sinHalf) / (1 - sinHalf));
+  return Math.sqrt((accel * junctionDeviationMm * sinHalf) / (1 - sinHalf));
 }
 
 /**
@@ -128,9 +135,14 @@ function junctionSpeed(prev: Pt | null, next: Pt | null): number {
  * gets a triangular profile with the peak solved for, which is the case that
  * matters — on a dense engrave every move is that case.
  */
-function moveSeconds(distance: number, vIn: number, vOut: number, vMax: number): number {
+function moveSeconds(
+  distance: number,
+  vIn: number,
+  vOut: number,
+  vMax: number,
+  a: number
+): number {
   if (distance <= 0) return 0;
-  const a = ACCEL_MM_S2;
 
   // Peak reachable inside the distance, accelerating from one end and
   // decelerating to the other.
@@ -161,19 +173,29 @@ function moveSeconds(distance: number, vIn: number, vOut: number, vMax: number):
  * reaches its feed rate.
  */
 function planSpeeds(
-  moves: Array<{ x1: number; y1: number; x2: number; y2: number; z1: number; z2: number; feed: number }>
-): Array<{ vIn: number; vOut: number }> {
+  moves: Array<{ x1: number; y1: number; x2: number; y2: number; z1: number; z2: number; feed: number }>,
+  profile: MotionProfile
+): Array<{ vIn: number; vOut: number; accel: number }> {
   const n = moves.length;
   const dist: number[] = new Array(n);
   const vLimit: number[] = new Array(n);
+  const accel: number[] = new Array(n);
   const dir: Array<Pt | null> = new Array(n);
 
   for (let i = 0; i < n; i++) {
     const m = moves[i];
-    dist[i] = Math.hypot(m.x2 - m.x1, m.y2 - m.y1, m.z2 - m.z1);
-    vLimit[i] = Math.max(1, m.feed) / 60;
     const dx = m.x2 - m.x1;
     const dy = m.y2 - m.y1;
+    const dz = m.z2 - m.z1;
+    dist[i] = Math.hypot(dx, dy, dz);
+    /*
+     * The axes decide as much as the feed does. A plunge is governed by Z alone
+     * and a retract runs at `$112`, not at the rapid rate — and on a hatch fill
+     * there is one of each per scanline, so a job made of them is timed by an
+     * axis the feed word never mentions.
+     */
+    vLimit[i] = Math.min(Math.max(1, m.feed), maxRateAlong(profile, dx, dy, dz)) / 60;
+    accel[i] = accelAlong(profile, dx, dy, dz);
     const len = Math.hypot(dx, dy);
     dir[i] = len < 1e-9 ? null : { x: dx / len, y: dy / len };
   }
@@ -182,7 +204,12 @@ function planSpeeds(
   const junction: number[] = new Array(n + 1).fill(0);
   for (let i = 1; i < n; i++) {
     junction[i] = Math.min(
-      junctionSpeed(dir[i - 1], dir[i]),
+      junctionSpeed(
+        dir[i - 1],
+        dir[i],
+        Math.min(accel[i - 1], accel[i]),
+        profile.junctionDeviation
+      ),
       vLimit[i - 1],
       vLimit[i]
     );
@@ -190,19 +217,20 @@ function planSpeeds(
 
   for (let i = n - 1; i >= 0; i--) {
     // Braking from this junction to the next one over the move's own length.
-    const reachable = Math.sqrt(junction[i + 1] * junction[i + 1] + 2 * ACCEL_MM_S2 * dist[i]);
+    const reachable = Math.sqrt(junction[i + 1] * junction[i + 1] + 2 * accel[i] * dist[i]);
     if (junction[i] > reachable) junction[i] = reachable;
   }
   for (let i = 0; i < n; i++) {
-    const reachable = Math.sqrt(junction[i] * junction[i] + 2 * ACCEL_MM_S2 * dist[i]);
+    const reachable = Math.sqrt(junction[i] * junction[i] + 2 * accel[i] * dist[i]);
     if (junction[i + 1] > reachable) junction[i + 1] = reachable;
   }
 
-  const out: Array<{ vIn: number; vOut: number }> = new Array(n);
+  const out: Array<{ vIn: number; vOut: number; accel: number }> = new Array(n);
   for (let i = 0; i < n; i++) {
     out[i] = {
       vIn: Math.min(junction[i], vLimit[i]),
       vOut: Math.min(junction[i + 1], vLimit[i]),
+      accel: accel[i],
     };
   }
   return out;
@@ -226,6 +254,11 @@ export function buildTimeline(
     /** Both planned the same way as the file, or the preview is not the program. */
     overscan?: boolean;
     stock?: { width: number; height: number };
+    /**
+     * What the machine can do, off its own `$$`. Defaults to the assumed hobby
+     * gantry, which is what an estimate made with nothing plugged in gets.
+     */
+    motion?: MotionProfile;
   }
 ): Timeline {
   const travelSpeed = Math.max(1, opts.travelSpeed);
@@ -241,6 +274,10 @@ export function buildTimeline(
     passOrder: opts.passOrder,
     overscan: opts.overscan,
     stock: opts.stock,
+    // The run-up's length is machine arithmetic, and the file's copy of it was
+    // computed from these same figures. Passing anything else here would draw a
+    // lead-in the program does not contain.
+    motion: opts.motion,
   });
 
   const moves: ToolMove[] = [];
@@ -258,7 +295,8 @@ export function buildTimeline(
   // arrives and how fast it must be going when it leaves, and the second of
   // those is a fact about moves that have not been reached yet — a backward
   // pass, then a forward one, exactly as the controller's own planner does it.
-  const speeds = planSpeeds(program.moves);
+  const profile = opts.motion ?? DEFAULT_MOTION_PROFILE;
+  const speeds = planSpeeds(program.moves, profile);
 
   for (let i = 0; i < program.moves.length; i++) {
     const change = changeAtMove.get(i);
@@ -280,7 +318,17 @@ export function buildTimeline(
     const distance = Math.hypot(m.x2 - m.x1, m.y2 - m.y1, m.z2 - m.z1);
     // Minutes, and never quicker than the controller can take the instruction.
     const dt = Math.max(
-      moveSeconds(distance, speeds[i].vIn, speeds[i].vOut, Math.max(1, m.feed) / 60),
+      moveSeconds(
+        distance,
+        speeds[i].vIn,
+        speeds[i].vOut,
+        // The feed word, held to what the axes involved will actually do.
+        Math.min(
+          Math.max(1, m.feed),
+          maxRateAlong(profile, m.x2 - m.x1, m.y2 - m.y1, m.z2 - m.z1)
+        ) / 60,
+        speeds[i].accel
+      ),
       1 / BLOCKS_PER_SECOND
     ) / 60;
 

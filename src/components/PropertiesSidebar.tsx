@@ -42,7 +42,12 @@ import {
   THROUGH_CUT_OVERCUT_MM,
   type MaterialProfile,
 } from '../utils/materials';
-import { readSpindleRange, describeLaserSource, type LaserSource } from '../utils/machineSettings';
+import {
+  readSpindleRange,
+  readMotionProfile,
+  describeLaserSource,
+  type LaserSource,
+} from '../utils/machineSettings';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { DEFAULT_SHADE_PITCH_MM } from '../utils/rasterImage';
 import type { EtchElement } from '../types/etch';
@@ -217,7 +222,7 @@ const CncLayerCutting: React.FC<{
   // being threaded through the document.
   const spindle = React.useMemo(() => readSpindleRange(), []);
   const recipe = React.useMemo(
-    () => (profile ? deriveFeeds(profile, material, spindle) : null),
+    () => (profile ? deriveFeeds(profile, material, spindle, readMotionProfile()) : null),
     [profile, material, spindle]
   );
 

@@ -1,4 +1,9 @@
 import { findMaterial, type LaserMaterial, type MaterialId, type MaterialProfile } from './materials';
+import {
+  DEFAULT_MOTION_PROFILE,
+  cuttingFeedCeiling,
+  type MotionProfile,
+} from './motionProfile';
 import { describeLaserSource, type LaserSource } from './machineSettings';
 import { DEFAULT_HATCH_SPACING } from './hatchFill';
 import { defaultFeedDiameter, type ToolProfile } from './tooling';
@@ -66,20 +71,18 @@ export interface FeedRecipe {
 const REFERENCE_DIAMETER_MM = 3.175;
 
 /**
- * Fastest cutting feed this app will emit, mm/min.
+ * The fastest a cutting move is driven when the machine has not said, mm/min.
  *
- * Not a physical limit but a hobby-machine one: belt-driven gantries lose steps
- * and round corners long before the cutter is in trouble. A job that wants more
- * than this is better served by a wider tool than by a feed the machine will
- * not actually achieve — and if it silently did not achieve it, every chipload
- * calculated here would be wrong.
+ * Not a cutter limit — a gantry one. Belt drives lose steps and round corners
+ * before the tool is in trouble, and this is the figure for a small one.
  *
- * 2,500 was low enough to be the binding constraint on the commonest job in the
- * app — plywood with a two-flute 1/8" — which is the one case where this cap
- * should never bind. Hitting it does not merely slow the job: the code below
- * responds by turning the *spindle* down to hold chipload, so the machine ended
- * up cutting at 15,600 RPM when the material wanted 18,000. 4,000 clears that
- * pairing and is still inside what a rigid hobby gantry tracks in wood.
+ * It is a *fallback*. GRBL reports `$110` and `$111`, and a machine that has
+ * answered `$$` is held to its own numbers instead — see `cuttingFeedCeiling`.
+ * Capping a capable machine at this costs more than the feed, because
+ * `deriveFeeds` answers a clamped feed by turning the spindle *down* to hold
+ * chipload: the job then loses feed and RPM together, which is exactly the
+ * complaint that raised this from 2500 in the first place. The right fix was
+ * never a bigger constant.
  */
 export const MAX_CUTTING_FEED_MM_MIN = 4000;
 
@@ -118,13 +121,24 @@ export const RAMP_ANGLE_DEG = 3;
 export function deriveFeeds(
   tool: ToolProfile,
   material: MaterialId | MaterialProfile,
-  spindle: SpindleRange
+  spindle: SpindleRange,
+  /**
+   * What the machine can do, off its own `$$`. Omitted, the fallback gantry
+   * figures are used and the recipe is an estimate — which is what a job
+   * planned with nothing plugged in is.
+   */
+  motion: MotionProfile = DEFAULT_MOTION_PROFILE
 ): FeedRecipe | null {
   const spec = tool.cutting;
   if (!spec) return null;
 
   const mat = typeof material === 'string' ? findMaterial(material) : material;
   const notes: string[] = [];
+
+  // The machine's own ceiling where it has given one, and the fallback where it
+  // has not. Whichever of X and Y is slower, because a feed handed to a
+  // toolpath has to be holdable in whatever direction the path goes.
+  const maxFeed = cuttingFeedCeiling(motion);
 
   /**
    * The width actually doing the cutting — the tool's `feedDiameter` when it
@@ -159,7 +173,7 @@ export function deriveFeeds(
    * acrylic to the flutes and dulls edges. Backing off RPM keeps the chip the
    * right thickness at a feed the machine can actually achieve.
    */
-  const rpmForMaxFeed = MAX_CUTTING_FEED_MM_MIN / feedPerRev;
+  const rpmForMaxFeed = maxFeed / feedPerRev;
   const rpm = Math.round(
     Math.max(spindle.min, Math.min(spindle.max, Math.min(targetRpm, rpmForMaxFeed)))
   );
@@ -179,15 +193,15 @@ export function deriveFeeds(
   } else if (rpm < targetRpm * 0.95) {
     notes.push(
       `Spindle turned down from ${formatRpm(targetRpm)} to ${formatRpm(rpm)} RPM so the feed ` +
-        `stays within ${MAX_CUTTING_FEED_MM_MIN} mm/min at the right chip thickness.`
+        `stays within ${Math.round(maxFeed)} mm/min at the right chip thickness.`
     );
   }
 
   let feed = rpm * feedPerRev;
-  if (feed > MAX_CUTTING_FEED_MM_MIN) {
+  if (feed > maxFeed) {
     // Reached only when the spindle floor is already the binding constraint,
     // which the note above has explained.
-    feed = MAX_CUTTING_FEED_MM_MIN;
+    feed = maxFeed;
   }
   feed = Math.round(Math.max(MIN_CUTTING_FEED_MM_MIN, feed));
 
@@ -278,9 +292,16 @@ function chipFactor(engagement: Engagement): number {
  */
 export const MAX_FEED_BOOST = 1.6;
 
-export function feedForEngagement(baseFeedMmMin: number, engagement: Engagement): number {
+export function feedForEngagement(
+  baseFeedMmMin: number,
+  engagement: Engagement,
+  /** The gantry's own ceiling. Boosting past it asks for a feed it cannot hold. */
+  maxFeedMmMin = MAX_CUTTING_FEED_MM_MIN
+): number {
   const boost = Math.min(MAX_FEED_BOOST, 1 / chipFactor(engagement));
-  return Math.round(Math.max(MIN_CUTTING_FEED_MM_MIN, Math.min(MAX_CUTTING_FEED_MM_MIN, baseFeedMmMin * boost)));
+  return Math.round(
+    Math.max(MIN_CUTTING_FEED_MM_MIN, Math.min(maxFeedMmMin, baseFeedMmMin * boost))
+  );
 }
 
 /**

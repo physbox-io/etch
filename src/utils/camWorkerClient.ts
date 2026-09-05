@@ -3,6 +3,7 @@ import type {
   WorkerCamResponse,
   TraceImagePayload,
 } from '../workers/cam.worker';
+import { readMotionProfile } from './machineSettings';
 import {
   traceMarchingSquares,
   generateHalftoneCompoundPath,
@@ -199,6 +200,7 @@ class CamWorkerClient {
               // is a second place to forget.
               overscan: opts?.overscan,
               stock: { width: doc.width, height: doc.height },
+              motion: opts?.motion,
             }),
           } as unknown as T);
         }
@@ -247,13 +249,28 @@ class CamWorkerClient {
     });
   }
 
+  /**
+   * The caller's options with the machine's own dynamics stamped in.
+   *
+   * A worker has no `localStorage`, so the exporter's usual way of finding the
+   * profile — `readMotionProfile()` inside `resolveOptions` — comes back with
+   * the assumed gantry on that side of the boundary and the real machine on
+   * this one. That is the one disagreement this class exists to prevent: the
+   * file would be written against one acceleration and the preview drawn
+   * against another, and a laser fill's run-up is sized from exactly that
+   * number. Read here, where the storage is, and sent with the request.
+   */
+  private withMotion(opts?: Partial<GCodeOptions>): Partial<GCodeOptions> {
+    return { motion: readMotionProfile(), ...opts };
+  }
+
   public planToolpath(
     doc: EtchDocument,
     opts?: Partial<GCodeOptions>
   ): Promise<ReturnType<typeof planToolpath>> {
     return this.sendRequest({
       type: 'PLAN_TOOLPATH',
-      payload: { doc, opts },
+      payload: { doc, opts: this.withMotion(opts) },
     });
   }
 
@@ -263,7 +280,7 @@ class CamWorkerClient {
   ): Promise<string> {
     return this.sendRequest({
       type: 'GENERATE_GCODE',
-      payload: { doc, opts },
+      payload: { doc, opts: this.withMotion(opts) },
     });
   }
 
@@ -282,7 +299,7 @@ class CamWorkerClient {
   ): Promise<ProgramResult> {
     return this.sendRequest({
       type: 'PLAN_PROGRAM',
-      payload: { doc, opts, timeline },
+      payload: { doc, opts: this.withMotion(opts), timeline },
     });
   }
 

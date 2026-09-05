@@ -1,4 +1,9 @@
 import type { MachineStatus, BedProbeGrid, ProbePoint } from '../types/etch';
+import {
+  DEFAULT_MOTION_PROFILE,
+  motionProfileFromSettings,
+  type MotionProfile,
+} from './motionProfile';
 import { postMachineTelemetry } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
 import {
@@ -11,6 +16,7 @@ import {
   readLaserModeBorrowed,
   writeActiveMachineId,
   writeLaserModeBorrowed,
+  writeMotionProfile,
 } from './machineSettings';
 import { describeTool, parseToolNumber, type MachineKind } from './tooling';
 import { CloudTransport, WebSerialTransport, type GrblTransport } from './grblTransport';
@@ -134,6 +140,7 @@ const INITIAL_STATUS: MachineStatus = {
   rapidOverride: 100,
   spindleOverride: 100,
   guideSpot: false,
+  motion: DEFAULT_MOTION_PROFILE,
   jobRunning: false,
   jobPaused: false,
   currentLine: 0,
@@ -451,12 +458,74 @@ class WebSerialManager {
        * other's numbers.
        */
       void this.sendCommand('$I');
+      /*
+       * And what it can do. `$$` is the only place acceleration, per-axis
+       * rapids and the corner tolerance exist, and until this was asked the app
+       * planned every job against invented figures — a job time that could be
+       * out by a factor of fifty on acceleration alone, and a cutting feed
+       * capped at a constant regardless of what the gantry would hold.
+       *
+       * Not awaited: a machine that never answers must not stop the connection
+       * from completing, because everything else here works without it.
+       */
+      void this.readMachineSettings();
       return true;
     } catch (err: any) {
       await transport.disconnect().catch(() => {});
       this.update({ connected: false, state: 'Disconnected', lastError: err?.message || 'Failed to connect.' });
       return false;
     }
+  }
+
+  /**
+   * Asks the controller what it can do, and keeps the answer.
+   *
+   * Retried, because a board that has just had its port opened spends a second
+   * or two booting and deaf, and a `$$` sent into that window goes nowhere. One
+   * attempt meant the app spent the rest of the session quoting times off
+   * invented acceleration and capping feeds at a constant, on a machine that
+   * was connected and answering everything else.
+   *
+   * The settings themselves are collected by `handleIncomingLine`, which has
+   * always been watching for `$N=` lines; all this does is ask the question and
+   * turn what comes back into a profile.
+   */
+  private async readMachineSettings(attempts = 3, timeoutMs = 4000): Promise<MotionProfile> {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (!this.status.connected || !this.transport) return this.status.motion;
+
+      await this.sendAndWait('$$', timeoutMs);
+
+      if (this.grblSettings.size === 0) {
+        // A board still booting answers nothing at all. Give it time to reach
+        // its prompt rather than hammering the same question at it.
+        if (attempt < attempts - 1) await new Promise((r) => setTimeout(r, 1200));
+        continue;
+      }
+
+      const motion = motionProfileFromSettings(this.grblSettings);
+      this.update({ motion });
+      // Kept against this machine, so a job planned tomorrow at a desk with
+      // nothing plugged in is still planned against the machine that will cut
+      // it rather than against an assumption.
+      writeMotionProfile(motion, this.status.machineId ?? null);
+      return motion;
+    }
+
+    return this.status.motion;
+  }
+
+  /**
+   * Asks again, for an operator who has just changed a setting on the machine.
+   *
+   * `$11` in particular is the one worth re-reading: it is the commonest thing
+   * to tune for speed, it is changed from a terminal rather than from here, and
+   * a job planned against the old value is planned against a machine that no
+   * longer exists.
+   */
+  public async refreshMachineSettings(): Promise<MotionProfile> {
+    this.grblSettings.clear();
+    return this.readMachineSettings();
   }
 
   /** Splits incoming chunks into whole lines. */

@@ -1,4 +1,5 @@
 import type { Pt } from './pathFlatten';
+import { DEFAULT_MOTION_PROFILE, accelAlong, type MotionProfile } from './motionProfile';
 import type { GCodeSegment } from './gcodeExporter';
 
 /**
@@ -13,18 +14,6 @@ import type { GCodeSegment } from './gcodeExporter';
  * serialises these moves, the timeline times them, and drifting apart is no
  * longer something either of them can do.
  */
-
-/**
- * Acceleration the planner assumes, mm/s².
- *
- * Not a setting anyone has typed — it is the shape of a small belt-driven hobby
- * machine. Two things depend on it and must not disagree: the job time estimate
- * in `toolpathTimeline.ts`, and the length of an overscan run-up, which is
- * precisely the distance needed to reach cutting feed under this figure. A
- * lead-in sized against one acceleration and timed against another would
- * describe a job that never happens.
- */
-export const ASSUMED_ACCEL_MM_S2 = 500;
 
 /**
  * Where a peck retracts to between bites, in mm above the work.
@@ -124,6 +113,15 @@ export interface PlanMoveOptions {
    * rather than a second, quietly different program.
    */
   passOrder?: PassOrder;
+  /**
+   * What the machine can do, off its own `$$`.
+   *
+   * Used for the one geometric decision in here that depends on the machine
+   * rather than on the drawing: how long a laser fill's run-up has to be, which
+   * is the distance the head needs to reach its feed and is therefore a
+   * question about acceleration. Defaults to the assumed hobby gantry.
+   */
+  motion?: MotionProfile;
 }
 
 /**
@@ -1258,7 +1256,16 @@ function overscanFor(
   if (seg.type !== 'fill') return null;
 
   const mmPerSec = seg.speed / 60;
-  const distance = (mmPerSec * mmPerSec) / (2 * ASSUMED_ACCEL_MM_S2);
+  /*
+   * Long enough for the head to reach the feed before the beam lights, which is
+   * a fact about this machine's acceleration and not about the drawing. Taken
+   * off the controller when there is one: a stiff gantry needs a couple of
+   * millimetres and a soft one needs a centimetre, and using one figure for
+   * both means either a burnt border that is still there or travel spent
+   * outside the work for nothing.
+   */
+  const accel = accelAlong(opts.motion ?? DEFAULT_MOTION_PROFILE, 1, 0, 0);
+  const distance = (mmPerSec * mmPerSec) / (2 * accel);
   if (!(distance > 0.01)) return null;
 
   const pts = seg.points;

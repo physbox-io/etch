@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { planMoves, ASSUMED_ACCEL_MM_S2 } from '../src/utils/toolpathMoves';
+import { planMoves } from '../src/utils/toolpathMoves';
+import {
+  DEFAULT_MOTION_PROFILE,
+  motionProfileFromSettings,
+  parseGrblSettings,
+} from '../src/utils/motionProfile';
 import { planToolpath, generateGCode, SAFE_Z, type GCodeSegment } from '../src/utils/gcodeExporter';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
@@ -62,8 +67,29 @@ describe('overscan', () => {
     const { moves } = planMoves([seg([P(50, 50), P(80, 50)])], opts());
     const lead = moves.find((m) => m.dark)!;
     const mmPerSec = 3000 / 60;
-    const expected = (mmPerSec * mmPerSec) / (2 * ASSUMED_ACCEL_MM_S2);
+    const expected = (mmPerSec * mmPerSec) / (2 * DEFAULT_MOTION_PROFILE.accel.x);
     expect(50 - lead.x1).toBeCloseTo(expected, 6);
+  });
+
+  it("is measured against the machine's own acceleration when it has reported one", () => {
+    /*
+     * A run-up is the distance to reach feed, which is a fact about the gantry
+     * rather than about the drawing. A stiff machine needs a fraction of what a
+     * soft one does, and sizing both from one assumed figure means either a
+     * burnt fill border that is still there or travel spent outside the work
+     * for nothing.
+     */
+    const stiff = motionProfileFromSettings(parseGrblSettings(['$120=2000', '$110=10000']));
+    const soft = motionProfileFromSettings(parseGrblSettings(['$120=120', '$110=3000']));
+
+    const runUp = (motion: typeof stiff) => {
+      const { moves } = planMoves([seg([P(50, 50), P(80, 50)])], { ...opts(), motion });
+      return 50 - moves.find((m) => m.dark)!.x1;
+    };
+
+    expect(runUp(stiff)).toBeLessThan(runUp(soft));
+    const mmPerSec = 3000 / 60;
+    expect(runUp(stiff)).toBeCloseTo((mmPerSec * mmPerSec) / (2 * 2000), 6);
   });
 
   it('scales with the feed, because a faster line needs longer to get up to speed', () => {

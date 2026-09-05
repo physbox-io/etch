@@ -151,6 +151,10 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
             passOrder: opts?.passOrder,
             overscan: opts?.overscan,
             stock: { width: doc.width, height: doc.height },
+            // Sent with the request, because a worker has no storage to read it
+            // from and an animation timed against a different machine from the
+            // one the file was written for is not a preview of that file.
+            motion: opts?.motion,
           }),
         });
         break;

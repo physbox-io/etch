@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { readMotionProfile } from '../utils/machineSettings';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { EtchDocument } from '../types/etch';
 import type { GCodeSegment } from '../utils/gcodeExporter';
@@ -112,6 +113,9 @@ export const ToolpathPreview: React.FC<{
   boundaries = null,
   timeline: precomputed = null,
 }) => {
+  // Read once per mount rather than subscribed to: it changes when a machine is
+  // plugged in, which remounts everything downstream of the connection anyway.
+  const motion = useMemo(() => readMotionProfile(), []);
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
 
@@ -122,8 +126,12 @@ export const ToolpathPreview: React.FC<{
         travelSpeed,
         laserMode,
         stock: { width: doc.width, height: doc.height },
+        // The machine's own acceleration and corner tolerance, so the playhead
+        // crawls through the dense parts and flies through the open ones where
+        // the tool actually will.
+        motion,
       }),
-    [precomputed, segments, travelSpeed, laserMode, doc.width, doc.height]
+    [precomputed, segments, travelSpeed, laserMode, doc.width, doc.height, motion]
   );
 
   const colourFor = useCallback(

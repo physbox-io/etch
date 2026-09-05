@@ -1,4 +1,5 @@
 import type { MaterialId } from '../utils/materials';
+import type { MotionProfile } from '../utils/motionProfile';
 
 /**
  * What a layer does to the material.
@@ -454,6 +455,18 @@ export interface MachineStatus {
    * deliberate stop the operator has to act on, not a fault.
    */
   pauseMessage?: string;
+
+  /**
+   * What this machine can actually do, read off its own `$$`.
+   *
+   * Acceleration, per-axis rapids and the corner tolerance decide how long a
+   * job takes and how fast a cutting feed may be handed out, and every one of
+   * them used to be a constant in this app. Until a controller answers, this is
+   * the assumed hobby-gantry profile and says so through its `source` field —
+   * the difference between a number read off a machine and a number invented
+   * for one is the difference between an estimate and a guess.
+   */
+  motion: MotionProfile;
 }
 
 /** One probed point of a bed grid: bed XY in mm, and height relative to the reference point. */

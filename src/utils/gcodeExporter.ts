@@ -16,6 +16,12 @@ import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatch
 import { pocketRings } from './pocketOffset';
 import { docToMachine, describeOrigin, originFlipsY } from './machineCoords';
 import {
+  DEFAULT_MOTION_PROFILE,
+  cuttingFeedCeiling,
+  describeMotionProfile,
+  type MotionProfile,
+} from './motionProfile';
+import {
   DEFAULT_TOOL,
   cutWidthAtDepth,
   describeTool,
@@ -43,6 +49,7 @@ import {
   readSpindleRange,
   readLaserSource,
   readLaserKerf,
+  readMotionProfile,
   describeLaserSource,
   type LaserSource,
 } from './machineSettings';
@@ -81,6 +88,15 @@ export interface GCodeOptions {
    * went from 4768 mm to 751 mm.
    */
   travelOptimization: number;
+  /**
+   * What the machine can do, read off its own `$$`.
+   *
+   * Reaches the *file*, not just the estimate, because a laser fill's run-up is
+   * sized from acceleration — so a program written against one machine's
+   * figures and previewed against another's would describe a job neither one
+   * runs. Defaults to the assumed hobby gantry.
+   */
+  motion?: MotionProfile;
   /**
    * Whether to fit G2/G3 circular arcs to planar cutting moves.
    * Reduces line count by 50-85% on curved geometry and prevents GRBL buffer lag.
@@ -815,7 +831,8 @@ export function planToolpath(
       options.laser,
       options.laserKerfMm ?? 0,
       stock,
-      options.customCncTools
+      options.customCncTools,
+      options.motion
     );
     notes.push(...cut.notes);
 
@@ -1059,7 +1076,8 @@ export function planToolpath(
             const adaptive = adaptiveRingCutting(
               fillCut,
               layer,
-              pocket.engagement[i]
+              pocket.engagement[i],
+              options.motion ?? DEFAULT_MOTION_PROFILE
             );
             if (adaptive !== fillCut) {
               adaptiveEngagement = Math.min(adaptiveEngagement, pocket.engagement[i]);
@@ -1490,6 +1508,21 @@ export function planToolpath(
     );
   }
 
+  /*
+   * Where the numbers came from, said once per job.
+   *
+   * An estimate built on figures read off the controller and one built on the
+   * shape of a generic hobby gantry are not the same kind of claim, and a
+   * header that presented them identically would be inviting someone to trust
+   * the second as far as the first. On a machine that has answered, this is
+   * also the only place `$11` is ever put in front of an operator — and it is
+   * usually the setting with the most time in it.
+   */
+  {
+    const motion = options.motion ?? DEFAULT_MOTION_PROFILE;
+    notes.push(describeMotionProfile(motion, motion.source === 'machine'));
+  }
+
   if (adaptiveEngagement < 1) {
     notes.push(
       `Pockets are cleared at ${Math.round(adaptiveEngagement * 100)}% of the cutter's width ` +
@@ -1650,6 +1683,7 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     finishPass: true,
     leadInOut: true,
     overscan: true,
+    motion: readMotionProfile(),
     spindle: readSpindleRange(),
     laser: readLaserSource(),
     laserKerfMm: readLaserKerf(),
@@ -1744,7 +1778,9 @@ function resolveLayerCutting(
   /** Width of the slot the beam burns, mm. Ignored on a router. */
   laserKerfMm: number,
   stock: StockSettings,
-  customCncTools?: ToolProfile[]
+  customCncTools?: ToolProfile[],
+  /** What the gantry will hold, off its own `$$`. */
+  motion: MotionProfile = DEFAULT_MOTION_PROFILE
 ): LayerCutting {
   const toolNumber = layer.tool ?? DEFAULT_TOOL;
   const profile = findTool(machine, toolNumber, customCncTools);
@@ -1840,7 +1876,7 @@ function resolveLayerCutting(
     };
   }
 
-  const recipe = profile ? deriveFeeds(profile, material, spindle) : null;
+  const recipe = profile ? deriveFeeds(profile, material, spindle, motion) : null;
   if (recipe) notes.push(...recipe.notes);
 
   if (!recipe) {
@@ -1998,14 +2034,17 @@ function resolveCutSide(layer: EtchLayer): OffsetSide {
 function adaptiveRingCutting(
   cut: LayerCutting,
   layer: MachinedLayer,
-  engagement: number
+  engagement: number,
+  motion: MotionProfile
 ): LayerCutting {
   if (!cut.flatBottomed || !(engagement > 0) || engagement >= 1) return cut;
 
   const next = { ...cut };
 
   if (layer.speedOverride === undefined) {
-    next.speed = feedForEngagement(cut.speed, engagement);
+    // Never past what the gantry will hold: a boost that asks for a feed the
+    // machine cannot track is a rounded corner, not a faster job.
+    next.speed = feedForEngagement(cut.speed, engagement, cuttingFeedCeiling(motion));
   }
 
   const pinned = layer.stepdownOverride !== undefined || (layer.passes ?? 0) > 1;
@@ -2104,7 +2143,8 @@ function roughingPlan(
     // A rougher is a router by definition; the kerf figure never reaches it.
     0,
     stock,
-    options.customCncTools
+    options.customCncTools,
+    options.motion
   );
   const step = Math.abs(cutting.depths[0] ?? 0);
   if (step <= 0) return null;
@@ -3205,6 +3245,7 @@ export function generateGCode(
     passOrder: options.passOrder,
     overscan: options.overscan,
     stock: { width: doc.width, height: doc.height },
+    motion: options.motion,
   });
 
   const material = findMaterial(doc.material);
@@ -3551,6 +3592,7 @@ export function planProgramMoves(
     passOrder: options.passOrder,
     overscan: options.overscan,
     stock: { width: doc.width, height: doc.height },
+    motion: options.motion,
   });
   return { moves: program.moves, segments };
 }
