@@ -40,6 +40,9 @@ function useJobBounds() {
   }, [document]);
 }
 
+/** Shown once per browser before the first connect; never again after acknowledged. */
+const SAFETY_ACK_KEY = 'etchSafetyAck';
+
 export const MachineControlModal: React.FC = () => {
   const { isMachineModalOpen, toggleMachineModal, openDocs, bedProbeGrid, setBedProbeGrid, document } =
     useStore();
@@ -63,6 +66,20 @@ export const MachineControlModal: React.FC = () => {
   const [log, setLog] = useState<string[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
   const jobBounds = useJobBounds();
+
+  // Gate on the first real connect attempt only. The auto-resume effect below
+  // never reaches this — it only fires for a device already connected once
+  // before, which means the warning already ran.
+  const [showSafetyWarning, setShowSafetyWarning] = useState(false);
+  const pendingConnectRef = useRef<(() => void) | null>(null);
+  const requestConnect = (action: () => void) => {
+    if (localStorage.getItem(SAFETY_ACK_KEY)) {
+      action();
+      return;
+    }
+    pendingConnectRef.current = action;
+    setShowSafetyWarning(true);
+  };
 
   // The log is appended from the subscription itself rather than from an effect
   // watching `status`: two consecutive identical replies are one state value but
@@ -161,10 +178,12 @@ export const MachineControlModal: React.FC = () => {
                 </button>
               ) : (
                 <button
-                  onClick={() => {
-                    webSerialManager.setTransport(transportMode, cloudDeviceId);
-                    void webSerialManager.connect(115200);
-                  }}
+                  onClick={() =>
+                    requestConnect(() => {
+                      webSerialManager.setTransport(transportMode, cloudDeviceId);
+                      void webSerialManager.connect(115200);
+                    })
+                  }
                   disabled={transportMode === 'wifi' && !cloudDeviceId}
                   className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs rounded-lg shadow-md shadow-amber-500/20 transition-all cursor-pointer"
                 >
@@ -272,8 +291,10 @@ export const MachineControlModal: React.FC = () => {
                       // standing in front of it, being asked to press Connect
                       // is a step with nothing behind it.
                       localStorage.setItem('etchCloudDeviceId', deviceId);
-                      webSerialManager.setTransport('wifi', deviceId);
-                      void webSerialManager.connect(115200);
+                      requestConnect(() => {
+                        webSerialManager.setTransport('wifi', deviceId);
+                        void webSerialManager.connect(115200);
+                      });
                     }}
                     accentClass="bg-amber-500 hover:bg-amber-600 text-white"
                   />
@@ -392,6 +413,61 @@ export const MachineControlModal: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {showSafetyWarning && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                Before you connect a machine
+              </h3>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              This connects to a real machine that moves and cuts under its own power. Keep clear of
+              moving parts, wear eye protection{isLaser ? ' rated for the beam' : ''}, and never leave
+              a running job unattended. Use your own judgment — you are responsible for the
+              machine&apos;s safe operation.
+            </p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+              Provided with no warranty and no liability for injury, loss, or damage of any kind. Full
+              terms:{' '}
+              <button
+                onClick={() => {
+                  setShowSafetyWarning(false);
+                  openDocs('license');
+                }}
+                className="underline hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer"
+              >
+                PhysBox Permissive Public License (PPPL-1.0)
+              </button>
+              .
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => {
+                  pendingConnectRef.current = null;
+                  setShowSafetyWarning(false);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+              >
+                No Machine Control
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.setItem(SAFETY_ACK_KEY, '1');
+                  setShowSafetyWarning(false);
+                  pendingConnectRef.current?.();
+                  pendingConnectRef.current = null;
+                }}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Acknowledged
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
