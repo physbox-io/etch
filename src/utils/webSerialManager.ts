@@ -1818,6 +1818,17 @@ class WebSerialManager {
     const grblState = parts[0].split(':')[0] as MachineStatus['state'];
     if (grblState) this.status.state = grblState;
 
+    // GRBL can enter Hold on its own — a stray real-time `!` from line noise is
+    // the usual culprit, and Etch never sends one outside an explicit pause
+    // click. Without this, `jobPaused` stays false because nothing here ever
+    // set it, so the pause banner never shows and Resume is a no-op: the job
+    // looks merely stalled instead of parked and recoverable.
+    if (grblState === 'Hold' && this.status.jobRunning && !this.status.jobPaused) {
+      this.status.jobPaused = true;
+      this.status.pauseMessage =
+        'The machine went into hold on its own (likely line noise). Resume when ready.';
+    }
+
     let mpos: [number, number, number] | null = null;
     let wpos: [number, number, number] | null = null;
     let wco: [number, number, number] | null = null;

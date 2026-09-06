@@ -21,7 +21,6 @@ import {
   Sun,
   Moon,
   Save,
-  SaveAll,
   Trash2,
   FileJson,
   FolderInput,
@@ -413,20 +412,14 @@ export const TopNavbar: React.FC = () => {
 
         {/* Files & Actions Segmented Group */}
         <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
-          <button
-            onClick={handleSave}
-            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
-            title={isUserPreset ? `Save "${userPresetName}" (Ctrl+S)` : 'Save document (Ctrl+S)'}
-          >
-            <Save className="w-3.5 h-3.5" />
-          </button>
-
+          {/* Always Save As: the preset dropdown's disk icon above is the one
+              that overwrites the selected document in place with no prompt. */}
           <button
             onClick={handleSaveAs}
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
             title="Save As… (Ctrl+Shift+S)"
           >
-            <SaveAll className="w-3.5 h-3.5" />
+            <Save className="w-3.5 h-3.5" />
           </button>
 
           <label

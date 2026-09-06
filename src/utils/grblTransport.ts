@@ -60,6 +60,15 @@ export class WebSerialTransport implements GrblTransport {
   private port: any = null;
   private reader: ReadableStreamDefaultReader<string> | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  /**
+   * The promise behind `port.readable.pipeTo(...)`. Cancelling `reader` only
+   * asks that pipe to unwind — the lock on `port.readable` isn't actually
+   * released until this settles. `port.close()` needs that lock released
+   * first, and closing before it is is what wedges the OS-level serial device
+   * open: the browser thinks it disconnected, but the port needs a physical
+   * replug or a reboot to open again.
+   */
+  private pipeDone: Promise<void> | null = null;
   private encoder = new TextEncoder();
   private isReading = false;
   private open = false;
@@ -91,7 +100,7 @@ export class WebSerialTransport implements GrblTransport {
     // handled by disconnect(), so swallow it rather than leaving a floating
     // unhandled rejection.
     const textDecoder = new TextDecoderStream();
-    this.port.readable.pipeTo(textDecoder.writable).catch(() => {});
+    this.pipeDone = this.port.readable.pipeTo(textDecoder.writable).catch(() => {});
     this.reader = textDecoder.readable.getReader();
 
     this.writer = this.port.writable.getWriter();
@@ -105,8 +114,17 @@ export class WebSerialTransport implements GrblTransport {
     this.isReading = false;
     this.open = false;
     try {
-      if (this.reader) await this.reader.cancel();
-      if (this.writer) await this.writer.close();
+      if (this.reader) {
+        await this.reader.cancel();
+        this.reader.releaseLock();
+      }
+      // Must be awaited before port.close(): the cancel above only starts the
+      // pipe unwinding, and port.readable's lock isn't released until it does.
+      if (this.pipeDone) await this.pipeDone;
+      if (this.writer) {
+        await this.writer.close();
+        this.writer.releaseLock();
+      }
       if (this.port) await this.port.close();
     } catch {
       // Ignore cleanup errors — the port may already be gone.
@@ -114,6 +132,7 @@ export class WebSerialTransport implements GrblTransport {
     this.port = null;
     this.reader = null;
     this.writer = null;
+    this.pipeDone = null;
   }
 
   async writeLine(line: string): Promise<void> {
