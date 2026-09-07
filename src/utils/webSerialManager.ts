@@ -18,7 +18,7 @@ import {
   writeLaserModeBorrowed,
   writeMotionProfile,
 } from './machineSettings';
-import { describeTool, parseToolNumber, type MachineKind } from './tooling';
+import { describeTool, hasJobZAxis, parseToolNumber, type MachineKind } from './tooling';
 import { CloudTransport, WebSerialTransport, type GrblTransport } from './grblTransport';
 
 /**
@@ -262,6 +262,11 @@ class WebSerialManager {
    * only a correction if it reads zero at the point the datum was taken from.
    */
   private zDatumMachineXY: { x: number; y: number } | null = null;
+
+  /** Whether Z has been zeroed since this machine was connected. */
+  public hasZDatum(): boolean {
+    return this.zDatumMachineXY !== null;
+  }
 
   /** Deadline for the guide spot, so a lit beam cannot be walked away from. */
   private guideSpotTimer: ReturnType<typeof setTimeout> | null = null;
@@ -969,10 +974,24 @@ class WebSerialManager {
     };
   }
 
+  /**
+   * Reads back the live work Z and clamps a requested retract height to never
+   * sit below it — a work height is only clear of the job when Z0 belongs to
+   * the stock clamped down now, and against a datum left over from a
+   * different setup it can be below the tool already, turning a move meant
+   * to retract into a plunge. May only move Z away from the stock, never
+   * toward it — same rule `frameJob` already applies to its own retract.
+   */
+  private async clampedRetractZ(safeZ: number): Promise<number> {
+    await this.nextStatusReport();
+    return Math.max(safeZ, this.status.wz);
+  }
+
   /** Retracts and drives to the work XY origin, to check where zero landed. */
   public async gotoWorkOrigin(safeZ = 5) {
     await this.sendCommand('G21 G90');
-    await this.sendCommand(`G0 Z${safeZ.toFixed(3)}`);
+    const retractZ = await this.clampedRetractZ(safeZ);
+    await this.sendCommand(`G0 Z${retractZ.toFixed(3)}`);
     await this.sendCommand('G0 X0.000 Y0.000 F3000');
   }
 
@@ -1130,6 +1149,23 @@ class WebSerialManager {
       return {
         started: false,
         message: 'The guide spot was still lit — it has been switched off. Press run again.',
+      };
+    }
+
+    /*
+     * A laser job has no Z to plunge with, so a datum this session has never
+     * confirmed cannot hurt it. A CNC job's first Z move — and every other Z
+     * move `startJob` streams after it — otherwise trusts whatever G54 Z
+     * offset the controller happens to be holding, which may belong to a
+     * previous session, a different tool, or a different piece of stock.
+     * `zeroZHere`/`zeroZ` are the only things that record a datum, and only a
+     * disconnect (a different setup entirely) clears it, so a null datum here
+     * genuinely means "not zeroed since this machine was connected."
+     */
+    if (hasJobZAxis(opts.machine ?? 'laser') && this.zDatumMachineXY === null) {
+      return {
+        started: false,
+        message: 'Z zero has not been set this session. Zero it before running a job — a Z move against an unconfirmed datum can drive the tool into the stock.',
       };
     }
 
@@ -1525,7 +1561,15 @@ class WebSerialManager {
           // Lift clear, *then* traverse. One combined `G0 X Y Z` is a
           // coordinated move: starting from anywhere below the clearance height
           // it cuts the corner and drags the tool diagonally across the work.
-          await this.sendAndWait('G0 Z5.000 F1000');
+          //
+          // Not clamped like a retract: the probe just below travels down a
+          // fixed 20 mm from wherever this leaves the tool, so raising this
+          // height to "wherever the tool already is" — as a retract clamp
+          // would, on a work offset well above the nominal 5 mm — can push the
+          // probe's fixed search past the surface it is meant to find. This
+          // routine's own precondition is a Z zeroed just before it runs, same
+          // as `zeroZ`/`zeroZHere` right above it.
+          await this.sendAndWait(`G0 Z5.000 F1000`);
           await this.sendAndWait(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
 
           let action: AssistedProbeAction = 'probe';
@@ -1560,7 +1604,8 @@ class WebSerialManager {
 
           // Retract before the next traverse whichever way the point was taken:
           // a captured point leaves the tool touching the work.
-          await this.sendAndWait('G0 Z5.000 F1000');
+          const pointRetractZ = await this.clampedRetractZ(5);
+          await this.sendAndWait(`G0 Z${pointRetractZ.toFixed(3)} F1000`);
 
           if (contactZ === null) missed++;
           else if (firstContactZ === null) firstContactZ = contactZ;
@@ -1629,7 +1674,8 @@ class WebSerialManager {
     }
 
     if (isLive) {
-      await this.sendAndWait('G0 Z10.000 F3000');
+      const finalRetractZ = await this.clampedRetractZ(10);
+      await this.sendAndWait(`G0 Z${finalRetractZ.toFixed(3)} F3000`);
       if (aborted) {
         this.update({
           lastError:

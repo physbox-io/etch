@@ -514,11 +514,13 @@ export const MachineWorkOriginPanel: React.FC<{
             </button>
             <button
               onClick={() => webSerialManager.gotoWorkOrigin()}
-              disabled={busy}
+              disabled={busy || (!isLaser && !webSerialManager.hasZDatum())}
               title={
                 isLaser
                   ? 'Drive to the work origin to check where it landed'
-                  : 'Retract and drive to the work origin to check where it landed'
+                  : !webSerialManager.hasZDatum()
+                    ? 'Set Z zero below first — Z has not been zeroed since this machine connected'
+                    : 'Retract and drive to the work origin to check where it landed'
               }
               className={actionBtn}
             >
