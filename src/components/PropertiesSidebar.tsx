@@ -1,7 +1,7 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
 import { FontPicker } from './FontPicker';
-import { NumberInput } from './NumberInput';
+import { NumberInput } from '@physbox-io/ui';
 import type { LayerOperation, EtchLayer, MachinedLayer } from '../types/etch';
 import { isMachinedLayer } from '../types/etch';
 import {

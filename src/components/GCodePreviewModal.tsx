@@ -24,7 +24,7 @@ import { BusyToast } from './BusyToast';
 import { JobOverridePanel } from './JobOverridePanel';
 import { DocsInfoButton } from './DocsModal';
 import { InfoTooltip } from './InfoTooltip';
-import { NumberInput } from './NumberInput';
+import { NumberInput } from '@physbox-io/ui';
 
 /**
  * Stands in for the plan while one is being made.

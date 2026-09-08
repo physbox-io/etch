@@ -37,7 +37,7 @@ import {
 import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
-import { NumberInput } from './NumberInput';
+import { NumberInput } from '@physbox-io/ui';
 
 /**
  * Setting the job's origin on a live machine: jog the tool where you want it,

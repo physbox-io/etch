@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
-import { NumberInput } from './NumberInput';
+import { NumberInput } from '@physbox-io/ui';
 import {
   LASER_SOURCES,
   describeLaserSource,

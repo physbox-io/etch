@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { X, Grid3x3, AlertTriangle } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { NumberInput } from './NumberInput';
+import { NumberInput } from '@physbox-io/ui';
 import { DocsInfoButton } from './DocsModal';
 import { buildTestGrid, DEFAULT_TEST_GRID, type TestGridOptions } from '../utils/testGrid';
 import { machineKind, machineWords } from '../utils/tooling';

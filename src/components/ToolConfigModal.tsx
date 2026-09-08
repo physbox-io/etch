@@ -13,7 +13,7 @@ import {
 } from '../utils/tooling';
 import { Wrench, Plus, Trash2, RotateCcw, X, Check, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { InfoTooltip } from './InfoTooltip';
-import { NumberInput } from './NumberInput';
+import { NumberInput } from '@physbox-io/ui';
 
 export const ToolConfigModal: React.FC = () => {
   const {
