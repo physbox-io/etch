@@ -6,8 +6,11 @@ WORKDIR /app
 # Copy the entire project context
 COPY . .
 
+ARG GITHUB_TOKEN
+ENV GITHUB_TOKEN=$GITHUB_TOKEN
+
 # Build the frontend application
-RUN npm install
+RUN echo "BUILD-TIME TOKEN LEN: ${#GITHUB_TOKEN}" && cat .npmrc && npm install
 RUN npm run build
 
 # Production stage
