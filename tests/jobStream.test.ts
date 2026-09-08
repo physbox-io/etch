@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { prepareJobLines, classifyJobLine, webSerialManager } from '../src/utils/webSerialManager';
+import { prepareJobLines, classifyJobLine, webSerialManager, describeGrblFault } from '../src/utils/webSerialManager';
 import { generateGCode } from '../src/utils/gcodeExporter';
 import type { EtchDocument } from '../src/types/etch';
 
@@ -194,5 +194,30 @@ describe('streaming a job to the controller', () => {
     webSerialManager.startJob(JOB);
     await advance(10);
     expect(fake.peak.bytes).toBeGreaterThan(60);
+  });
+});
+
+describe('explaining what the controller refused', () => {
+  /*
+   * `Machine error:24` is the string that sends an operator to a forum. It also
+   * happens to be the one code that describes a program this app wrote itself,
+   * so a raw number gives the operator no way to tell it is not their setup.
+   */
+  it('writes out the numbered errors an operator can act on', () => {
+    expect(describeGrblFault('error:24')).toContain('axis words');
+    expect(describeGrblFault('error:9')).toContain('$X');
+    expect(describeGrblFault('error:22')).toContain('Feed rate');
+    // The raw line is kept alongside, so the code is still searchable.
+    expect(describeGrblFault('error:24')).toContain('error:24');
+  });
+
+  it('writes out alarms too, which is where homing and probing land', () => {
+    expect(describeGrblFault('ALARM:1')).toContain('limit switch');
+    expect(describeGrblFault('ALARM:5')).toContain('Probe failed');
+  });
+
+  it('says something useful for codes it does not know', () => {
+    expect(describeGrblFault('error:99')).toContain('error:99');
+    expect(describeGrblFault('ALARM:99')).toContain('ALARM:99');
   });
 });

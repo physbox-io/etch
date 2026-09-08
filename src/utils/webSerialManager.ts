@@ -196,6 +196,67 @@ export function prepareJobLines(gcode: string): string[] {
     .filter((l) => l.length > 0);
 }
 
+/*
+ * What GRBL's numbered refusals and alarms mean.
+ *
+ * `Machine error:24` is the string that sends an operator to a forum. Written
+ * out it is a fault they can act on, or at least name — and error:24 in
+ * particular describes a program the app itself wrote, so an operator reading
+ * the raw code has no way to tell it is not their setup at fault.
+ */
+const GRBL_ERRORS: Record<number, string> = {
+  1: 'G-code letter with no number after it',
+  2: 'G-code value was missing or malformed',
+  3: 'Unsupported `$` system command',
+  4: 'A negative value was given where only positive is allowed',
+  5: 'Homing is disabled on this controller ($22=0)',
+  7: 'EEPROM read failed; defaults were restored',
+  8: '`$` command needs the machine to be idle',
+  9: 'The machine is locked out in Alarm — unlock ($X) or home ($H) it first',
+  10: 'Soft limits need homing enabled ($22=1)',
+  11: 'Line was longer than GRBL accepts',
+  15: 'Jog target exceeds the machine travel',
+  16: 'Malformed jog command',
+  17: 'Laser mode needs PWM-capable spindle pins',
+  20: 'Unsupported or invalid G-code command',
+  21: 'Two G-code commands from the same modal group on one line',
+  22: 'Feed rate has not been set (missing F)',
+  23: 'G-code command needs an integer value',
+  24: 'Two commands that both need axis words on one line',
+  25: 'A G-code word was repeated on the line',
+  26: 'G-code command is missing its axis words',
+  33: 'Invalid target — arc or motion endpoint is unreachable',
+  34: 'Arc radius geometry is invalid',
+  38: 'Tool number is out of range',
+};
+
+const GRBL_ALARMS: Record<number, string> = {
+  1: 'Hard limit triggered — the machine hit a limit switch and its position is lost. Home ($H) before doing anything else.',
+  2: 'Soft limit: the commanded move goes outside the machine travel. Check work zero and the job origin.',
+  3: 'Reset while in motion — position is lost. Home ($H) to recover.',
+  4: 'Probe failed: the probe was already triggered before the cycle started. Check the continuity clip is not shorted to the bit.',
+  5: 'Probe failed: the tool travelled its full search distance without touching the surface. Check the clip is attached and the bit started close above the plate.',
+  6: 'Homing failed — reset during the homing cycle.',
+  7: 'Homing failed — safety door opened during homing.',
+  8: 'Homing failed: the limit switch did not clear on pull-off. Check the switch and $27.',
+  9: 'Homing failed: no limit switch found within the search distance.',
+};
+
+/** Turns a raw `error:N` or `ALARM:N` line into something an operator can act on. */
+export function describeGrblFault(line: string): string {
+  const err = /^error:\s*(\d+)/.exec(line);
+  if (err) {
+    const detail = GRBL_ERRORS[Number(err[1])];
+    return detail ? `${detail} (${line})` : `Machine rejected a command (${line})`;
+  }
+  const alarm = /^ALARM:\s*(\d+)/.exec(line);
+  if (alarm) {
+    const detail = GRBL_ALARMS[Number(alarm[1])];
+    return detail ? `${detail} (${line})` : `Machine alarm: ${line}`;
+  }
+  return `Machine ${line}`;
+}
+
 /**
  * One line awaiting its `ok`.
  *
@@ -1520,6 +1581,20 @@ class WebSerialManager {
     });
   }
 
+  /**
+   * How many job lines GRBL has been sent but not yet answered.
+   *
+   * The streamer keeps the buffer full, so the line the controller just refused
+   * is not the one most recently sent — it is the oldest still unanswered.
+   * Counting these back off the send index is what makes the line number in the
+   * error point at the line the operator has to go and look at.
+   */
+  private jobLinesInFlight(): number {
+    let n = 0;
+    for (const slot of this.ackQueue) if (slot.kind === 'job') n++;
+    return n;
+  }
+
   /** Releases everything waiting on the machine, so a reset does not hang a cycle. */
   private failPendingWaiters() {
     const probe = this.pendingProbe;
@@ -1971,13 +2046,15 @@ class WebSerialManager {
     } else if (line.startsWith('error:') || line.startsWith('ALARM:')) {
       // A refused command never completes, so release whoever is waiting on it
       // rather than hanging the cycle until its timeout.
-      this.status.lastError = `Machine ${line}`;
+      this.status.lastError = describeGrblFault(line);
+      // Read before the queue is released, since that is what holds the count.
+      const refusedLine = Math.max(1, this.queueIndex - this.jobLinesInFlight() + 1);
       this.failPendingWaiters();
       // Streaming the rest of a job after the controller refused a line means
       // cutting the remainder in a state nobody intended, so a running job stops
       // here and says why.
       if (this.status.jobRunning) {
-        this.abortJob(`Job stopped — the machine refused a command (${line}).`);
+        this.abortJob(`Job stopped at line ${refusedLine}. ${describeGrblFault(line)}`);
       }
     }
 
