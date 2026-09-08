@@ -10,7 +10,7 @@ ARG GITHUB_TOKEN
 ENV GITHUB_TOKEN=$GITHUB_TOKEN
 
 # Build the frontend application
-RUN echo "BUILD-TIME TOKEN LEN: ${#GITHUB_TOKEN}" && cat .npmrc && npm install
+RUN npm install
 RUN npm run build
 
 # Production stage
