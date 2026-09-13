@@ -205,6 +205,20 @@ so on a 100 mm import a pixel is a third of a millimetre.
 | `cutoutSmoothPx = 2` — radius of the open-then-close on the mask | `applyCutout`, `DEFAULT_IMAGE_OPTIONS` | A hair or a JPEG fringe one pixel wide traces as a spike a laser will cut, and a spike that narrow is a whisker of ply that breaks off. Open first, so a speck is gone before the close could glue it to a neighbour. Disc kernel, not box: a box leaves square corners on the cut line. Under Advanced. | **Judgement** |
 | Neighbours outside the frame are skipped in the morphology | `morph` | Reading them as backdrop stripped a kernel's width off every edge of every picture — shoulders came back floating above the bottom of the frame. | **Derived** (from the failure) |
 
+### Paint bucket (`floodFill.ts`)
+
+The fill tool works on a raster of the drawing, so its constants are the
+resolution of that raster. The boundary it produces lies under a stroke and
+under a hatch, which is the most forgiving geometry there is; these are still
+listed because the region's edge is where the hatch stops.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `FILL_PITCH_MM = 0.05` (fine pass) | `floodFill.ts` | The traced boundary sits on the lattice, within half a cell of the line: 0.025 mm, inside the shared 0.05 mm budget in this section. | **Derived** (from the budget) |
+| `FILL_COARSE_PITCH_MM = 0.25` (locating pass) | `floodFill.ts` | Only has to find the region's box and any leaks; a 300×200 sheet is under a million cells. The fine pass is then confined to the coarse answer, which is what makes the fine pass leak-proof without a second seal. | **Judgement** |
+| `FILL_SEAL_GAP_MM = 0.3` | `floodFill.ts` | Half a stroke width on the shipped presets: two hand-drawn lines meant to meet leave a sliver of this order, the same failure the boolean ops report. Wider is a doorway someone drew. | **Judgement** |
+| `FILL_MAX_CELLS = 16 000 000` | `floodFill.ts` | Past this the fine pitch is coarsened rather than the worker left grinding; the result says what pitch it used. | **Judgement** |
+
 ## 8. Machine dynamics and time
 
 | Value | Where | Basis | Source |

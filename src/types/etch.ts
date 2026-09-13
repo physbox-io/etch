@@ -362,7 +362,8 @@ export type ToolMode =
   | 'text'
   | 'symbol'
   | 'node-edit'
-  | 'mandala';
+  | 'mandala'
+  | 'fill';
 
 export interface MandalaSettings {
   sectorCount: number; // e.g. 8, 12, 16, 24

@@ -16,6 +16,7 @@ import { buildTimeline, type Timeline } from './toolpathTimeline';
 import { fitArcsToPolyline, type PathCommand } from './arcFitting';
 import type { Pt } from './pathFlatten';
 import type { EtchDocument } from '../types/etch';
+import { floodFillRegion, type FloodFillFailure, type FloodFillResult } from './floodFill';
 
 export interface TraceResult {
   mode: 'vector' | 'halftone' | 'scanline' | 'shade';
@@ -41,6 +42,7 @@ export type CamRequestPayload =
       type: 'PLAN_TOOLPATH';
       payload: { doc: EtchDocument; opts?: Partial<GCodeOptions> };
     }
+  | { type: 'FLOOD_FILL'; payload: { doc: EtchDocument; seed: Pt } }
   | {
       type: 'GENERATE_GCODE';
       payload: { doc: EtchDocument; opts?: Partial<GCodeOptions> };
@@ -210,6 +212,8 @@ class CamWorkerClient {
           const res = fitArcsToPolyline(req.payload.points, req.payload.tolerance);
           return Promise.resolve(res as unknown as T);
         }
+        case 'FLOOD_FILL':
+          return Promise.resolve(floodFillRegion(req.payload.doc, req.payload.seed) as unknown as T);
         default:
           return Promise.reject(new Error('Unknown request type'));
       }
@@ -236,6 +240,10 @@ class CamWorkerClient {
       type: 'TRACE_IMAGE',
       payload,
     });
+  }
+
+  public floodFill(doc: EtchDocument, seed: Pt): Promise<FloodFillResult | FloodFillFailure> {
+    return this.sendRequest({ type: 'FLOOD_FILL', payload: { doc, seed } });
   }
 
   public hatch(

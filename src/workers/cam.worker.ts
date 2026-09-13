@@ -11,6 +11,7 @@ import { buildTimeline } from '../utils/toolpathTimeline';
 import { fitArcsToPolyline } from '../utils/arcFitting';
 import type { Pt } from '../utils/pathFlatten';
 import type { EtchDocument } from '../types/etch';
+import { floodFillRegion } from '../utils/floodFill';
 
 export interface TraceImagePayload {
   width: number;
@@ -52,6 +53,11 @@ export type WorkerCamRequest =
         opts?: Partial<GCodeOptions>;
         timeline: { travelSpeed: number; laserMode: boolean };
       };
+    }
+  | {
+      id: number;
+      type: 'FLOOD_FILL';
+      payload: { doc: EtchDocument; seed: Pt };
     }
   | {
       id: number;
@@ -174,6 +180,13 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
         const { points, tolerance } = req.payload;
         const commands = fitArcsToPolyline(points, tolerance);
         respondSuccess(req.id, commands);
+        break;
+      }
+      case 'FLOOD_FILL': {
+        // Off the main thread for the same reason as the image trace: a
+        // sheet-sized region is millions of cells, and a click that freezes
+        // the tab for a second reads as a click that did nothing.
+        respondSuccess(req.id, floodFillRegion(req.payload.doc, req.payload.seed));
         break;
       }
       default: {

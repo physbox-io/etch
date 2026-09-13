@@ -18,6 +18,7 @@ import {
   Spline,
   Grid,
   Waypoints,
+  PaintBucket,
 } from 'lucide-react';
 
 export const LeftToolbar: React.FC = () => {
@@ -43,6 +44,7 @@ export const LeftToolbar: React.FC = () => {
     { id: 'polygon', label: 'Polygon', icon: Hexagon },
     { id: 'star', label: 'Star Tool', icon: Star },
     { id: 'text', label: 'Vector Text', icon: Type },
+    { id: 'fill', label: 'Fill a Region (click inside enclosed lines)', icon: PaintBucket },
     { id: 'mandala', label: 'Mandala Symmetry', icon: Sun },
   ];
 

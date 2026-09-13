@@ -640,7 +640,7 @@ function dropIslands(mask: Uint8Array, w: number, h: number, fraction: number): 
  * faster and would leave a square-cornered outline wherever it touched, which
  * on a cut line is the visible kind of wrong.
  */
-function morph(mask: Uint8Array, w: number, h: number, r: number, op: 'erode' | 'dilate'): void {
+export function morph(mask: Uint8Array, w: number, h: number, r: number, op: 'erode' | 'dilate'): void {
   const src = mask.slice();
   const offsets: Array<[number, number]> = [];
   for (let dy = -r; dy <= r; dy++) {
@@ -856,6 +856,26 @@ export function traceCutoutOutline(
   return traceGrid(grid, width, height, options, scaleX, scaleY);
 }
 
+/** What the walker needs to know about how to emit an outline. */
+export type TraceOptions = Pick<ImageProcessOptions, 'simplifyPx' | 'smoothing' | 'minHoleArea'>;
+
+/**
+ * Traces any binary grid where 1 is inside — the flood fill tool's region as
+ * well as the image modes above. One walker, so a region filled by clicking
+ * and a region traced from a photograph are fitted and simplified the same
+ * way and cannot come out with two different ideas of a curve.
+ */
+export function traceBinaryGrid(
+  grid: Uint8Array,
+  width: number,
+  height: number,
+  options: TraceOptions,
+  scaleX: number,
+  scaleY: number
+): string[] {
+  return traceGrid(grid, width, height, options, scaleX, scaleY);
+}
+
 /**
  * The walker itself, over a binary grid where 1 is inside. See
  * `traceMarchingSquares` for the argument that it is linear.
@@ -864,7 +884,7 @@ function traceGrid(
   grid: Uint8Array,
   width: number,
   height: number,
-  options: ImageProcessOptions,
+  options: TraceOptions,
   scaleX: number,
   scaleY: number
 ): string[] {

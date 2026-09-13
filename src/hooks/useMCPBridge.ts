@@ -21,6 +21,7 @@ import { DITHER_LABELS } from '../utils/imageProcessor';
 import { webSerialManager, type OverrideStep } from '../utils/webSerialManager';
 import { buildSnapshotSvg, rasterizeSvg } from '../utils/svgSnapshot';
 import { getBedBBox, bedBoxOfAll, isOutsideStock } from '../utils/geom';
+import { floodFillRegion, fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
 
 /** Millimetres, to the micron — past that it is float noise, not a dimension. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -521,6 +522,43 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
         outlineLayerId: outline?.layerId,
         createdCutLayer: newCutLayer?.id,
         sizeMm: { width: options.targetWidth, height: options.targetHeight },
+      };
+    }
+
+    case 'etch_fill_region':
+    case 'FILL_REGION': {
+      /*
+       * The paint bucket, by coordinate. An agent has no pointer, so "click
+       * inside the petal" is "fill at this point in mm". Same code as the
+       * tool, so the region an agent gets is the region a click would.
+       */
+      const x = Number(msg.x);
+      const y = Number(msg.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, error: 'x and y (mm, document space) are required' };
+      }
+      const doc = store.document;
+      const result = floodFillRegion(doc, { x, y });
+      if (isFloodFillFailure(result)) return { ok: false, error: result.error };
+      const layerId =
+        doc.layers.some((l) => l.id === msg.layerId) ? msg.layerId : fillTargetLayerId(doc, store.activeLayerId);
+      const layer = doc.layers.find((l) => l.id === layerId);
+      const el = fillElement(result, layerId, layer?.color ?? '#3b82f6');
+      store.addElement(el);
+      const notes: string[] = [];
+      if (result.openToStock) {
+        notes.push('The region reached the edge of the stock: the point was outside every closed shape, so this is the background.');
+      }
+      if (result.sealed) notes.push('A hairline gap in the outline was sealed to keep the fill in.');
+      return {
+        ok: true,
+        addedId: el.id,
+        layerId,
+        areaMm2: round3(result.areaMm2),
+        bounds: { x: round3(result.x), y: round3(result.y) },
+        openToStock: result.openToStock,
+        sealed: result.sealed,
+        note: notes.join(' ') || undefined,
       };
     }
 

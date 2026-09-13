@@ -17,6 +17,9 @@ import {
 } from '../utils/geom';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { rasterDataURL } from '../utils/rasterPreview';
+import { camWorker } from '../utils/camWorkerClient';
+import { fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
+import { BusyToast } from './BusyToast';
 import { computeResize, resizeSeed, clampScale } from '../utils/resizeElement';
 import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
 import {
@@ -240,6 +243,55 @@ export const EtchCanvas: React.FC = () => {
 
   const activeLayer =
     document.layers.find((l) => l.id === activeLayerId) || document.layers[0];
+
+  /**
+   * The paint bucket. One click, one filled element.
+   *
+   * Runs on the CAM worker and lands as a single history entry, so a fill is
+   * one undo. The point is the raw pointer position, not the snapped one: the
+   * click means "in here", and snapping it to the grid can move it onto the
+   * very line it was meant to be inside of.
+   */
+  const [filling, setFilling] = useState(false);
+  const [fillNotice, setFillNotice] = useState<string | null>(null);
+  const fillNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showFillNotice = useCallback((msg: string) => {
+    setFillNotice(msg);
+    if (fillNoticeTimer.current) clearTimeout(fillNoticeTimer.current);
+    fillNoticeTimer.current = setTimeout(() => setFillNotice(null), 4000);
+  }, []);
+
+  const runFloodFill = useCallback(
+    async (seed: { x: number; y: number }) => {
+      if (filling) return;
+      setFilling(true);
+      try {
+        const result = await camWorker.floodFill(document, seed);
+        if (isFloodFillFailure(result)) {
+          showFillNotice(result.error);
+          return;
+        }
+        const layerId = fillTargetLayerId(document, activeLayerId);
+        const layer = document.layers.find((l) => l.id === layerId);
+        addElement(fillElement(result, layerId, layer?.color ?? '#3b82f6'));
+        // Say what happened when it is not the obvious thing. A region that
+        // ran to the edge of the stock is "the background", which is
+        // sometimes meant and sometimes a line that did not close.
+        if (result.openToStock) {
+          showFillNotice(
+            'Filled to the edge of the stock — the click was outside every closed shape. Undo if a line was meant to close this.'
+          );
+        } else if (result.sealed) {
+          showFillNotice('Filled. A hairline gap in the outline was sealed to keep the fill in.');
+        }
+      } catch (err) {
+        showFillNotice(`Could not fill: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setFilling(false);
+      }
+    },
+    [filling, document, activeLayerId, addElement, showFillNotice]
+  );
 
   const baseElementProps = useCallback(
     () => ({
@@ -616,6 +668,11 @@ export const EtchCanvas: React.FC = () => {
       }
       setBezierNodes((prev) => [...prev, { x: coords.x, y: coords.y }]);
       setIsDraggingHandle(true);
+      return;
+    }
+
+    if (activeTool === 'fill') {
+      void runFloodFill(toBed(e));
       return;
     }
 
@@ -1103,6 +1160,12 @@ export const EtchCanvas: React.FC = () => {
 
   return (
     <div className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors">
+      <BusyToast show={filling} label="Filling region…" />
+      {fillNotice && (
+        <div className="absolute left-1/2 -translate-x-1/2 top-4 z-30 max-w-md px-3 py-2 rounded-lg bg-slate-900/90 text-slate-100 text-xs shadow-lg pointer-events-none">
+          {fillNotice}
+        </div>
+      )}
       <svg
         ref={svgRef}
         // How the MCP bridge finds the canvas to photograph it. A ref is no use

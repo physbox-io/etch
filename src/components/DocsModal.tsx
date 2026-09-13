@@ -333,6 +333,21 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           is meant to blend into surrounding engraving.
         </Step>
       </Card>
+      <Card>
+        <Step title="The paint bucket">
+          Pick the fill tool and click inside any region the drawing encloses — one petal of a
+          mandala, one panel of a sign, the space between two letters — and that region becomes a
+          filled shape on the fill layer (or the etch layer, if there is none), without drawing its
+          outline again. Anything enclosed inside it stays a hole. The new shape's own outline is
+          not machined: the lines that bound it are already in the drawing.
+        </Step>
+        <Step title="Gaps">
+          Two strokes meant to meet rarely quite do. A gap narrower than about a third of a
+          millimetre is sealed and the fill stays in; the tool tells you when it had to. A wider
+          gap is treated as a doorway you drew, the fill goes through it, and if it reaches the edge
+          of the stock the tool says so — undo, close the line, and click again.
+        </Step>
+      </Card>
     </div>
   ),
 
