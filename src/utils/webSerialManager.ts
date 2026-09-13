@@ -1559,6 +1559,10 @@ class WebSerialManager {
    */
   private sendAndWait(command: string, timeoutMs = 30000): Promise<void> {
     if (!this.transport || !this.status.connected) return Promise.resolve();
+    // Captured here: inside the promise callback the compiler no longer knows
+    // the guard above held, and a disconnect between the two would in any case
+    // be better answered by writing to the transport we checked than to none.
+    const transport = this.transport;
     return new Promise<void>((resolve) => {
       let done = false;
       const finish = () => {
@@ -1577,7 +1581,7 @@ class WebSerialManager {
         finish();
       }, timeoutMs);
       this.ackQueue.push({ kind: 'other', resolve: finish });
-      void this.transport.writeLine(command.replace(/\n+$/, ''));
+      void transport.writeLine(command.replace(/\n+$/, ''));
     });
   }
 

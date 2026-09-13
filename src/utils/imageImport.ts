@@ -1,6 +1,7 @@
 import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
 import {
   traceMarchingSquares,
+  traceCutoutOutline,
   generateHalftoneCompoundPath,
   generateScanlinePaths,
   grayFromImageData,
@@ -29,6 +30,52 @@ export interface ImageImportPlan {
    * when the mode is not `shade`.
    */
   newShadeLayer: EtchLayer | null;
+  /**
+   * The cut line around a cut-out subject, on a cut layer. Null unless
+   * `options.cutout` was on and the mask had an edge to trace. Always placed
+   * at the same x/y as `element`, so the two stay registered — the outline is
+   * where the picture ends, and moving one without the other cuts through the
+   * face.
+   */
+  outline: EtchElement | null;
+  /**
+   * A cut layer that must be appended alongside `outline`, when the document
+   * had none to use. Null otherwise.
+   */
+  newCutLayer: EtchLayer | null;
+}
+
+/**
+ * The cut layer a cut-out outline should land on.
+ *
+ * The first `cut` layer in the document, since that is what every shipped
+ * preset calls `cut` and what the operator's own cut settings are on. A
+ * document with none gets one whose depth is the stock's thickness — a cutout
+ * is a through-cut by definition — with the same fallbacks the presets carry.
+ */
+export function resolveCutLayer(
+  doc: EtchDocument,
+  cncTools?: ToolProfile[],
+  timestamp = Date.now()
+): { layer: EtchLayer; isNew: boolean } {
+  const existing = doc.layers.find((l) => l.operation === 'cut');
+  if (existing) return { layer: existing, isNew: false };
+  return {
+    isNew: true,
+    layer: {
+      id: `layer_cut_${timestamp}`,
+      name: 'Cutout',
+      color: '#ef4444',
+      operation: 'cut',
+      visible: true,
+      locked: false,
+      speed: 500,
+      power: 90,
+      passes: 1,
+      zDepth: doc.stockThickness ?? 3,
+      tool: suggestTool(machineKind(doc), 'cut', cncTools),
+    },
+  };
 }
 
 /**
@@ -106,6 +153,36 @@ export function planImageImport(
     locked: false,
   } as const;
 
+  /**
+   * The outline first, because it is the same whichever mode the inside takes.
+   *
+   * It goes on a cut layer regardless of where the caller aimed the picture:
+   * the caller's layer is for the *inside*, and an outline that followed it
+   * onto an etch layer would score the silhouette and release nothing.
+   */
+  let outline: EtchElement | null = null;
+  let newCutLayer: EtchLayer | null = null;
+  if (options.cutout) {
+    const outlineD = traceCutoutOutline(imageData, options, scaleX, scaleY).join(' ');
+    if (outlineD) {
+      const { layer, isNew } = resolveCutLayer(doc, cncTools, timestamp);
+      newCutLayer = isNew ? layer : null;
+      outline = {
+        ...common,
+        id: `img_cutout_${timestamp}`,
+        name: 'Image Cutout',
+        type: 'path',
+        layerId: layer.id,
+        d: outlineD,
+        strokeWidth: 0.2,
+        strokeColor: layer.color,
+        fillColor: 'none',
+        machining: 'outline',
+      };
+    }
+  }
+  const withOutline = <T extends object>(plan: T) => ({ ...plan, outline, newCutLayer });
+
   if (options.mode === 'shade') {
     /**
      * The pixels go in, not a path.
@@ -117,7 +194,7 @@ export function planImageImport(
      * the import is not the last chance to get it right.
      */
     const { layer, isNew } = resolveShadeLayer(doc, layerId, cncTools, timestamp);
-    return {
+    return withOutline({
       newShadeLayer: isNew ? layer : null,
       element: {
         ...common,
@@ -134,12 +211,12 @@ export function planImageImport(
         hatchAngle: 0,
         strokeWidth: 0,
       },
-    };
+    });
   }
 
   if (options.mode === 'halftone') {
     const { pathD } = generateHalftoneCompoundPath(imageData, options, scaleX, scaleY);
-    return {
+    return withOutline({
       newShadeLayer: null,
       element: pathD
         ? {
@@ -155,7 +232,7 @@ export function planImageImport(
             machining: 'filled',
           }
         : null,
-    };
+    });
   }
 
   const paths =
@@ -164,7 +241,7 @@ export function planImageImport(
       : generateScanlinePaths(imageData, options, scaleX, scaleY);
   const compoundD = paths.join(' ');
 
-  return {
+  return withOutline({
     newShadeLayer: null,
     element: compoundD
       ? {
@@ -180,5 +257,5 @@ export function planImageImport(
           machining: 'outline',
         }
       : null,
-  };
+  });
 }

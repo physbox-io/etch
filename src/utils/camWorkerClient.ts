@@ -24,6 +24,8 @@ export interface TraceResult {
   lines?: string[];
   compoundD?: string;
   detailCount: number;
+  /** The cut line around a cut-out subject; absent when cutout is off or found no edge. */
+  outlineD?: string;
 }
 
 export type CamRequestPayload =

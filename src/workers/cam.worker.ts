@@ -1,5 +1,6 @@
 import {
   traceMarchingSquares,
+  traceCutoutOutline,
   generateHalftoneCompoundPath,
   generateScanlinePaths,
   type ImageProcessOptions,
@@ -75,6 +76,12 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
           colorSpace: 'srgb' as PredefinedColorSpace,
         } as ImageData;
 
+        // The cut line around a cut-out subject, whatever mode the inside is
+        // in. Empty when cutout is off, so it is simply absent from the reply.
+        const outlineD = options.cutout
+          ? traceCutoutOutline(fakeImageData, options, scaleX, scaleY).join(' ') || undefined
+          : undefined;
+
         if (options.mode === 'vector') {
           const paths = traceMarchingSquares(fakeImageData, options, scaleX, scaleY);
           respondSuccess(req.id, {
@@ -82,6 +89,7 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
             paths,
             detailCount: paths.length,
             compoundD: paths.join(' '),
+            outlineD,
           });
         } else if (options.mode === 'halftone') {
           const { pathD, dotCount } = generateHalftoneCompoundPath(fakeImageData, options, scaleX, scaleY);
@@ -89,6 +97,7 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
             mode: 'halftone',
             pathD,
             detailCount: dotCount,
+            outlineD,
           });
         } else if (options.mode === 'scanline') {
           const lines = generateScanlinePaths(fakeImageData, options, scaleX, scaleY);
@@ -97,11 +106,13 @@ self.onmessage = (e: MessageEvent<WorkerCamRequest>) => {
             lines,
             detailCount: lines.length,
             compoundD: lines.join(' '),
+            outlineD,
           });
         } else {
           respondSuccess(req.id, {
             mode: 'shade',
             detailCount: Math.max(1, Math.round(options.targetHeight / Math.max(0.05, options.shadePitch))),
+            outlineD,
           });
         }
         break;

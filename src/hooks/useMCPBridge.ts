@@ -485,34 +485,41 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
       if (!layerId) return { ok: false, error: 'This document has no layers to import onto.' };
 
       const { imageData } = processImageCanvas(img, options, 300);
-      const { element, newShadeLayer } = planImageImport(
+      const { element, newShadeLayer, outline, newCutLayer } = planImageImport(
         doc,
         imageData,
         options,
         layerId,
         store.cncTools
       );
-      if (!element) {
+      if (!element && !outline) {
         return {
           ok: false,
-          error:
-            `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
-            `Raise the threshold or contrast, or set invert if the artwork is light on dark.`,
+          error: options.cutout
+            ? `Nothing was found to cut out: everything matched the backdrop. Lower cutoutTolerance, ` +
+              `or set cutoutBackground to 'white' or 'black' if the picture's edges are not backdrop.`
+            : `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
+              `Raise the threshold or contrast, or set invert if the artwork is light on dark.`,
         };
       }
 
-      // The shade layer first: an image added to a document that has none
-      // would otherwise reference a layer that does not exist yet, and an
-      // element on a missing layer draws on the canvas but is never
-      // machined.
+      // The layers first: an element added to a document without its layer
+      // would reference one that does not exist yet, and an element on a
+      // missing layer draws on the canvas but is never machined.
       if (newShadeLayer) store.addLayer(newShadeLayer);
-      store.addElement(element);
+      if (newCutLayer) store.addLayer(newCutLayer);
+      if (element) store.addElement(element);
+      if (outline) store.addElement(outline);
       return {
         ok: true,
-        addedId: element.id,
+        addedId: element?.id,
         mode: options.mode,
-        layerId: element.layerId,
+        layerId: element?.layerId,
         createdShadeLayer: newShadeLayer?.id,
+        // The cut line around a cut-out subject, when options.cutout was set.
+        outlineId: outline?.id,
+        outlineLayerId: outline?.layerId,
+        createdCutLayer: newCutLayer?.id,
         sizeMm: { width: options.targetWidth, height: options.targetHeight },
       };
     }

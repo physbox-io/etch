@@ -429,6 +429,21 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           rather than baked into a toolpath, the size, sweep pitch, angle and depth all stay
           editable afterwards.
         </Step>
+        <Step title="Cut out the subject">
+          For a photograph of someone against a plain white or black backdrop. Tick{' '}
+          <strong>Cut out the subject</strong> and the backdrop is read off the picture's edges
+          and ignored, the edge of whatever is left becomes one closed outline on the cut layer,
+          and the mode you picked is applied to the subject only — so Photo Tone engraves the
+          person and not the wall behind them, and the finished piece is their silhouette. The
+          backdrop is found by flooding in from the edges rather than by colour alone, which is
+          what keeps a white shirt on a white wall inside the outline instead of cutting a hole
+          through it. Hairs and dust are tidied off the cut line, since a spike one pixel wide is
+          a whisker of material that breaks off in the hand; the radius, the backdrop colour and
+          the tolerance are under Advanced when the picture's edges read wrong. An{' '}
+          <strong>Any colour</strong> backdrop is there too, for a photograph against a coloured
+          wall: it matches the edge colour in colour rather than in grey, and is less certain than
+          white or black, since anything the wall's colour goes with it.
+        </Step>
       </Card>
       <Card>
         <Step title="Brightness, contrast and gamma">

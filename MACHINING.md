@@ -185,6 +185,26 @@ at one end of the range or the other.
 | A shared **centre** needs 2 shapes, a shared **edge** needs 3 | `beautify.ts` | Two shapes on a common centre line is a layout. Two shapes with a common edge is very often a coincidence. Missing an alignment is a much smaller failure here than inventing one. | **Judgement** |
 | No alignment may create an overlap that did not exist | `beautify.ts` | Both lines of a stacked title are within tolerance of the middle of the tag; centring both vertically would put one on top of the other. | **Derived** |
 
+### Image cutout (`imageProcessor.ts`)
+
+Also editing tolerances, and also outside the budget: they decide where a
+photograph's subject *ends*, and that boundary is then cut. A figure wrong here
+does not drift a joint; it cuts through a shoulder or leaves the studio wall on.
+Every one is in source pixels of a picture capped at 300 px on its long side,
+so on a 100 mm import a pixel is a third of a millimetre.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| Backdrop is the **median** of the border pixels | `applyCutout` | Most of a portrait's edge is backdrop; the shoulders that reach the bottom are the minority a median ignores where a mean would be pulled toward them. Overridable to white or black for a cluttered edge. | **Judgement** |
+| `'any'` backdrop: per-channel median colour of the border, distance = largest channel difference | `colorDistanceFromBorder` | Measured before the picture is flattened to grey, or a green wall and a grey shirt are one tone. Largest channel rather than Euclidean so the tolerance keeps the meaning it has in grey. Less certain than white or black by construction, and offered as such. | **Judgement** |
+| Backdrop extent is a **flood fill from the edge**, not a threshold | `applyCutout` | Set from the failure it prevents: a white shirt on a white wall thresholded as backdrop, cutting a hole through the chest. Only backdrop that touches the frame is backdrop. | **Derived** |
+| `CUTOUT_TOLERANCE_MAD_FACTOR = 4` × the border's median absolute deviation | `applyCutout` | How unevenly the backdrop was lit is how far a backdrop pixel may stray. MAD rather than standard deviation for the same reason as the median above. | **Judgement** |
+| `CUTOUT_TOLERANCE_MIN = 12`, `CUTOUT_TOLERANCE_MAX = 96` (of 255) | `applyCutout` | The floor admits JPEG ringing along a hard edge on a flat digital white, whose spread is zero; the picture is averaged down to 300 px first, which halves that ringing. Was 24, and at 24 the sky seen through a tinted sunglass lens counted as sky — the lens came out as a hole with a cut line round it. The ceiling stops a badly lit wall from being allowed to swallow a face. Overridable. | **Judgement**, floor set from a failure |
+| Necks narrower than 2 × `cutoutSmoothPx` are sealed before the tidy | `sealNecks` | Black sunglass lens against a black backdrop, two levels apart by tone, joined to it through a one-pixel break in a bright frame. No tolerance can separate them; shape can — a plain backdrop has no pockets reached through threads. The backdrop is shrunk, re-flooded from the border, and grown back only into what the first fill reached. Same radius as the tidy pass: one decision about what "narrower than this" means. | **Derived** (from the failure), **Judgement** (sharing the radius) |
+| `CUTOUT_ISLAND_FRACTION = 0.01` of the largest island | `dropIslands` | A fleck the fill went round becomes its own closed cut a millimetre across. Set from the same portrait: five such loops inside one lens. Two people in one frame are each far above it. | **Judgement** |
+| `cutoutSmoothPx = 2` — radius of the open-then-close on the mask | `applyCutout`, `DEFAULT_IMAGE_OPTIONS` | A hair or a JPEG fringe one pixel wide traces as a spike a laser will cut, and a spike that narrow is a whisker of ply that breaks off. Open first, so a speck is gone before the close could glue it to a neighbour. Disc kernel, not box: a box leaves square corners on the cut line. Under Advanced. | **Judgement** |
+| Neighbours outside the frame are skipped in the morphology | `morph` | Reading them as backdrop stripped a kernel's width off every edge of every picture — shoulders came back floating above the bottom of the frame. | **Derived** (from the failure) |
+
 ## 8. Machine dynamics and time
 
 | Value | Where | Basis | Source |

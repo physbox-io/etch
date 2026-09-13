@@ -1,5 +1,5 @@
 import type { EtchElement } from '../types/etch';
-import { decodeGray, hasRaster } from './rasterImage';
+import { decodeGray, hasRaster, SHADE_WHITE } from './rasterImage';
 
 /**
  * Draws an image element's stored pixels for the canvas.
@@ -35,6 +35,12 @@ export function rasterDataURL(el: EtchElement): string | null {
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
+  // White is drawn as nothing, by the same test the exporter uses to leave
+  // the beam off: a sample that emits no move should not paint the canvas
+  // either. Drawn opaque, a cut-out portrait's removed backdrop sat over the
+  // rest of the drawing as a white slab, hiding art that was going to be
+  // machined under a region that was not.
+  const whiteAbove = 255 * (1 - SHADE_WHITE);
   const samples = decodeGray(gray);
   const img = ctx.createImageData(w, h);
   for (let i = 0; i < w * h; i++) {
@@ -42,7 +48,7 @@ export function rasterDataURL(el: EtchElement): string | null {
     img.data[i * 4] = v;
     img.data[i * 4 + 1] = v;
     img.data[i * 4 + 2] = v;
-    img.data[i * 4 + 3] = 255;
+    img.data[i * 4 + 3] = v > whiteAbove ? 0 : 255;
   }
   ctx.putImageData(img, 0, 0);
 

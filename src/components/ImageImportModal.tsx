@@ -5,6 +5,7 @@ import {
   processImageCanvas,
   DEFAULT_IMAGE_OPTIONS,
   DITHER_LABELS,
+  type CutoutInfo,
   type DitherMode,
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
@@ -13,7 +14,7 @@ import { usePanZoom } from '../hooks/usePanZoom';
 import { ZoomControls } from './ZoomControls';
 import { BusyToast } from './BusyToast';
 import { DocsInfoButton } from './DocsModal';
-import { planImageImport } from '../utils/imageImport';
+import { planImageImport, resolveCutLayer } from '../utils/imageImport';
 import { machineKind } from '../utils/tooling';
 import {
   X,
@@ -27,6 +28,7 @@ import {
   AlignJustify,
   Image as ImageIcon,
   Sun,
+  Scissors,
 } from 'lucide-react';
 
 export const ImageImportModal: React.FC = () => {
@@ -64,7 +66,16 @@ export const ImageImportModal: React.FC = () => {
     scaleY: number;
     strokeD?: string;
     fillD?: string;
+    /** The cut line around a cut-out subject, drawn in the cut layer's colour. */
+    outlineD?: string;
   } | null>(null);
+
+  /**
+   * What the backdrop detector found on the last preview, so the dialog can
+   * say "white, read off the edges" rather than leaving the operator to infer
+   * it from a preview that may or may not have changed.
+   */
+  const [cutoutInfo, setCutoutInfo] = useState<CutoutInfo | null>(null);
 
   /** Zoom, so the simplification setting can be judged on actual detail. */
   const view = usePanZoom(16);
@@ -115,6 +126,28 @@ export const ImageImportModal: React.FC = () => {
   const shadeLayers = doc.layers.filter((l) => l.operation === 'shade');
   const shadeTargetId =
     shadeLayers.find((l) => l.id === targetLayerId)?.id ?? shadeLayers[0]?.id ?? '';
+
+  /** Where the cut-out outline will land — named in the dialog, not discovered afterwards. */
+  const cutLayerForOutline = useMemo(() => resolveCutLayer(doc, cncTools), [doc, cncTools]);
+
+  /**
+   * Turning the cutout on moves the inside off a cut layer.
+   *
+   * The outline takes the cut; if the picture stays aimed at the cut layer as
+   * well, the person's features are cut through and the outline releases a
+   * lace. The first etch layer is what "the rest is etched" means, and the
+   * dropdown is left for anyone who meant something else.
+   */
+  const setCutout = (on: boolean) => {
+    setOptions({ ...options, cutout: on });
+    if (on && options.mode !== 'shade') {
+      const current = doc.layers.find((l) => l.id === targetLayerId);
+      if (!current || current.operation === 'cut') {
+        const etch = doc.layers.find((l) => l.operation === 'etch' || l.operation === 'fill');
+        if (etch) setTargetLayerId(etch.id);
+      }
+    }
+  };
 
   /** Sweeps the pitch slider is about to ask for, so its cost is on screen. */
   const shadeSweepEstimate = Math.max(
@@ -213,9 +246,10 @@ export const ImageImportModal: React.FC = () => {
     setTracing(true);
     const timer = setTimeout(async () => {
       try {
-        const { imageData } = processImageCanvas(loadedImg, options, 300);
+        const { imageData, cutout } = processImageCanvas(loadedImg, options, 300);
         const canvas = previewCanvasRef.current;
         if (!canvas || cancelled) return;
+        setCutoutInfo(cutout ?? null);
 
         canvas.width = imageData.width;
         canvas.height = imageData.height;
@@ -238,7 +272,13 @@ export const ImageImportModal: React.FC = () => {
         );
         if (cancelled) return;
 
-        const base = { imgW: imageData.width, imgH: imageData.height, scaleX, scaleY };
+        const base = {
+          imgW: imageData.width,
+          imgH: imageData.height,
+          scaleX,
+          scaleY,
+          outlineD: traceResult.outlineD,
+        };
         if (traceResult.mode === 'vector' || traceResult.mode === 'scanline') {
           setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
           setOverlay({ ...base, strokeD: traceResult.compoundD });
@@ -309,7 +349,7 @@ export const ImageImportModal: React.FC = () => {
       // Shared with the MCP bridge, so an agent-driven import produces exactly
       // the same element — including the shade layer a shaded image needs and
       // makes for itself when the document has none.
-      const { element, newShadeLayer } = planImageImport(
+      const { element, newShadeLayer, outline, newCutLayer } = planImageImport(
         doc,
         imageData,
         options,
@@ -323,21 +363,32 @@ export const ImageImportModal: React.FC = () => {
        * the artwork somewhere off screen. Say which knob answers it — the
        * threshold is what decides whether any pixel counts as dark at all — and
        * leave the dialog open so it can be turned.
+       *
+       * A cutout whose inside traced to nothing is still an import: a blank
+       * silhouette is a thing people cut. Only nothing at all is refused.
        */
-      if (!element) {
+      if (!element && !outline) {
         alert(
-          `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
-            `Raise the threshold (or the contrast) until the preview shows the outline you want, ` +
-            `or invert it if the artwork is light on a dark background.`
+          options.cutout
+            ? `Nothing was found to cut out. The backdrop was read as ${cutoutInfo?.background ?? 'white'} ` +
+                `and everything matched it — lower the background tolerance under Advanced, or set the ` +
+                `backdrop colour there if the picture's edges are cluttered.`
+            : `Nothing was traced from this image at a threshold of ${options.threshold}. ` +
+                `Raise the threshold (or the contrast) until the preview shows the outline you want, ` +
+                `or invert it if the artwork is light on a dark background.`
         );
         return;
       }
 
+      const added = [element, outline].filter((e): e is NonNullable<typeof e> => !!e);
+      const newLayers = [newShadeLayer, newCutLayer].filter(
+        (l): l is NonNullable<typeof l> => !!l
+      );
       setDocument({
         ...doc,
-        layers: newShadeLayer ? [...doc.layers, newShadeLayer] : doc.layers,
-        elements: [...doc.elements, element],
-        selectedIds: [element.id],
+        layers: newLayers.length ? [...doc.layers, ...newLayers] : doc.layers,
+        elements: [...doc.elements, ...added],
+        selectedIds: added.map((e) => e.id),
       });
 
       closeImageImport();
@@ -378,10 +429,14 @@ export const ImageImportModal: React.FC = () => {
           </button>
         </div>
 
-        {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-12 gap-6">
+        {/* Content Body. Side by side, only the settings column scrolls: the
+            preview is the thing being judged while a slider moves, and it used
+            to slide off the top of the dialog along with the settings above it.
+            Stacked on a narrow screen the whole body scrolls instead, since the
+            preview then sits below the settings and has to be reachable. */}
+        <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden p-6 grid grid-cols-1 md:grid-cols-12 gap-6">
           {/* Controls Column (5 cols) */}
-          <div className="md:col-span-5 flex flex-col gap-5 border-r border-slate-200 dark:border-slate-800 pr-0 md:pr-6">
+          <div className="md:col-span-5 md:min-h-0 md:overflow-y-auto flex flex-col gap-5 border-r border-slate-200 dark:border-slate-800 pr-0 md:pr-6">
             {!loadedImg ? (
               <div
                 onClick={() => fileInputRef.current?.click()}
@@ -458,6 +513,62 @@ export const ImageImportModal: React.FC = () => {
                       {laserMode
                         ? 'The picture goes in as greys, and the beam varies its power across it — dark burns hard, light barely at all. The layer\u2019s power is what black comes out at.'
                         : 'The picture goes in as greys, and the cutter varies its depth across it — dark carves deep, light stays near the surface. The layer\u2019s depth is what black comes out at.'}
+                    </p>
+                  )}
+                </div>
+
+                {/* Cut out the subject. A toggle over the four modes rather
+                    than a fifth mode: how the inside is rendered and whether
+                    the backdrop is removed and the edge cut are independent
+                    questions, and a photo of someone wants tone inside and a
+                    cut around, while a logo on white wants a trace inside and
+                    the same cut around. */}
+                <div
+                  className={`space-y-2 p-4 rounded-xl border ${
+                    options.cutout
+                      ? 'bg-rose-50/60 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800'
+                      : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-800'
+                  }`}
+                >
+                  <label className="flex items-center gap-2 text-xs font-bold cursor-pointer text-slate-700 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={options.cutout}
+                      onChange={(e) => setCutout(e.target.checked)}
+                      className="rounded border-slate-300 dark:border-slate-700 text-rose-500 focus:ring-rose-500"
+                    />
+                    <Scissors className="w-3.5 h-3.5" />
+                    Cut out the subject
+                  </label>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                    For a photo against a plain white or black backdrop. The backdrop is found
+                    from the picture's edges and ignored, the edge of what is left goes on the
+                    cut layer as one outline, and the mode above is applied to the subject only.
+                    Anything enclosed by the subject — a white shirt on a white wall — stays
+                    inside the outline.
+                  </p>
+                  {options.cutout && (
+                    <p className="text-[10px] text-slate-600 dark:text-slate-300 leading-snug font-medium">
+                      {cutoutInfo
+                        ? `Backdrop: ${cutoutInfo.background === 'any' ? 'the colour at the edges' : cutoutInfo.background} (edges read ${Math.round(cutoutInfo.borderGray)}, tolerance ±${Math.round(cutoutInfo.tolerance)}). ` +
+                          `${Math.round(cutoutInfo.subjectFraction * 100)}% of the picture kept.`
+                        : 'Reading the backdrop…'}{' '}
+                      Outline goes on{' '}
+                      {cutLayerForOutline.isNew
+                        ? `a new cut layer, ${laserMode ? '' : `${cutLayerForOutline.layer.zDepth} mm deep, `}since this document has none`
+                        : `“${cutLayerForOutline.layer.name}”`}
+                      .
+                    </p>
+                  )}
+                  {options.cutout && cutoutInfo && cutoutInfo.subjectFraction > 0.98 && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
+                      Almost nothing was removed. The edges of the picture may not be backdrop —
+                      set the backdrop colour under Advanced, or raise the tolerance there.
+                    </p>
+                  )}
+                  {options.cutout && cutoutInfo && cutoutInfo.subjectFraction < 0.02 && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
+                      Almost everything was removed. Lower the background tolerance under Advanced.
                     </p>
                   )}
                 </div>
@@ -596,10 +707,12 @@ export const ImageImportModal: React.FC = () => {
                   </div>
                 )}
 
-                {/* Advanced. Vector only: the other three modes decide at
-                    import that a pixel is either cut or not, and simplifying
-                    an outline is meaningless to a dot grid or a scan. */}
-                {options.mode === 'vector' && (
+                {/* Advanced. The outline controls apply to a traced outline —
+                    the vector trace, or the cut line around a cutout, which is
+                    traced the same way. The other three modes decide at import
+                    that a pixel is either cut or not, and simplifying an
+                    outline is meaningless to a dot grid or a scan. */}
+                {(options.mode === 'vector' || options.cutout) && (
                   <div>
                     <button
                       onClick={() => setShowAdvanced((v) => !v)}
@@ -610,6 +723,89 @@ export const ImageImportModal: React.FC = () => {
 
                     {showAdvanced && (
                       <div className="space-y-3 mt-2 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                        {options.cutout && (
+                          <>
+                            <div>
+                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                                Backdrop
+                              </label>
+                              <select
+                                value={options.cutoutBackground}
+                                onChange={(e) =>
+                                  setOptions({
+                                    ...options,
+                                    cutoutBackground: e.target.value as ImageProcessOptions['cutoutBackground'],
+                                  })
+                                }
+                                className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                              >
+                                <option value="auto">White or black, read from the edges</option>
+                                <option value="white">White</option>
+                                <option value="black">Black</option>
+                                <option value="any">Any colour — whatever the edges are</option>
+                              </select>
+                              <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                                {options.cutoutBackground === 'any'
+                                  ? 'Matches the colour at the edges, in colour rather than grey, so a green wall behind a grey shirt still comes off. Less certain than a plain white or black backdrop: anything the same colour as the wall goes with it.'
+                                  : 'Set white or black when the edges are not backdrop — a hat brim or a hand at the frame reads as the wall.'}
+                              </p>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                Background tolerance
+                              </span>
+                              <span className="text-xs font-mono text-cyan-500">
+                                {options.cutoutTolerance > 0
+                                  ? `±${options.cutoutTolerance}`
+                                  : `auto${cutoutInfo ? ` (±${Math.round(cutoutInfo.tolerance)})` : ''}`}
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0"
+                              max="128"
+                              step="1"
+                              value={options.cutoutTolerance}
+                              onChange={(e) =>
+                                setOptions({ ...options, cutoutTolerance: Number(e.target.value) })
+                              }
+                              className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                            />
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                              How far a pixel may differ from the backdrop and still be backdrop.
+                              At zero it is read from how evenly the backdrop was lit. Raise it
+                              when shadows on the wall are being kept as part of the subject;
+                              lower it when the subject's edge is being eaten.
+                            </p>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                Tidy the outline
+                              </span>
+                              <span className="text-xs font-mono text-cyan-500">
+                                {options.cutoutSmoothPx} px
+                                {mmPerPixel > 0 && ` · ${(options.cutoutSmoothPx * mmPerPixel).toFixed(2)} mm`}
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0"
+                              max="6"
+                              step="1"
+                              value={options.cutoutSmoothPx}
+                              onChange={(e) =>
+                                setOptions({ ...options, cutoutSmoothPx: Number(e.target.value) })
+                              }
+                              className="w-full accent-cyan-500 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                            />
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                              Removes hairs, dust and notches narrower than this from the cut line.
+                              A spike one pixel wide is a whisker of material that breaks off in the
+                              hand.
+                            </p>
+                          </>
+                        )}
+                        {options.mode === 'vector' && (
+                          <>
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
                             Simplify
@@ -653,6 +849,8 @@ export const ImageImportModal: React.FC = () => {
                           Rounds off the pixel staircase. Off, the outline is emitted as the
                           straight lines it was traced as — squarer, and fewer moves.
                         </p>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -755,7 +953,7 @@ export const ImageImportModal: React.FC = () => {
 
                   <div>
                     <label className="text-xs font-semibold text-slate-500 block mb-1">
-                      Target Layer
+                      {options.cutout ? 'Layer for the inside' : 'Target Layer'}
                     </label>
                     {/* In tone mode only a Shade layer is a legal target: the
                         planner will not machine an image anywhere else, so
@@ -798,7 +996,7 @@ export const ImageImportModal: React.FC = () => {
           </div>
 
           {/* Canvas Preview Column (7 cols) */}
-          <div className="md:col-span-7 flex flex-col items-center justify-center bg-slate-950/80 rounded-2xl p-4 border border-slate-800 relative min-h-[320px]">
+          <div className="md:col-span-7 md:min-h-0 flex flex-col items-center justify-center bg-slate-950/80 rounded-2xl p-4 border border-slate-800 relative min-h-[320px]">
             {loadedImg ? (
               /* Fills the column rather than shrink-wrapping the image. The
                  transform does not affect layout, so a box sized to the canvas
@@ -842,7 +1040,7 @@ export const ImageImportModal: React.FC = () => {
                     style={{ imageRendering: 'pixelated', maxHeight: 'min(420px, 100%)' }}
                     className="block max-w-full border border-slate-700/50 shadow-2xl rounded-lg"
                   />
-                  {overlay && (overlay.strokeD || overlay.fillD) && (
+                  {overlay && (overlay.strokeD || overlay.fillD || overlay.outlineD) && (
                     <svg
                       className="absolute inset-0 w-full h-full pointer-events-none"
                       viewBox={`0 0 ${overlay.imgW} ${overlay.imgH}`}
@@ -859,6 +1057,16 @@ export const ImageImportModal: React.FC = () => {
                             strokeWidth={1.5 * Math.min(overlay.scaleX, overlay.scaleY)}
                           />
                         )}
+                        {/* The cut line, in the cut layer's colour so it reads
+                            as a different job from the cyan etch inside it. */}
+                        {overlay.outlineD && (
+                          <path
+                            d={overlay.outlineD}
+                            fill="none"
+                            stroke={cutLayerForOutline.layer.color}
+                            strokeWidth={2 * Math.min(overlay.scaleX, overlay.scaleY)}
+                          />
+                        )}
                       </g>
                     </svg>
                   )}
@@ -871,7 +1079,9 @@ export const ImageImportModal: React.FC = () => {
                     Size: {options.targetWidth} × {options.targetHeight} mm
                   </span>
                   <span>|</span>
-                  <span>Compound Element (1)</span>
+                  <span>
+                    {overlay?.outlineD ? 'Inside + Cut Outline (2)' : 'Compound Element (1)'}
+                  </span>
                 </div>
               </div>
             ) : (
