@@ -131,6 +131,29 @@ const LaserLayerCutting: React.FC<{
         ))}
       </div>
 
+      {/*
+        The laser's answer to the router's holding tabs, which it cannot have:
+        a tab is material left at the bottom of a cut, and a beam goes through
+        or it does not. Off by default, because a part dropping onto the
+        honeycomb is what most laser jobs want — this is for the one that has
+        to come off the bed in one piece.
+      */}
+      {layer.operation === 'cut' && (
+        <label className="flex items-center gap-1.5 text-[10px] text-slate-600 dark:text-slate-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={layer.bridges === true}
+            onChange={(e) => {
+              update({ bridges: e.target.checked });
+              commit();
+            }}
+            className="cursor-pointer"
+          />
+          <span>Bridges — leave the piece joined to the sheet</span>
+          <InfoTooltip text="Short stretches of the outline left unburnt, so the part stays attached until you snap or knife it out. Width follows the stock thickness." />
+        </label>
+      )}
+
       <button
         onClick={() => setShowAdvanced((v) => !v)}
         className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"

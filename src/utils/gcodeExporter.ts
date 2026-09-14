@@ -5,6 +5,8 @@ import { type Pt } from './pathFlatten';
 import { extractElementContours } from './elementContours';
 import { clipValuedPolylineToStock, isWhollyInside } from './clipToStock';
 import { eraseMasksByLayer, subtractMaskFromPolyline, type EraseMask } from './eraseMask';
+import { bridgeWidthFor, planBridgeSpans, splitPolylineAtSpans } from './bridges';
+import { analyseSheetPieces, type WorkPath } from './sheetPieces';
 import {
   DEFAULT_SHADE_PITCH_MM,
   hasRaster,
@@ -1453,6 +1455,26 @@ export function planToolpath(
   // contour is ordered by — and an outline cut down to an arc no longer encloses
   // the holes it used to be sequenced after.
   /*
+   * Bridges, before the eraser and before the trim, so they are planned on the
+   * whole contour: a bridge is a fraction of a perimeter, and spacing them
+   * along a contour that has already had pieces taken out of it would put them
+   * somewhere other than where they were asked for.
+   */
+  const bridged = applyBridges(segments, doc, machineKind, stock.thickness);
+  if (bridged.contours > 0) {
+    segments.length = 0;
+    segments.push(...bridged.segments);
+    notes.push(
+      `${bridged.bridges} bridge${bridged.bridges === 1 ? '' : 's'} of ${bridged.widthMm.toFixed(
+        1
+      )} mm left uncut across ${bridged.contours} outline${bridged.contours === 1 ? '' : 's'}, so ` +
+        `${bridged.contours === 1 ? 'the piece' : 'those pieces'} stay joined to the sheet instead ` +
+        `of dropping when the cut closes. Snap or knife them afterwards; turn bridges off on the ` +
+        `layer to cut straight through.`
+    );
+  }
+
+  /*
    * The eraser, applied before the stock trim and before the sort, for the same
    * reasons the trim runs there: rubbing out part of a contour changes the area
    * it encloses (and so where it sorts), and a doubled edge that only one of two
@@ -1513,6 +1535,16 @@ export function planToolpath(
       );
     }
   }
+
+  /*
+   * What the sheet comes apart into, read off the finished toolpath.
+   *
+   * Last, deliberately: bridges, the eraser, the stock trim and the overlap
+   * removal each change where the cuts actually are, and an answer computed
+   * before any of them would be about a job that is not the one being run.
+   */
+  const sheet = reportSheetPieces(doc, segments, machineKind, stock.thickness);
+  if (sheet) notes.push(sheet);
 
   if (finished > 0) {
     notes.push(
@@ -2408,6 +2440,154 @@ export function planTabs(perimeter: number): TabSpan[] {
     tabs.push({ start: centre - TAB_WIDTH_MM / 2, end: centre + TAB_WIDTH_MM / 2 });
   }
   return tabs;
+}
+
+/**
+ * Says what will be loose when the job finishes, and when that looks wrong.
+ *
+ * Two different statements, and the difference is the whole value of it. A job
+ * that frees pieces is the ordinary case — that is what cutting out a part is —
+ * and gets one line saying how many. A piece that comes away *carrying work
+ * from another layer* is the case worth stopping for: the engraving is done
+ * before the cut that releases it, so the picture is finished and then the part
+ * it is on drops. On a framed picture that is the middle falling out of its
+ * border; on a router with tabs off it is a loose part under a spinning cutter.
+ *
+ * Returns null when nothing comes away, which is the quiet answer a drawing of
+ * etching alone should get.
+ */
+function reportSheetPieces(
+  doc: EtchDocument,
+  segments: GCodeSegment[],
+  machine: MachineKind,
+  stockThicknessMm: number
+): string | null {
+  const layerName = (id: string) => doc.layers.find((l) => l.id === id)?.name ?? id;
+
+  const cuts: Pt[][] = [];
+  const work: WorkPath[] = [];
+  for (const seg of segments) {
+    if (seg.type !== 'cut') {
+      work.push({ layerName: layerName(seg.layerId), points: seg.points });
+      continue;
+    }
+    // Only a cut that goes through separates anything. A router layer set
+    // shallower than the stock is a groove, and a groove holds.
+    if (machine !== 'laser' && seg.zDepth + 1e-6 < stockThicknessMm) continue;
+    // A tab is a piece of sheet still joining the part to the rest of it, so
+    // the wall has a gap there — the same treatment the bridges already had
+    // when they were split into separate segments.
+    for (const piece of splitPolylineAtSpans(seg.points, seg.tabs)) cuts.push(piece);
+  }
+  if (cuts.length === 0) return null;
+
+  const analysis = analyseSheetPieces(doc.width, doc.height, cuts, work);
+  if (!analysis || analysis.loose.length === 0) return null;
+
+  const n = analysis.loose.length;
+  const carrying = analysis.loose.filter((p) => p.workLayers.length > 0);
+  const size = (p: (typeof analysis.loose)[number]) =>
+    `${Math.round(p.maxX - p.minX)} x ${Math.round(p.maxY - p.minY)} mm`;
+
+  if (carrying.length === 0) {
+    return (
+      `This job frees ${n} piece${n === 1 ? '' : 's'} from the sheet ` +
+      `(largest ${size(analysis.loose[0])}) — which is what a cut is usually for. ` +
+      `Nothing else comes away.`
+    );
+  }
+
+  const layers = [...new Set(carrying.flatMap((p) => p.workLayers))];
+  const held =
+    machine === 'laser'
+      ? `Hold it with bridges — the checkbox on the cut layer — or draw an eraser stroke across ` +
+        `the cut where you want it joined.`
+      : `Hold it with the layer's holding tabs, or draw an eraser stroke across the cut where you ` +
+        `want it joined.`;
+  return (
+    `${carrying.length === 1 ? 'A piece' : `${carrying.length} pieces`} that come${
+      carrying.length === 1 ? 's' : ''
+    } away from the sheet ` +
+    `carr${carrying.length === 1 ? 'ies' : 'y'} work from ` +
+    `${layers.map((l) => `"${l}"`).join(', ')} — ${size(carrying[0])} for the largest. ` +
+    `Engraving runs before the cut that releases it, so that work is finished and then the piece ` +
+    `it is on comes loose. ${held}`
+  );
+}
+
+/**
+ * Leaves the bridges on the cuts of every layer that asked for them.
+ *
+ * A laser cannot hold a part the way a router does — see `bridges.ts` — so the
+ * only way to keep a piece attached is to not cut part of the line. The split
+ * happens at segment level, the same way the stock trim and the eraser work:
+ * each surviving run becomes its own segment, and the mover already knows how
+ * to lift, travel and pierce between two segments.
+ *
+ * Closed contours only. An open path has two ends already and is holding
+ * nothing, and a hatch line or a shaded sweep is not a cut at all.
+ */
+function applyBridges(
+  segments: GCodeSegment[],
+  doc: EtchDocument,
+  machine: MachineKind,
+  stockThicknessMm: number
+): { segments: GCodeSegment[]; contours: number; bridges: number; widthMm: number } {
+  const width = bridgeWidthFor(stockThicknessMm);
+  // A router holds a part with tabs, which leave the outline unbroken and the
+  // part the size it was drawn. Offering both on one machine would be two
+  // answers to one question, and the tabs are the better one where they work.
+  const asking = new Set(
+    machine === 'laser'
+      ? doc.layers.filter((l) => l.operation === 'cut' && l.bridges === true).map((l) => l.id)
+      : []
+  );
+  if (asking.size === 0) {
+    return { segments, contours: 0, bridges: 0, widthMm: width };
+  }
+
+  const out: GCodeSegment[] = [];
+  let contours = 0;
+  let bridges = 0;
+
+  for (const seg of segments) {
+    if (!asking.has(seg.layerId) || seg.type !== 'cut' || !seg.isClosed) {
+      out.push(seg);
+      continue;
+    }
+    const spans = planBridgeSpans(pathLength(seg.points), width);
+    if (spans.length === 0) {
+      // Too small to bridge. Said nowhere: a part this size is lighter than the
+      // bridges that would hold it, and the honest outcome is the cut it asked
+      // for.
+      out.push(seg);
+      continue;
+    }
+    const pieces = splitPolylineAtSpans(seg.points, spans);
+    if (pieces.length === 0) {
+      out.push(seg);
+      continue;
+    }
+    contours++;
+    bridges += spans.length;
+    for (const pts of pieces) {
+      out.push({
+        ...seg,
+        points: pts,
+        isClosed: false,
+        // The enclosed area is the whole contour's, not the fragment's: these
+        // pieces are still one outline as far as cut order goes, and a fragment
+        // that measured its own box would sort as if it enclosed nothing and
+        // run before the holes inside it.
+        bBoxArea: seg.bBoxArea,
+        // Tabs and bridges are two answers to one question, and a laser has no
+        // tabs to begin with.
+        tabs: [],
+      });
+    }
+  }
+
+  return { segments: out, contours, bridges, widthMm: width };
 }
 
 /**

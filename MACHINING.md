@@ -130,6 +130,20 @@ grid, read the cell you like, and the numbers in §5 can be corrected against it
 | `DEFAULT_LASER_KERF_MM = 0.1` | `machineSettings.ts` | A focused diode's slot in thin stock, and a fair start for a small tube. It is not a constant — it widens with thicker stock, a defocused head and a slower pass — so it is a setting, and the UI says to measure it from a test cut. | **Judgement** — the default only. The number in use should be measured. |
 | Kerf stored per machine, keyed on `$I` | `machineSettings.ts`, `webSerialManager.ts` | A 5 W diode and a 40 W tube do not burn the same slot, and one account can have both. GRBL's `$I` carries a build-info string the owner can write with `$I=`, which is the only stable identity a controller offers; unnamed, it falls back to version and options, which identify the model but not the individual machine. | **Documented** (GRBL 1.1 `$I` / `$I=`) |
 
+### Bridges, and what stays attached (`bridges.ts`, `sheetPieces.ts`)
+
+A laser cannot hold a part with tabs — a tab is material left at the bottom of a
+cut, and a beam goes through or it does not — so the only way to keep a piece
+attached is to leave part of the line unburnt. Off by default: a part dropping
+onto the honeycomb is the ordinary outcome of a laser cut.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| Bridge width = `thickness / 3`, clamped to 0.8–2.5 mm | `bridges.ts` | What a bridge must hold scales with thickness; what makes it usable is that a blade goes through it in one stroke, which is why the top of the range is a bound rather than a formula. 1 mm at the shipped 3 mm ply. | **Judgement** |
+| `BRIDGE_SPACING_MM = 60`, `MIN_BRIDGES = 3` | `bridges.ts` | The same figures as the holding tabs, for the same reasons: not busywork on a big outline, three points rather than a hinge on a small one. | **Judgement** (mirrors the tab rule) |
+| Fall-out lattice pitch 0.4 mm | `sheetPieces.ts` | Half the narrowest bridge worth leaving, so a bridge is never lost to rounding and reported as a piece that drops. Error is half a cell — far below anything here can cut. | **Derived** (from the bridge minimum) |
+| `MIN_PIECE_MM2 = 10` | `sheetPieces.ts` | Below this a "piece" is rasterising noise between a wall and whatever runs alongside it, not geometry. | **Judgement** |
+
 ## 7. Geometry tolerances
 
 These are a **shared budget**, not per-module choices. Flattening and arc fitting

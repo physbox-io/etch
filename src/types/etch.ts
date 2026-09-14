@@ -121,6 +121,17 @@ export interface EtchLayer {
    */
   tabs?: boolean;
   /**
+   * Whether a through-cut on this layer is left joined to the sheet by short
+   * unburnt bridges. Laser only, and off by default.
+   *
+   * The laser's answer to the holding tabs above, which it cannot have: a tab
+   * is material left at the bottom of a cut, and a beam goes through or it does
+   * not. Off by default because a part dropping onto the honeycomb is the
+   * ordinary outcome of a laser cut and what most jobs want — bridges are for
+   * the job that must come off the bed in one piece. See `utils/bridges.ts`.
+   */
+  bridges?: boolean;
+  /**
    * Which side of the line the cutter runs on.
    *
    * 'auto' — the default — puts it outside the outermost contour and inside

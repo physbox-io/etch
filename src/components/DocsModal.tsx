@@ -550,6 +550,23 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           cut so the part is not loose under a spinning bit on the last pass. Snap or pare them off
           afterwards. Both are per-layer settings if you want them off.
         </Step>
+        <Step title="A laser cannot have tabs — it has bridges">
+          A tab is material left at the <em>bottom</em> of a cut, and a beam goes through or it does
+          not, so a laser holds a part the only other way there is: short stretches of the outline
+          left unburnt. Off by default, since a part dropping onto the honeycomb is what most jobs
+          want; the checkbox is on the cut layer, next to the derived speed and power. The width
+          follows the stock — about a millimetre in 3 mm ply, wider in thicker stock, never more
+          than a knife goes through in one stroke — and they are spaced like the tabs, at least
+          three to a part so it is held rather than hinged.
+        </Step>
+        <Step title="What will still be attached when it finishes">
+          Every plan works out what the sheet comes apart into and says so: how many pieces come
+          away, and — the one worth stopping for — whether any of them carries engraving. Engraving
+          runs before the cut that releases it, so a picture in a frame is finished and then the
+          piece it is on drops. The check reads the real toolpath, so tabs, bridges, an eraser
+          stroke drawn across a cut, and the stock trim all count as holding exactly as they will
+          on the machine.
+        </Step>
         <Step title="A laser is offset too, by half its kerf">
           A beam is not a line either: it takes material off both sides of where it was pointed, so
           a part cut down its own outline finishes one kerf small and every hole one kerf large.

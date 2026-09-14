@@ -22,6 +22,9 @@ import { webSerialManager, type OverrideStep } from '../utils/webSerialManager';
 import { buildSnapshotSvg, rasterizeSvg } from '../utils/svgSnapshot';
 import { getBedBBox, bedBoxOfAll, isOutsideStock } from '../utils/geom';
 import { floodFillRegion, fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
+import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
+import type { Pt } from '../utils/pathFlatten';
+import type { EtchElement } from '../types/etch';
 
 /** Millimetres, to the micron — past that it is float noise, not a dimension. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -562,6 +565,104 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
       };
     }
 
+    case 'etch_erase':
+    case 'ERASE': {
+      /*
+       * The eraser, by coordinate. An agent has no pointer, so "rub this bit
+       * out" is a centreline and a width — the same element the tool draws, so
+       * what an agent masks is what a stroke would have masked.
+       *
+       * It is the only way to take part of something out of a job without
+       * editing the drawing, which for an agent matters more than for a person:
+       * an agent that "fixed" an overhang by rewriting a traced photo's path
+       * has destroyed the photo, and nothing says what it used to be.
+       */
+      const raw = Array.isArray(msg.points) ? msg.points : [];
+      const points = raw
+        .map((p: { x?: unknown; y?: unknown }) => ({ x: Number(p?.x), y: Number(p?.y) }))
+        .filter((p: Pt) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (points.length === 0) {
+        return { ok: false, error: 'points must be one or more {x, y} in mm, document space' };
+      }
+      const width = Number(msg.width ?? DEFAULT_ERASER_WIDTH_MM);
+      if (!Number.isFinite(width) || width < MIN_ERASER_WIDTH_MM) {
+        return { ok: false, error: `width must be at least ${MIN_ERASER_WIDTH_MM} mm` };
+      }
+      const doc = store.document;
+      const layerId = doc.layers.some((l) => l.id === msg.layerId)
+        ? msg.layerId
+        : store.activeLayerId || doc.layers[0]?.id;
+      if (!layerId) return { ok: false, error: 'This document has no layers to erase on' };
+
+      const ox = points[0].x;
+      const oy = points[0].y;
+      const d =
+        'M 0 0' +
+        points
+          .slice(1)
+          .map((p: Pt) => ` L ${(p.x - ox).toFixed(3)} ${(p.y - oy).toFixed(3)}`)
+          .join('');
+      const el = {
+        id: msg.id || `erase_${Date.now()}`,
+        name: msg.name || 'Eraser',
+        type: 'erase',
+        layerId,
+        x: ox,
+        y: oy,
+        d,
+        rotation: 0,
+        scaleX: 1,
+        scaleY: 1,
+        opacity: 1,
+        strokeWidth: width,
+        fillColor: 'none',
+        visible: true,
+        locked: false,
+      } as EtchElement;
+      store.addElement(el);
+      return {
+        ok: true,
+        addedId: el.id,
+        layerId,
+        layerName: doc.layers.find((l) => l.id === layerId)?.name,
+        widthMm: width,
+        note:
+          `Masks "${doc.layers.find((l) => l.id === layerId)?.name}" only. Nothing underneath is ` +
+          `changed — delete this element and all of it is machined again.`,
+      };
+    }
+
+    case 'etch_update_layer':
+    case 'UPDATE_LAYER': {
+      /*
+       * Layer settings, one layer at a time.
+       *
+       * They were only reachable by sending the whole `layers` array through
+       * `SET_DOCUMENT`, which discards anything that changed on the canvas
+       * between the read and the write — the same trap `UPDATE_ELEMENT` exists
+       * to avoid. It is also where holding lives: `tabs` on a router, `bridges`
+       * on a laser, and both decide whether the part is still attached when the
+       * job ends.
+       */
+      const layerId = msg.layerId || msg.id;
+      if (typeof layerId !== 'string' || !layerId) return { ok: false, error: 'layerId is required' };
+      const updates = msg.updates;
+      if (!updates || typeof updates !== 'object') {
+        return { ok: false, error: 'updates must be an object of layer fields' };
+      }
+      if (!store.document.layers.some((l) => l.id === layerId)) {
+        return { ok: false, error: `No layer with id '${layerId}'` };
+      }
+      if ('id' in updates) {
+        return { ok: false, error: "A layer's id cannot be changed — elements are homed by it" };
+      }
+      store.updateLayer(layerId, updates);
+      return {
+        ok: true,
+        layer: useStore.getState().document.layers.find((l) => l.id === layerId),
+      };
+    }
+
     case 'etch_combine':
     case 'COMBINE': {
       /*
@@ -755,6 +856,13 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
           // toolbar before they were in this list.
           'fill', 'erase',
         ],
+        /*
+         * How a part is held to the sheet, which is machine-specific: a tab is
+         * material left at the bottom of a cut, which a beam cannot leave, and
+         * a bridge is a stretch of line left uncut, which a router does not
+         * need. Both are `etch_update_layer` fields on a cut layer.
+         */
+        holding: machineKind(store.document) === 'laser' ? 'bridges' : 'tabs',
       };
     }
 

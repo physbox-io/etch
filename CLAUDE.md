@@ -282,6 +282,20 @@ way — a preview that does its own conversion will drift from the file.
   only when it is enclosed by another contour, since a lone small circle is a
   disc to cut out and drilling it would destroy the part. All four are derived,
   not asked: see `MACHINING.md`.
+- **A laser cannot have tabs, so it has bridges.** `withTabBreaks` returns early
+  in laser mode because a tab is material left at the bottom of a cut; the beam's
+  equivalent is a stretch of the line left unburnt, which is `bridges.ts` and the
+  per-layer `bridges` flag. Off by default — a part dropping onto the honeycomb
+  is the ordinary outcome of a laser cut — and applied at segment level before
+  the eraser and the trim, so the spacing is measured on the whole contour.
+- **Every plan says what the sheet comes apart into.** `sheetPieces.ts` rasterises
+  the *finished* toolpath, labels the connected regions of sheet and reports the
+  ones that no longer reach the edge. It runs last for that reason: bridges,
+  tabs, the eraser and the stock trim each change where the cuts are, and a gap
+  in the path is a piece still attached whichever of them put it there. Freeing
+  pieces is usually the point and gets one line; a loose piece *carrying work
+  from another layer* is the case worth stopping for, because the engraving is
+  finished before the cut that drops it.
 - `dedupeOverlaps.ts` cuts a line two shapes share **once**. A doubled laser
   line burns through thin ply where the rest of the outline does not, and a
   doubled router pass drops the cutter full depth into a slot that is already
