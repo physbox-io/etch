@@ -750,6 +750,10 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
         drawingTools: [
           'select', 'freehand', 'grid-freehand', 'bezier', 'node-edit',
           'line', 'rect', 'circle', 'polygon', 'star', 'text', 'mandala',
+          // 'fill' clicks inside enclosed lines; 'erase' masks part of a layer
+          // out of the job without changing the drawing. Both were in the
+          // toolbar before they were in this list.
+          'fill', 'erase',
         ],
       };
     }

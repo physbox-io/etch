@@ -127,11 +127,15 @@ export function getLocalBBox(el: EtchElement): BBox {
       height = fontSize * 1.15;
       break;
     }
+    // An eraser stroke is in here because it is a polyline like any other as
+    // far as where it *is*: its width is paint, and its selection box is drawn
+    // round its centreline exactly as a fat freehand stroke's is.
     case 'path':
     case 'freehand':
     case 'symbol':
     case 'star':
-    case 'bezier': {
+    case 'bezier':
+    case 'erase': {
       const pts = el.d ? pathPoints(el.d) : [];
       if (pts.length > 0) ({ minX, minY, width, height } = boundsOf(pts));
       break;

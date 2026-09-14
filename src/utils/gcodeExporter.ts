@@ -4,6 +4,7 @@ import { localToBed, isOutsideStock, bedBoxOfAll } from './geom';
 import { type Pt } from './pathFlatten';
 import { extractElementContours } from './elementContours';
 import { clipValuedPolylineToStock, isWhollyInside } from './clipToStock';
+import { eraseMasksByLayer, subtractMaskFromPolyline, type EraseMask } from './eraseMask';
 import {
   DEFAULT_SHADE_PITCH_MM,
   hasRaster,
@@ -857,6 +858,13 @@ export function planToolpath(
     const drillable: Array<{ index: number; centre: Pt; diameter: number }> = [];
 
     for (const el of layerElements) {
+      /*
+       * An eraser stroke is not geometry to cut — it is geometry *not* to cut.
+       * It is applied to the finished segments below, where the unit is the
+       * piece of a path that lies under it rather than the whole element.
+       */
+      if (el.type === 'erase') continue;
+
       /**
        * A shaded image: swept as tone rather than machined as geometry.
        *
@@ -1444,6 +1452,25 @@ export function planToolpath(
   // Trimmed before the sort, because clipping changes the enclosed area a
   // contour is ordered by — and an outline cut down to an arc no longer encloses
   // the holes it used to be sequenced after.
+  /*
+   * The eraser, applied before the stock trim and before the sort, for the same
+   * reasons the trim runs there: rubbing out part of a contour changes the area
+   * it encloses (and so where it sorts), and a doubled edge that only one of two
+   * shapes still has is no longer doubled.
+   */
+  const erase = applyEraseMasks(segments, eraseMasksByLayer(doc));
+  if (erase.erased > 0 || erase.dropped > 0) {
+    segments.length = 0;
+    segments.push(...erase.segments);
+    notes.push(
+      `Erased: ${Math.round(erase.removedMm)} mm of path lies under the eraser and is not machined` +
+        (erase.dropped > 0
+          ? `, including ${erase.dropped} path${erase.dropped === 1 ? '' : 's'} covered entirely`
+          : '') +
+        `. Nothing on the canvas has changed — delete the eraser stroke and all of it comes back.`
+    );
+  }
+
   const clip = clipSegmentsToStock(segments, doc.width, doc.height);
   segments.length = 0;
   segments.push(...clip.segments);
@@ -2381,6 +2408,69 @@ export function planTabs(perimeter: number): TabSpan[] {
     tabs.push({ start: centre - TAB_WIDTH_MM / 2, end: centre + TAB_WIDTH_MM / 2 });
   }
   return tabs;
+}
+
+/**
+ * Takes the eraser out of the planned path.
+ *
+ * An eraser masks the layer it is drawn on, so the mask is looked up per
+ * segment by layer; a segment on a layer with no eraser on it is handed
+ * straight back, which is every segment in almost every document.
+ *
+ * Like the stock trim, this works on segments rather than elements and says
+ * what it did. A contour rubbed through is no longer closed and its holding
+ * tabs are distances along a contour that no longer exists, so they are
+ * re-planned for what is left — an outline with a bite out of it still
+ * releases the part.
+ */
+function applyEraseMasks(
+  segments: GCodeSegment[],
+  masks: Map<string, EraseMask>
+): { segments: GCodeSegment[]; erased: number; dropped: number; removedMm: number } {
+  if (masks.size === 0) {
+    return { segments, erased: 0, dropped: 0, removedMm: 0 };
+  }
+
+  const out: GCodeSegment[] = [];
+  let erased = 0;
+  let dropped = 0;
+  let removedMm = 0;
+
+  for (const seg of segments) {
+    const mask = masks.get(seg.layerId);
+    if (!mask) {
+      out.push(seg);
+      continue;
+    }
+    const { pieces, removedMm: gone } = subtractMaskFromPolyline(
+      seg.points,
+      seg.intensities ?? null,
+      mask
+    );
+    if (gone <= 0 && pieces.length === 1 && pieces[0].points.length === seg.points.length) {
+      out.push(seg);
+      continue;
+    }
+    removedMm += gone;
+    if (pieces.length === 0) {
+      dropped++;
+      continue;
+    }
+    erased++;
+    for (const piece of pieces) {
+      const pts = piece.points;
+      out.push({
+        ...seg,
+        points: pts,
+        isClosed: isClosedContour(pts),
+        bBoxArea: seg.intensities ? seg.bBoxArea : boundingArea(pts),
+        tabs: seg.tabs.length > 0 ? planTabs(pathLength(pts)) : [],
+        ...(piece.values ? { intensities: piece.values } : {}),
+      });
+    }
+  }
+
+  return { segments: out, erased, dropped, removedMm };
 }
 
 /**

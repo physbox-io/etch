@@ -136,6 +136,20 @@ Two fill rules, and both are load-bearing: even-odd *within* an element, so a
 traced glyph's counter stays a hole, then non-zero *between* elements, or two
 overlapping squares would "union" to a square with a hole in the overlap.
 
+`src/utils/eraseMask.ts` — the eraser, in the toolbar. A freehand stroke of a
+given width, stored as an `erase` element on a layer, that masks *that layer*:
+the canvas hides the band with an SVG mask over that layer's elements, and the
+planner subtracts the same band from the segments of that layer just before the
+stock trim. The canvas must *mask*, not paint: a bed-coloured stroke over the
+drawing also hid the halftone dots of an etch layer running under an eraser on
+the cut layer, and those dots were still being machined. Nothing underneath is edited, so deleting the stroke restores the job
+exactly — which is the point, and why erasing is not a geometry edit. It is
+applied to segments rather than elements for the reason `clipToStock.ts` is: a
+traced photo is one compound path, and dropping whole elements would throw away
+the picture to rub out a thumbnail. Intensities travel with the geometry, as
+they do everywhere else that rewrites segment points. See
+`tests/eraseMask.test.ts`.
+
 `src/utils/beautify.ts` — the "Make Pretty" button, next to the boolean ops in
 the sidebar. It regularises a hand-drawn selection in four passes, and the order
 is load-bearing:

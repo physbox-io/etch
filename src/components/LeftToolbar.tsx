@@ -19,6 +19,7 @@ import {
   Grid,
   Waypoints,
   PaintBucket,
+  Eraser,
 } from 'lucide-react';
 
 export const LeftToolbar: React.FC = () => {
@@ -45,6 +46,7 @@ export const LeftToolbar: React.FC = () => {
     { id: 'star', label: 'Star Tool', icon: Star },
     { id: 'text', label: 'Vector Text', icon: Type },
     { id: 'fill', label: 'Fill a Region (click inside enclosed lines)', icon: PaintBucket },
+    { id: 'erase', label: 'Eraser — mask out part of the active layer (nothing is deleted)', icon: Eraser },
     { id: 'mandala', label: 'Mandala Symmetry', icon: Sun },
   ];
 

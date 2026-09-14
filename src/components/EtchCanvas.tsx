@@ -111,6 +111,7 @@ export const EtchCanvas: React.FC = () => {
     zoom,
     pan,
     mandalaSettings,
+    eraserWidth,
     setSelectedIds,
     setPan,
     setZoom,
@@ -657,6 +658,19 @@ export const EtchCanvas: React.FC = () => {
       return;
     }
 
+    /*
+     * The eraser draws like the pencil and lands as a mask. It follows the
+     * document's snap setting rather than having a snapped and an unsnapped
+     * variant: rubbing out one square of a grid-drawn part is the case it is
+     * wanted for, and an eraser that ignored the grid while the drawing was
+     * built on it would never line up with what it is aimed at.
+     */
+    if (activeTool === 'erase') {
+      setIsFreehandDrawing(true);
+      setFreehandPoints([coords]);
+      return;
+    }
+
     if (activeTool === 'bezier') {
       // Clicking the first node again closes the path.
       if (bezierNodes.length > 1) {
@@ -727,7 +741,7 @@ export const EtchCanvas: React.FC = () => {
     }
 
     if (isFreehandDrawing) {
-      const pt = activeTool === 'grid-freehand' ? coords : rawCoords;
+      const pt = activeTool === 'grid-freehand' || activeTool === 'erase' ? coords : rawCoords;
       setFreehandPoints((prev) => {
         const last = prev[prev.length - 1];
         // Drop sub-0.2mm jitter: the raw pointer stream produces thousands of
@@ -907,8 +921,42 @@ export const EtchCanvas: React.FC = () => {
       setIsFreehandDrawing(false);
       // Snapped to match the snapped start point, but only for the pencil whose
       // whole point is the grid. See handleMouseDown.
-      const endPt = activeTool === 'grid-freehand' ? toBedSnapped(e) : toBed(e);
+      const endPt =
+        activeTool === 'grid-freehand' || activeTool === 'erase' ? toBedSnapped(e) : toBed(e);
       const pts = [...freehandPoints, endPt];
+      /*
+       * An eraser is allowed to be a dot. A click with the pencil is a stroke
+       * with no length and nothing to cut, but a click with the eraser is a
+       * round patch the width of the brush — the way a single tap rubs out one
+       * spot — and dropping it would make the tool look broken.
+       */
+      if (activeTool === 'erase') {
+        const ox = pts[0].x;
+        const oy = pts[0].y;
+        const d =
+          'M 0 0' +
+          pts
+            .slice(1)
+            .map((p) => ` L ${(p.x - ox).toFixed(2)} ${(p.y - oy).toFixed(2)}`)
+            .join('');
+        addElement({
+          id: `erase_${Date.now()}`,
+          name: 'Eraser',
+          type: 'erase',
+          x: ox,
+          y: oy,
+          d,
+          ...baseElementProps(),
+          // The brush width, not a drawn line's width: this is the whole
+          // geometry of an eraser, which is why it is the one thing the tool
+          // panel asks for.
+          strokeWidth: eraserWidth,
+          strokeColor: undefined,
+          fillColor: 'none',
+        } as EtchElement);
+        setFreehandPoints([]);
+        return;
+      }
       if (pts.length > 1) {
         const ox = pts[0].x;
         const oy = pts[0].y;
@@ -1140,6 +1188,24 @@ export const EtchCanvas: React.FC = () => {
   const viewW = viewMaxX - viewMinX;
   const viewH = viewMaxY - viewMinY;
 
+  /**
+   * The eraser strokes on each layer, for the SVG masks below.
+   *
+   * Keyed by layer because an eraser masks its own layer and nothing else —
+   * the same rule the planner applies (`eraseMask.ts`), which is what keeps
+   * the canvas and the job in agreement about what is going to be cut.
+   */
+  const erasersByLayer = useMemo(() => {
+    const byLayer = new Map<string, EtchElement[]>();
+    for (const el of document.elements) {
+      if (el.type !== 'erase' || el.visible === false) continue;
+      const list = byLayer.get(el.layerId);
+      if (list) list.push(el);
+      else byLayer.set(el.layerId, [el]);
+    }
+    return byLayer;
+  }, [document.elements]);
+
   /** Boxes for the elements that have ended up off the material. */
   const offStockBoxes = useMemo(
     () =>
@@ -1248,6 +1314,41 @@ export const EtchCanvas: React.FC = () => {
               className="text-slate-500/60 dark:text-slate-400/40"
             />
           </pattern>
+          {/*
+            One mask per layer that has an eraser on it.
+
+            Painting the stroke over the drawing in the colour of the bed was
+            the first attempt, and it lied: an eraser on the cut layer also hid
+            the halftone dots of an etch layer underneath it, which were still
+            going to be machined. A mask takes out exactly the geometry that is
+            not cut and leaves every other layer showing through, so what is on
+            screen is what the machine will do.
+          */}
+          {[...erasersByLayer].map(([layerId, strokes]) => (
+            <mask
+              key={layerId}
+              id={`etch-erase-${layerId}`}
+              maskUnits="userSpaceOnUse"
+              x={viewMinX}
+              y={viewMinY}
+              width={viewW}
+              height={viewH}
+            >
+              <rect x={viewMinX} y={viewMinY} width={viewW} height={viewH} fill="white" />
+              {strokes.map((el) => (
+                <path
+                  key={el.id}
+                  transform={getElementTransform(el)}
+                  d={el.d || ''}
+                  fill="none"
+                  stroke="black"
+                  strokeWidth={el.strokeWidth || 1}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ))}
+            </mask>
+          ))}
         </defs>
 
         {/* Bed surface + grid */}
@@ -1313,6 +1414,11 @@ export const EtchCanvas: React.FC = () => {
         {document.elements.map((el) => {
           const layer = document.layers.find((l) => l.id === el.layerId);
           if (!el.visible || layer?.visible === false) return null;
+          // Erasers are drawn in their own pass below, on top of everything.
+          // Drawn in document order they would mask only what happened to be
+          // added before them, so rubbing something out and then drawing next
+          // to it would un-rub it.
+          if (el.type === 'erase') return null;
 
           const isSelected = selectedIds.includes(el.id);
           // One transform for the element, shared verbatim with the selection
@@ -1359,9 +1465,24 @@ export const EtchCanvas: React.FC = () => {
           const hit = { fill: 'none', stroke: 'transparent', strokeWidth: Math.max(strokeW, 3) };
           const textHit = el.type === 'text' ? textHitBoxes.get(el.id) : null;
 
-          return (
+          /**
+           * Whatever an eraser on this layer covers is taken out of the element
+           * rather than painted over, so a shape on another layer running under
+           * the same stroke still shows — and still cuts.
+           *
+           * The mask goes on a wrapper with no transform of its own. A
+           * `userSpaceOnUse` mask is resolved in the coordinate system of the
+           * element that references it, transform included, so hanging it on
+           * the element's own group would carry the eraser along with every
+           * rotation and scale the element has — a mask that moved when the
+           * shape under it was dragged.
+           */
+          const eraseMask = erasersByLayer.has(el.layerId)
+            ? `url(#etch-erase-${el.layerId})`
+            : undefined;
+
+          const body = (
             <g
-              key={el.id}
               data-el-id={el.id}
               transform={transform}
               // No mousedown handler: the canvas resolves clicks itself, from
@@ -1484,10 +1605,114 @@ export const EtchCanvas: React.FC = () => {
               {isPathish && <path d={el.d || ''} {...common} />}
             </g>
           );
+
+          return eraseMask ? (
+            <g key={el.id} mask={eraseMask}>
+              {body}
+            </g>
+          ) : (
+            <React.Fragment key={el.id}>{body}</React.Fragment>
+          );
         })}
 
+        {/*
+          The eraser strokes themselves.
+
+          They paint nothing: the band is already gone from the drawing, taken
+          out of each layer by the mask in the defs above. What is left here is
+          a transparent copy at the band's width so the mask can still be
+          clicked and deleted — `transparent` is a paint, not `none`, so it is
+          a hit target under `visiblePainted` while drawing nothing.
+
+          A mask with nothing under it is invisible, by design. That is right
+          until you need to find one again, so while the eraser is in hand — or
+          when one is selected — every mask shows its band and its centreline.
+        */}
+        {document.elements.map((el) => {
+          if (el.type !== 'erase') return null;
+          const layer = document.layers.find((l) => l.id === el.layerId);
+          if (!el.visible || layer?.visible === false) return null;
+          const isSelected = selectedIds.includes(el.id);
+          const reveal = isSelected || activeTool === 'erase';
+          const width = el.strokeWidth || 1;
+          const caps = { strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
+          return (
+            <g
+              key={el.id}
+              data-el-id={el.id}
+              transform={getElementTransform(el)}
+              className={activeTool === 'select' ? 'cursor-move' : ''}
+              style={{
+                pointerEvents:
+                  activeTool === 'select' || activeTool === 'node-edit'
+                    ? 'visiblePainted'
+                    : 'none',
+              }}
+            >
+              <path
+                d={el.d || ''}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={Math.max(width, 3)}
+                {...caps}
+              />
+              {reveal && (
+                <>
+                  <path
+                    d={el.d || ''}
+                    fill="none"
+                    stroke={isSelected ? '#f59e0b' : '#64748b'}
+                    strokeOpacity={0.18}
+                    strokeWidth={width}
+                    {...caps}
+                  />
+                  <path
+                    d={el.d || ''}
+                    fill="none"
+                    stroke={isSelected ? '#f59e0b' : '#94a3b8'}
+                    strokeWidth={0.25}
+                    strokeDasharray="1.5,1.5"
+                    {...caps}
+                  />
+                </>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Live Eraser Preview — the band, at the width it will mask at. The
+            drawing under it is still there until the stroke is finished, so
+            this is a wash rather than the hole it is about to make. */}
+        {isFreehandDrawing && activeTool === 'erase' && freehandPoints.length > 0 && (
+          <path
+            d={`M ${freehandPoints.map((p) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' L ')}`}
+            stroke="#94a3b8"
+            strokeOpacity={0.5}
+            strokeWidth={eraserWidth}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+
+        {/* The brush, under the pointer: the one honest way to show a width in
+            millimetres before any of it is committed. */}
+        {activeTool === 'erase' && !isFreehandDrawing && (
+          <circle
+            cx={cursorPos.x}
+            cy={cursorPos.y}
+            r={eraserWidth / 2}
+            fill="none"
+            stroke="#94a3b8"
+            strokeWidth={0.25}
+            strokeDasharray="1,1"
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+
         {/* Live Freehand Preview Stroke */}
-        {isFreehandDrawing && freehandPoints.length > 1 && (
+        {isFreehandDrawing && activeTool !== 'erase' && freehandPoints.length > 1 && (
           <path
             d={`M ${freehandPoints.map((p) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' L ')}`}
             stroke="#f59e0b"
@@ -1914,6 +2139,16 @@ export const EtchCanvas: React.FC = () => {
           {editPath
             ? 'Drag a node to move it · drag a blue handle to curve it (Alt for a corner) · click the path to add a node · double-click or Delete to remove one'
             : 'Click a path, freehand stroke or star to edit its nodes'}
+        </div>
+      )}
+
+      {/* Eraser hint. It has to say which layer, because that is the whole of
+          what an eraser does and there is nothing on the canvas that shows it. */}
+      {activeTool === 'erase' && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+          Drag to rub out {eraserWidth} mm wide on &ldquo;{activeLayer?.name ?? 'the active layer'}
+          &rdquo; · other layers are untouched · nothing is deleted — remove the mask and the
+          drawing comes back
         </div>
       )}
 

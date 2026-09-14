@@ -219,6 +219,17 @@ listed because the region's edge is where the hatch stops.
 | `FILL_SEAL_GAP_MM = 0.3` | `floodFill.ts` | Half a stroke width on the shipped presets: two hand-drawn lines meant to meet leave a sliver of this order, the same failure the boolean ops report. Wider is a doorway someone drew. | **Judgement** |
 | `FILL_MAX_CELLS = 16 000 000` | `floodFill.ts` | Past this the fine pitch is coarsened rather than the worker left grinding; the result says what pitch it used. | **Judgement** |
 
+### Eraser (`eraseMask.ts`)
+
+The eraser decides what is *not* machined, so its one number reaches material by
+omission rather than by being cut at. It is a drawing tool: the stroke's width
+is editable per stroke in the inspector, and this is only where a new one starts.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `DEFAULT_ERASER_WIDTH_MM = 2` | `eraseMask.ts` | Four times the 0.5 mm stroke every shipped preset draws with: narrower than the line it is aimed at needs a steadier hand than a mouse has, much wider cannot be aimed between two lines of text. | **Judgement** |
+| `MIN_ERASER_WIDTH_MM = 0.05` | `eraseMask.ts` | The shared 0.05 mm geometry budget in this section: a band thinner than the app's own geometric error masks nothing anything could rely on. | **Derived** (from the budget) |
+
 ## 8. Machine dynamics and time
 
 | Value | Where | Basis | Source |

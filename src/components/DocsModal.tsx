@@ -307,6 +307,33 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         or subtracting something that covers the base completely — nothing happens and the note
         says why. An empty path is indistinguishable from the tool having deleted your drawing.
       </P>
+      <Card>
+        <Step title="The eraser rubs out without deleting">
+          Pick the eraser and drag over the drawing. The band it covers — the thickness is set in
+          the inspector — drops out of the job: part of the length of a line, a corner of a hatched
+          panel, a patch of a photo engraved as tone. Nothing under it is changed: the line is
+          still one whole line, the photograph still has all its pixels.
+        </Step>
+        <Step title="It masks one layer — the active one">
+          An eraser belongs to the layer it was drawn on and takes nothing off any other — erase
+          across a cut line and a halftone fill running under it, and the dots stay, because they
+          are still going to be machined. Pick the tool and the inspector asks which layer before
+          you draw anything; a stroke can still be moved to another layer afterwards, like any
+          other element. Snapping applies to the stroke like every
+          other tool, so a mask lines up with a drawing built on the grid.
+        </Step>
+        <Step title="Undoing it is deleting it">
+          Select the mask and delete it, and everything under it is machined again. That is the
+          whole reason it is a shape rather than an edit — it survives saving, reopening and any
+          amount of work in between, which an undo stack does not. Against an empty bed a mask is
+          invisible by design, so picking up the eraser again outlines every one of them.
+        </Step>
+        <Step title="The plan says what it took">
+          The toolpath notes report how many millimetres of path lie under the eraser, and whether
+          anything was covered end to end. A path that has gone missing from the preview is
+          accounted for there rather than left to be discovered on material.
+        </Step>
+      </Card>
     </div>
   ),
 

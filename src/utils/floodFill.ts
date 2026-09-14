@@ -96,6 +96,10 @@ function wallContours(doc: EtchDocument): Pt[][] {
   for (const el of doc.elements) {
     if (el.visible === false || !visibleLayers.has(el.layerId)) continue;
     if (el.type === 'image') continue;
+    // An eraser is not a boundary. It masks what is machined, and a fill that
+    // stopped at one would be a region shaped by something the operator drew
+    // to take geometry away rather than to enclose any.
+    if (el.type === 'erase') continue;
     if (el.type === 'text' && !hasFreshOutline(el)) continue;
     for (const c of extractElementContours(el)) if (c.length >= 2) walls.push(c);
   }

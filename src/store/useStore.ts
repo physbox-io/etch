@@ -23,6 +23,7 @@ import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type T
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 import { getBedBBox } from '../utils/geom';
+import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import {
   BOOLEAN_OP_LABEL,
   MIN_FEATURE_MM,
@@ -133,6 +134,14 @@ interface EtchStore {
   pan: { x: number; y: number };
   cursor: { x: number; y: number };
   mandalaSettings: MandalaSettings;
+  /**
+   * How wide the next eraser stroke is drawn, in mm.
+   *
+   * A tool setting rather than a document one: it is the size of the brush in
+   * the operator's hand, and every stroke already carries the width it was
+   * drawn at in its own `strokeWidth`, editable afterwards in the inspector.
+   */
+  eraserWidth: number;
   darkMode: boolean;
   activePreset: string;
   isAiPanelOpen: boolean;
@@ -187,6 +196,7 @@ interface EtchStore {
   setDocumentName: (name: string) => void;
   setNotecard: (markdown: string) => void;
   setMandalaSettings: (settings: Partial<MandalaSettings>) => void;
+  setEraserWidth: (width: number) => void;
   toggleDarkMode: () => void;
   toggleAiPanel: () => void;
   toggleGCodeModal: () => void;
@@ -363,6 +373,7 @@ export const useStore = create<EtchStore>((set, get) => ({
     centerY: 100,
     liveMode: false,
   },
+  eraserWidth: DEFAULT_ERASER_WIDTH_MM,
   darkMode: false,
   isAiPanelOpen: false,
   isGCodeModalOpen: false,
@@ -626,6 +637,9 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
     return { done, failed };
   },
+
+  setEraserWidth: (width) =>
+    set({ eraserWidth: Math.max(MIN_ERASER_WIDTH_MM, width) }),
 
   setMandalaSettings: (settings) =>
     set((state) => ({

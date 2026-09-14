@@ -52,6 +52,7 @@ import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { DEFAULT_SHADE_PITCH_MM } from '../utils/rasterImage';
 import type { EtchElement } from '../types/etch';
 import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
+import { MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 
 const NUM_INPUT =
   'w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono';
@@ -436,6 +437,9 @@ const round1 = (v: number) => Math.round(v * 10) / 10;
  */
 function canBeStroked(el: EtchElement): boolean {
   if (el.type === 'image') return false;
+  // An eraser is machined as nothing at all — it is the absence of a cut, and
+  // its width is already the only thing it has to say.
+  if (el.type === 'erase') return false;
   if (el.type === 'text') return hasFreshOutline(el);
   return true;
 }
@@ -455,6 +459,7 @@ function canBeFilled(el: EtchElement): boolean {
   // An image is neither outlined nor hatched: it is swept as tone, and its own
   // controls are the sweep's.
   if (el.type === 'image') return false;
+  if (el.type === 'erase') return false;
   if (el.type === 'text') return hasFreshOutline(el);
   if (el.type === 'line' || el.type === 'freehand') return false;
   if (el.type === 'path' || el.type === 'bezier' || el.type === 'symbol') {
@@ -480,6 +485,9 @@ export const PropertiesSidebar: React.FC = () => {
     document,
     selectedIds,
     activeLayerId,
+    activeTool,
+    eraserWidth,
+    setEraserWidth,
     mandalaSettings,
     updateElement,
     centerSelected,
@@ -569,6 +577,60 @@ export const PropertiesSidebar: React.FC = () => {
       {/* The inspector body scrolls on its own so that however long a
           selection's fields get, the layer manager below stays on screen. */}
       <div className="flex-1 min-h-0 overflow-y-auto">
+      {/*
+        The eraser's own settings, shown the moment the tool is picked up.
+
+        Which layer it will erase is the first question the tool raises and the
+        one nothing on the canvas can answer, so it is asked here, up front and
+        as a control rather than as a sentence. It used to say the name and
+        point at the layer manager, which meant the target could only really be
+        changed after the fact, by drawing a stroke and re-homing it — finding
+        out where an eraser lands by making a mark and looking.
+      */}
+      {activeTool === 'erase' && (
+        <div className="p-4 space-y-2 text-xs border-b border-slate-200 dark:border-slate-800/80">
+          <h3 className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+            Eraser
+          </h3>
+          <div>
+            <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+              Thickness (mm){' '}
+              <InfoTooltip text="How wide a band the stroke masks. Nothing is cut at this width — it is what is left uncut." />
+            </label>
+            <NumberInput
+              step={0.5}
+              min={MIN_ERASER_WIDTH_MM}
+              fallbackOnBlur={MIN_ERASER_WIDTH_MM}
+              value={eraserWidth}
+              onChange={(val) => setEraserWidth(val ?? MIN_ERASER_WIDTH_MM)}
+              className={NUM_INPUT}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+              Erases On{' '}
+              <InfoTooltip text="The layer this eraser masks. Everything on every other layer is left alone — and still machined." />
+            </label>
+            <select
+              value={activeLayerId}
+              onChange={(e) => setActiveLayer(e.target.value)}
+              className="w-full mt-1 px-2 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100"
+            >
+              {document.layers.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name} ({l.operation})
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+            That layer only — anything on the others is untouched and still cut. The drawing
+            underneath is untouched too: delete the eraser stroke and all of it is machined again.
+            {document.snapToGrid && ' Snapping is on, so the stroke lands on the grid.'}
+          </p>
+        </div>
+      )}
+
       {selectedElement ? (
         <div className="p-4 space-y-4 text-xs">
           {/* Which of a multiple selection these fields are editing. Without
@@ -861,7 +923,17 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                Line Thickness (mm) <InfoTooltip text="Visual stroke width on canvas. Tool diameter determines physical cut width." />
+                {selectedElement.type === 'erase' ? (
+                  <>
+                    Eraser Width (mm){' '}
+                    <InfoTooltip text="How wide a band this stroke masks out of its layer. Widening it rubs out more; nothing underneath is changed either way." />
+                  </>
+                ) : (
+                  <>
+                    Line Thickness (mm){' '}
+                    <InfoTooltip text="Visual stroke width on canvas. Tool diameter determines physical cut width." />
+                  </>
+                )}
               </label>
               <NumberInput
                 step={0.1}
@@ -1201,7 +1273,7 @@ export const PropertiesSidebar: React.FC = () => {
             </button>
           </div>
         </div>
-      ) : (
+      ) : activeTool === 'erase' ? null : (
         <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
           Select any element on the canvas to inspect and edit properties.
         </div>

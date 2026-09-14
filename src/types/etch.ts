@@ -160,7 +160,13 @@ export type ElementType =
   | 'freehand'
   | 'path'
   /** A greyscale raster, machined as tone rather than as outlines. */
-  | 'image';
+  | 'image'
+  /**
+   * A stroke that masks its own layer: whatever lies under it is not machined,
+   * and is not changed either. Delete the stroke and the drawing comes back
+   * exactly as it was. See `utils/eraseMask.ts`.
+   */
+  | 'erase';
 
 export interface BezierNode {
   x: number;
@@ -363,7 +369,8 @@ export type ToolMode =
   | 'symbol'
   | 'node-edit'
   | 'mandala'
-  | 'fill';
+  | 'fill'
+  | 'erase';
 
 export interface MandalaSettings {
   sectorCount: number; // e.g. 8, 12, 16, 24
