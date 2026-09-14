@@ -142,7 +142,7 @@ onto the honeycomb is the ordinary outcome of a laser cut.
 | Bridge width = `thickness / 3`, clamped to 0.8–2.5 mm | `bridges.ts` | What a bridge must hold scales with thickness; what makes it usable is that a blade goes through it in one stroke, which is why the top of the range is a bound rather than a formula. 1 mm at the shipped 3 mm ply. | **Judgement** |
 | `BRIDGE_SPACING_MM = 60`, `MIN_BRIDGES = 3` | `bridges.ts` | The same figures as the holding tabs, for the same reasons: not busywork on a big outline, three points rather than a hinge on a small one. | **Judgement** (mirrors the tab rule) |
 | Fall-out lattice pitch 0.4 mm | `sheetPieces.ts` | Half the narrowest bridge worth leaving, so a bridge is never lost to rounding and reported as a piece that drops. Error is half a cell — far below anything here can cut. | **Derived** (from the bridge minimum) |
-| `MIN_PIECE_MM2 = 10` | `sheetPieces.ts` | Below this a "piece" is rasterising noise between a wall and whatever runs alongside it, not geometry. | **Judgement** |
+| A piece is ≥ 1 mm² **and** ≥ 3 cells across | `sheetPieces.ts` | Area alone does not separate a piece from an artefact: a 3 mm registration plug is 7 mm² and really does drop out, while the strip between two contours half a millimetre apart can be long enough to beat any area bar. What artefacts share is being one or two cells thick. | **Derived** (from the pitch) |
 
 ## 7. Geometry tolerances
 
@@ -243,6 +243,18 @@ is editable per stroke in the inspector, and this is only where a new one starts
 |---|---|---|---|
 | `DEFAULT_ERASER_WIDTH_MM = 2` | `eraseMask.ts` | Four times the 0.5 mm stroke every shipped preset draws with: narrower than the line it is aimed at needs a steadier hand than a mouse has, much wider cannot be aimed between two lines of text. | **Judgement** |
 | `MIN_ERASER_WIDTH_MM = 0.05` | `eraseMask.ts` | The shared 0.05 mm geometry budget in this section: a band thinner than the app's own geometric error masks nothing anything could rely on. | **Derived** (from the budget) |
+
+### Registration holes (`registration.ts`)
+
+Pin holes for stacking sheets. Placed from the stock by a rule rather than drawn,
+which is what makes the same numbers on six documents land on the same
+millimetre — the entire point of them.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| 3 mm pin, three holes in an L | `registration.ts` | A dowel, brass rod or drill shank people already have. Three holes in an L cannot be rotated or mirrored onto themselves, so a sheet fits the pins one way only; two on a diagonal still fit turned end for end, and the dialog says so. | **Judgement** |
+| Pin widened to `1.5 x` the cut tool on a router | `defaultRegistration` | A hole narrower than the cutter offsets inside to nothing and is dropped — six sheets with no holes in them, found at the glue-up. Half as much again is a hole the tool can go round rather than a full-width plunge. | **Derived** |
+| 5 mm inset, ≥ pin radius + 1 mm | `registration.ts` | Inside the 10 mm border a framed picture usually carries, with material left round the pin so the edge does not tear out. | **Judgement** |
 
 ## 8. Machine dynamics and time
 

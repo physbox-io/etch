@@ -336,6 +336,17 @@ props — **pass them**; it shipped for a long time with nothing passing
 `showZProbe`, so its `= true` default won and laser users were shown a touch
 plate.
 
+`registration.ts` places the pin holes a stack of sheets goes together on
+(preset dropdown → Generators). The positions come from the **stock**, not the
+drawing, which is what makes them repeatable: the same numbers on six documents
+of the same size land on the same millimetre, and Etch has no project to link
+those documents any other way. Three holes in an L, because an L cannot be
+rotated or mirrored onto itself, so a sheet only fits the pins the way it was
+cut. They go on their own layer with `cutSide: 'inside'` — a lone circle that
+nothing encloses reads to the planner as a small *disc* to cut out, which is the
+rule that stops a hole being drilled through a part, and a registration hole cut
+that way comes back a tool-width oversize.
+
 `testGrid.ts` builds the grid of squares you cut on a scrap before the job: one
 layer per cell carrying an explicit `speedOverride`/`powerOverride` (laser) or
 `feedOverride`/`rpmOverride` (router), so the sweep goes past what `feeds.ts`

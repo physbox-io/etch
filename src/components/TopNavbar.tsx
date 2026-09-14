@@ -46,6 +46,7 @@ export const TopNavbar: React.FC = () => {
     toggleGCodeModal,
     toggleMachineModal,
     toggleTestGridModal,
+    toggleRegistrationModal,
     toggleSettings,
     isSettingsOpen,
     undo,
@@ -319,6 +320,11 @@ export const TopNavbar: React.FC = () => {
               // in this list because that is where someone looks for "start a
               // new job from a template", which is what it is.
               if (e.target.value === 'generator:test-grid') toggleTestGridModal();
+              // The odd one in this list: it adds to the open document instead
+              // of replacing it. It is here because this is where someone looks
+              // for "make me the thing I do not want to draw by hand", and the
+              // dialog says plainly that nothing on the canvas is touched.
+              else if (e.target.value === 'generator:registration') toggleRegistrationModal();
               else if (e.target.value) loadPreset(e.target.value);
             }}
             className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem] max-lg:flex-1 max-lg:min-w-0 max-lg:max-w-none"
@@ -335,6 +341,7 @@ export const TopNavbar: React.FC = () => {
             </optgroup>
             <optgroup label="🔧 Generators" className="bg-white dark:bg-slate-900">
               <option value="generator:test-grid">Material Test Grid…</option>
+              <option value="generator:registration">Registration Holes…</option>
             </optgroup>
             {userPresetNames.length > 0 && (
               <optgroup label="📁 Saved Documents" className="bg-white dark:bg-slate-900">

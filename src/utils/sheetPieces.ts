@@ -40,14 +40,17 @@ const PITCH_MM = 0.4;
 const MAX_CELLS = 4_000_000;
 
 /**
- * Regions smaller than this are not pieces.
+ * What separates a piece from a rasterising artefact.
  *
- * Rasterising a cut leaves slivers between the wall and whatever it runs
- * alongside — a doubled line, a lead-in arc, two contours a fraction of a
- * millimetre apart. At 0.4 mm pitch this is about sixty cells, comfortably
- * above that noise and far below anything an operator would call a piece.
+ * Not area alone. A 3 mm registration plug is 7 mm² and is unarguably a piece —
+ * it drops out — while the strip left between two contours half a millimetre
+ * apart can be long enough to beat any area threshold and is nothing. What the
+ * artefacts have in common is that they are one or two cells thick, so the test
+ * is thickness as well as size: a piece has to be three cells across in both
+ * directions and cover a square millimetre.
  */
-const MIN_PIECE_MM2 = 10;
+const MIN_PIECE_MM2 = 1;
+const MIN_PIECE_CELLS_ACROSS = 3;
 
 /**
  * How many points of one work path are tested against the lattice.
@@ -143,7 +146,11 @@ export function analyseSheetPieces(
     }
   }
 
-  const real = pieces.filter((p) => p.areaMm2 >= MIN_PIECE_MM2 || p.workLayers.length > 0);
+  const thick = (p: SheetPiece) =>
+    Math.min(p.maxX - p.minX, p.maxY - p.minY) >= MIN_PIECE_CELLS_ACROSS * pitch;
+  const real = pieces.filter(
+    (p) => (p.areaMm2 >= MIN_PIECE_MM2 && thick(p)) || p.workLayers.length > 0
+  );
   const loose = real
     .filter((p) => !p.heldToSheet)
     .sort((a, b) => b.areaMm2 - a.areaMm2);

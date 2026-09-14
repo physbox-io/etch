@@ -25,6 +25,7 @@ import { floodFillRegion, fillElement, fillTargetLayerId, isFloodFillFailure } f
 import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import type { Pt } from '../utils/pathFlatten';
 import type { EtchElement } from '../types/etch';
+import { defaultRegistration, planRegistration } from '../utils/registration';
 
 /** Millimetres, to the micron — past that it is float noise, not a dimension. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -632,6 +633,38 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
       };
     }
 
+    case 'etch_add_registration':
+    case 'ADD_REGISTRATION': {
+      /*
+       * Pin holes for a stack of sheets.
+       *
+       * The reason this is worth a tool of its own rather than three
+       * `etch_add_element` calls: the positions come from the stock by a rule,
+       * so an agent running it across six documents of the same size puts them
+       * on the same millimetre every time — which is the entire point, and
+       * exactly what hand-placed circles get wrong.
+       */
+      const doc = store.document;
+      const derived = defaultRegistration(doc, store.cncTools);
+      const count = msg.count === 2 ? 2 : msg.count === 3 || msg.count === undefined ? 3 : null;
+      if (count === null) return { ok: false, error: 'count must be 2 or 3' };
+      const diameterMm = Number(msg.diameterMm ?? derived.diameterMm);
+      const insetMm = Number(msg.insetMm ?? derived.insetMm);
+      if (!Number.isFinite(diameterMm) || !Number.isFinite(insetMm)) {
+        return { ok: false, error: 'diameterMm and insetMm must be numbers, in mm' };
+      }
+      const plan = planRegistration(doc, { count, diameterMm, insetMm }, store.cncTools);
+      if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
+      store.addRegistrationHoles(plan);
+      return {
+        ok: true,
+        addedIds: plan.elements.map((el) => el.id),
+        layerId: plan.layerId,
+        holes: plan.holes.map((h) => ({ x: round3(h.x), y: round3(h.y), r: round3(h.r) })),
+        note: plan.notes.join(' ') || undefined,
+      };
+    }
+
     case 'etch_update_layer':
     case 'UPDATE_LAYER': {
       /*
@@ -846,7 +879,7 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
         // handing a thresholder an already-dithered image traces the dots.
         imageDitherModes: Object.keys(DITHER_LABELS),
         booleanOps: Object.keys(BOOLEAN_OP_LABEL),
-        generators: ['test-grid'],
+        generators: ['test-grid', 'registration-holes'],
         clipartCount: CLIP_ART_INDEX.length,
         drawingTools: [
           'select', 'freehand', 'grid-freehand', 'bezier', 'node-edit',

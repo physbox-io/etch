@@ -24,6 +24,7 @@ import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/p
 import { createRadialArray } from '../utils/mandalaGenerator';
 import { getBedBBox } from '../utils/geom';
 import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
+import type { RegistrationPlan } from '../utils/registration';
 import {
   BOOLEAN_OP_LABEL,
   MIN_FEATURE_MM,
@@ -204,7 +205,9 @@ interface EtchStore {
   toggleClipArtModal: () => void;
   /** The material test grid generator — see `utils/testGrid.ts`. */
   isTestGridOpen: boolean;
+  isRegistrationOpen: boolean;
   toggleTestGridModal: () => void;
+  toggleRegistrationModal: () => void;
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
@@ -306,6 +309,14 @@ interface EtchStore {
    * millisecond that two layers added in the same tick would share.
    */
   addLayer: (layer: Omit<EtchLayer, 'id'> & { id?: string }) => void;
+  /**
+   * Drops registration holes on the stock, on their own layer.
+   *
+   * One history entry for the layer and every hole together: they are one act,
+   * and an undo that took the holes out but left an empty layer behind would be
+   * a mess the operator has to tidy. See `utils/registration.ts`.
+   */
+  addRegistrationHoles: (plan: RegistrationPlan) => void;
   updateLayer: (layerId: string, updates: Partial<EtchLayer>, transient?: boolean) => void;
   deleteLayer: (layerId: string) => void;
 
@@ -380,6 +391,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isMachineModalOpen: false,
   isClipArtModalOpen: false,
   isTestGridOpen: false,
+  isRegistrationOpen: false,
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
@@ -651,6 +663,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleMachineModal: () => set((state) => ({ isMachineModalOpen: !state.isMachineModalOpen })),
   toggleClipArtModal: () => set((state) => ({ isClipArtModalOpen: !state.isClipArtModalOpen })),
   toggleTestGridModal: () => set((state) => ({ isTestGridOpen: !state.isTestGridOpen })),
+  toggleRegistrationModal: () =>
+    set((state) => ({ isRegistrationOpen: !state.isRegistrationOpen })),
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
@@ -1238,6 +1252,21 @@ export const useStore = create<EtchStore>((set, get) => ({
    * picker — they write the document and let a later `commitHistory` (on blur)
    * record one entry for the whole edit.
    */
+  addRegistrationHoles: (plan) => {
+    const { document } = get();
+    set({
+      document: {
+        ...document,
+        layers: plan.layerNeeded ? [...document.layers, plan.layer] : document.layers,
+        elements: [...document.elements, ...plan.elements],
+      },
+      // Selected, because the first thing anyone does with a hole in the wrong
+      // place is move it.
+      selectedIds: plan.elements.map((el) => el.id),
+    });
+    get().commitHistory();
+  },
+
   addLayer: (layer) => {
     const { document } = get();
     const id = layer.id ?? `layer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;

@@ -9,6 +9,7 @@ import { BottomStatusBar } from './components/BottomStatusBar';
 import { DocumentNoteCard } from './components/DocumentNoteCard';
 import { ClipArtModal } from './components/ClipArtModal';
 import { MaterialTestModal } from './components/MaterialTestModal';
+import { RegistrationModal } from './components/RegistrationModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { JobPauseBanner } from './components/JobPauseBanner';
@@ -237,6 +238,7 @@ export const App: React.FC = () => {
       {/* Modals */}
       <ClipArtModal />
       <MaterialTestModal />
+      <RegistrationModal />
       <ImageImportModal />
       <GCodePreviewModal />
       <MachineControlModal />

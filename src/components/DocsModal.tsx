@@ -559,6 +559,14 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           than a knife goes through in one stroke — and they are spaced like the tabs, at least
           three to a part so it is held rather than hinged.
         </Step>
+        <Step title="Stacking sheets: registration holes">
+          Generators → Registration Holes drops pin holes on the stock — three in an L, which
+          cannot be rotated or flipped onto itself, so a sheet only goes on the pins the way it was
+          cut. They are placed from the stock rather than from the drawing, so running it on every
+          sheet of a layered piece with the same size and settings puts them on the same
+          millimetre. They land on their own layer, cut inside the line so the pins fit rather than
+          rattle, and the dialog says if they would fall on your artwork.
+        </Step>
         <Step title="What will still be attached when it finishes">
           Every plan works out what the sheet comes apart into and says so: how many pieces come
           away, and — the one worth stopping for — whether any of them carries engraving. Engraving
