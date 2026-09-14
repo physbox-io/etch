@@ -115,8 +115,58 @@ function releaseUnusedAnchors(doc: EtchDocument): EtchDocument {
   return touched ? { ...doc, elements } : doc;
 }
 
+/**
+ * One sheet of a job, parked.
+ *
+ * Etch edits a single document, and everything in this store — history,
+ * selection, the active layer — is about that one. A layered picture is six
+ * sheets, cut one after another from six documents that share a stock size, a
+ * frame and a set of registration holes, and before this the only way to hold
+ * them was six saved presets and a lot of switching.
+ *
+ * So the live document stays exactly where it was, at the top of the store, and
+ * the *other* sheets wait here as whole snapshots. Switching parks what is live
+ * and unpacks what was parked. Nothing else in the app had to learn about
+ * sheets: every action still reads and writes `document`, and the undo stack is
+ * per sheet because the whole stack travels with it.
+ */
+export interface SheetTab {
+  id: string;
+  document: EtchDocument;
+  history: EtchDocument[];
+  historyIndex: number;
+  selectedIds: string[];
+  activeLayerId: string;
+  activePreset: string;
+}
+
 interface EtchStore {
   document: EtchDocument;
+  /**
+   * Every sheet in the job, in tab order, including the one on screen.
+   *
+   * The active sheet's entry is a snapshot from the last switch and is stale
+   * while it is open — the live fields above are the truth. Read the name of
+   * the active sheet from `document.name`, not from here, or a rename does not
+   * show until you leave the tab.
+   */
+  tabs: SheetTab[];
+  activeTabId: string;
+  /** Park the current sheet and open another. */
+  switchTab: (id: string) => void;
+  /**
+   * A new blank sheet carrying this one's stock, material, machine and layers.
+   *
+   * Inherited rather than defaulted, because a second sheet of a layered piece
+   * is cut from the same board with the same settings — and because every
+   * shipped preset is 300x200, a fresh default would silently put sheet two on
+   * different stock from sheet one.
+   */
+  newTab: () => string;
+  /** A copy of a sheet, which is how sheet two of six gets its frame. */
+  duplicateTab: (id?: string) => string;
+  closeTab: (id: string) => void;
+  renameTab: (id: string, name: string) => void;
   /**
    * How many MCP bridge commands are in flight right now.
    *
@@ -317,6 +367,16 @@ interface EtchStore {
    * a mess the operator has to tidy. See `utils/registration.ts`.
    */
   addRegistrationHoles: (plan: RegistrationPlan) => void;
+  /**
+   * The same holes on every sheet of the job, planned per sheet.
+   *
+   * Per sheet rather than once, because each document decides its own positions
+   * from its own stock — which is the property that makes the holes line up,
+   * and the one that would be quietly broken by copying one sheet's circles
+   * onto a sheet of a different size. The caller hands in the rule; each sheet
+   * runs it on itself.
+   */
+  addRegistrationToAll: (plan: (doc: EtchDocument) => RegistrationPlan) => number;
   updateLayer: (layerId: string, updates: Partial<EtchLayer>, transient?: boolean) => void;
   deleteLayer: (layerId: string) => void;
 
@@ -361,8 +421,73 @@ function combineNoticeFor(result: {
   return parts.length ? parts.join(' ') : null;
 }
 
+const FIRST_TAB_ID = 'sheet_1';
+
+/**
+ * A sheet id, collision-resistant.
+ *
+ * A bare millisecond is not: "duplicate this sheet four times" is four calls in
+ * one tick, and two sheets sharing an id means switching to one opens the
+ * other and closing one closes both. The layer ids learned this separately.
+ */
+function sheetId(): string {
+  return `sheet_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+}
+
+/** The live state of the open sheet, as a parked entry. */
+function park(state: {
+  activeTabId: string;
+  document: EtchDocument;
+  history: EtchDocument[];
+  historyIndex: number;
+  selectedIds: string[];
+  activeLayerId: string;
+  activePreset: string;
+}): SheetTab {
+  return {
+    id: state.activeTabId,
+    document: state.document,
+    history: state.history,
+    historyIndex: state.historyIndex,
+    selectedIds: state.selectedIds,
+    activeLayerId: state.activeLayerId,
+    activePreset: state.activePreset,
+  };
+}
+
+/**
+ * A name for a new sheet, following the one it came from.
+ *
+ * "Sheet 3" becomes "Sheet 4" — a layered picture is numbered, and numbering it
+ * by hand six times is exactly the sort of chore this feature exists to remove.
+ * Anything else gets "<name> 2", then 3, skipping names already in the job.
+ */
+function nextSheetName(tabs: SheetTab[], from: EtchDocument, activeId: string): string {
+  const taken = new Set(tabs.map((t) => (t.id === activeId ? from.name : t.document.name)));
+  const match = /^(.*?)(\d+)\s*$/.exec(from.name.trim());
+  const stem = match ? match[1] : `${from.name.trim() || 'Sheet'} `;
+  let n = match ? Number(match[2]) + 1 : 2;
+  while (taken.has(`${stem}${n}`)) n++;
+  return `${stem}${n}`;
+}
+
+/** The parked form of a sheet that has never been left. */
+function parkedTab(id: string, doc: EtchDocument, activePreset: string): SheetTab {
+  return {
+    id,
+    document: doc,
+    history: [doc],
+    historyIndex: 0,
+    selectedIds: [],
+    activeLayerId: doc.layers[0]?.id || 'cut',
+    activePreset,
+  };
+}
+
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
+  tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, DEFAULT_PRESET_ID)],
+  activeTabId: FIRST_TAB_ID,
   mcpActiveCount: 0,
   activeTool: 'select',
   activeLayerId: 'cut',
@@ -454,6 +579,123 @@ export const useStore = create<EtchStore>((set, get) => ({
   // drive the count negative and leave the pill stuck off.
   decrementMcpActive: () => set((state) => ({ mcpActiveCount: Math.max(0, state.mcpActiveCount - 1) })),
   resetMcpActive: () => set({ mcpActiveCount: 0 }),
+  /*
+   * Sheets.
+   *
+   * Park, then unpack. Everything about the open sheet lives in the top-level
+   * fields; a switch copies them into that sheet's entry and copies the target's
+   * entry back out. The view — zoom, pan, the tool in hand — is deliberately not
+   * parked: the sheets of one job are the same size and the useful thing when
+   * flicking between them is that they land in exactly the same place on screen,
+   * which is how you see that sheet four's opening is inside sheet three's.
+   */
+  switchTab: (id) => {
+    const state = get();
+    if (id === state.activeTabId) return;
+    const target = state.tabs.find((t) => t.id === id);
+    if (!target) return;
+    set({
+      tabs: state.tabs.map((t) => (t.id === state.activeTabId ? park(state) : t)),
+      activeTabId: id,
+      document: target.document,
+      history: target.history,
+      historyIndex: target.historyIndex,
+      selectedIds: target.selectedIds,
+      activeLayerId: target.activeLayerId,
+      activePreset: target.activePreset,
+      // A half-drawn bezier or a marquee belongs to the sheet it was started
+      // on, and the canvas has no way to resume one on a different drawing.
+      activeTool: 'select',
+    });
+  },
+
+  newTab: () => {
+    const state = get();
+    const from = state.document;
+    const id = sheetId();
+    const doc: EtchDocument = {
+      ...JSON.parse(JSON.stringify(from)),
+      id,
+      name: nextSheetName(state.tabs, state.document, state.activeTabId),
+      elements: [],
+      selectedIds: [],
+      notecard: undefined,
+    };
+    set({
+      tabs: [...state.tabs.map((t) => (t.id === state.activeTabId ? park(state) : t)), parkedTab(id, doc, '')],
+    });
+    get().switchTab(id);
+    return id;
+  },
+
+  duplicateTab: (id) => {
+    const state = get();
+    const sourceId = id ?? state.activeTabId;
+    const source = sourceId === state.activeTabId ? park(state) : state.tabs.find((t) => t.id === sourceId);
+    if (!source) return state.activeTabId;
+    const newId = sheetId();
+    const doc: EtchDocument = {
+      ...JSON.parse(JSON.stringify(source.document)),
+      id: newId,
+      name: nextSheetName(state.tabs, source.document, sourceId),
+      selectedIds: [],
+    };
+    const at = state.tabs.findIndex((t) => t.id === sourceId);
+    const tabs = state.tabs.map((t) => (t.id === state.activeTabId ? park(state) : t));
+    // Next to the sheet it came from, not at the end: a copy made to become
+    // sheet four belongs after sheet three.
+    tabs.splice(at + 1, 0, parkedTab(newId, doc, source.activePreset));
+    set({ tabs });
+    get().switchTab(newId);
+    return newId;
+  },
+
+  closeTab: (id) => {
+    const state = get();
+    // There is always a sheet. Closing the last one would leave the canvas with
+    // no document to draw, and "close" is not how anyone means to clear a
+    // drawing anyway.
+    if (state.tabs.length <= 1) return;
+    const index = state.tabs.findIndex((t) => t.id === id);
+    if (index < 0) return;
+    const remaining = state.tabs.filter((t) => t.id !== id);
+    if (id !== state.activeTabId) {
+      set({ tabs: remaining.map((t) => (t.id === state.activeTabId ? park(state) : t)) });
+      return;
+    }
+    const next = remaining[Math.min(index, remaining.length - 1)];
+    set({ tabs: remaining });
+    // Straight from the parked copy: the sheet being closed is the live one, so
+    // there is nothing worth parking and `switchTab` would put it back.
+    set({
+      activeTabId: next.id,
+      document: next.document,
+      history: next.history,
+      historyIndex: next.historyIndex,
+      selectedIds: next.selectedIds,
+      activeLayerId: next.activeLayerId,
+      activePreset: next.activePreset,
+      activeTool: 'select',
+    });
+  },
+
+  renameTab: (id, name) => {
+    const state = get();
+    const clean = name.trim() || 'Sheet';
+    if (id === state.activeTabId) {
+      // Through the document, so it is one undoable edit and the name that
+      // reaches a saved preset or a G-code header is the one on the tab.
+      set({ document: { ...state.document, name: clean } });
+      get().commitHistory();
+      return;
+    }
+    set({
+      tabs: state.tabs.map((t) =>
+        t.id === id ? { ...t, document: { ...t.document, name: clean } } : t
+      ),
+    });
+  },
+
   setToolMode: (tool) => set({ activeTool: tool }),
   setActiveLayer: (layerId) => set({ activeLayerId: layerId }),
   // Clearing the combine notice here rather than on a timer: it explains why
@@ -1265,6 +1507,49 @@ export const useStore = create<EtchStore>((set, get) => ({
       selectedIds: plan.elements.map((el) => el.id),
     });
     get().commitHistory();
+  },
+
+  addRegistrationToAll: (build) => {
+    const state = get();
+    let added = 0;
+    const tabs = state.tabs.map((tab) => {
+      if (tab.id === state.activeTabId) return park(state);
+      const plan = build(tab.document);
+      if (!plan.fits) return tab;
+      added++;
+      return {
+        ...tab,
+        document: {
+          ...tab.document,
+          layers: plan.layerNeeded ? [...tab.document.layers, plan.layer] : tab.document.layers,
+          elements: [...tab.document.elements, ...plan.elements],
+        },
+        /*
+         * A parked sheet's history is left where it was and the edit is pushed
+         * onto it, so undo on that sheet takes the holes back out — the same
+         * behaviour as if it had been done with the sheet open. Truncated at
+         * the current index first, because anything that was redoable is now a
+         * branch nobody can reach.
+         */
+        history: [
+          ...tab.history.slice(0, tab.historyIndex + 1),
+          {
+            ...tab.document,
+            layers: plan.layerNeeded ? [...tab.document.layers, plan.layer] : tab.document.layers,
+            elements: [...tab.document.elements, ...plan.elements],
+          },
+        ],
+        historyIndex: tab.historyIndex + 1,
+      };
+    });
+    set({ tabs });
+
+    const live = build(state.document);
+    if (live.fits) {
+      get().addRegistrationHoles(live);
+      added++;
+    }
+    return added;
   },
 
   addLayer: (layer) => {

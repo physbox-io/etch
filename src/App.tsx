@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { useStore } from './store/useStore';
 import { useMCPBridge } from './hooks/useMCPBridge';
 import { TopNavbar } from './components/TopNavbar';
+import { SheetTabs } from './components/SheetTabs';
 import { LeftToolbar } from './components/LeftToolbar';
 import { EtchCanvas } from './components/EtchCanvas';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
@@ -174,6 +175,10 @@ export const App: React.FC = () => {
     <div className="w-screen h-dvh flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden select-none font-sans transition-colors duration-200">
       {/* Top Navbar */}
       <TopNavbar />
+
+      {/* The sheets of this job. One document at a time is still what is being
+          edited; this is how the others stay within reach. */}
+      <SheetTabs />
 
       {/* Main Studio Viewport Workspace */}
       <div className="flex-1 relative flex overflow-hidden">

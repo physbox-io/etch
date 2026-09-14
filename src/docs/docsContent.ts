@@ -17,6 +17,7 @@ export const DOCS_TABS = [
     group: 'Design',
     items: [
       { id: 'workspace', label: '🖥️ Stock, Layers & Units' },
+      { id: 'sheets', label: '🗂️ Sheets & Layered Work' },
       { id: 'text', label: '🔤 Text & Vectorizing' },
       { id: 'combine', label: '➕ Combining Shapes' },
       { id: 'fill', label: '🪡 Engrave Fill & Hatch' },

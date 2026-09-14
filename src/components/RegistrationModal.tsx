@@ -28,9 +28,13 @@ export const RegistrationModal: React.FC = () => {
   const document = useStore((s) => s.document);
   const cncTools = useStore((s) => s.cncTools);
   const addRegistrationHoles = useStore((s) => s.addRegistrationHoles);
+  const addRegistrationToAll = useStore((s) => s.addRegistrationToAll);
+  const tabs = useStore((s) => s.tabs);
+  const activeTabId = useStore((s) => s.activeTabId);
 
   const derived = useMemo(() => defaultRegistration(document, cncTools), [document, cncTools]);
   const [opts, setOpts] = useState<RegistrationOptions | null>(null);
+  const [allSheets, setAllSheets] = useState(true);
   const active = opts ?? derived;
 
   // Re-planned on every keystroke: it is a handful of circles, and the warnings
@@ -46,9 +50,27 @@ export const RegistrationModal: React.FC = () => {
   const isLaser = machineKind(document) === 'laser';
 
   const add = () => {
-    addRegistrationHoles(plan);
+    if (allSheets && tabs.length > 1) addRegistrationToAll((d) => planRegistration(d, active, cncTools));
+    else addRegistrationHoles(plan);
     toggle();
   };
+
+  /*
+   * Sheets that are not the same size as this one.
+   *
+   * The holes are placed from each sheet's own stock, so on a sheet of another
+   * size they land somewhere else — which is not a bug in the rule, it is the
+   * stack not being a stack. Worth saying before the holes are cut rather than
+   * when the pins will not go through.
+   */
+  const mismatched = tabs.filter(
+    (t) =>
+      // Not this sheet: its parked copy is a snapshot from the last switch, so
+      // resizing the stock and opening this dialog would have it warning about
+      // itself.
+      t.id !== activeTabId &&
+      (t.document.width !== document.width || t.document.height !== document.height)
+  );
 
   const field =
     'w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono text-xs';
@@ -133,6 +155,30 @@ export const RegistrationModal: React.FC = () => {
               : ` — the pin is sized for the cut layer's tool, since a hole narrower than the cutter cannot be milled.`}
           </div>
 
+          {tabs.length > 1 && (
+            <label className="flex items-center gap-2 font-semibold cursor-pointer text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                checked={allSheets}
+                onChange={(e) => setAllSheets(e.target.checked)}
+                className="w-4 h-4 accent-violet-500 rounded cursor-pointer"
+              />
+              Add to all {tabs.length} sheets
+            </label>
+          )}
+
+          {allSheets && mismatched.length > 0 && (
+            <div className="flex items-start gap-2 p-2.5 rounded-lg border border-amber-400 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+              <span>
+                {mismatched.map((t) => `"${t.document.name}"`).join(', ')}{' '}
+                {mismatched.length === 1 ? 'is' : 'are'} not the same size as this sheet, so the
+                holes land somewhere else on {mismatched.length === 1 ? 'it' : 'them'} and the pins
+                will not line up. Make the stock match first if they are meant to stack.
+              </span>
+            </div>
+          )}
+
           {plan.notes.map((n) => (
             <div
               key={n}
@@ -146,15 +192,16 @@ export const RegistrationModal: React.FC = () => {
 
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-            Added to this document — nothing already on the canvas is changed, and one undo takes
-            them back out.
+            {allSheets && tabs.length > 1
+              ? 'Added to every sheet — nothing already drawn is changed, and one undo per sheet takes them back out.'
+              : 'Added to this document — nothing already on the canvas is changed, and one undo takes them back out.'}
           </p>
           <button
             onClick={add}
             disabled={!plan.fits}
             className="shrink-0 px-4 py-2 bg-violet-500 hover:bg-violet-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs rounded-lg shadow-md shadow-violet-500/20 cursor-pointer"
           >
-            Add Holes
+            {allSheets && tabs.length > 1 ? `Add to ${tabs.length} Sheets` : 'Add Holes'}
           </button>
         </div>
       </div>

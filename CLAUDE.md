@@ -105,6 +105,34 @@ Presets are module-level objects; `loadPreset` clones them, or every later edit
 would be an edit of the preset itself. `sanitizeDoc` runs on every entry point
 (preset load, JSON import, MCP) to repair documents written by older builds.
 
+## Sheets
+
+A document is one piece of stock. A layered picture is six of them — same size,
+same frame, same registration holes, cut one after another — so the store holds
+a strip of **sheets** (`SheetTab[]` + `activeTabId`, `SheetTabs.tsx`).
+
+The live document stays exactly where it was, at the top of the store. The other
+sheets are parked whole snapshots (document, history, historyIndex, selection,
+active layer, preset id), and `switchTab` parks what is live and unpacks what was
+parked. **Nothing else in the app had to learn about sheets**: every action still
+reads and writes `document`, and undo is per sheet because the whole stack
+travels with it. Keep it that way — an action that reached into `tabs` to edit a
+parked document would bypass history and the canvas both.
+
+- The active sheet's parked entry is **stale by design**. Read its name and
+  contents from `document`, not from `tabs`, or a rename shows up only after you
+  leave the tab and come back.
+- The view (zoom, pan) is deliberately *not* parked. The sheets of one job are
+  the same size, and the useful thing when flicking between them is that they
+  land in the same place on screen.
+- The clipboard is not parked either: it belongs to the job, which is what makes
+  "draw the frame once, paste it onto the other five" work.
+- Sheet ids are `sheet_<ms>_<rand>`. A bare millisecond collides — duplicating a
+  sheet four times is four calls in one tick — and two sheets sharing an id means
+  closing one closes both. Layer ids learned this separately.
+- Sheets live for the session, like the open document always has. There is no
+  autosave here; saving is still per document.
+
 ## Geometry
 
 `src/utils/geom.ts` is the shared truth about where a shape is. The SVG render

@@ -184,6 +184,47 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
     </div>
   ),
 
+  sheets: (
+    <div className="flex flex-col gap-4">
+      <H>🗂️ Sheets &amp; Layered Work</H>
+      <P>
+        The strip under the toolbar holds the sheets of one job. Etch still edits one document at a
+        time — a sheet is one piece of stock, cut in one run — but a layered picture is six of them
+        that share a size, a frame and a set of pin holes, and they now live side by side instead of
+        as six saved files you load one after another.
+      </P>
+      <Card>
+        <Step title="A new sheet inherits the board">
+          <strong>+</strong> gives you a blank sheet carrying this one's stock size, material,
+          machine and layers, because the next sheet of a job is cut from the same board. The
+          copy button duplicates the sheet whole — which is how the next layer of a stack gets its
+          frame and its registration holes already in the right place, with only the middle left to
+          change. Double-click a tab to rename it; a new sheet follows the numbering of the one it
+          came from, so "Sheet 3" makes "Sheet 4".
+        </Step>
+        <Step title="Each sheet keeps its own undo">
+          Switching does not disturb anything: the drawing, the selection, the active layer and the
+          whole undo stack travel with the sheet. What does <em>not</em> travel is the view — zoom
+          and pan stay where they are, so flicking between two sheets of the same size lands them
+          in exactly the same place on screen, which is how you see that sheet four's opening is
+          inside sheet three's.
+        </Step>
+        <Step title="Copy and paste move work between sheets">
+          The clipboard belongs to the job rather than to one sheet, so a frame drawn once can be
+          pasted onto the rest. Registration Holes can do the whole job in one go — the dialog
+          offers "add to all sheets", and each sheet works its holes out from its own stock so they
+          land on the same millimetre. It warns if a sheet is a different size, because then they
+          will not.
+        </Step>
+        <Step title="They last as long as the tab">
+          Sheets live in the browser session, like the open document always has. Save each one you
+          want to keep (Ctrl+S saves the open sheet as a document), and close only takes a sheet
+          away — there is always at least one open.
+        </Step>
+      </Card>
+    </div>
+  ),
+
   workspace: (
     <div className="flex flex-col gap-4">
       <H>🖥️ Stock, Layers &amp; Units</H>

@@ -633,6 +633,83 @@ export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
       };
     }
 
+    case 'etch_list_sheets':
+    case 'LIST_SHEETS': {
+      /*
+       * The sheets of the job. One document is edited at a time — that has not
+       * changed — but a layered piece is several, and an agent driving one
+       * needs to know which it is on before it draws anything.
+       */
+      const state = useStore.getState();
+      return {
+        ok: true,
+        activeSheetId: state.activeTabId,
+        sheets: state.tabs.map((t) => {
+          // The live document for the open sheet: its parked copy is a snapshot
+          // from the last switch and would under-report everything just drawn.
+          const doc = t.id === state.activeTabId ? state.document : t.document;
+          return {
+            id: t.id,
+            name: doc.name,
+            active: t.id === state.activeTabId,
+            width: doc.width,
+            height: doc.height,
+            material: doc.material,
+            stockThickness: doc.stockThickness,
+            machine: doc.machine ?? 'laser',
+            elementCount: doc.elements.length,
+            layers: doc.layers.length,
+          };
+        }),
+      };
+    }
+
+    case 'etch_select_sheet':
+    case 'SELECT_SHEET': {
+      const state = useStore.getState();
+      const id =
+        typeof msg.sheetId === 'string'
+          ? msg.sheetId
+          : typeof msg.index === 'number'
+            ? state.tabs[msg.index]?.id
+            : undefined;
+      if (!id || !state.tabs.some((t) => t.id === id)) {
+        return { ok: false, error: `No such sheet. Open sheets: ${state.tabs.map((t) => t.id).join(', ')}` };
+      }
+      store.switchTab(id);
+      const now = useStore.getState();
+      return { ok: true, activeSheetId: now.activeTabId, name: now.document.name };
+    }
+
+    case 'etch_new_sheet':
+    case 'NEW_SHEET': {
+      /*
+       * Duplicate is the important half: sheet two of a layered piece is sheet
+       * one with the middle changed, and rebuilding its frame and registration
+       * holes from scratch is both work and a chance to get them a millimetre
+       * out.
+       */
+      const id = msg.duplicate ? store.duplicateTab() : store.newTab();
+      if (typeof msg.name === 'string' && msg.name.trim()) {
+        useStore.getState().renameTab(id, msg.name);
+      }
+      const now = useStore.getState();
+      return { ok: true, sheetId: id, name: now.document.name, sheets: now.tabs.length };
+    }
+
+    case 'etch_close_sheet':
+    case 'CLOSE_SHEET': {
+      const state = useStore.getState();
+      const id = typeof msg.sheetId === 'string' ? msg.sheetId : state.activeTabId;
+      if (!state.tabs.some((t) => t.id === id)) return { ok: false, error: `No sheet with id '${id}'` };
+      if (state.tabs.length <= 1) {
+        return { ok: false, error: 'This is the only sheet — there is always one open document.' };
+      }
+      store.closeTab(id);
+      const now = useStore.getState();
+      return { ok: true, activeSheetId: now.activeTabId, sheets: now.tabs.length };
+    }
+
     case 'etch_add_registration':
     case 'ADD_REGISTRATION': {
       /*
