@@ -30,7 +30,21 @@ import {
  * dispatched explicitly.
  */
 export const SettingsPanel: React.FC = () => {
-  const { isSettingsOpen, toggleSettings } = useStore();
+  const isSettingsOpen = useStore((s) => s.isSettingsOpen);
+  /*
+   * Mounted only while it is open, which is what makes the fields correct.
+   *
+   * localStorage is the source of truth and the panel is one of several ways
+   * to write it, so it has to re-read every time it opens. It used to do that
+   * in an effect — a render showing the old values, then a second render
+   * correcting them. Mounting on open means each field reads the store in its
+   * own initialiser and the first render is already right.
+   */
+  return isSettingsOpen ? <SettingsForm /> : null;
+};
+
+const SettingsForm: React.FC = () => {
+  const toggleSettings = useStore((s) => s.toggleSettings);
 
   const [geminiKey, setGeminiKey] = useState(readGeminiKey);
   const [anthropicKey, setAnthropicKey] = useState(readAnthropicKey);
@@ -41,19 +55,9 @@ export const SettingsPanel: React.FC = () => {
 
   const announce = () => window.dispatchEvent(new Event('storage'));
 
-  // Re-read on open: localStorage is the source of truth, not this component.
-  useEffect(() => {
-    if (!isSettingsOpen) return;
-    setGeminiKey(readGeminiKey());
-    setAnthropicKey(readAnthropicKey());
-    setModel(readModel());
-    setMaxTokens(readMaxTokens());
-  }, [isSettingsOpen]);
-
   // The picker lists what the configured keys can actually reach; without a key
   // each group falls back to the built-in list rather than showing nothing.
   useEffect(() => {
-    if (!isSettingsOpen) return;
     let cancelled = false;
     (async () => {
       const [claude, gemini] = await Promise.all([listClaudeModels(), listGeminiModels()]);
@@ -64,9 +68,7 @@ export const SettingsPanel: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isSettingsOpen, anthropicKey, geminiKey]);
-
-  if (!isSettingsOpen) return null;
+  }, [anthropicKey, geminiKey]);
 
   const claudeOptions = claudeModels.length ? claudeModels : FALLBACK_MODELS.filter((m) => isClaudeModel(m.id));
   const geminiOptions = geminiModels.length ? geminiModels : FALLBACK_MODELS.filter((m) => !isClaudeModel(m.id));

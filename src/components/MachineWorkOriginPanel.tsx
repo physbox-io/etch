@@ -116,12 +116,25 @@ export const MachineWorkOriginPanel: React.FC<{
   const [isHoming, setIsHoming] = useState(false);
   const jobPaused = status.jobRunning && status.jobPaused;
 
+  /*
+   * Keyed on the four numbers rather than on the object.
+   *
+   * The bounds are rebuilt by the parent on every render — a fresh object with
+   * the same corners — so depending on it would re-suggest a grid on every
+   * keystroke anywhere in the panel. Pulling the numbers out first says the
+   * same thing to the dependency check as it does to a reader: this depends on
+   * where the bed is, not on which object described it.
+   */
+  const minX = bedBounds?.minX;
+  const minY = bedBounds?.minY;
+  const maxX = bedBounds?.maxX;
+  const maxY = bedBounds?.maxY;
   const suggested = useMemo(
     () =>
-      bedBounds
-        ? suggestGridCounts(bedBounds)
+      minX !== undefined && minY !== undefined && maxX !== undefined && maxY !== undefined
+        ? suggestGridCounts({ minX, minY, maxX, maxY })
         : { gridX: 3, gridY: 3 },
-    [bedBounds?.minX, bedBounds?.minY, bedBounds?.maxX, bedBounds?.maxY]
+    [minX, minY, maxX, maxY]
   );
   const { gridX, gridY } = gridOverride ?? suggested;
 

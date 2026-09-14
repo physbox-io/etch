@@ -4,8 +4,22 @@
  */
 
 declare module 'opentype.js' {
+  /**
+   * One drawing command of a glyph outline. opentype.js emits the SVG path
+   * commands, and the coordinates a command carries depend on which it is —
+   * hence the optional numbers rather than six required ones.
+   */
+  export interface OTPathCommand {
+    type: 'M' | 'L' | 'C' | 'Q' | 'Z' | 'z';
+    x?: number;
+    y?: number;
+    x1?: number;
+    y1?: number;
+    x2?: number;
+    y2?: number;
+  }
   export interface OTPath {
-    commands: any[];
+    commands: OTPathCommand[];
     toPathData(decimals?: number): string;
   }
   export interface OTGlyph {

@@ -14,8 +14,8 @@ npm test         # vitest run
 npm run lint     # eslint
 ```
 
-`npm run lint` currently reports ~55 pre-existing errors on a clean tree. Check
-the count before and after your change rather than trying to reach zero.
+`npm run lint` is clean — no errors, no warnings. Keep it that way: it was not
+always so, and a lint that reports fifty known problems is a lint nobody reads.
 
 Every number that decides what happens to material — a feed, a depth of cut, a
 laser power, a peck depth, a tolerance — is registered in **`MACHINING.md`**,

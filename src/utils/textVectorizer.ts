@@ -20,6 +20,7 @@ import { nodesToPath } from './bezierNodes';
  */
 
 type OpenTypeFont = import('opentype.js').OTFont;
+type OTPathCommand = import('opentype.js').OTPathCommand;
 
 const GH_FONTS = 'https://cdn.jsdelivr.net/gh/google/fonts@main';
 /** google/fonts groups families by licence directory. */
@@ -188,23 +189,22 @@ export async function loadFont(family: string, weight: string = '400'): Promise<
  * 3. Ensures every open contour sequence starting with `M` ends with `Z` before
  *    the next `M` or end-of-path, preventing stroke gaps when SVG renders unfilled paths.
  */
-function sanitizePathCommands(commands: any[], decimalPlaces = 4): any[] {
+function sanitizePathCommands(
+  commands: OTPathCommand[],
+  decimalPlaces = 4
+): OTPathCommand[] {
   const threshold = Math.pow(10, -decimalPlaces) / 2;
-  const newCommands: any[] = [];
+  const newCommands: OTPathCommand[] = [];
   let hasCommandsInContour = false;
 
   for (let i = 0; i < commands.length; i++) {
     const cmd = commands[i];
     if (!cmd) continue;
 
-    for (const key of ['x', 'y', 'x1', 'y1', 'x2', 'y2']) {
-      if (key in cmd && typeof cmd[key] === 'number') {
-        if (Number.isNaN(cmd[key])) {
-          cmd[key] = 0;
-        } else if (Math.abs(cmd[key]) < threshold) {
-          cmd[key] = 0;
-        }
-      }
+    for (const key of ['x', 'y', 'x1', 'y1', 'x2', 'y2'] as const) {
+      const value = cmd[key];
+      if (typeof value !== 'number') continue;
+      if (Number.isNaN(value) || Math.abs(value) < threshold) cmd[key] = 0;
     }
 
     if (cmd.type === 'M') {
@@ -367,7 +367,11 @@ function layoutGlyphsOnPath(
         if (typeof kern === 'number' && !Number.isNaN(kern)) {
           totalTextWidth += kern * scale;
         }
-      } catch {}
+      } catch {
+        // A font with no kerning table, or a pair it has nothing to say about.
+        // Either way the glyphs sit at their own advance widths, which is the
+        // right answer and not worth interrupting the layout for.
+      }
     }
   }
 
@@ -418,7 +422,11 @@ function layoutGlyphsOnPath(
         if (typeof kern === 'number' && !Number.isNaN(kern)) {
           currentAdvance += kern * scale;
         }
-      } catch {}
+      } catch {
+        // A font with no kerning table, or a pair it has nothing to say about.
+        // Either way the glyphs sit at their own advance widths, which is the
+        // right answer and not worth interrupting the layout for.
+      }
     }
   }
 

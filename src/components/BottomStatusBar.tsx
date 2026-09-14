@@ -74,7 +74,6 @@ export const BottomStatusBar: React.FC = () => {
   const {
     document,
     zoom,
-    selectedIds,
     cursor,
     setGridSize,
     setDocumentSize,

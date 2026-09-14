@@ -51,6 +51,38 @@ const SUGGESTIONS: Record<Mode, string[]> = {
   ],
 };
 
+/**
+ * One edit in a reply: an element to add, or a patch to one already drawn.
+ *
+ * This is a model's output rather than a contract, so everything is optional
+ * and the fields that decide what happens — the type, the id, the layer, the
+ * clip-art id — are checked before they are used. The rest are declared as
+ * what the document expects and land in it as given, exactly as a typed-in
+ * value would; `unknown` on those would buy a cast at each one and no safety,
+ * since an element field is whatever number it is handed either way.
+ */
+interface CopilotEdit extends Record<string, unknown> {
+  id?: unknown;
+  type?: string;
+  layerId?: string;
+  symbolId?: string;
+  strokeColor?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  rotation?: number;
+}
+
+/** The JSON a reply is expected to carry. Everything optional, for the same reason. */
+interface CopilotPayload extends Record<string, unknown> {
+  svg?: unknown;
+  layerHint?: unknown;
+  add?: unknown[];
+  update?: unknown[];
+  remove?: unknown[];
+}
+
 export const AICopilotPanel: React.FC = () => {
   const {
     isAiPanelOpen,
@@ -136,13 +168,13 @@ export const AICopilotPanel: React.FC = () => {
   };
 
   /** Applies element-level edits, ignoring ids the document doesn't have. */
-  const applyEdits = async (payload: any): Promise<string> => {
+  const applyEdits = async (payload: CopilotPayload): Promise<string> => {
     const byId = new Map(doc.elements.map((el) => [el.id, el]));
     const notes: string[] = [];
     let changed = 0;
 
     const removeIds: string[] = Array.isArray(payload.remove)
-      ? payload.remove.filter((id: unknown) => typeof id === 'string' && byId.has(id))
+      ? payload.remove.filter((id): id is string => typeof id === 'string' && byId.has(id))
       : [];
     if (removeIds.length) {
       deleteElements(removeIds);
@@ -150,13 +182,14 @@ export const AICopilotPanel: React.FC = () => {
     }
 
     if (Array.isArray(payload.update)) {
-      for (const patch of payload.update) {
-        if (!patch || typeof patch.id !== 'string') continue;
-        if (!byId.has(patch.id) || removeIds.includes(patch.id)) {
-          notes.push(`No element "${patch.id}" — skipped.`);
+      for (const patch of payload.update as CopilotEdit[]) {
+        if (!patch) continue;
+        const { id, ...fields } = patch;
+        if (typeof id !== 'string') continue;
+        if (!byId.has(id) || removeIds.includes(id)) {
+          notes.push(`No element "${id}" — skipped.`);
           continue;
         }
-        const { id, ...fields } = patch;
         updateElement(id, fields as Partial<EtchElement>, true);
         changed++;
       }
@@ -165,10 +198,13 @@ export const AICopilotPanel: React.FC = () => {
     const addedIds: string[] = [];
     if (Array.isArray(payload.add)) {
       const layerIds = new Set(doc.layers.map((l) => l.id));
-      for (const spec of payload.add) {
+      for (const spec of payload.add as CopilotEdit[]) {
         if (!spec || typeof spec.type !== 'string') continue;
         const id = `ai_${Date.now()}_${addedIds.length}`;
-        const layerId = layerIds.has(spec.layerId) ? spec.layerId : doc.layers[0]?.id;
+        const layerId =
+          typeof spec.layerId === 'string' && layerIds.has(spec.layerId)
+            ? spec.layerId
+            : doc.layers[0]?.id;
 
         /**
          * Clip art asked for by id becomes real geometry here.
@@ -219,7 +255,7 @@ export const AICopilotPanel: React.FC = () => {
           opacity: 1,
           ...spec,
           id,
-          name: spec.name || `AI ${spec.type}`,
+          name: typeof spec.name === 'string' && spec.name ? spec.name : `AI ${spec.type}`,
           type: spec.type as ElementType,
           layerId,
           x: spec.x ?? doc.width / 2,
@@ -279,7 +315,7 @@ export const AICopilotPanel: React.FC = () => {
         return;
       }
 
-      const payload = extractJson(text);
+      const payload = extractJson(text) as CopilotPayload | null;
       if (!payload) {
         // A truncated reply looks like a complete answer with the geometry
         // missing off the end, so say which failure this was.
@@ -306,16 +342,24 @@ export const AICopilotPanel: React.FC = () => {
        */
       const hasSvg = mode === 'generate' && typeof payload.svg === 'string';
       const hasEdits = ['add', 'update', 'remove'].some((k) => Array.isArray(payload[k]) && payload[k].length);
-      const summary = [hasSvg ? applySvg(payload.svg, payload.layerHint) : '', hasEdits || !hasSvg ? await applyEdits(payload) : '']
+      const summary = [
+        hasSvg
+          ? applySvg(
+              payload.svg as string,
+              typeof payload.layerHint === 'string' ? payload.layerHint : undefined
+            )
+          : '',
+        hasEdits || !hasSvg ? await applyEdits(payload) : '',
+      ]
         .filter(Boolean)
         .join(' ');
 
       say({ role: 'assistant', mode, text: `${prose ? `${prose}\n\n` : ''}✅ ${summary}` });
-    } catch (err: any) {
+    } catch (err) {
       say({
         role: 'assistant',
         mode,
-        text: err instanceof LLMError ? err.message : err?.message || 'Something went wrong.',
+        text: err instanceof Error ? err.message : 'Something went wrong.',
         isError: true,
       });
     } finally {

@@ -56,8 +56,30 @@ interface GrblFrame {
  * TextDecoderStream (serial RX is ASCII); writes go out on a raw byte writer so
  * a realtime byte lands on the wire exactly, with no UTF-8 re-encoding.
  */
+/**
+ * The parts of a Web Serial port this transport uses.
+ *
+ * Declared here because the API's own typings are not in this project's DOM
+ * lib — Web Serial is Chromium-only and behind a flag elsewhere — and because
+ * naming the four members actually used makes a stub, a mock or a future
+ * polyfill answer a checkable shape rather than `any`.
+ */
+interface SerialPortLike {
+  // `BufferSource`, matching what `TextDecoderStream` accepts on the other end
+  // of the pipe: the bytes go straight into it, and a narrower element type
+  // here would make that pipe a type error rather than a decode.
+  readable: ReadableStream<BufferSource>;
+  writable: WritableStream<Uint8Array>;
+  open(options: { baudRate: number }): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface SerialCapableNavigator {
+  serial: { requestPort(): Promise<SerialPortLike> };
+}
+
 export class WebSerialTransport implements GrblTransport {
-  private port: any = null;
+  private port: SerialPortLike | null = null;
   private reader: ReadableStreamDefaultReader<string> | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
   /**
@@ -93,7 +115,7 @@ export class WebSerialTransport implements GrblTransport {
   }
 
   async connect(): Promise<void> {
-    this.port = await (navigator as any).serial.requestPort();
+    this.port = await (navigator as unknown as SerialCapableNavigator).serial.requestPort();
     await this.port.open({ baudRate: this.baudRate });
 
     // This pipe rejects when the port closes or the cable is pulled; that is

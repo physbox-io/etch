@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { X, Activity, Radio, Clock, AlertTriangle, RefreshCw, Cpu, Star } from 'lucide-react';
+import { X, Radio, Clock, AlertTriangle, RefreshCw, Cpu, Star } from 'lucide-react';
 import { fetchLatestTelemetry, MachiningTelemetry, isProAccount } from '../utils/apiClient';
 
 interface RemoteMachiningModalProps {
@@ -10,32 +10,36 @@ interface RemoteMachiningModalProps {
 
 export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOpen, onClose }) => {
   const [telemetry, setTelemetry] = useState<MachiningTelemetry[]>([]);
-  const [loading, setLoading] = useState(false);
+  /*
+   * Loading is the state this opens in, rather than something switched on when
+   * the first fetch starts. The spinner is for the wait before there is
+   * anything to show; the three-second poll that follows must not flash it,
+   * and a fetch that announced itself synchronously would also be a render
+   * spent before the panel had drawn once.
+   */
+  const [loading, setLoading] = useState(true);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = useCallback(async () => {
     try {
-      const data = await fetchLatestTelemetry();
-      setTelemetry(data);
+      setTelemetry(await fetchLatestTelemetry());
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (isOpen) {
-      loadData();
-      const interval = setInterval(loadData, 3000);
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') onClose();
-      };
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        clearInterval(interval);
-        window.removeEventListener('keydown', handleKeyDown);
-      };
-    }
-  }, [isOpen]);
+    if (!isOpen) return;
+    void loadData();
+    const interval = setInterval(() => void loadData(), 3000);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, loadData, onClose]);
 
   if (!isOpen) return null;
 

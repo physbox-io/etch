@@ -37,13 +37,51 @@ export interface MachiningTelemetry {
   settings?: Record<string, unknown> | null;
 }
 
+/**
+ * Anything that survives a round trip through JSON.
+ *
+ * The cloud endpoints take and return whatever an app cares to store — a
+ * machine setting, a whole Etch document — so the honest type at this boundary
+ * is "JSON", not `any`. It is still checked: an object that cannot be
+ * serialised is a compile error at the call site rather than a 400 at runtime.
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * A preset row as the API returns it.
+ *
+ * `data` is whatever the app stored — for Etch a whole document — and is
+ * `unknown` rather than a document type on purpose: this module knows nothing
+ * about documents, and a row written by an older build is not guaranteed to be
+ * one. The caller that does know checks it.
+ */
+export interface CloudPresetRow {
+  id?: string;
+  name?: string;
+  data?: unknown;
+  updated_at?: string;
+}
+
+/** Overrides a deployment can set on the page before the app boots. */
+interface PhysBoxWindow {
+  PHYSBOX_API_URL?: string;
+}
+
 const AUTH_TOKEN_KEY = 'physbox_auth_token';
 const USER_KEY = 'physbox_user_profile';
 
 export function getApiBaseUrl(): string {
-  if (typeof window !== 'undefined' && (window as any).PHYSBOX_API_URL) {
-    return (window as any).PHYSBOX_API_URL;
-  }
+  const configured =
+    typeof window !== 'undefined'
+      ? (window as unknown as PhysBoxWindow).PHYSBOX_API_URL
+      : undefined;
+  if (configured) return configured;
   if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
     return 'http://localhost:3000';
   }
@@ -202,7 +240,10 @@ export async function fetchCurrentUser(): Promise<PhysBoxUser | null> {
   }
 }
 
-export async function syncCloudParameters(appId: string, parameters: Record<string, any>): Promise<boolean> {
+export async function syncCloudParameters(
+  appId: string,
+  parameters: Record<string, JsonValue>
+): Promise<boolean> {
   if (!getStoredAuthToken()) return false;
   try {
     await request('/api/parameters', {
@@ -216,10 +257,12 @@ export async function syncCloudParameters(appId: string, parameters: Record<stri
   }
 }
 
-export async function fetchCloudParameters(appId: string): Promise<Record<string, any>> {
+export async function fetchCloudParameters(appId: string): Promise<Record<string, JsonValue>> {
   if (!getStoredAuthToken()) return {};
   try {
-    const res = await request<{ parameters: Record<string, any> }>(`/api/parameters?app_id=${encodeURIComponent(appId)}`);
+    const res = await request<{ parameters: Record<string, JsonValue> }>(
+      `/api/parameters?app_id=${encodeURIComponent(appId)}`
+    );
     return res.parameters || {};
   } catch (err) {
     console.warn('[PhysBox Cloud] Could not fetch parameters:', err);
@@ -227,7 +270,12 @@ export async function fetchCloudParameters(appId: string): Promise<Record<string
   }
 }
 
-export async function syncCloudPreset(appId: string, name: string, data: any, id?: string): Promise<string | null> {
+export async function syncCloudPreset(
+  appId: string,
+  name: string,
+  data: unknown,
+  id?: string
+): Promise<string | null> {
   if (!getStoredAuthToken()) return null;
   try {
     const res = await request<{ id: string }>('/api/presets', {
@@ -241,10 +289,12 @@ export async function syncCloudPreset(appId: string, name: string, data: any, id
   }
 }
 
-export async function fetchCloudPresets(appId: string): Promise<any[]> {
+export async function fetchCloudPresets(appId: string): Promise<CloudPresetRow[]> {
   if (!getStoredAuthToken()) return [];
   try {
-    const res = await request<{ presets: any[] }>(`/api/presets?app_id=${encodeURIComponent(appId)}`);
+    const res = await request<{ presets: CloudPresetRow[] }>(
+      `/api/presets?app_id=${encodeURIComponent(appId)}`
+    );
     return res.presets || [];
   } catch (err) {
     console.warn('[PhysBox Cloud] Failed to load cloud presets:', err);

@@ -39,7 +39,21 @@ const round3 = (n: number) => Math.round(n * 1000) / 1000;
  * command that silently stops working is one nobody notices until a job comes
  * out wrong.
  */
-export async function handleMCPCommand(cmd: string, msg: any): Promise<any> {
+/**
+ * One command off the bridge, as it arrives.
+ *
+ * A JSON object from an agent: the keys are whatever that command takes, and
+ * every handler below reads the ones it needs and checks them. Typed as `any`
+ * values rather than `unknown` deliberately — the checking happens per command,
+ * in prose the agent gets back as an error, and an `unknown` here would buy a
+ * cast at each of a hundred field reads and no safety at all.
+ */
+type MCPMessage = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+/** Whatever a command chooses to answer with. Always carries `ok`. */
+export type MCPResult = Record<string, unknown> & { ok: boolean };
+
+export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MCPResult> {
   const store = useStore.getState();
 
   switch (cmd) {
@@ -995,7 +1009,7 @@ export function useMCPBridge() {
     // URL just fails to connect and retries quietly, exactly as Mesh does.)
 
     let ws: WebSocket | null = null;
-    let retryTimer: any = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let dead = false;
 
     function connect() {
@@ -1026,7 +1040,7 @@ export function useMCPBridge() {
       };
 
       ws.onmessage = async (event) => {
-        let msg: any;
+        let msg: MCPMessage;
         try {
           msg = JSON.parse(event.data);
         } catch {
@@ -1049,7 +1063,7 @@ export function useMCPBridge() {
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ event: 'RESULT', cmd, id, data }));
           }
-        } catch (err: any) {
+        } catch (err) {
           console.error('[MCP Bridge] Command error:', err);
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ event: 'ERROR', cmd, id, error: String(err) }));
@@ -1074,7 +1088,7 @@ export function useMCPBridge() {
 
     return () => {
       dead = true;
-      clearTimeout(retryTimer);
+      if (retryTimer) clearTimeout(retryTimer);
       ws?.close();
       // Nothing can reply for a command once the bridge is gone, so don't leave
       // its pill behind (a dev-time remount would otherwise strand it).

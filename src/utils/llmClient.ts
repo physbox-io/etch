@@ -31,6 +31,29 @@ export type LLMResult = {
   truncated: boolean;
 };
 
+/**
+ * One block of a reply, as either provider sends it.
+ *
+ * Both APIs return a list of blocks with a `text` on the ones that carry any —
+ * Anthropic tags them with `type`, Gemini does not — and a thinking model
+ * interleaves blocks that have no text at all. Typed as what is actually read
+ * rather than as the whole response shape: the rest of the payload is the
+ * provider's business and changes without notice.
+ */
+interface ContentBlock {
+  type?: string;
+  text?: string;
+}
+
+/** A row of a provider's model list, as much of it as the picker uses. */
+interface ModelRow {
+  id?: string;
+  name?: string;
+  display_name?: string;
+  displayName?: string;
+  supportedGenerationMethods?: string[];
+}
+
 export class LLMError extends Error {}
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -92,8 +115,8 @@ async function callClaude(system: string, user: string, model: string): Promise<
   // blocks are the answer, and taking content[0] blindly would return nothing.
   const text: string = Array.isArray(json.content)
     ? json.content
-        .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
-        .map((b: any) => b.text)
+        .filter((b: ContentBlock) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b: ContentBlock) => b.text as string)
         .join('\n')
     : '';
 
@@ -130,8 +153,8 @@ async function callGemini(system: string, user: string, model: string): Promise<
   // parts, and the trailing JSON is usually in a later one.
   const text: string = Array.isArray(candidate?.content?.parts)
     ? candidate.content.parts
-        .filter((p: any) => typeof p?.text === 'string' && p.text)
-        .map((p: any) => p.text)
+        .filter((p: ContentBlock) => typeof p?.text === 'string' && p.text)
+        .map((p: ContentBlock) => p.text as string)
         .join('\n')
     : '';
 
@@ -162,7 +185,10 @@ export async function listClaudeModels(): Promise<{ id: string; name: string }[]
     }
     if (!res.ok) return [];
     const json = await res.json();
-    return (json.data || []).map((m: any) => ({ id: m.id, name: m.display_name || m.id }));
+    return (json.data || []).map((m: ModelRow) => ({
+      id: String(m.id),
+      name: m.display_name || String(m.id),
+    }));
   } catch {
     return [];
   }
@@ -178,8 +204,11 @@ export async function listGeminiModels(): Promise<{ id: string; name: string }[]
     if (!res.ok) return [];
     const json = await res.json();
     return (json.models || [])
-      .filter((m: any) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes('generateContent'))
-      .map((m: any) => ({
+      .filter(
+        (m: ModelRow) =>
+          !m.supportedGenerationMethods || m.supportedGenerationMethods.includes('generateContent')
+      )
+      .map((m: ModelRow) => ({
         id: String(m.name).replace(/^models\//, ''),
         name: m.displayName || String(m.name).replace(/^models\//, ''),
       }));
@@ -196,7 +225,7 @@ export async function listGeminiModels(): Promise<{ id: string; name: string }[]
  * takes the first that parses into an object — then falls back to the outermost
  * brace-delimited span for replies with no fence at all.
  */
-export function extractJson(text: string): any | null {
+export function extractJson(text: string): Record<string, unknown> | null {
   const candidates: string[] = [];
   const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
   let match: RegExpExecArray | null;

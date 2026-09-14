@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   pointInPolygon,
-  pointInRegion,
   triangulatePoints,
-  densifyContour,
   generateVCarveToolpaths,
   vCarveFlatBottom,
 } from '../src/utils/vCarve';

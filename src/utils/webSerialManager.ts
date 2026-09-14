@@ -596,9 +596,13 @@ class WebSerialManager {
        */
       void this.readMachineSettings();
       return true;
-    } catch (err: any) {
+    } catch (err) {
       await transport.disconnect().catch(() => {});
-      this.update({ connected: false, state: 'Disconnected', lastError: err?.message || 'Failed to connect.' });
+      this.update({
+        connected: false,
+        state: 'Disconnected',
+        lastError: err instanceof Error ? err.message : 'Failed to connect.',
+      });
       return false;
     }
   }
@@ -757,8 +761,10 @@ class WebSerialManager {
       this.ackQueue.push({ kind: 'other', resolve: null });
       // Bare: each transport terminates the line the way its own wire needs.
       await this.transport.writeLine(cmd.replace(/\n+$/, ''));
-    } catch (err: any) {
-      this.update({ lastError: err?.message || 'Write to the machine failed.' });
+    } catch (err) {
+      this.update({
+        lastError: err instanceof Error ? err.message : 'Write to the machine failed.',
+      });
     }
   }
 

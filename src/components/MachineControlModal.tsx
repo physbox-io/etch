@@ -114,7 +114,6 @@ export const MachineControlModal: React.FC = () => {
     webSerialManager.setTransport('wifi', savedDevice);
     void webSerialManager.connect(115200).catch(() => {});
     // Once per mount: a resume, not a retry loop.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

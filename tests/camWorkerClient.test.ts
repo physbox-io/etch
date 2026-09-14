@@ -11,20 +11,31 @@ class SilentWorker {
 
 let worker: SilentWorker;
 
+/**
+ * The globals the client reaches for. Typed as what this test provides rather
+ * than as the DOM's own, so a stub that stops matching what the client uses is
+ * a compile error here instead of a mystery at runtime.
+ */
+type WorkerGlobals = {
+  window?: unknown;
+  Worker?: new () => SilentWorker;
+};
+const globals = globalThis as unknown as WorkerGlobals;
+
 beforeEach(() => {
   vi.resetModules();
-  (globalThis as any).window = globalThis;
-  (globalThis as any).Worker = class {
+  globals.window = globalThis;
+  globals.Worker = class {
     constructor() {
       worker = new SilentWorker();
-      return worker as any;
+      return worker;
     }
   };
 });
 
 afterEach(() => {
-  delete (globalThis as any).Worker;
-  delete (globalThis as any).window;
+  delete globals.Worker;
+  delete globals.window;
 });
 
 describe('camWorker', () => {

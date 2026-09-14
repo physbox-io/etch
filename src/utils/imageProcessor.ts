@@ -262,9 +262,9 @@ export function processImageCanvas(
   const gamma = options.gamma ?? 1;
 
   for (let i = 0; i < data.length; i += 4) {
-    let r = data[i];
-    let g = data[i + 1];
-    let b = data[i + 2];
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
     const a = data[i + 3];
 
     // Grayscale conversion
@@ -936,7 +936,7 @@ function traceGrid(
   for (let y = 0; y <= height; y++) {
     for (let x = 0; x <= width; x++) {
       // A loop can only start at a corner that still has an edge left in it.
-      let first = step(x, y, 0);
+      const first = step(x, y, 0);
       if (!first) continue;
 
       const polyPoints: { x: number; y: number }[] = [{ x: x * scaleX, y: y * scaleY }];
@@ -953,7 +953,6 @@ function traceGrid(
         cx += next.dx;
         cy += next.dy;
       }
-      first = null;
 
       // `minHoleArea` is a pixel *area*, so speck rejection measures the area
       // the loop encloses. Comparing it against the point count — as this used

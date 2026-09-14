@@ -70,9 +70,14 @@ export interface ProgramResult {
 class CamWorkerClient {
   private worker: Worker | null = null;
   private reqId = 1;
+  /*
+   * One entry per request in flight. The result type is `unknown` because this
+   * map holds every kind of reply the worker can send at once; each public
+   * method casts its own back, which is where the shape is actually known.
+   */
   private pending = new Map<
     number,
-    { resolve: (val: any) => void; reject: (err: Error) => void }
+    { resolve: (val: unknown) => void; reject: (err: Error) => void }
   >();
 
   constructor() {
@@ -126,7 +131,10 @@ class CamWorkerClient {
 
     if (this.worker) {
       return new Promise<T>((resolve, reject) => {
-        this.pending.set(id, { resolve, reject });
+        // The map is keyed by request id and holds every kind of reply at once,
+        // so it cannot be typed per request. The cast is the one place the two
+        // meet, and `sendRequest`'s own caller is where T is actually known.
+        this.pending.set(id, { resolve: resolve as (val: unknown) => void, reject });
         this.worker!.postMessage({ ...req, id } as WorkerCamRequest);
       });
     }

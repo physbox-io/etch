@@ -358,9 +358,20 @@ export const EtchCanvas: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [activeTool, finishBezier]);
 
-  // Switching tools mid-path would otherwise silently discard the work.
+  /*
+   * Switching tools mid-path would otherwise silently discard the work.
+   *
+   * The ref exists so the tool-change effect can call the *current* finisher
+   * without re-running every time `finishBezier` is rebuilt — which is every
+   * keystroke of the path, and re-running it would finish the path being drawn.
+   * It is written in an effect rather than during render: a render can be
+   * thrown away and re-run, and a ref written by one that was discarded is a
+   * value nobody can account for.
+   */
   const finishRef = useRef(finishBezier);
-  finishRef.current = finishBezier;
+  useEffect(() => {
+    finishRef.current = finishBezier;
+  }, [finishBezier]);
   useEffect(() => {
     if (activeTool !== 'bezier') finishRef.current(false);
   }, [activeTool]);

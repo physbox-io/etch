@@ -19,9 +19,7 @@ import { machineKind } from '../utils/tooling';
 import {
   X,
   Upload,
-  Sliders,
   Sparkles,
-  Layers,
   Check,
   RefreshCw,
   Grid,
@@ -44,7 +42,6 @@ export const ImageImportModal: React.FC = () => {
 
   const laserMode = machineKind(doc) === 'laser';
 
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [loadedImg, setLoadedImg] = useState<HTMLImageElement | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -106,14 +103,16 @@ export const ImageImportModal: React.FC = () => {
       options.targetHeight / Math.max(1, Math.round(h * scale))
     );
   }, [loadedImg, options.targetWidth, options.targetHeight]);
-  const [lockAspect, setLockAspect] = useState<boolean>(true);
+  /*
+   * The size fields keep the picture's proportions. It was a piece of state
+   * with no control attached to it and no way to turn it off, which is a
+   * setting in name only — a photograph stretched by typing one number into
+   * one box is nobody's intent.
+   */
+  const lockAspect = true;
   const [aspectRatio, setAspectRatio] = useState<number>(1);
   const [targetLayerId, setTargetLayerId] = useState<string>(activeLayerId || doc.layers[0]?.id || 'cut');
   const wasOpen = useRef(false);
-  const [previewStats, setPreviewStats] = useState<{ elementCount: number; detailCount: number }>({
-    elementCount: 1,
-    detailCount: 0,
-  });
 
   /**
    * The layers a shaded image may land on, and the one it will.
@@ -181,35 +180,57 @@ export const ImageImportModal: React.FC = () => {
     wasOpen.current = isImageImportOpen;
   }, [isImageImportOpen, doc.layers, activeLayerId]);
 
-  // Load image when file or modal state changes
+  /*
+   * Load the picture the dialog was opened with.
+   *
+   * Only the arrival of an image sets state here, in the callback — the
+   * "opened with no file" case is handled by clearing on the way out
+   * (`close` below) rather than by clearing on the way in, which would be a
+   * second render before the dialog had drawn once.
+   *
+   * The object URL is revoked and the load is marked cancelled on the way out,
+   * so picking a second file while the first is still decoding cannot have the
+   * slower one land afterwards and replace it.
+   */
   useEffect(() => {
-    if (!isImageImportOpen) return;
-
-    if (imageImportFile) {
-      const url = URL.createObjectURL(imageImportFile);
-      setImageSrc(url);
-      loadImageElement(url)
-        .then((img) => {
-          setLoadedImg(img);
-          const ratio = (img.naturalWidth || img.width || 100) / (img.naturalHeight || img.height || 100);
-          setAspectRatio(ratio);
-          const w = Math.min(doc.width * 0.6, 100);
-          const h = Math.round(w / ratio);
-          setOptions((prev) => ({ ...prev, targetWidth: Math.round(w), targetHeight: Math.round(h) }));
-        })
-        .catch((err) => console.error('Failed to load image:', err));
-    } else {
-      setImageSrc(null);
-      setLoadedImg(null);
-    }
+    if (!isImageImportOpen || !imageImportFile) return;
+    let cancelled = false;
+    const url = URL.createObjectURL(imageImportFile);
+    loadImageElement(url)
+      .then((img) => {
+        if (cancelled) return;
+        setLoadedImg(img);
+        const ratio = (img.naturalWidth || img.width || 100) / (img.naturalHeight || img.height || 100);
+        setAspectRatio(ratio);
+        const w = Math.min(doc.width * 0.6, 100);
+        const h = Math.round(w / ratio);
+        setOptions((prev) => ({ ...prev, targetWidth: Math.round(w), targetHeight: Math.round(h) }));
+      })
+      .catch((err) => console.error('Failed to load image:', err));
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(url);
+    };
   }, [isImageImportOpen, imageImportFile, doc.width]);
+
+  /**
+   * Shut the dialog, and forget the picture with it.
+   *
+   * The forgetting has to happen somewhere, or opening the importer a second
+   * time with no file shows the last photograph as though it were about to be
+   * imported again. Here rather than on open, because a click is a plain event
+   * and clearing on open is a render the dialog spends undoing itself.
+   */
+  const close = React.useCallback(() => {
+    setLoadedImg(null);
+    closeImageImport();
+  }, [closeImageImport]);
 
   // Handle local file selection
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const url = URL.createObjectURL(file);
-    setImageSrc(url);
     loadImageElement(url)
       .then((img) => {
         setLoadedImg(img);
@@ -280,15 +301,12 @@ export const ImageImportModal: React.FC = () => {
           outlineD: traceResult.outlineD,
         };
         if (traceResult.mode === 'vector' || traceResult.mode === 'scanline') {
-          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
           setOverlay({ ...base, strokeD: traceResult.compoundD });
         } else if (traceResult.mode === 'halftone') {
-          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
           setOverlay({ ...base, fillD: traceResult.pathD });
         } else if (traceResult.mode === 'shade') {
           // Shading has no outline to draw: the processed greyscale on the
           // canvas below *is* the preview.
-          setPreviewStats({ elementCount: 1, detailCount: traceResult.detailCount });
           setOverlay({ ...base });
         }
       } catch (err) {
@@ -391,7 +409,7 @@ export const ImageImportModal: React.FC = () => {
         selectedIds: added.map((e) => e.id),
       });
 
-      closeImageImport();
+      close();
     } catch (err) {
       console.error('Failed to import image elements:', err);
       alert('Failed to process and import image elements.');
@@ -422,7 +440,7 @@ export const ImageImportModal: React.FC = () => {
             </div>
           </div>
           <button
-            onClick={closeImageImport}
+            onClick={close}
             className="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -1112,7 +1130,7 @@ export const ImageImportModal: React.FC = () => {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={closeImageImport}
+              onClick={close}
               className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800 rounded-xl transition-colors"
             >
               Cancel
