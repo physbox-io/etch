@@ -60,14 +60,16 @@ export function NoteCardOverlay({ card, isEditing, onToggleEdit, onToggleMinimiz
       // close button would be the part that went over the edge.
       style={{ position: 'absolute', left: card.x, top: card.y, width: 300, maxWidth: 'calc(100vw - 24px)' }}
       /*
-        The stacking order is a class, not the inline `zIndex` it used to be,
-        so that it can differ by width. On a desktop the card floats in a corner
-        of the canvas and nothing else wants that space. On a phone every panel
-        and modal is full-width, and a card pinned above them covered the thing
-        the user had just opened — so below `lg` it drops beneath them while
-        staying above the canvas it annotates.
+        The card belongs to the layer of the canvas it annotates, not to the
+        layer of the modals: it sits above the canvas, the toolbars and the
+        inspector (all z-30 and below), and beneath every dialog (z-50 and up).
+        It was z-[100] on a desktop, which put it over the top of the export and
+        machine-control dialogs — a note card floating in front of a dimmed
+        backdrop, in the middle of the job the operator had just opened.
+        One value for both widths: the reasoning is the same on a phone, where
+        every panel is full-width and the card covered whatever was opened last.
       */
-      className="z-[100] max-lg:z-[45] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-2xl rounded-2xl overflow-hidden"
+      className="z-[45] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-2xl rounded-2xl overflow-hidden"
     >
       {/* Title bar */}
       <div
