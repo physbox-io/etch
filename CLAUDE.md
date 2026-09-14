@@ -62,10 +62,15 @@ because the board got wider would be wrong on a machine.
 The consequence is that shrinking the stock leaves art outside it. Three things
 guard this and all must keep working:
 
-- `EtchCanvas` sizes its viewBox to the **union of the stock and all visible
-  content**, so off-stock geometry pulls the view out to include itself. An SVG
-  root clips to its viewBox; sizing it to the stock alone makes the canvas lie
-  about what is in the document.
+- `EtchCanvas` frames its viewBox on the **stock plus a fixed margin** and sets
+  `overflow: visible` on the root. An SVG root clips to its viewBox, so a canvas
+  framed on the stock alone would make off-stock geometry vanish from the screen
+  while it was still in the document and still in the G-code — `overflow` is what
+  stops that, not the framing. The viewBox used to be the union of the stock and
+  all visible content, which fixed the clipping and introduced a worse problem:
+  a window that follows the drawing moves while you work, so every frame of a
+  resize crossing the stock edge re-framed the canvas and the whole drawing
+  lurched under the cursor. Do not reintroduce it. See `tests/canvasView.test.ts`.
 - `isOutsideStock` / `bedBoxOfAll` (`src/utils/geom.ts`) flag strays, drawn as
   red dashed boxes on the canvas and emitted as a note by `planToolpath`.
 - `clipToStock.ts` trims the *planned path* — not the drawing — to the stock

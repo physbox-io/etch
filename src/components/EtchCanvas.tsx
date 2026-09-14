@@ -1176,28 +1176,38 @@ export const EtchCanvas: React.FC = () => {
   const bedH = document.height;
 
   /**
-   * The visible window, in bed millimetres.
+   * The visible window, in bed millimetres: the stock and a fixed margin.
    *
-   * It used to be the stock plus a fixed margin, which quietly made the canvas a
-   * lie: an SVG root clips to its viewBox, so anything outside the stock was in
-   * the document, in the DOM, and in the exported G-code — but not on screen.
-   * Shrinking the stock to a business card was enough to hide a whole preset,
-   * and the first anyone knew of it was the machine cutting it 150 mm away.
+   * It used to be the union of the stock and everything drawn on it, so that
+   * art dragged off the board pulled the view out to include itself. That came
+   * from a real bug — an SVG root clips to its viewBox, and a canvas framed on
+   * the stock alone made off-stock geometry vanish from the screen while still
+   * being in the document and in the G-code.
    *
-   * So the window is the union of the stock and everything drawn on it. Off-stock
-   * geometry pulls the view out to include itself, which is the behaviour the
-   * warning outline below depends on: you cannot fix what you cannot see.
+   * But a window that follows the drawing is a window that moves while you
+   * work: every frame of a resize that crosses the stock edge re-frames the
+   * canvas, so the whole drawing lurches under the cursor at the moment you are
+   * trying to be precise with it. The fix for the clipping is `overflow:
+   * visible` on the root (below), which lets geometry outside the box draw
+   * anyway — so the view can stay still and nothing is hidden.
    */
-  const contentBox = useMemo(
-    () => bedBoxOfAll(document.elements.filter((el) => el.visible !== false)),
-    [document.elements]
-  );
-  const viewMinX = Math.min(0, contentBox?.minX ?? 0) - BED_MARGIN;
-  const viewMinY = Math.min(0, contentBox?.minY ?? 0) - BED_MARGIN;
-  const viewMaxX = Math.max(bedW, contentBox?.maxX ?? bedW) + BED_MARGIN;
-  const viewMaxY = Math.max(bedH, contentBox?.maxY ?? bedH) + BED_MARGIN;
-  const viewW = viewMaxX - viewMinX;
-  const viewH = viewMaxY - viewMinY;
+  const viewMinX = -BED_MARGIN;
+  const viewMinY = -BED_MARGIN;
+  const viewW = bedW + BED_MARGIN * 2;
+  const viewH = bedH + BED_MARGIN * 2;
+
+  /**
+   * How far past the window the grid is painted.
+   *
+   * The grid is what tells you the drawing is still there when you pan out to
+   * find something that fell off the board. A bed's worth in every direction
+   * covers any sane overhang; beyond that the red off-stock outlines are the
+   * thing to follow.
+   */
+  const gridMinX = viewMinX - bedW;
+  const gridMinY = viewMinY - bedH;
+  const gridW = viewW + bedW * 2;
+  const gridH = viewH + bedH * 2;
 
   /**
    * The eraser strokes on each layer, for the SVG masks below.
@@ -1255,6 +1265,15 @@ export const EtchCanvas: React.FC = () => {
         style={{
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           transformOrigin: 'top left',
+          /*
+            An SVG root clips to its viewBox by default, and that is what once
+            made a drawing dragged off the stock disappear from the screen while
+            staying in the document and in the G-code. The window is now fixed to
+            the stock so it cannot move while you work, and this is what keeps
+            the off-stock geometry on screen: it draws outside the box, and
+            panning reaches it.
+          */
+          overflow: 'visible',
         }}
         onWheel={handleWheel}
         onPointerDownCapture={handlePointerDownCapture}
@@ -1340,12 +1359,12 @@ export const EtchCanvas: React.FC = () => {
               key={layerId}
               id={`etch-erase-${layerId}`}
               maskUnits="userSpaceOnUse"
-              x={viewMinX}
-              y={viewMinY}
-              width={viewW}
-              height={viewH}
+              x={gridMinX}
+              y={gridMinY}
+              width={gridW}
+              height={gridH}
             >
-              <rect x={viewMinX} y={viewMinY} width={viewW} height={viewH} fill="white" />
+              <rect x={gridMinX} y={gridMinY} width={gridW} height={gridH} fill="white" />
               {strokes.map((el) => (
                 <path
                   key={el.id}
@@ -1367,7 +1386,7 @@ export const EtchCanvas: React.FC = () => {
         {/* Grid spans the whole visible window, not just the stock: once the
             view widens to reach off-stock geometry, a grid that stopped at the
             stock edge would leave that geometry floating on nothing. */}
-        <rect x={viewMinX} y={viewMinY} width={viewW} height={viewH} fill="url(#etch-grid-major)" />
+        <rect x={gridMinX} y={gridMinY} width={gridW} height={gridH} fill="url(#etch-grid-major)" />
 
         {/* Machine Bed Boundary Overlay */}
         <rect
@@ -1740,6 +1759,7 @@ export const EtchCanvas: React.FC = () => {
         {offStockBoxes.map((b) => (
           <rect
             key={b.id}
+            data-off-stock={b.id}
             x={b.minX}
             y={b.minY}
             width={Math.max(b.maxX - b.minX, 0.5)}
