@@ -344,10 +344,18 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
     case 'SAVE_PRESET': {
       const name = String(msg.name || msg.preset || '').trim();
       if (!name) return { ok: false, error: 'name is required' };
-      store.saveUserPresetByName(name);
+      // Saves every sheet of the job under the one name; the error says why not
+      // (a browser out of room for a shaded photograph is the usual reason).
+      const error = store.saveUserPresetByName(name);
       const saved = useStore.getState().userPresetNames.includes(name);
-      if (!saved) return { ok: false, error: `Could not save preset '${name}'` };
-      return { ok: true, preset: `user:${name}`, userPresets: useStore.getState().userPresetNames };
+      if (error || !saved) return { ok: false, error: error ?? `Could not save preset '${name}'` };
+      const sheets = useStore.getState().tabs.length;
+      return {
+        ok: true,
+        preset: `user:${name}`,
+        sheetsSaved: sheets,
+        userPresets: useStore.getState().userPresetNames,
+      };
     }
 
     case 'etch_delete_preset':

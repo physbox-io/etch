@@ -363,6 +363,28 @@ export interface EtchDocument {
   elements: EtchElement[];
   selectedIds: string[];
   notecard?: string;
+  /**
+   * The rest of the job, when this document was saved from a strip of sheets.
+   *
+   * A job is several sheets — the same stock, the same registration holes, cut
+   * one after another — and saving used to take only the one in front of you.
+   * Four sheets meant four saves, and two sheets of a layered picture called
+   * "selfie" meant one save overwriting the other and half the job gone.
+   *
+   * So a save carries the strip: the open sheet stays exactly where it always
+   * was, at the top level, and the *others* go here in tab order with
+   * `sheetIndex` saying where the open one sat among them. That way a saved job
+   * is still an ordinary document — the G-code path, the cloud, an older build
+   * and anything that ignores this field read it as the sheet that was open —
+   * and nothing is stored twice, which matters when a sheet is a photograph.
+   *
+   * Only ever present on a saved or exported document. The live document never
+   * carries it (the store holds sheets in `tabs`), and `sanitizeDoc` strips it
+   * on the way in so it cannot accumulate a job inside a job.
+   */
+  sheets?: EtchDocument[];
+  /** Where the saved sheet sat in the strip. */
+  sheetIndex?: number;
 }
 
 export type ToolMode =

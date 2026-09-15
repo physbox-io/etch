@@ -160,7 +160,9 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         </Key>
         <Key combo="Ctrl/Cmd + Z">Undo.</Key>
         <Key combo="Ctrl/Cmd + Y">Redo.</Key>
-        <Key combo="Ctrl/Cmd + S">Save the document; add <strong>Shift</strong> for Save As.</Key>
+        <Key combo="Ctrl/Cmd + S">
+          Save the job — every sheet of it; add <strong>Shift</strong> for Save As.
+        </Key>
         <Key combo="Esc">Put the current tool away and go back to Select.</Key>
       </Card>
       <P>
@@ -219,10 +221,12 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           land on the same millimetre. It warns if a sheet is a different size, because then they
           will not.
         </Step>
-        <Step title="They last as long as the tab">
-          Sheets live in the browser session, like the open document always has. Save each one you
-          want to keep (Ctrl+S saves the open sheet as a document), and close only takes a sheet
-          away — there is always at least one open.
+        <Step title="One save covers the whole job">
+          Ctrl+S saves every sheet under one name, from whichever sheet you are on, and opening
+          that name brings the whole strip back. Sheet names are left alone — the job is called one
+          thing, its sheets are called what you called them. Exporting JSON writes the same job to
+          a file. Until you save, sheets live in the browser session like the open document always
+          has, and close only takes a sheet away — there is always at least one open.
         </Step>
       </Card>
     </div>

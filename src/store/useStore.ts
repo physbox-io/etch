@@ -75,7 +75,53 @@ export function sanitizeDoc(doc: EtchDocument): EtchDocument {
     delete rest.h;
     return rest;
   });
+  // The other sheets of a saved job are for `jobSheets` to unpack into tabs,
+  // not for the live document to carry: a document that kept them would be
+  // saved with a copy of the job inside every sheet of the job.
+  if (doc.sheets !== undefined || doc.sheetIndex !== undefined) {
+    const rest = { ...doc, elements };
+    delete rest.sheets;
+    delete rest.sheetIndex;
+    return rest;
+  }
   return touched ? { ...doc, elements } : doc;
+}
+
+/**
+ * The saved form of the whole job: the open sheet, carrying the others.
+ *
+ * Saving took only the live document, which is right when there is one sheet
+ * and quietly destructive when there are four — and worse than destructive when
+ * two of them are called the same thing, because then the second save
+ * overwrites the first under one name and half the job is gone. See the
+ * `sheets` field on EtchDocument for why the strip is stored this way round.
+ */
+export function jobDocument(state: {
+  tabs: SheetTab[];
+  activeTabId: string;
+  document: EtchDocument;
+}): EtchDocument {
+  const doc = cloneDoc(state.document);
+  const others = state.tabs.filter((t) => t.id !== state.activeTabId).map((t) => cloneDoc(t.document));
+  if (others.length === 0) return doc;
+  const at = state.tabs.findIndex((t) => t.id === state.activeTabId);
+  return { ...doc, sheets: others, sheetIndex: Math.max(0, at) };
+}
+
+/**
+ * The strip of sheets a saved document describes, in tab order.
+ *
+ * A document with no `sheets` is one sheet, which is what every document saved
+ * before jobs existed — and every document exported by another tool — looks
+ * like. That is the case that must keep behaving exactly as it did: it loads
+ * into the sheet you are on and leaves the sheets beside it alone.
+ */
+export function jobSheets(saved: EtchDocument): EtchDocument[] {
+  const others = saved.sheets ?? [];
+  const open = cloneDoc(saved);
+  if (others.length === 0) return [open];
+  const at = Math.min(Math.max(saved.sheetIndex ?? 0, 0), others.length);
+  return [...others.slice(0, at).map(cloneDoc), open, ...others.slice(at).map(cloneDoc)];
 }
 
 /**
@@ -303,7 +349,10 @@ interface EtchStore {
 
   // Save / Load / Save As / Delete (localStorage user presets)
   userPresetNames: string[];
-  saveUserPresetByName: (name: string) => void;
+  /** Saves every sheet of the job under one name. Returns null, or the error. */
+  saveUserPresetByName: (name: string) => string | null;
+  /** Opens a saved document — or, if it holds a strip of sheets, the whole job. */
+  openJob: (saved: EtchDocument, presetId?: string) => void;
   deleteUserPreset: (name: string) => void;
   /** Adds presets pulled from the signed-in account. Existing names win. */
   mergeCloudPresets: (incoming: Record<string, EtchDocument>) => number;
@@ -772,13 +821,31 @@ export const useStore = create<EtchStore>((set, get) => ({
   setNotecard: (markdown) =>
     set((state) => ({ document: { ...state.document, notecard: markdown } })),
 
+  /**
+   * Saves the job — every sheet of it — under one name.
+   *
+   * It used to save the live document alone, so a four-sheet job needed four
+   * saves under four names, and two sheets that shared a name saved over each
+   * other. One name, one job, and loading it brings the whole strip back.
+   *
+   * Returns null on success, or what went wrong. It used to swallow the error:
+   * localStorage has a few megabytes and a shaded photograph is most of one, so
+   * the way this fails in real use is a quota the browser refuses silently, and
+   * the operator carries on believing the job is saved.
+   */
   saveUserPresetByName: (name) => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed) return 'Give the job a name first.';
     try {
-      const { document } = get();
+      const state = get();
+      const { document } = state;
       const presets = readUserPresets();
-      const newDoc = cloneDoc({ ...document, name: trimmed });
+      const job = jobDocument(state);
+      // Only a one-sheet job takes the saved name as its own. The name of a
+      // sheet is what the tab reads, and renaming sheet three of four to
+      // "finalselfie" because that is what the job is called helps nobody.
+      const single = state.tabs.length <= 1;
+      const newDoc = single ? { ...job, name: trimmed } : job;
       presets[trimmed] = newDoc;
       writeUserPresets(presets);
       saveCloudPreset(trimmed, newDoc);
@@ -788,11 +855,72 @@ export const useStore = create<EtchStore>((set, get) => ({
       set({
         activePreset: `user:${trimmed}`,
         userPresetNames: Object.keys(presets).sort(),
-        document: { ...document, name: trimmed },
+        document: single ? { ...document, name: trimmed } : document,
+        // Every sheet of the job now belongs to that saved job, so Ctrl+S from
+        // any of them saves the job rather than asking for a name again.
+        tabs: state.tabs.map((t) => ({ ...t, activePreset: `user:${trimmed}` })),
       });
+      return null;
     } catch (e) {
       console.error('Failed to save user preset', e);
+      const quota = e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22);
+      return quota
+        ? `There is no room left in this browser to save “${trimmed}”. A shaded photograph is ` +
+            `megabytes of pixels and the browser allows a few in total — delete a saved document ` +
+            `you no longer need, or export this job to a file instead.`
+        : `Could not save “${trimmed}”: ${e instanceof Error ? e.message : String(e)}`;
     }
+  },
+
+  /**
+   * Opens a saved document, and a saved job as the whole strip of sheets.
+   *
+   * A document with no sheets in it behaves exactly as it always did — it
+   * replaces the sheet you are on and never touches the ones beside it. A job
+   * replaces the strip, because a job *is* the strip: opening four sheets into
+   * the middle of four other sheets is nobody's meaning of "open".
+   */
+  openJob: (saved, presetId = '') => {
+    const strip = jobSheets(saved);
+    if (strip.length === 1) {
+      // A single document dropped into one sheet of a job does not become the
+      // job: the strip is still whatever it was saved as, and adopting the
+      // loaded name here would make the next Ctrl+S save four sheets over a
+      // one-sheet document called "bg". (setDocument clears the name, so the
+      // job's is put back rather than merely left.)
+      const job = get().tabs.length > 1 ? get().activePreset : presetId;
+      get().setDocument(strip[0]);
+      set({ activePreset: job });
+      return;
+    }
+    const at = Math.min(Math.max(saved.sheetIndex ?? 0, 0), strip.length - 1);
+    // Fresh tab ids, because the ids in the file were the session's and this
+    // session may already be using them — two sheets sharing an id means
+    // closing one closes both.
+    const seen = new Set<string>();
+    const tabs = strip.map((d) => {
+      const tabId = sheetId();
+      const docId = d.id && !seen.has(d.id) ? d.id : tabId;
+      seen.add(docId);
+      return parkedTab(tabId, sanitizeDoc({ ...d, id: docId }), presetId);
+    });
+    const live = tabs[at];
+    set((state) => ({
+      tabs,
+      activeTabId: live.id,
+      document: live.document,
+      history: live.history,
+      historyIndex: live.historyIndex,
+      selectedIds: [],
+      activeLayerId: live.activeLayerId,
+      activePreset: presetId,
+      activeTool: 'select',
+      mandalaSettings: {
+        ...state.mandalaSettings,
+        centerX: live.document.width / 2,
+        centerY: live.document.height / 2,
+      },
+    }));
   },
 
   /**
@@ -1603,8 +1731,9 @@ export const useStore = create<EtchStore>((set, get) => ({
       const name = presetId.slice('user:'.length);
       const saved = readUserPresets()[name];
       if (!saved) return;
-      get().setDocument(cloneDoc(saved));
-      set({ activePreset: presetId });
+      // Through openJob: a document saved from several sheets comes back as
+      // several sheets.
+      get().openJob(saved, presetId);
       return;
     }
 

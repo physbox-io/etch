@@ -128,6 +128,136 @@ describe('saving and loading with several sheets open', () => {
   });
 });
 
+describe('saving a job of several sheets', () => {
+  /** Builds a job of `names` sheets and returns their ids, in tab order. */
+  function job(names: string[]): string[] {
+    const ids = [useStore.getState().activeTabId];
+    useStore.getState().renameTab(ids[0], names[0]);
+    useStore.getState().addElement(rect(`${names[0]}-el`));
+    for (const name of names.slice(1)) {
+      const id = useStore.getState().newTab();
+      ids.push(id);
+      useStore.getState().renameTab(id, name);
+      useStore.getState().addElement(rect(`${name}-el`));
+    }
+    return ids;
+  }
+
+  it('saves every sheet under one name and opens the whole strip again', () => {
+    // The failure this fixes: a job of four sheets needed four saves, and three
+    // of them were gone the moment the browser tab closed.
+    const ids = job(['bg', 'middle', 'top']);
+    useStore.getState().switchTab(ids[1]);
+    expect(useStore.getState().saveUserPresetByName('finalselfie')).toBeNull();
+
+    // Somewhere else entirely, then back.
+    useStore.getState().setDocument(doc('Scratch'));
+    for (const tab of useStore.getState().tabs.slice(1)) useStore.getState().closeTab(tab.id);
+    expect(useStore.getState().tabs).toHaveLength(1);
+
+    useStore.getState().loadPreset('user:finalselfie');
+    const state = useStore.getState();
+    expect(state.tabs.map((t) => t.document.name)).toEqual(['bg', 'middle', 'top']);
+    expect(state.tabs.map((t) => t.document.elements.map((e) => e.id))).toEqual([
+      ['bg-el'],
+      ['middle-el'],
+      ['top-el'],
+    ]);
+    // …and onto the sheet that was open when it was saved.
+    expect(state.document.name).toBe('middle');
+  });
+
+  it('keeps two sheets that share a name, which saving separately could not', () => {
+    // The real loss: a layered picture whose sheets are both called "selfie"
+    // saved one over the other, under one preset name, and half the job went.
+    const ids = job(['selfie', 'selfie']);
+    useStore.getState().addElement(rect('second-only'));
+    useStore.getState().saveUserPresetByName('twice');
+    useStore.getState().closeTab(ids[1]);
+
+    useStore.getState().loadPreset('user:twice');
+    const tabs = useStore.getState().tabs;
+    expect(tabs).toHaveLength(2);
+    expect(tabs.map((t) => t.document.name)).toEqual(['selfie', 'selfie']);
+    expect(tabs[1].document.elements.map((e) => e.id)).toContain('second-only');
+    // Two sheets, two ids: sharing one means closing either closes both.
+    expect(new Set(tabs.map((t) => t.id)).size).toBe(2);
+  });
+
+  it('leaves sheet names alone — the job is named, not the sheet', () => {
+    job(['bg', 'top']);
+    useStore.getState().saveUserPresetByName('finalselfie');
+    expect(useStore.getState().document.name).toBe('top');
+    // Read through the live document for the open sheet: its parked entry is
+    // stale by design, and only a switch refreshes it.
+    const names = useStore.getState().tabs.map((t) =>
+      t.id === useStore.getState().activeTabId ? useStore.getState().document.name : t.document.name
+    );
+    expect(names).toEqual(['bg', 'top']);
+    // A one-sheet job still takes the name, as it always has: there is no tab
+    // strip to disagree with.
+    const solo = useStore.getState().tabs[1].id;
+    useStore.getState().switchTab(solo);
+    useStore.getState().closeTab(useStore.getState().tabs[0].id);
+    useStore.getState().saveUserPresetByName('solo');
+    expect(useStore.getState().document.name).toBe('solo');
+  });
+
+  it('belongs to the saved job from every sheet, so Ctrl+S from any of them saves it', () => {
+    job(['bg', 'top']);
+    useStore.getState().saveUserPresetByName('finalselfie');
+    expect(useStore.getState().tabs.every((t) => t.activePreset === 'user:finalselfie')).toBe(true);
+    expect(useStore.getState().activePreset).toBe('user:finalselfie');
+  });
+
+  it('does not let one loaded sheet rename the job it was dropped into', () => {
+    // Load a one-sheet document into a sheet of a saved job and the job is
+    // still that job. Adopting the loaded name would make the next Ctrl+S write
+    // all four sheets over a one-sheet document called "bg".
+    // Saved on its own, while it was the only sheet: a one-sheet document.
+    useStore.getState().addElement(rect('alone'));
+    useStore.getState().saveUserPresetByName('just the bg');
+
+    job(['bg', 'top']);
+    useStore.getState().saveUserPresetByName('finalselfie');
+
+    useStore.getState().loadPreset('user:just the bg');
+    expect(useStore.getState().document.elements.map((e) => e.id)).toContain('alone');
+    expect(useStore.getState().tabs).toHaveLength(2);
+    expect(useStore.getState().activePreset).toBe('user:finalselfie');
+  });
+
+  it('never leaves the strip inside the live document', () => {
+    // The live document is what the planner, the G-code header and the bridge
+    // read. A job nested in it would be saved inside the next save of itself.
+    job(['bg', 'top']);
+    useStore.getState().saveUserPresetByName('finalselfie');
+    useStore.getState().loadPreset('user:finalselfie');
+    for (const tab of useStore.getState().tabs) {
+      expect(tab.document.sheets).toBeUndefined();
+      expect(tab.document.sheetIndex).toBeUndefined();
+    }
+    expect(useStore.getState().document.sheets).toBeUndefined();
+  });
+
+  it('says so when the browser has no room, instead of looking saved', () => {
+    // How saving actually fails in use: a shaded photograph is megabytes and
+    // localStorage holds a few in total. It used to console.error and return,
+    // so the operator was told the job was safe when it was not.
+    const real = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    };
+    try {
+      const error = useStore.getState().saveUserPresetByName('too big');
+      expect(error).toContain('no room');
+      expect(useStore.getState().userPresetNames).not.toContain('too big');
+    } finally {
+      Storage.prototype.setItem = real;
+    }
+  });
+});
+
 describe('the agent bridge with several sheets open', () => {
   it('lists the sheets with the open one’s live contents', async () => {
     useStore.getState().addElement(rect('one'));

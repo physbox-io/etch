@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { useStore } from '../store/useStore';
+import { useStore, jobDocument } from '../store/useStore';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
@@ -42,6 +42,7 @@ export const TopNavbar: React.FC = () => {
     toggleDarkMode,
     loadPreset,
     setDocument,
+    openJob,
     toggleAiPanel,
     toggleGCodeModal,
     toggleMachineModal,
@@ -80,9 +81,20 @@ export const TopNavbar: React.FC = () => {
     return preset ? preset.name : '✏️ Modified document';
   })();
 
-  // Save: overwrite the open user document. Save As / first save: ask for a name.
+  /*
+   * Save: overwrite the open user document. Save As / first save: ask for a name.
+   *
+   * A save covers every sheet of the job, so this is the same call from any tab.
+   * The error is shown rather than logged: the way saving fails in real use is
+   * the browser refusing a few megabytes of shaded photograph, and it does that
+   * silently — an operator who is told nothing believes the job is safe.
+   */
+  const reportSave = (error: string | null) => {
+    if (error) alert(error);
+  };
+
   const handleSave = () => {
-    if (isUserPreset) saveUserPresetByName(userPresetName);
+    if (isUserPreset) reportSave(saveUserPresetByName(userPresetName));
     else handleSaveAs();
   };
 
@@ -92,7 +104,11 @@ export const TopNavbar: React.FC = () => {
   };
 
   const handleConfirmSave = () => {
-    saveUserPresetByName(presetNameInput);
+    const error = saveUserPresetByName(presetNameInput);
+    if (error) {
+      alert(error);
+      return;
+    }
     setIsSaveModalOpen(false);
     setPresetNameInput('');
   };
@@ -106,7 +122,10 @@ export const TopNavbar: React.FC = () => {
 
   const handleExportJson = () => {
     try {
-      const blob = new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' });
+      // The job, not the open sheet: a file that dropped the other three sheets
+      // is the same loss as a save that dropped them.
+      const job = jobDocument(useStore.getState());
+      const blob = new Blob([JSON.stringify(job, null, 2)], { type: 'application/json' });
       downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.json`);
     } catch (e) {
       console.error('Failed to export JSON', e);
@@ -124,7 +143,8 @@ export const TopNavbar: React.FC = () => {
         if (!parsed || !Array.isArray(parsed.elements) || !Array.isArray(parsed.layers)) {
           throw new Error('Not an Etch document');
         }
-        setDocument(parsed);
+        // openJob, so a file exported from a job of four sheets opens as four.
+        openJob(parsed);
       } catch (err) {
         console.error('Failed to import JSON', err);
         alert('That file is not a valid Etch document.');
