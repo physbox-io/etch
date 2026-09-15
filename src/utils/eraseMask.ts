@@ -65,6 +65,29 @@ function centrelines(el: EtchElement): Pt[][] {
 }
 
 /**
+ * An eraser stroke's centreline in bed millimetres, as an SVG path.
+ *
+ * The canvas draws the band from this, without the element's transform, rather
+ * than stroking `d` inside it. An SVG transform scales the *stroke* as well as
+ * the geometry, so stretching a scribble sideways turned an even 2 mm band into
+ * fat vertical bars with thin gaps between them — and the gaps were not erased,
+ * while the planner went on masking the single width below. Drawing the same
+ * round brush the planner subtracts is what keeps the screen and the G-code
+ * saying the same thing.
+ */
+export function eraserBedPathD(el: EtchElement): string {
+  return centrelines(el)
+    .map((pts) => {
+      const pt = (p: Pt) => `${p.x.toFixed(3)} ${p.y.toFixed(3)}`;
+      // A stroke that is one point is a dot the operator clicked, and a bare
+      // moveto paints nothing however round the cap is.
+      if (pts.length === 1) return `M ${pt(pts[0])} L ${pt(pts[0])}`;
+      return `M ${pts.map(pt).join(' L ')}`;
+    })
+    .join(' ');
+}
+
+/**
  * The region one or more eraser strokes cover, as a polygon set.
  *
  * Each centreline is offset to both sides by half its own width and the

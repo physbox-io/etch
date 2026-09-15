@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { EtchCanvas } from '../src/components/EtchCanvas';
 import { useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
+import { eraserWidth } from '../src/utils/eraseMask';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
 
 /**
@@ -128,6 +129,24 @@ describe('an eraser on the canvas', () => {
     expect(masked(host, 'r2')).toBeNull();
     // A round brush in the mask, matching the band the planner subtracts.
     expect(maskEl.querySelector('path')!.getAttribute('stroke-linecap')).toBe('round');
+  });
+
+  it('rubs out one even band however unevenly the stroke has been scaled', async () => {
+    // The bug: the band was `d` stroked inside the element's transform, and an
+    // SVG transform scales the stroke too. Stretched sideways, an even 2mm band
+    // came out as fat bars with thin gaps — and the gaps were not erased, while
+    // the planner went on masking the single width it always has.
+    const stretched = { ...mask('m1'), scaleX: 3, scaleY: 1 } as EtchElement;
+    setUp([stretched, line('r1')], 'select');
+    const host = await render();
+
+    const path = host.querySelector('#etch-erase-l1 path')!;
+    expect(path.getAttribute('transform')).toBeNull();
+    expect(Number(path.getAttribute('stroke-width'))).toBeCloseTo(eraserWidth(stretched), 6);
+    // …and the geometry is already in bed millimetres: the stroke was drawn at
+    // (40,40) and runs 20mm down, at scaleY 1.
+    expect(path.getAttribute('d')).toContain('40.000 40.000');
+    expect(path.getAttribute('d')).toContain('40.000 60.000');
   });
 
   it('is drawn after everything else, even when it was drawn first', async () => {

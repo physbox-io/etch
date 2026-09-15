@@ -15,12 +15,15 @@ import {
   bedBoxOfAll,
   isOutsideStock,
 } from '../utils/geom';
+// `eraserBandWidth` is the width a *stroke* covers on the bed; the store's
+// `eraserWidth` below is the width the tool will draw the next one at.
+import { eraserBedPathD, eraserWidth as eraserBandWidth } from '../utils/eraseMask';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { rasterDataURL } from '../utils/rasterPreview';
 import { camWorker } from '../utils/camWorkerClient';
 import { fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
 import { BusyToast } from './BusyToast';
-import { computeResize, resizeSeed, clampScale } from '../utils/resizeElement';
+import { computeResize, resizeSeed, clampScale, type ResizeHandle } from '../utils/resizeElement';
 import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
 import {
   nodesToPath,
@@ -39,7 +42,7 @@ import {
 /** Equal 25mm margin on top, bottom, left and right of the bed. */
 const BED_MARGIN = 25;
 
-type TransformMode = 'move' | 'resize-se' | 'rotate';
+type TransformMode = 'move' | 'resize' | 'rotate';
 
 interface TransformStart {
   mouseX: number;
@@ -54,6 +57,8 @@ interface TransformStart {
   elRy: number;
   /** Mouse angle around the pivot at grab time, degrees. */
   grabAngle: number;
+  /** Which corner (or line end) the resize was grabbed by. */
+  handle: ResizeHandle;
   /** Initial multi-element bounding box if >1 elements selected */
   multiBox?: {
     minX: number;
@@ -178,6 +183,14 @@ export const EtchCanvas: React.FC = () => {
 
   // Element Transformation (Move, Resize, Rotate)
   const [isTransforming, setIsTransforming] = useState<TransformMode | null>(null);
+  /**
+   * Whether Shift was down on the last resize frame, for the hint below.
+   *
+   * Read from the pointer event rather than from a key listener: a modifier
+   * pressed while the canvas has no keyboard focus never arrives as a keydown,
+   * and the one moment it matters is mid-drag.
+   */
+  const [aspectLocked, setAspectLocked] = useState(false);
   const [transformStart, setTransformStart] = useState<TransformStart | null>(null);
 
   // Rubber-band (marquee) selection
@@ -532,6 +545,7 @@ export const EtchCanvas: React.FC = () => {
     if (isTransforming) {
       setIsTransforming(null);
       setTransformStart(null);
+      setAspectLocked(false);
       commitHistory();
     }
   };
@@ -825,8 +839,17 @@ export const EtchCanvas: React.FC = () => {
         );
         if (!el || el.locked) return;
 
-        if (isTransforming === 'resize-se') {
-          updateElement(el.id, computeResize(el, transformStart, dx, dy), true);
+        if (isTransforming === 'resize') {
+          // From the element as it was at grab time, never as it is now: the
+          // anchor correction is measured against that state, and feeding it
+          // its own half-finished output walks the shape across the bed.
+          const el0 = transformStart.moves[0]?.initialEl ?? el;
+          setAspectLocked(e.shiftKey);
+          updateElement(
+            el.id,
+            computeResize(el0, transformStart, dx, dy, transformStart.handle, e.shiftKey),
+            true
+          );
         } else if (isTransforming === 'rotate') {
           const pivot = getPivotInBed(el);
           const angle = (Math.atan2(rawCoords.y - pivot.y, rawCoords.x - pivot.x) * 180) / Math.PI;
@@ -858,11 +881,19 @@ export const EtchCanvas: React.FC = () => {
             const newY = p1y - (tempEl.scaleY ?? 1) * localBox.centerY;
             updateElement(m.id, { x: newX, y: newY, rotation: newRot }, true);
           }
-        } else if (isTransforming === 'resize-se') {
-          const newW = Math.max(1, mb.width + dx);
-          const newH = Math.max(1, mb.height + dy);
+        } else if (isTransforming === 'resize') {
+          // The corner opposite the one grabbed is what the whole group is
+          // scaled about, so dragging the group's west side grows it westwards
+          // instead of hauling it across the bed.
+          const west = transformStart.handle === 'nw' || transformStart.handle === 'sw';
+          const north = transformStart.handle === 'nw' || transformStart.handle === 'ne';
+          const anchorX = west ? mb.minX + mb.width : mb.minX;
+          const anchorY = north ? mb.minY + mb.height : mb.minY;
+          const newW = Math.max(1, mb.width + (west ? -dx : dx));
+          const newH = Math.max(1, mb.height + (north ? -dy : dy));
           let sxRatio = newW / mb.width;
           let syRatio = newH / mb.height;
+          setAspectLocked(e.shiftKey);
           if (e.shiftKey) {
             const sRatio = Math.max(sxRatio, syRatio);
             sxRatio = syRatio = sRatio;
@@ -871,10 +902,10 @@ export const EtchCanvas: React.FC = () => {
           for (const m of transformStart.moves) {
             const el0 = m.initialEl;
             const p0 = m.pivotBed;
-            const relX = p0.x - mb.minX;
-            const relY = p0.y - mb.minY;
-            const p1x = mb.minX + relX * sxRatio;
-            const p1y = mb.minY + relY * syRatio;
+            const relX = p0.x - anchorX;
+            const relY = p0.y - anchorY;
+            const p1x = anchorX + relX * sxRatio;
+            const p1y = anchorY + relY * syRatio;
 
             const updates: Partial<EtchElement> = {};
             if (el0.type === 'rect') {
@@ -1050,6 +1081,7 @@ export const EtchCanvas: React.FC = () => {
       }
       setIsTransforming(null);
       setTransformStart(null);
+      setAspectLocked(false);
       commitHistory(); // one undo entry for the whole gesture
     }
   };
@@ -1079,7 +1111,8 @@ export const EtchCanvas: React.FC = () => {
     el: EtchElement,
     mode: TransformMode,
     at: { x: number; y: number },
-    moving: EtchElement[] = [el]
+    moving: EtchElement[] = [el],
+    handle: ResizeHandle = 'se'
   ) => {
     const pivot = getPivotInBed(el);
     const isMulti = moving.length > 1;
@@ -1122,6 +1155,7 @@ export const EtchCanvas: React.FC = () => {
       elX: el.x,
       elY: el.y,
       ...resizeSeed(el),
+      handle,
       elRot: el.rotation || 0,
       grabAngle: (Math.atan2(at.y - pivotPoint.y, at.x - pivotPoint.x) * 180) / Math.PI,
     });
@@ -1226,6 +1260,22 @@ export const EtchCanvas: React.FC = () => {
     }
     return byLayer;
   }, [document.elements]);
+
+  /**
+   * Each eraser's band, already in bed millimetres: the centreline and the one
+   * width it covers, for both the mask and the outline the tool reveals.
+   *
+   * Drawn without the element's transform on purpose — see `eraserBedPathD`.
+   * Memoised because it flattens the stroke, and the masks are rebuilt on every
+   * render of a canvas that re-renders on every mouse move.
+   */
+  const eraserBands = useMemo(() => {
+    const bands = new Map<string, { d: string; width: number }>();
+    for (const list of erasersByLayer.values()) {
+      for (const el of list) bands.set(el.id, { d: eraserBedPathD(el), width: eraserBandWidth(el) });
+    }
+    return bands;
+  }, [erasersByLayer]);
 
   /** Boxes for the elements that have ended up off the material. */
   const offStockBoxes = useMemo(
@@ -1365,18 +1415,20 @@ export const EtchCanvas: React.FC = () => {
               height={gridH}
             >
               <rect x={gridMinX} y={gridMinY} width={gridW} height={gridH} fill="white" />
-              {strokes.map((el) => (
-                <path
-                  key={el.id}
-                  transform={getElementTransform(el)}
-                  d={el.d || ''}
-                  fill="none"
-                  stroke="black"
-                  strokeWidth={el.strokeWidth || 1}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              ))}
+              {strokes.map((el) => {
+                const band = eraserBands.get(el.id);
+                return (
+                  <path
+                    key={el.id}
+                    d={band?.d || ''}
+                    fill="none"
+                    stroke="black"
+                    strokeWidth={band?.width ?? el.strokeWidth ?? 1}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                );
+              })}
             </mask>
           ))}
         </defs>
@@ -1664,13 +1716,17 @@ export const EtchCanvas: React.FC = () => {
           if (!el.visible || layer?.visible === false) return null;
           const isSelected = selectedIds.includes(el.id);
           const reveal = isSelected || activeTool === 'erase';
-          const width = el.strokeWidth || 1;
+          // The band in bed millimetres, drawn without the element transform:
+          // an SVG transform scales the stroke too, so a stretched stroke came
+          // out as fat bars with unerased gaps between them. See the mask above.
+          const band = eraserBands.get(el.id);
+          const d = band?.d || '';
+          const width = band?.width ?? el.strokeWidth ?? 1;
           const caps = { strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
           return (
             <g
               key={el.id}
               data-el-id={el.id}
-              transform={getElementTransform(el)}
               className={activeTool === 'select' ? 'cursor-move' : ''}
               style={{
                 pointerEvents:
@@ -1680,7 +1736,7 @@ export const EtchCanvas: React.FC = () => {
               }}
             >
               <path
-                d={el.d || ''}
+                d={d}
                 fill="none"
                 stroke="transparent"
                 strokeWidth={Math.max(width, 3)}
@@ -1689,7 +1745,7 @@ export const EtchCanvas: React.FC = () => {
               {reveal && (
                 <>
                   <path
-                    d={el.d || ''}
+                    d={d}
                     fill="none"
                     stroke={isSelected ? '#f59e0b' : '#64748b'}
                     strokeOpacity={0.18}
@@ -1697,7 +1753,7 @@ export const EtchCanvas: React.FC = () => {
                     {...caps}
                   />
                   <path
-                    d={el.d || ''}
+                    d={d}
                     fill="none"
                     stroke={isSelected ? '#f59e0b' : '#94a3b8'}
                     strokeWidth={0.25}
@@ -2039,22 +2095,30 @@ export const EtchCanvas: React.FC = () => {
                     />
                   </g>
 
-                  {/* Multi-selection SE Resize Handle */}
-                  <rect
-                    x={handleBox.maxX - 1.5 * hs}
-                    y={handleBox.maxY - 1.5 * hs}
-                    width={3 * hs}
-                    height={3 * hs}
-                    fill="#f59e0b"
-                    stroke="#ffffff"
-                    strokeWidth={0.3 * hs}
-                    className="cursor-nwse-resize"
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      if (movableSelected.length === 0) return;
-                      beginTransform(movableSelected[0], 'resize-se', toBed(e), movableSelected);
-                    }}
-                  />
+                  {/* Multi-selection resize knobs, one per corner */}
+                  {([
+                    { key: 'nw' as const, hx: handleBox.minX, hy: handleBox.minY, cursor: 'cursor-nwse-resize' },
+                    { key: 'ne' as const, hx: handleBox.maxX, hy: handleBox.minY, cursor: 'cursor-nesw-resize' },
+                    { key: 'sw' as const, hx: handleBox.minX, hy: handleBox.maxY, cursor: 'cursor-nesw-resize' },
+                    { key: 'se' as const, hx: handleBox.maxX, hy: handleBox.maxY, cursor: 'cursor-nwse-resize' },
+                  ]).map((h) => (
+                    <rect
+                      key={h.key}
+                      x={h.hx - 1.5 * hs}
+                      y={h.hy - 1.5 * hs}
+                      width={3 * hs}
+                      height={3 * hs}
+                      fill="#f59e0b"
+                      stroke="#ffffff"
+                      strokeWidth={0.3 * hs}
+                      className={h.cursor}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        if (movableSelected.length === 0) return;
+                        beginTransform(movableSelected[0], 'resize', toBed(e), movableSelected, h.key);
+                      }}
+                    />
+                  ))}
                 </>
               );
             })()}
@@ -2134,22 +2198,51 @@ export const EtchCanvas: React.FC = () => {
                 />
               </g>
 
-              {/* SE Resize Handle */}
-              <rect
-                x={selectedLocal.minX + selectedLocal.width - 1.5 * hs}
-                y={selectedLocal.minY + selectedLocal.height - 1.5 * hs}
-                width={3 * hs}
-                height={3 * hs}
-                fill="#f59e0b"
-                stroke="#ffffff"
-                strokeWidth={0.3 * hs}
-                className="cursor-nwse-resize"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  // Raw, not snapped — see the resize branch in handleMouseMove.
-                  beginTransform(selectedElement, 'resize-se', toBed(e));
-                }}
-              />
+              {/*
+                Resize knobs: one per corner, because the box looks like it
+                promises that. With only a south-east knob the west side could
+                be reached only by growing east and dragging the shape back,
+                and grabbing the left edge moved the whole element instead.
+
+                A line gets its two ends rather than corners — its box is
+                degenerate (a horizontal line has no height at all) and its
+                direction lives in x2/y2, so an end is the only handle that
+                means anything.
+              */}
+              {(selectedElement.type === 'line'
+                ? [
+                    { key: 'line-start' as const, hx: 0, hy: 0, cursor: 'cursor-crosshair' },
+                    {
+                      key: 'line-end' as const,
+                      hx: (selectedElement.x2 ?? 40) * safeScale(selectedElement.scaleX),
+                      hy: (selectedElement.y2 ?? 0) * safeScale(selectedElement.scaleY),
+                      cursor: 'cursor-crosshair',
+                    },
+                  ]
+                : [
+                    { key: 'nw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY, cursor: 'cursor-nwse-resize' },
+                    { key: 'ne' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY, cursor: 'cursor-nesw-resize' },
+                    { key: 'sw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nesw-resize' },
+                    { key: 'se' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nwse-resize' },
+                  ]
+              ).map((h) => (
+                <rect
+                  key={h.key}
+                  x={h.hx - 1.5 * hs}
+                  y={h.hy - 1.5 * hs}
+                  width={3 * hs}
+                  height={3 * hs}
+                  fill="#f59e0b"
+                  stroke="#ffffff"
+                  strokeWidth={0.3 * hs}
+                  className={h.cursor}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    // Raw, not snapped — see the resize branch in handleMouseMove.
+                    beginTransform(selectedElement, 'resize', toBed(e), [selectedElement], h.key);
+                  }}
+                />
+              ))}
             </g>
           </g>
         )}
@@ -2170,6 +2263,26 @@ export const EtchCanvas: React.FC = () => {
           {editPath
             ? 'Drag a node to move it · drag a blue handle to curve it (Alt for a corner) · click the path to add a node · double-click or Delete to remove one'
             : 'Click a path, freehand stroke or star to edit its nodes'}
+        </div>
+      )}
+
+      {/* Resize hint. The same popup the eraser uses, for the same reason: a
+          modifier nobody is told about is a modifier nobody presses. Not for a
+          line end, which has no proportions to lock beyond its own angle — and
+          says so. */}
+      {isTransforming === 'resize' && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+          {transformStart?.handle === 'line-start' || transformStart?.handle === 'line-end' ? (
+            aspectLocked ? (
+              <>Angle held — release <kbd className="font-mono">Shift</kbd> to swing the end freely</>
+            ) : (
+              <>Hold <kbd className="font-mono">Shift</kbd> to keep the line&rsquo;s angle</>
+            )
+          ) : aspectLocked ? (
+            <>Proportions locked — release <kbd className="font-mono">Shift</kbd> to stretch freely</>
+          ) : (
+            <>Hold <kbd className="font-mono">Shift</kbd> to keep the proportions</>
+          )}
         </div>
       )}
 

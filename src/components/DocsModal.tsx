@@ -110,10 +110,13 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           shape's centre, which is how you line a label up with the plate it sits on.
         </Step>
         <Step title="Resize and rotate">
-          The corner knob and the stem above the box appear for a single selection only, and act on
-          the shape's own centre — shown by the crosshair in the middle of the box. Hold{' '}
-          <strong>Shift</strong> while rotating for 15° steps. There is no group resize: each shape
-          keeps its own geometry, which is what keeps a drawing dimensionally honest.
+          Drag anywhere on a shape to move it; the knobs are what resize it. There is one on each
+          corner and it holds the corner opposite, so you can grow a shape leftwards without
+          dragging it back afterwards. Hold <strong>Shift</strong> to keep the proportions. The stem
+          above the box rotates about the shape's own centre — the crosshair in the middle of the
+          box — and <strong>Shift</strong> there gives 15° steps. A line is grabbed by either end
+          instead of by corners: its box has no thickness to take a corner, and Shift holds the
+          angle it already has.
         </Step>
       </Card>
       <P>
