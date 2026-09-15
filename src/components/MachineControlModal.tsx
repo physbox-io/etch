@@ -52,6 +52,13 @@ export const MachineControlModal: React.FC = () => {
   const words = machineWords(machineKind(document));
   const [status, setStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
 
+  // The machine layer is told what it is connected to, not left to guess: the
+  // telemetry it posts carries one `S` word, and whether that reads as RPM or
+  // as beam power on the remote dashboard is this.
+  useEffect(() => {
+    webSerialManager.setMachineKind(isLaser ? 'laser' : 'cnc');
+  }, [isLaser]);
+
   // How the machine is reached, remembered between sessions.
   const [transportMode, setTransportMode] = useState<TransportMode>(
     () => (localStorage.getItem('etchTransport') as TransportMode) || 'usb'

@@ -20,7 +20,27 @@ export interface MachiningTelemetry {
   currentLine?: number;
   totalLines?: number;
   xyz?: { x: number; y: number; z: number };
+  /**
+   * The controller's `S` word: spindle RPM on a router, beam power on a laser.
+   *
+   * It is one field because GRBL reports one number, and `machine` is what says
+   * which it is. Without that the dashboard read every one of them as RPM, so a
+   * laser cutting at 84% reported "840 RPM" for a machine that has no spindle.
+   */
   spindleSpeed?: number;
+  /**
+   * Which kind of machine those numbers came from.
+   *
+   * Optional, and absent means a spindle — which is what the field meant before
+   * this existed, so telemetry from an older client reads exactly as it did.
+   */
+  machine?: 'laser' | 'cnc';
+  /**
+   * Full-scale `S` for the controller (GRBL's `$30`), so a laser's S word can
+   * be shown as the percentage the operator set rather than a raw PWM count.
+   * Nothing but the machine that posted it knows this number.
+   */
+  spindleMax?: number;
   feedRate?: number;
   lastError?: string | null;
   updatedAt?: string;

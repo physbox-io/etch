@@ -374,6 +374,18 @@ class WebSerialManager {
   private jobMachine: MachineKind = 'laser';
 
   /**
+   * Which machine is on the other end of the cable, outside a job.
+   *
+   * `startJob` sets the same field, but telemetry is posted whenever the
+   * machine is connected, and before the session's first job this would
+   * otherwise report a router as a laser — which is how the S word gets
+   * labelled on the remote dashboard.
+   */
+  public setMachineKind(machine: MachineKind) {
+    if (!this.status.jobRunning) this.jobMachine = machine;
+  }
+
+  /**
    * Every line sent that still owes an `ok`, oldest first.
    *
    * GRBL answers in the order it was asked, so one FIFO covers both kinds of
@@ -530,6 +542,11 @@ class WebSerialManager {
       totalLines: snapshot.totalLines,
       xyz: { x: snapshot.x, y: snapshot.y, z: snapshot.z },
       spindleSpeed: snapshot.spindlePower,
+      // What that S word means, and what its full scale is. The dashboard has
+      // no other way to tell 840 RPM from 84% of a diode laser, and it showed
+      // the laser as a spindle running at 840 RPM.
+      machine: this.jobMachine,
+      spindleMax: this.spindlePwmMax(),
       feedRate: snapshot.feedRate,
       lastError: snapshot.lastError,
       documentId: this.jobContext.documentId ?? null,

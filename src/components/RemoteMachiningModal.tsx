@@ -111,13 +111,25 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
               <Cpu className="w-12 h-12 text-slate-400 dark:text-slate-600 mx-auto mb-3 opacity-60" />
               <p className="text-slate-700 dark:text-slate-300 font-medium">No Active Remote Telemetry</p>
               <p className="text-xs text-slate-500 dark:text-slate-500 mt-1 max-w-md mx-auto">
-                Connect a machine via WebSerial on any device to stream real-time cut status, Z-height, line progress, and spindle metrics here.
+                Connect a machine via WebSerial on any device to stream real-time cut status, Z-height, line progress, and feed and power here.
               </p>
             </div>
           ) : (
             telemetry.map((item, idx) => {
               const isRunning = item.status === 'running' || item.status === 'Run';
               const progress = Math.min(100, Math.max(0, item.progressPercent || 0));
+              /*
+               * One `S` word, two machines. A laser reported 840 for 84% of a
+               * diode's full scale and the panel called it "840 RPM" — a
+               * spindle speed, on a machine with no spindle, for a job the
+               * operator was watching from another room. Telemetry that does
+               * not say which machine it came from keeps the old reading:
+               * before this was posted every client was a router as far as
+               * this panel knew.
+               */
+              const isLaser = item.machine === 'laser';
+              const sWord = item.spindleSpeed || 0;
+              const fullScale = item.spindleMax && item.spindleMax > 0 ? item.spindleMax : 1000;
 
               return (
                 <div key={idx} className="bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 rounded-xl p-5 shadow-sm space-y-4">
@@ -162,8 +174,19 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
                       </span>
                     </div>
                     <div className="bg-white dark:bg-slate-900/80 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
-                      <span className="text-slate-500 dark:text-slate-400 block mb-0.5">Spindle Speed</span>
-                      <span className="font-mono text-emerald-600 dark:text-emerald-300 font-semibold">{item.spindleSpeed || 0} RPM</span>
+                      <span className="text-slate-500 dark:text-slate-400 block mb-0.5">
+                        {isLaser ? 'Laser Power' : 'Spindle Speed'}
+                      </span>
+                      {/* The raw S word hides behind the percentage: it is what an
+                          operator comparing against LightBurn or a forum post is
+                          actually comparing, and it cannot be worked out from a
+                          percentage without this controller's $30. */}
+                      <span
+                        className="font-mono text-emerald-600 dark:text-emerald-300 font-semibold"
+                        title={isLaser ? `S${sWord} of ${fullScale} full scale` : undefined}
+                      >
+                        {isLaser ? `${Math.round((sWord / fullScale) * 100)}%` : `${sWord} RPM`}
+                      </span>
                     </div>
                     <div className="bg-white dark:bg-slate-900/80 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                       <span className="text-slate-500 dark:text-slate-400 block mb-0.5">Feed Rate</span>
