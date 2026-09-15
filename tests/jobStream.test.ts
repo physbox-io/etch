@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { prepareJobLines, classifyJobLine, webSerialManager, describeGrblFault } from '../src/utils/webSerialManager';
+import { prepareJobLines, scanJobProgram, classifyJobLine, webSerialManager, describeGrblFault } from '../src/utils/webSerialManager';
 import { generateGCode } from '../src/utils/gcodeExporter';
 import type { EtchDocument } from '../src/types/etch';
 
@@ -42,6 +42,61 @@ describe('prepareJobLines', () => {
     expect(lines.length).toBeGreaterThan(4);
     expect(lines.every((l) => !l.startsWith(';'))).toBe(true);
     expect(lines.some((l) => l.startsWith('G1 X'))).toBe(true);
+  });
+});
+
+describe('scanJobProgram layer boundaries', () => {
+  /**
+   * The stream resets the live feed/power trim when the job crosses into a new
+   * layer, and this scan is the only thing that knows where those crossings
+   * are — the motion is just coordinates.
+   */
+  it('marks the first machine line of each layer after the first', () => {
+    const src = [
+      '; --- Segment 1 (CUT) --- Layer: cut ---',
+      'G1 X0 Y0',
+      'G1 X10 Y0',
+      '; --- Segment 2 (CUT) --- Layer: cut ---',
+      'G1 X10 Y10',
+      '; --- Segment 3 (ETCH) --- Layer: etch ---',
+      'G1 X20 Y10',
+      'G1 X20 Y20',
+    ].join('\n');
+    const { lines, layerStarts } = scanJobProgram(src);
+    expect(lines).toHaveLength(5);
+    // Only the cut→etch crossing: a second segment of the same layer is not one.
+    expect(layerStarts).toEqual([3]);
+    expect(lines[3]).toBe('G1 X20 Y10');
+  });
+
+  it('does not mark the opening layer — nothing has been crossed into at line one', () => {
+    const src = ['; --- Segment 1 (CUT) --- Layer: cut ---', 'G1 X0 Y0'].join('\n');
+    expect(scanJobProgram(src).layerStarts).toEqual([]);
+  });
+
+  it('finds the crossings in a real two-layer program', () => {
+    const doc: EtchDocument = {
+      id: 'd', name: 'Two layers', width: 300, height: 200, gridSize: 10, snapToGrid: false,
+      units: 'mm', origin: 'top-left',
+      layers: [
+        { id: 'etch', name: 'Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 1200, power: 30, passes: 1, zDepth: 0.2 },
+        { id: 'cut', name: 'Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 600, power: 80, passes: 1, zDepth: 1 },
+      ],
+      elements: [
+        { id: 'e1', name: 'Etch rect', type: 'rect', layerId: 'etch', x: 30, y: 30, w: 20, h: 20,
+          rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.5, visible: true, locked: false },
+        { id: 'c1', name: 'Cut rect', type: 'rect', layerId: 'cut', x: 20, y: 20, w: 40, h: 40,
+          rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.5, visible: true, locked: false },
+      ],
+      selectedIds: [],
+    };
+    const { lines, layerStarts } = scanJobProgram(generateGCode(doc));
+    expect(layerStarts).toHaveLength(1);
+    // A boundary has to land on a line the streamer actually sends — here the
+    // new layer's own preamble, ahead of its first move.
+    expect(layerStarts[0]).toBeGreaterThan(0);
+    expect(layerStarts[0]).toBeLessThan(lines.length);
+    expect(lines[layerStarts[0]].startsWith(';')).toBe(false);
   });
 });
 

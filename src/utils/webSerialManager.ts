@@ -190,10 +190,46 @@ export const SPINDLE_OVERRIDE_BYTES: Record<OverrideStep | 'reset', number> = {
  * stream starves.
  */
 export function prepareJobLines(gcode: string): string[] {
-  return gcode
-    .split('\n')
-    .map((l) => l.replace(/;.*$/, '').trim())
-    .filter((l) => l.length > 0);
+  return scanJobProgram(gcode).lines;
+}
+
+/**
+ * The same strip, but keeping what the comments said about layers.
+ *
+ * The emitter writes `; --- Segment n (CUT) --- Layer: <id> ---` ahead of each
+ * run of moves, and that comment is the only place the program says which
+ * layer it is cutting — the motion itself is just coordinates. Reading it here
+ * is what lets the stream notice it has crossed into a new layer without the
+ * comments ever reaching the controller.
+ *
+ * `layerStarts` holds indices into `lines`: the first machine line of each
+ * layer after the first. The first layer is deliberately absent — nothing has
+ * been crossed into at line one, and a trim the operator dialled in before
+ * pressing run is theirs.
+ */
+export function scanJobProgram(gcode: string): { lines: string[]; layerStarts: number[] } {
+  const lines: string[] = [];
+  const layerStarts: number[] = [];
+  let layer: string | null = null;
+  let pendingLayer: string | null = null;
+
+  for (const raw of gcode.split('\n')) {
+    const marker = /;.*\bLayer:\s*(\S+)/.exec(raw);
+    if (marker) pendingLayer = marker[1];
+    const code = raw.replace(/;.*$/, '').trim();
+    if (code.length === 0) continue;
+    // Attributed to the line that follows the comment, not the comment itself:
+    // the boundary has to be a line the streamer actually sends, or it has
+    // nothing to hang the reset on.
+    if (pendingLayer !== null && pendingLayer !== layer) {
+      if (layer !== null) layerStarts.push(lines.length);
+      layer = pendingLayer;
+    }
+    pendingLayer = null;
+    lines.push(code);
+  }
+
+  return { lines, layerStarts };
 }
 
 /*
@@ -265,7 +301,7 @@ export function describeGrblFault(line: string): string {
  * commands, which are paced one at a time and may have someone waiting on them.
  */
 type AckSlot =
-  | { kind: 'job'; bytes: number }
+  | { kind: 'job'; bytes: number; startsLayer?: boolean }
   | { kind: 'other'; resolve: (() => void) | null };
 
 /**
@@ -368,6 +404,11 @@ class WebSerialManager {
    * does not have to walk the queue on every line.
    */
   private jobBytesInFlight = 0;
+  /**
+   * Indices into `gcodeQueue` where the program crosses into a new layer, from
+   * `scanJobProgram`. What they are for is `resetTrimAtLayerChange`.
+   */
+  private layerStartLines: Set<number> = new Set();
   private pendingProbe: ((z: number | null) => void) | null = null;
 
   /** The job being streamed, if any. */
@@ -1303,7 +1344,7 @@ class WebSerialManager {
       };
     }
 
-    const lines = prepareJobLines(gcode);
+    const { lines, layerStarts } = scanJobProgram(gcode);
 
     if (lines.length === 0) {
       return { started: false, message: 'That program has no machine commands in it.' };
@@ -1315,6 +1356,7 @@ class WebSerialManager {
 
     this.gcodeQueue = lines;
     this.queueIndex = 0;
+    this.layerStartLines = new Set(layerStarts);
     /*
      * The stream owns the ack channel from here.
      *
@@ -1448,7 +1490,7 @@ class WebSerialManager {
     // Booked as a job slot rather than going through `sendCommand`, so its ack
     // is credited back to the stream's byte count and not to an interactive
     // command that never asked for one.
-    this.ackQueue.push({ kind: 'job', bytes });
+    this.ackQueue.push({ kind: 'job', bytes, startsLayer: this.layerStartLines.has(this.queueIndex - 1) });
     this.jobBytesInFlight += bytes;
     void this.transport.writeLine(line);
     return true;
@@ -1520,6 +1562,43 @@ class WebSerialManager {
   }
 
   /**
+   * Drops the feed and power trims back to 100% when the job reaches a new
+   * layer.
+   *
+   * A trim is an adjustment to *this layer's* numbers: "the cut layer is
+   * scorching at the speed it was given." The next layer was given different
+   * numbers — a different speed, a different power, often a different
+   * operation entirely — and carrying a percentage across means an etch pass
+   * inherits a correction made for a through-cut. Nobody dialling in a cut
+   * means "and do the same to whatever comes next", and an override that
+   * quietly survives a layer boundary is invisible: the readout is offscreen
+   * for most of a job and the only symptom is a layer that came out wrong.
+   *
+   * Fired on the *ack* of the layer's first line rather than when it is
+   * queued, which is as late as the protocol allows: the ack means the
+   * controller has taken the line, so everything from the previous layer has
+   * at least been parsed. It is still ahead of the motion by whatever the
+   * planner is looking at, so the last block or two of the old layer may run
+   * untrimmed — still far better than resetting a whole buffer-fill of long
+   * cutting moves early, which is what doing it at send time would have meant.
+   *
+   * Rapids are deliberately left alone. They are not a layer setting — the
+   * traverse speed is the same all job — and quarter-speed rapids are what
+   * someone sets to stay in reach of the stop button on a first run of an
+   * unfamiliar file. Putting that back to full without being asked would be
+   * the app overruling a safety choice.
+   */
+  private async resetTrimAtLayerChange() {
+    // Sent whether or not the mirrored percentages say a trim is in force.
+    // Those come from the controller's `Ov:` field, which is not on every
+    // status frame, so a trim dialled in a moment ago may not have been
+    // reported yet — and skipping the reset on a stale 100% would lose exactly
+    // the case this exists for. The bytes are real-time and cost nothing.
+    await this.writeRealtime(FEED_OVERRIDE_BYTES.reset);
+    await this.writeRealtime(SPINDLE_OVERRIDE_BYTES.reset);
+  }
+
+  /**
    * Rapid traverse trim: full, half or quarter speed, and nothing between —
    * those are the only three GRBL implements.
    */
@@ -1535,6 +1614,7 @@ class WebSerialManager {
     const wasRunning = this.status.jobRunning;
     this.gcodeQueue = [];
     this.queueIndex = 0;
+    this.layerStartLines.clear();
     this.update({ jobRunning: false, jobPaused: false, pauseMessage: undefined, totalLines: 0, currentLine: 0 });
     if (wasRunning) await this.emergencyStop();
   }
@@ -1543,6 +1623,7 @@ class WebSerialManager {
   private abortJob(message: string) {
     this.gcodeQueue = [];
     this.queueIndex = 0;
+    this.layerStartLines.clear();
     this.status = {
       ...this.status,
       jobRunning: false,
@@ -2049,6 +2130,7 @@ class WebSerialManager {
       const slot = this.ackQueue.shift();
       if (slot?.kind === 'job') {
         this.jobBytesInFlight = Math.max(0, this.jobBytesInFlight - slot.bytes);
+        if (slot.startsLayer) void this.resetTrimAtLayerChange();
         this.pumpJobQueue();
       } else if (slot?.kind === 'other') {
         slot.resolve?.();

@@ -745,7 +745,10 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           starting again on material that has already been cut into and can no longer be lined up.
           The percentages shown are read back from the controller, not from what was clicked, so
           they stay right if the machine is reset or trimmed from a pendant. They are steps rather
-          than a slider because that is exactly what the controller understands.
+          than a slider because that is exactly what the controller understands. Feed and power go
+          back to 100% when the job reaches the next layer: a correction made for the cut is not a
+          correction for the etch pass that follows it. Rapid speed is not a layer setting and
+          holds for the whole job.
         </Step>
         <Step title="When something goes wrong">
           If the controller refuses a line, the job stops rather than streaming the rest of the

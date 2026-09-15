@@ -13,6 +13,11 @@ import type { MachineStatus } from '../types/etch';
  * been cut into and can no longer be registered against the drawing. Every
  * controller can do this live; nothing here could ask it to.
  *
+ * A trim belongs to the layer it was dialled in for, so the stream puts feed
+ * and power back to 100% when the job crosses into the next one — a correction
+ * made for a through-cut is not a correction for the etch pass that follows it.
+ * Rapids are not a layer setting and hold for the whole job.
+ *
  * Steps rather than a slider, because that is the protocol: GRBL takes nudges
  * and a reset, and nothing else. The percentage shown is the controller's own
  * `Ov:` report rather than a tally of what was clicked — an override survives a
@@ -79,7 +84,7 @@ export const JobOverridePanel: React.FC<{
         <span>Live Trim</span>
         <DocsInfoButton tab="toolpaths" size="w-3 h-3" />
         <span className="font-normal normal-case tracking-normal text-slate-500 dark:text-slate-400">
-          — takes effect immediately, without restarting the job
+          — immediate, and back to 100% at each new layer
         </span>
       </div>
 
@@ -102,7 +107,10 @@ export const JobOverridePanel: React.FC<{
           Worth having on a first run of an unfamiliar file: a rapid at quarter
           speed is one you can still hit the stop for. */}
       <div className="flex items-center gap-1.5">
-        <span className="w-14 shrink-0 text-[10px] uppercase font-semibold text-slate-500 dark:text-slate-400">
+        <span
+          className="w-14 shrink-0 text-[10px] uppercase font-semibold text-slate-500 dark:text-slate-400"
+          title="Holds for the whole job — travel speed is not a layer setting, and a quarter-speed rapid is something you chose to stay in reach of the stop"
+        >
           Rapids
         </span>
         <span
