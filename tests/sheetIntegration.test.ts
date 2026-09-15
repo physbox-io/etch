@@ -128,6 +128,11 @@ describe('saving and loading with several sheets open', () => {
   });
 });
 
+/** The stored form of a saved document, as the cloud would have received it. */
+function readSavedPreset(name: string): EtchDocument {
+  return JSON.parse(localStorage.getItem('etch_user_presets') || '{}')[name];
+}
+
 describe('saving a job of several sheets', () => {
   /** Builds a job of `names` sheets and returns their ids, in tab order. */
   function job(names: string[]): string[] {
@@ -225,6 +230,47 @@ describe('saving a job of several sheets', () => {
     expect(useStore.getState().document.elements.map((e) => e.id)).toContain('alone');
     expect(useStore.getState().tabs).toHaveLength(2);
     expect(useStore.getState().activePreset).toBe('user:finalselfie');
+  });
+
+  it('survives the round trip through the account', () => {
+    /**
+     * The pull that runs on mount for a signed-in session is the only copy of a
+     * job a browser that has never held it locally gets — a second machine, a
+     * cleared profile, the dev server next to the deployed build. It used to
+     * clone each incoming document with the same repair that keeps the *live*
+     * document free of its own strip, so a four-sheet job arrived as one sheet
+     * and "loading artproj only loads the first sheet" was all the operator saw.
+     */
+    job(['bg', 'middle', 'top']);
+    useStore.getState().saveUserPresetByName('artproj');
+    const uploaded = JSON.parse(JSON.stringify(readSavedPreset('artproj')));
+
+    // A browser that has never seen it: the local copy is gone and the account's
+    // is merged in.
+    useStore.getState().deleteUserPreset('artproj');
+    expect(useStore.getState().mergeCloudPresets({ artproj: uploaded })).toBe(1);
+
+    useStore.getState().loadPreset('user:artproj');
+    const state = useStore.getState();
+    expect(state.tabs.map((t) => t.document.name)).toEqual(['bg', 'middle', 'top']);
+    expect(state.tabs.map((t) => t.document.elements.map((e) => e.id))).toEqual([
+      ['bg-el'],
+      ['middle-el'],
+      ['top-el'],
+    ]);
+    // The account holds a job called "artproj"; its sheets keep their own names.
+    expect(state.document.name).toBe('top');
+  });
+
+  it('still takes the preset name for a one-sheet document from the account', () => {
+    useStore.getState().addElement(rect('alone'));
+    useStore.getState().saveUserPresetByName('just the bg');
+    const uploaded = JSON.parse(JSON.stringify(readSavedPreset('just the bg')));
+    useStore.getState().deleteUserPreset('just the bg');
+
+    useStore.getState().mergeCloudPresets({ 'renamed in the cloud': uploaded });
+    useStore.getState().loadPreset('user:renamed in the cloud');
+    expect(useStore.getState().document.name).toBe('renamed in the cloud');
   });
 
   it('never leaves the strip inside the live document', () => {

@@ -109,6 +109,25 @@ export function jobDocument(state: {
 }
 
 /**
+ * Clones a document on its way into or out of *storage* — one that may be
+ * carrying the rest of its job.
+ *
+ * `cloneDoc` runs `sanitizeDoc`, which strips `sheets` deliberately: the live
+ * document must never carry the strip, or it would be saved with a copy of the
+ * job inside every sheet of the job. A stored document is the other case
+ * entirely, and cloning one with `cloneDoc` threw the job away without a word
+ * — a four-sheet job pulled from the account on a machine that had never held
+ * it locally came back as a single sheet, which reads as "loading it only
+ * loads the first sheet".
+ */
+export function cloneSavedDoc(doc: EtchDocument): EtchDocument {
+  const open = cloneDoc(doc);
+  const sheets = doc.sheets?.map(cloneDoc);
+  if (!sheets || sheets.length === 0) return open;
+  return { ...open, sheets, sheetIndex: Math.min(Math.max(doc.sheetIndex ?? 0, 0), sheets.length) };
+}
+
+/**
  * The strip of sheets a saved document describes, in tab order.
  *
  * A document with no `sheets` is one sheet, which is what every document saved
@@ -929,6 +948,11 @@ export const useStore = create<EtchStore>((set, get) => ({
    * Runs every incoming document through `sanitizeDoc`, because a preset saved
    * by an older build of any Physbox app is exactly the stale shape that repair
    * exists for, and it arrives here without having passed through the loader.
+   * Through `cloneSavedDoc`, though: a job in the account is a job, and the
+   * repair that keeps the *live* document free of its own strip would otherwise
+   * delete every sheet but the open one on the way in. The pull runs on mount
+   * for any signed-in session, so this is the whole of what a job saved in one
+   * browser looks like when it is opened in another.
    */
   mergeCloudPresets: (incoming) => {
     const names = Object.keys(incoming);
@@ -938,7 +962,13 @@ export const useStore = create<EtchStore>((set, get) => ({
       let added = 0;
       for (const name of names) {
         if (presets[name]) continue;
-        presets[name] = cloneDoc({ ...incoming[name], name });
+        const saved = incoming[name];
+        // The preset's name is the *job's* name, and only a one-sheet job is
+        // also a sheet by that name. Renaming the open sheet of a four-sheet
+        // job to the job would undo the care the save takes: sheet three of
+        // "artproj" is called what it was called.
+        const single = !saved.sheets?.length;
+        presets[name] = cloneSavedDoc(single ? { ...saved, name } : saved);
         added += 1;
       }
       if (added === 0) return 0;
