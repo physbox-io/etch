@@ -5,13 +5,13 @@
 // this app's storage: different origin, no shared anything. So the artwork
 // arrives in the URL fragment, gzipped and base64url'd.
 //
-// The fragment, specifically, rather than the query string. A fragment is
-// never sent to the server, so it cannot hit nginx's 8KB request-line limit —
-// which a dense board's artwork would, at around 25KB — and it never appears
-// in an access log. Browsers allow far more room there than any server would.
+// The fragment, specifically, rather than the query string — see
+// `urlPayload.ts` for why, and for the encoding both this and the outbound
+// share link in `shareLink.ts` use.
 // ---------------------------------------------------------------------------
 
 import { transformPathD } from './pathTransform';
+import { fromBase64Url, gunzip } from './urlPayload';
 import type { EtchElement } from '../types/etch';
 import type { SvgImportResult } from './svgImporter';
 import type { Matrix } from './matrix';
@@ -34,37 +34,6 @@ export interface SvgHandoff {
    */
   material: string | null;
   thicknessMm: number | null;
-}
-
-function fromBase64Url(data: string): Uint8Array {
-  const padded = data.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-async function gunzip(bytes: Uint8Array): Promise<string> {
-  if (typeof DecompressionStream === 'undefined') {
-    throw new Error('This browser cannot decompress the artwork it was sent.');
-  }
-  // Fed and drained by hand rather than through Blob.stream()/Response: those
-  // two are the parts of the platform a test DOM is least likely to have, and
-  // the reader loop is the same handful of lines.
-  const gz = new DecompressionStream('gzip');
-  const writer = gz.writable.getWriter();
-  void writer.write(bytes as unknown as BufferSource);
-  void writer.close();
-
-  const reader = gz.readable.getReader();
-  const decoder = new TextDecoder();
-  let out = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    out += decoder.decode(value, { stream: true });
-  }
-  return out + decoder.decode();
 }
 
 /**

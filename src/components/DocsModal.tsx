@@ -449,6 +449,15 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           bed, because its size is the whole point of it; if it is bigger than the stock it is
           placed at true size and reported, rather than quietly shrunk to fit.
         </Step>
+        <Step title="Sharing a job as a link">
+          The share button copies a link with the whole job inside it — every sheet, not just the
+          one on screen — which is why there is no account, no expiry and nothing to take down.
+          Nothing is uploaded; the document travels in the part of the URL that never reaches a
+          server. The cost is length: a job with a shaded photograph in it can want tens of
+          kilobytes of link, and a chat app that shortens a link that long throws the document
+          away with it. Etch says how long the link is, and refuses outright rather than hand you
+          one too long for a browser to open — export the JSON and send the file instead.
+        </Step>
         <Step title="What is skipped">
           Embedded images, filters, gradients and text nodes have no toolpath equivalent and are
           reported as skipped rather than dropped in silence. Convert text to paths in your drawing

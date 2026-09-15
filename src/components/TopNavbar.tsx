@@ -5,6 +5,7 @@ import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
 import { readSvgHandoff, placeUnscaled, type SvgHandoff } from '../utils/svgHandoff';
+import { buildShareLink, readShareLink, clearShareFragment, type ShareLink } from '../utils/shareLink';
 import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
@@ -27,6 +28,9 @@ import {
   Info,
   Settings,
   PanelRight,
+  Share2,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -70,6 +74,9 @@ export const TopNavbar: React.FC = () => {
     size: string | null;
     notes: string[];
   } | null>(null);
+  const [share, setShare] = useState<ShareLink | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const isUserPreset = activePreset.startsWith('user:');
   const userPresetName = isUserPreset ? activePreset.slice('user:'.length) : '';
@@ -130,6 +137,52 @@ export const TopNavbar: React.FC = () => {
     } catch (e) {
       console.error('Failed to export JSON', e);
       alert('Failed to export JSON');
+    }
+  };
+
+  const copyLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      // No clipboard on an insecure origin, and none in some embedded views.
+      // The link is in a selectable field beside this for exactly that case.
+      setCopied(false);
+    }
+  };
+
+  /**
+   * Copies a link that opens this job in someone else's browser.
+   *
+   * The job, not the sheet on screen: `jobDocument` is the same packer the save
+   * and the JSON export use, so a link, a file and a saved document all carry
+   * the same thing. Nothing is uploaded — the document is inside the link —
+   * which is why there is no account, no expiry and nothing to take down.
+   *
+   * Copied as it is built rather than merely displayed: the reason anyone
+   * presses this is to paste it somewhere, and a panel that shows twenty
+   * kilobytes of base64 and invites you to select it by hand is not a share
+   * button.
+   */
+  const handleShare = async () => {
+    setShareError(null);
+    setCopied(false);
+    try {
+      const link = await buildShareLink(jobDocument(useStore.getState()));
+      setShare(link);
+      await copyLink(link.url);
+    } catch (e) {
+      setShare(null);
+      setShareError(e instanceof Error ? e.message : 'That job could not be made into a link.');
+    }
+  };
+
+  /** The OS share sheet, where there is one — the route to a message or a post. */
+  const shareToSystem = async (link: ShareLink) => {
+    try {
+      await navigator.share({ title: document.name || 'Etch document', url: link.url });
+    } catch {
+      // Cancelled, or refused for a URL this long. The copy is already made.
     }
   };
 
@@ -280,16 +333,67 @@ export const TopNavbar: React.FC = () => {
    * something physical, and a stencil quietly resized to 95% lines up with
    * nothing while looking perfectly correct on screen.
    */
+  /**
+   * A whole job arriving by link — a link this app made, from the Share button.
+   *
+   * Separate from the stencil handoff below because what arrives is different:
+   * a stencil is artwork that joins a document, a shared link *is* the
+   * document, sheets and all. Opened through `openJob`, so a four-sheet job
+   * arrives as four sheets rather than as its first one.
+   *
+   * Declinable, and the fragment stays in the URL until it is accepted: unlike
+   * the handoff, there is nowhere to put a shared job alongside what is open,
+   * so "no" has to mean "not now" rather than "throw it away".
+   */
+  useEffect(() => {
+    readShareLink()
+      .then((shared) => {
+        if (!shared) return;
+        const { document: open, tabs } = useStore.getState();
+        const empty = tabs.length === 1 && open.elements.length === 0;
+        const sheets = (shared.sheets?.length ?? 0) + 1;
+        if (
+          !empty &&
+          !window.confirm(
+            `Open "${shared.name || 'a shared document'}"` +
+              (sheets > 1 ? ` (${sheets} sheets)` : '') +
+              '?\n\n' +
+              `This closes the ${tabs.length} sheet${tabs.length === 1 ? '' : 's'} you have open. ` +
+              'Save them first if you want them back.\n' +
+              'Cancel keeps them — the link stays in the address bar, so you can reload to open it later.'
+          )
+        ) {
+          return;
+        }
+        clearShareFragment();
+        openJob(shared);
+      })
+      .catch((err) => {
+        clearShareFragment();
+        setImportReport({
+          count: 0,
+          size: null,
+          notes: [err?.message || 'That link could not be read.'],
+        });
+      });
+    // Once, on mount: opening the job takes the fragment out of the URL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     readSvgHandoff()
       .then((handoff) => {
         if (!handoff) return;
-        const open = useStore.getState().document;
+        const { document: open, tabs } = useStore.getState();
+        // What it replaces is the sheet you are on, not the job: `setDocument`
+        // writes the live document and leaves the parked sheets alone. Saying
+        // "document" to someone with six sheets open reads as all six.
+        const what = tabs.length > 1 ? `the sheet "${open.name}"` : `"${open.name}"`;
         const replace =
           open.elements.length === 0 ||
           window.confirm(
-            `Replace "${open.name}" with ${handoff.name || 'the imported artwork'}?\n\n` +
-              'OK replaces it — the current document is not recoverable afterwards.\n' +
+            `Replace ${what} with ${handoff.name || 'the imported artwork'}?\n\n` +
+              'OK replaces it — that sheet is not recoverable afterwards, and the other sheets are untouched.\n' +
               'Cancel keeps it and brings the artwork in alongside.'
           );
         applyImportedSvg(handoff.svg, { mayScale: false, handoff, replace });
@@ -481,6 +585,17 @@ export const TopNavbar: React.FC = () => {
             <Download className="w-3.5 h-3.5" />
           </button>
 
+          {/* Share: a link with the job inside it. Next to the exports because
+              it is one — the same job as the JSON file, addressed to a browser
+              instead of a disk. */}
+          <button
+            onClick={handleShare}
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-sky-600 dark:text-sky-400 transition-colors cursor-pointer"
+            title="Copy a share link — the whole job travels inside it"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+          </button>
+
           <button
             onClick={undo}
             disabled={historyIndex === 0}
@@ -558,10 +673,90 @@ export const TopNavbar: React.FC = () => {
         </div>
       </div>
 
+      {/* Share link report. The link is in a selectable field as well as on the
+          clipboard: clipboard writes are refused on an insecure origin and in
+          some embedded views, and a share button that silently did nothing
+          would be indistinguishable from one that worked.
+
+          Portalled to the body, like the save modal below and for the same
+          reason: this navbar is `backdrop-blur-md`, and a backdrop-filter makes
+          the element a stacking context. Rendered in place, every z-index in
+          here is a rank *within* the header's own z-30, so a note card at
+          z-[45] sat on top of this panel no matter what number it carried —
+          nothing about the panel's classes was wrong, the ancestor was. */}
+      {(share || shareError) &&
+        ReactDOM.createPortal(
+        <div className="fixed top-16 right-4 max-lg:top-1/2 max-lg:right-1/2 max-lg:translate-x-1/2 max-lg:-translate-y-1/2 z-50 w-[28rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
+          <div className="flex items-start justify-between gap-3">
+            <p className="font-bold text-slate-800 dark:text-slate-100">
+              {shareError
+                ? 'This job is too big to share as a link'
+                : copied
+                  ? 'Link copied'
+                  : 'Share link'}
+            </p>
+            <button
+              onClick={() => {
+                setShare(null);
+                setShareError(null);
+              }}
+              className="text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold cursor-pointer px-1"
+              title="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+
+          {shareError && (
+            <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">{shareError}</p>
+          )}
+
+          {share && (
+            <>
+              <div className="mt-2 flex items-center gap-1.5">
+                <input
+                  readOnly
+                  value={share.url}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="flex-1 min-w-0 px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-mono text-[10px] outline-none"
+                />
+                <button
+                  onClick={() => copyLink(share.url)}
+                  className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer transition-colors"
+                  title="Copy link"
+                >
+                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                {share.travelsWell && typeof navigator !== 'undefined' && 'share' in navigator && (
+                  <button
+                    onClick={() => shareToSystem(share)}
+                    className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer transition-colors"
+                    title="Send it to a message, a post or another app"
+                  >
+                    <Share2 className="w-3 h-3" />
+                    Send
+                  </button>
+                )}
+              </div>
+              <ul className="mt-1.5 space-y-1 text-[11px] text-slate-500 dark:text-slate-400 list-disc list-inside">
+                {share.notes.map((n, i) => (
+                  <li key={i}>{n}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>,
+          window.document.body
+        )}
+
       {/* SVG import report — unit assumptions and skipped content matter on a
-          machine, so they are surfaced rather than swallowed. */}
-      {importReport && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 max-lg:fixed max-lg:top-1/2 max-lg:-translate-y-1/2 z-40 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
+          machine, so they are surfaced rather than swallowed. Portalled for the
+          same reason as the share panel above: it carried the same z-index and
+          was under the same note card. */}
+      {importReport &&
+        ReactDOM.createPortal(
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 max-lg:top-1/2 max-lg:-translate-y-1/2 z-50 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="font-bold text-slate-800 dark:text-slate-100">
@@ -585,8 +780,9 @@ export const TopNavbar: React.FC = () => {
               ✕
             </button>
           </div>
-        </div>
-      )}
+        </div>,
+          window.document.body
+        )}
 
       {/*
         Save / Save As name modal.
