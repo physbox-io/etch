@@ -66,7 +66,7 @@
     "etch_delete_preset": "Delete a saved user preset by name (with or without the 'user:' prefix). Built-in templates cannot be deleted. Destructive and not undoable — confirm with the user first.",
     "etch_machine_settings": "The controller's `$$` settings — max rates, accelerations, steps/mm — as read when the link opened. Read-only.\n\nAn empty result with a `note` means the controller never answered `$$`: the figures are unknown, not absent. This app's feed ceilings and time estimates come from these, and it says when it is falling back to an assumed profile.",
     "etch_machine_list_devices": "List the Tekno Boxes paired to this account, with whether each is online. Pass one of these ids as etch_machine_connect's deviceId to cut over WiFi. Read-only.",
-    "etch_machine_arm": "Deliberately CANNOT arm the machine. It exists to give a clear answer rather than leave you guessing why motion is refused.\n\nArming is a click in the app, by the person standing next to the machine: \"Allow Claude to move this machine\". If you need to move the machine and it is not armed, ask the user to click it — do not retry, and do not look for another route. The permission lasts about an hour and they can end it at any moment with Stop in the same banner, which also cancels whatever is running.",
+    "etch_machine_arm": "Deliberately CANNOT arm the machine. It exists to give a clear answer rather than leave you guessing why motion is refused.\n\nArming is a click in the app, by the person standing next to the machine: ARM. If you need to move the machine and it is not armed, ask the user to click it — do not retry, and do not look for another route. The permission lasts about an hour and they can end it at any moment with DISARM in the same banner, which also cancels whatever is running.",
     "etch_machine_disarm": "Give the permission back before it lapses, and stop anything running. Needs no arming itself.",
     "etch_machine_connect": "Open the link to the machine. `transport` is 'usb' or 'wifi'; WiFi also needs `deviceId`.\n\nUSB opens a native port-picker that only the person at the keyboard can answer, so it only works if they are sitting there. WiFi has no such prompt.",
     "etch_machine_disconnect": "Close the machine link. Does not stop a job — cancel or e-stop first if one is running.",
@@ -247,7 +247,7 @@
   },
   "machining": {
     "overview": "Etch can drive the laser or CNC that cuts the document, not just design it. The tools are the etch_machine_* set plus etch_run_job.",
-    "permission": "Everything that can move an axis is refused until the person at the machine clicks \"Allow Claude to move this machine\" in the app. You cannot do this for yourself — etch_machine_arm exists only to say so. Reading state, trimming a running cut, pausing, cancelling and e-stopping all work without it, always.",
+    "permission": "Everything that can move an axis is refused until the person at the machine clicks ARM in the app. You cannot do this for yourself — etch_machine_arm exists only to say so. Reading state, trimming a running cut, pausing, cancelling and e-stopping all work without it, always.",
     "order": [
       "1. etch_machine_status — connected? armed?",
       "2. etch_machine_connect if needed.",
