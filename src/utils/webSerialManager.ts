@@ -20,6 +20,7 @@ import {
 } from './machineSettings';
 import { describeTool, hasJobZAxis, parseToolNumber, type MachineKind } from './tooling';
 import { CloudTransport, WebSerialTransport, type GrblTransport } from './grblTransport';
+import type { MachineState as SharedMachineState } from '@physbox-io/machining';
 
 /**
  * How often the machine's state is reported to the account, at most.
@@ -2242,6 +2243,113 @@ class WebSerialManager {
   private workOffset: [number, number, number] = [0, 0, 0];
   /** One-shot callbacks awaiting the next status report (see `settledMachineZ`). */
   private statusWaiters = new Set<() => void>();
+
+  // -------------------------------------------------------------------------
+  // MachineControl
+  // -------------------------------------------------------------------------
+  //
+  // What the shared MCP machine tools talk to (`@physbox-io/machining`). This
+  // app's own status is a flat shape with `x`/`wx` and a GRBL state word, which
+  // is the right shape for the panels that read it and the wrong one for a set
+  // of tools that has to mean the same thing in three apps. So this is a
+  // translation, not a second source of truth — every field below is read off
+  // `this.status`.
+  //
+  // The aliases exist for the same reason: `home` and `emergencyStop` are good
+  // names and are called from a dozen places, so they keep them, and the shared
+  // vocabulary is added alongside rather than renamed underneath.
+
+  /** This app's status, in the shared vocabulary. */
+  public getState(): SharedMachineState {
+    const s = this.status;
+    return {
+      status: sharedStatusOf(s),
+      connected: s.connected,
+      portName: s.portName,
+      grblState: s.state,
+      mpos: { x: s.x, y: s.y, z: s.z },
+      wpos: { x: s.wx, y: s.wy, z: s.wz },
+      workOffset: { x: s.x - s.wx, y: s.y - s.wy, z: s.z - s.wz },
+      currentLine: s.currentLine,
+      totalLines: s.totalLines,
+      progressPercent: s.totalLines > 0 ? Math.round((s.currentLine / s.totalLines) * 100) : 0,
+      feedRate: s.feedRate,
+      spindleSpeed: s.spindlePower,
+      overrides: {
+        feed: s.feedOverride,
+        rapid: s.rapidOverride,
+        spindle: s.spindleOverride,
+      },
+      pauseMessage: s.pauseMessage,
+      lastError: s.lastError,
+    };
+  }
+
+  public isRunning(): boolean {
+    return this.status.jobRunning;
+  }
+
+  public isJobPaused(): boolean {
+    return this.status.jobPaused;
+  }
+
+  /**
+   * The operation being cut.
+   *
+   * Always null: a job here is a sequence of layers with their own parameters,
+   * not a program divided into named operations the way a board's isolation,
+   * drilling and profiling passes are. A tool change still shows up in the
+   * pause message.
+   */
+  public getCurrentLayer(): null {
+    return null;
+  }
+
+  public getGrblSettings(): Map<number, number> {
+    return new Map(this.grblSettings);
+  }
+
+  /**
+   * Asks the controller where it is and waits for the answer, so a caller about
+   * to reason about the head's position reads one from now rather than from up
+   * to a poll interval ago.
+   */
+  public async refreshPosition(): Promise<SharedMachineState> {
+    if (this.status.connected) await this.nextStatusReport();
+    return this.getState();
+  }
+
+  /** `home()` under the name the shared tools use. */
+  public async homeMachine(): Promise<void> {
+    await this.home();
+  }
+
+  /** `emergencyStop()` under the name the shared tools use. */
+  public async eStop(): Promise<void> {
+    await this.emergencyStop();
+  }
+}
+
+/**
+ * GRBL's state word, and this app's own connection states, mapped onto the
+ * shared vocabulary.
+ *
+ * A pause is the interesting one. GRBL sits `Idle` through a tool change — it
+ * has run everything it was given — so the controller's word cannot tell a
+ * finished job from a job waiting for someone to change a tool. The app knows,
+ * and that is what is reported.
+ */
+function sharedStatusOf(s: MachineStatus): SharedMachineState['status'] {
+  if (!s.connected) return s.state === 'Connecting' ? 'CONNECTING' : 'DISCONNECTED';
+  if (s.state === 'Alarm') return 'ALARM';
+  if (s.jobPaused) {
+    if (/tool/i.test(s.pauseMessage ?? '')) return 'PAUSED_TOOL';
+    if (/material|sheet/i.test(s.pauseMessage ?? '')) return 'PAUSED_MATERIAL';
+    return 'PAUSED_OPERATOR';
+  }
+  if (s.jobRunning) return 'RUNNING';
+  if (s.state === 'Home' || s.state === 'Jog' || s.state === 'Run') return 'RUNNING';
+  return 'IDLE';
 }
 
 export const webSerialManager = new WebSerialManager();

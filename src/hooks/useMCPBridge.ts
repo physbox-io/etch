@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { getStoredAuthToken } from '../utils/apiClient';
+import { createEtchMachineHandlers, setCurrentDocument } from '../utils/machineMcp';
 import { useStore } from '../store/useStore';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
@@ -53,8 +54,38 @@ type MCPMessage = Record<string, any>; // eslint-disable-line @typescript-eslint
 /** Whatever a command chooses to answer with. Always carries `ok`. */
 export type MCPResult = Record<string, unknown> & { ok: boolean };
 
+/*
+ * The machine commands, shared with Volt and Mesh.
+ *
+ * Built once, outside the handler, because the gate they check has to be the
+ * same object the navbar's arm button toggles.
+ *
+ * Everything that can move an axis goes through that gate: a person clicks
+ * "Allow Claude to move this machine" in the app, once, and the agent works
+ * inside that window. Reading state, trimming a running cut, pausing,
+ * cancelling and e-stopping are all ungated — refusing a stop would be worse
+ * than having no gate at all.
+ */
+const machineHandlers = createEtchMachineHandlers();
+
 export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MCPResult> {
   const store = useStore.getState();
+
+  // The machine handlers outlive any one call, so they are pointed at the
+  // document this one is answering about rather than closing over a stale one.
+  setCurrentDocument(store.document, store.cncTools);
+
+  const machineHandler = machineHandlers[cmd];
+  if (machineHandler) {
+    try {
+      return (await machineHandler(msg ?? {})) as MCPResult;
+    } catch (e) {
+      // Returned rather than thrown: a refusal is an answer the agent has to
+      // read and act on — arm the machine, open a document, re-zero — and an
+      // exception here would surface as a bridge fault instead.
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
 
   switch (cmd) {
     case 'etch_get_state':

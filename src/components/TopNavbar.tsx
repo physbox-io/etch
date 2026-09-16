@@ -22,6 +22,7 @@ import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
 import { UserProfileButton, SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from './UserProfileButton';
+import { AgentMachineBanner } from './AgentMachineBanner';
 import {
   Scissors,
   Sparkles,
@@ -781,6 +782,9 @@ export const TopNavbar: React.FC = () => {
           </button>
 
           {/* User Account Profile & Cloud Sync */}
+          {/* Whether Claude may move the machine — see AgentMachineBanner */}
+          <AgentMachineBanner />
+
           <UserProfileButton />
 
           {/* GitHub Repository Link */}
