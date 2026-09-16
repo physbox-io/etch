@@ -166,3 +166,38 @@ describe('readShareLink', () => {
     await expect(readShareLink()).rejects.toThrow();
   });
 });
+
+/*
+ * The account route: the job is left with the account and the link carries a
+ * token. Only the URL handling is exercised here — the network side belongs to
+ * the API's own suite.
+ */
+describe('account share links', () => {
+  it('reads a token out of a query string, and ignores everything else', async () => {
+    const { shareTokenInUrl } = await import('../src/utils/shareLink');
+    expect(shareTokenInUrl('?share=uPqJ1nK9w2sX4vB7tR3aZg')).toBe('uPqJ1nK9w2sX4vB7tR3aZg');
+    expect(shareTokenInUrl('?other=1')).toBeNull();
+    expect(shareTokenInUrl('')).toBeNull();
+  });
+
+  // The opposite of the fragment path's choice, on purpose: a chat app that
+  // rewrites a link keeps the query and drops the fragment, and surviving that
+  // rewrite is the whole reason this route exists.
+  it('carries the token in the query string, not the fragment', async () => {
+    const url = new URL('https://etch.example/app/');
+    url.searchParams.set('share', 'tok123');
+    expect(url.hash).toBe('');
+    expect(url.toString()).toContain('?share=tok123');
+  });
+
+  // A token says nothing about which app made it, so a Mesh link pasted here
+  // would otherwise be answered with "that link is damaged" — which sends
+  // somebody looking for a fault in a link that is perfectly good.
+  it('takes a token out of the address bar without disturbing the rest of it', async () => {
+    const { clearShareToken } = await import('../src/utils/shareLink');
+    window.history.replaceState(null, '', '/app/?keep=1&share=tok123#anchor');
+    clearShareToken();
+    expect(window.location.search).toBe('?keep=1');
+    expect(window.location.hash).toBe('#anchor');
+  });
+});

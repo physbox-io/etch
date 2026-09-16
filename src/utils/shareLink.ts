@@ -15,6 +15,7 @@
 
 import type { EtchDocument } from '../types/etch';
 import { toBase64Url, fromBase64Url, gzip, gunzip } from './urlPayload';
+import { createShare, fetchSharedDocument, getStoredUser } from './apiClient';
 
 /** The only share format understood so far. */
 const SHARE_VERSION = '1';
@@ -44,6 +45,14 @@ const SHARE_HARD_LIMIT = 64 * 1024;
 
 export interface ShareLink {
   url: string;
+  /**
+   * Set when the job was left with the account rather than put in the link.
+   *
+   * It is what "stop sharing" needs, and it is how the panel knows there is
+   * anything to stop: a link with the job inside it cannot be recalled, and
+   * offering to turn one off would be a lie.
+   */
+  token?: string;
   /** Length of the whole URL in characters — what the limits above are about. */
   length: number;
   sheets: number;
@@ -167,4 +176,116 @@ export async function readShareLink(): Promise<EtchDocument | null> {
  */
 export function clearShareFragment(): void {
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
+}
+
+// ---------------------------------------------------------------------------
+// The other kind of link: a token, with the job left in the account
+//
+// Everything above puts the job in the URL, which needs no server and no
+// account and is right for anything that fits. A shaded photograph does not,
+// and a job of six sheets with a photograph on each is not close: the pixels
+// are in the document by design and they are base64 already, so gzip has
+// nothing to take out of them. So the job is left with the account and the link
+// carries a token.
+//
+// In the *query string*, not the fragment, which is the opposite of the choice
+// above and for the reason this path exists at all: a link that a chat app
+// rewrites is exactly what the fragment could not survive, and a rewrite keeps
+// the query and drops the fragment. The cost is that the token appears in an
+// access log, which is why it is 128 bits of randomness and why it can be
+// revoked.
+//
+// What is stored is a snapshot and the server will not let it be edited
+// afterwards. Somebody who vouches for a link is vouching for what they sent,
+// and a link whose contents could change under them would make that worthless.
+// Changing the job means making a new link.
+// ---------------------------------------------------------------------------
+
+/**
+ * The query parameter a token-shared document arrives in.
+ *
+ * The same name in every Physbox app rather than one word per app. A token is
+ * opaque and says nothing about where it belongs, so the app that receives one
+ * asks the server what it is and sends you to the right app if it is not this
+ * one — which only works if all three look in the same place for it.
+ */
+const SHARE_TOKEN_PARAM = 'share';
+
+/** What to call a sibling app when a link turns out to belong to it. */
+const APP_NAMES: Record<string, string> = { etch: 'Etch', volt: 'Volt', mesh: 'Mesh' };
+
+/** Whether there is an account to leave a job with at all. */
+export function canShareViaAccount(): boolean {
+  return Boolean(getStoredUser());
+}
+
+/**
+ * Leaves the job with the account and returns the short link for it.
+ *
+ * No size ceiling of our own here: the server holds the one that matters and
+ * says so in its refusal, and a second number kept in the app would be the one
+ * that drifted.
+ */
+export async function buildAccountShareLink(
+  job: EtchDocument,
+  base: string = window.location.href
+): Promise<ShareLink> {
+  const { token } = await createShare({ appId: 'etch', name: job.name || 'Etch document', data: job });
+
+  const url = new URL(base);
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set(SHARE_TOKEN_PARAM, token);
+  const full = url.toString();
+
+  const sheets = (job.sheets?.length ?? 0) + 1;
+  return {
+    url: full,
+    length: full.length,
+    sheets,
+    travelsWell: true,
+    token,
+    notes: [
+      sheets > 1
+        ? `All ${sheets} sheets are stored with your account and the link points at them, so it stays short.`
+        : 'The job is stored with your account and the link points at it, so the link stays short.',
+      'What it holds cannot be changed afterwards — edit the job and share again for a new link.',
+      'Anyone with the link can open it, with or without an account. You can turn it off at any time.',
+      // Said at the moment somebody is deciding to rely on it, rather than
+      // buried in terms nobody opens. PhysBox Cloud is early and might not
+      // continue; a link is a convenience, not an archive.
+      'PhysBox Cloud is early — accounts and links here may be withdrawn at any time. Keep your own copy of anything that matters.',
+    ],
+  };
+}
+
+/** The token in the address bar, if this page was opened from an account link. */
+export function shareTokenInUrl(search: string = window.location.search): string | null {
+  return new URLSearchParams(search).get(SHARE_TOKEN_PARAM);
+}
+
+/** Fetches the job a token stands for. */
+export async function readAccountShareLink(token: string): Promise<EtchDocument> {
+  const share = await fetchSharedDocument(token);
+  /*
+   * A token carries no hint of which app made it, so a Mesh link pasted into
+   * Etch would otherwise be answered with "that link is damaged" — which sends
+   * somebody looking for a fault in a link that is perfectly good.
+   */
+  if (share.appId && share.appId !== 'etch') {
+    const other = APP_NAMES[share.appId] ?? share.appId;
+    throw new Error(`That link is a ${other} document, not an Etch job. Open it in ${other}.`);
+  }
+  const doc = share.data as EtchDocument | null;
+  if (!doc || !Array.isArray(doc.elements) || !Array.isArray(doc.layers)) {
+    throw new Error('That shared job could not be read — it may have been made by a newer version of Etch.');
+  }
+  return { ...doc, name: doc.name || share.name || 'Shared document' };
+}
+
+/** Takes an opened token back out of the address bar. See `clearShareFragment`. */
+export function clearShareToken(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(SHARE_TOKEN_PARAM);
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }

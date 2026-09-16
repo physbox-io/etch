@@ -5,11 +5,23 @@ import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed } from '../utils/svgImporter';
 import { readSvgHandoff, placeUnscaled, type SvgHandoff } from '../utils/svgHandoff';
-import { buildShareLink, readShareLink, clearShareFragment, type ShareLink } from '../utils/shareLink';
+import {
+  buildShareLink,
+  readShareLink,
+  clearShareFragment,
+  buildAccountShareLink,
+  canShareViaAccount,
+  shareTokenInUrl,
+  readAccountShareLink,
+  clearShareToken,
+  ShareTooLargeError,
+  type ShareLink,
+} from '../utils/shareLink';
+import { revokeShare, isProRequired } from '../utils/apiClient';
 import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
-import { UserProfileButton } from './UserProfileButton';
+import { UserProfileButton, SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from './UserProfileButton';
 import {
   Scissors,
   Sparkles,
@@ -77,6 +89,8 @@ export const TopNavbar: React.FC = () => {
   const [share, setShare] = useState<ShareLink | null>(null);
   const [shareError, setShareError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [shareTooBig, setShareTooBig] = useState<ShareTooLargeError | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
 
   const isUserPreset = activePreset.startsWith('user:');
   const userPresetName = isUserPreset ? activePreset.slice('user:'.length) : '';
@@ -166,6 +180,7 @@ export const TopNavbar: React.FC = () => {
    */
   const handleShare = async () => {
     setShareError(null);
+    setShareTooBig(null);
     setCopied(false);
     try {
       const link = await buildShareLink(jobDocument(useStore.getState()));
@@ -173,8 +188,77 @@ export const TopNavbar: React.FC = () => {
       await copyLink(link.url);
     } catch (e) {
       setShare(null);
-      setShareError(e instanceof Error ? e.message : 'That job could not be made into a link.');
+      /*
+       * A job that will not fit in a link is the ordinary case for anything with
+       * a photograph on it, not an error to apologise for — so it is kept apart
+       * from a real failure. The panel turns it into the offer that actually
+       * solves it: leave the job with an account and send a short link.
+       */
+      if (e instanceof ShareTooLargeError) setShareTooBig(e);
+      else setShareError(e instanceof Error ? e.message : 'That job could not be made into a link.');
     }
+  };
+
+  /**
+   * Leaves the job with the account and copies the short link for it.
+   *
+   * Offered only after the link-sized route has failed. It is the heavier
+   * option — it needs an account, and it puts a copy of the job on a server —
+   * and offering it first would make an account look required for something
+   * that mostly is not.
+   */
+  const handleAccountShare = async () => {
+    setShareError(null);
+    setShareBusy(true);
+    try {
+      const link = await buildAccountShareLink(jobDocument(useStore.getState()));
+      setShareTooBig(null);
+      setShare(link);
+      await copyLink(link.url);
+    } catch (e) {
+      // A free account is expected to work here; sharing is deliberately not a
+      // Pro route. If that ever changes server-side, name it rather than
+      // showing a bare 403.
+      setShareError(
+        isProRequired(e)
+          ? 'Sharing from your account needs PhysBox Pro.'
+          : e instanceof Error
+            ? e.message
+            : 'That job could not be shared from your account.'
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  /*
+   * Signing in was the answer to "this job is too big for a link", so the share
+   * is finished off rather than leaving the panel sitting there with the same
+   * button on it — the person already said what they wanted.
+   */
+  useEffect(() => {
+    const done = (e: Event) => {
+      if ((e as CustomEvent<{ reason?: string }>).detail?.reason !== 'share') return;
+      void handleAccountShare();
+    };
+    window.addEventListener(SIGNED_IN_EVENT, done);
+    return () => window.removeEventListener(SIGNED_IN_EVENT, done);
+    // `handleAccountShare` is rebuilt every render and reads the store at call
+    // time, so re-subscribing on it would churn the listener for nothing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Turns off a link that points at the account. A link with the job inside it cannot be recalled. */
+  const handleStopSharing = async (token: string) => {
+    setShareBusy(true);
+    const ok = await revokeShare(token);
+    setShareBusy(false);
+    if (!ok) {
+      setShareError('That link could not be turned off. Try again in a moment.');
+      return;
+    }
+    setShare(null);
+    setCopied(false);
   };
 
   /** The OS share sheet, where there is one — the route to a message or a post. */
@@ -345,28 +429,67 @@ export const TopNavbar: React.FC = () => {
    * the handoff, there is nowhere to put a shared job alongside what is open,
    * so "no" has to mean "not now" rather than "throw it away".
    */
+  /**
+   * Opens a shared job, however the link carried it.
+   *
+   * Through `openJob`, so a job of four sheets arrives as four. The link is
+   * taken out of the address bar only on a yes: unlike handed-over artwork
+   * there is nowhere to put a shared job alongside what is open, so declining
+   * has to mean "not now" rather than "thrown away".
+   */
+  const openSharedJob = (shared: EtchDocument): boolean => {
+    const { document: open, tabs } = useStore.getState();
+    const empty = tabs.length === 1 && open.elements.length === 0;
+    const sheets = (shared.sheets?.length ?? 0) + 1;
+    if (
+      !empty &&
+      !window.confirm(
+        `Open "${shared.name || 'a shared document'}"` +
+          (sheets > 1 ? ` (${sheets} sheets)` : '') +
+          '?\n\n' +
+          `This closes the ${tabs.length} sheet${tabs.length === 1 ? '' : 's'} you have open. ` +
+          'Save them first if you want them back.\n' +
+          'Cancel keeps them — the link stays in the address bar, so you can reload to open it later.'
+      )
+    ) {
+      return false;
+    }
+    clearShareFragment();
+    clearShareToken();
+    openJob(shared);
+    return true;
+  };
+
+  /**
+   * A job arriving as a token — the account route, for jobs too big for a link.
+   *
+   * It lands the same way a fragment-shared job does, through `openSharedJob`,
+   * so there is one way into a shared job rather than two that drift. The token
+   * is taken out of the address bar only once it is open, so declining leaves
+   * the link where it was.
+   */
+  useEffect(() => {
+    const token = shareTokenInUrl();
+    if (!token) return;
+    readAccountShareLink(token)
+      .then((shared) => openSharedJob(shared))
+      .catch((err) => {
+        clearShareToken();
+        setImportReport({
+          count: 0,
+          size: null,
+          notes: [err?.message || 'That shared link could not be opened.'],
+        });
+      });
+    // Once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     readShareLink()
       .then((shared) => {
         if (!shared) return;
-        const { document: open, tabs } = useStore.getState();
-        const empty = tabs.length === 1 && open.elements.length === 0;
-        const sheets = (shared.sheets?.length ?? 0) + 1;
-        if (
-          !empty &&
-          !window.confirm(
-            `Open "${shared.name || 'a shared document'}"` +
-              (sheets > 1 ? ` (${sheets} sheets)` : '') +
-              '?\n\n' +
-              `This closes the ${tabs.length} sheet${tabs.length === 1 ? '' : 's'} you have open. ` +
-              'Save them first if you want them back.\n' +
-              'Cancel keeps them — the link stays in the address bar, so you can reload to open it later.'
-          )
-        ) {
-          return;
-        }
-        clearShareFragment();
-        openJob(shared);
+        openSharedJob(shared);
       })
       .catch((err) => {
         clearShareFragment();
@@ -684,21 +807,24 @@ export const TopNavbar: React.FC = () => {
           here is a rank *within* the header's own z-30, so a note card at
           z-[45] sat on top of this panel no matter what number it carried —
           nothing about the panel's classes was wrong, the ancestor was. */}
-      {(share || shareError) &&
+      {(share || shareError || shareTooBig) &&
         ReactDOM.createPortal(
         <div className="fixed top-16 right-4 max-lg:top-1/2 max-lg:right-1/2 max-lg:translate-x-1/2 max-lg:-translate-y-1/2 z-50 w-[28rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
           <div className="flex items-start justify-between gap-3">
             <p className="font-bold text-slate-800 dark:text-slate-100">
-              {shareError
-                ? 'This job is too big to share as a link'
-                : copied
-                  ? 'Link copied'
-                  : 'Share link'}
+              {shareTooBig
+                ? 'This job is too big to put in a link'
+                : shareError
+                  ? 'This job could not be shared as a link'
+                  : copied
+                    ? 'Link copied'
+                    : 'Share link'}
             </p>
             <button
               onClick={() => {
                 setShare(null);
                 setShareError(null);
+                setShareTooBig(null);
               }}
               className="text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold cursor-pointer px-1"
               title="Dismiss"
@@ -709,6 +835,57 @@ export const TopNavbar: React.FC = () => {
 
           {shareError && (
             <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">{shareError}</p>
+          )}
+
+          {/* The offer, not an apology.
+
+              A shaded photograph is around a hundred kilobytes of link on its
+              own, and a job of six sheets with one on each is nowhere near
+              fitting — so "too big" is the ordinary outcome for the jobs people
+              most want to show somebody. The one thing that fixes it is an
+              account, and this is the moment it is worth having one, so it is
+              asked for here rather than left to be found behind the avatar in
+              the corner. */}
+          {shareTooBig && (
+            <div className="mt-1.5 space-y-2">
+              <p className="text-[11px] text-slate-600 dark:text-slate-300">{shareTooBig.message}</p>
+              {canShareViaAccount() ? (
+                <>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Your account can hold it instead, and the link becomes a short one.
+                  </p>
+                  <button
+                    onClick={handleAccountShare}
+                    disabled={shareBusy}
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold cursor-pointer transition-colors"
+                  >
+                    <Share2 className="w-3 h-3" />
+                    {shareBusy ? 'Storing the job…' : 'Share from your account'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Sign in and your account can hold the job instead — the link becomes a short one,
+                    anyone can open it without an account, and you can turn it off later. It is free;
+                    there is nothing to buy.
+                  </p>
+                  <button
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent(SIGN_IN_REQUESTED_EVENT, { detail: { reason: 'share' } })
+                      )
+                    }
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer transition-colors"
+                  >
+                    Sign in to share this job
+                  </button>
+                </>
+              )}
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Or export JSON and send the file.
+              </p>
+            </div>
           )}
 
           {share && (
@@ -744,6 +921,18 @@ export const TopNavbar: React.FC = () => {
                   <li key={i}>{n}</li>
                 ))}
               </ul>
+              {/* Only for a link that points at the account. A link with the job
+                  inside it is already out there and cannot be recalled;
+                  offering to turn one off would be a lie. */}
+              {share.token && (
+                <button
+                  onClick={() => handleStopSharing(share.token!)}
+                  disabled={shareBusy}
+                  className="mt-2 text-[11px] text-red-600 dark:text-red-400 hover:underline disabled:opacity-50 cursor-pointer"
+                >
+                  {shareBusy ? 'Turning it off…' : 'Stop sharing this link'}
+                </button>
+              )}
             </>
           )}
         </div>,

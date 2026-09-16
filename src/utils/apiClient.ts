@@ -248,9 +248,17 @@ export async function loginWithGoogle(credential: string): Promise<{ token: stri
 export async function fetchCurrentUser(): Promise<PhysBoxUser | null> {
   if (!getStoredAuthToken()) return null;
   try {
-    const res = await request<{ user: PhysBoxUser }>('/api/auth/me');
+    const res = await request<{ user: PhysBoxUser; token?: string }>('/api/auth/me');
     if (res.user) {
-      setStoredAuth(getStoredAuthToken()!, res.user);
+      /*
+       * The server rolls a session forward when it is more than halfway
+       * through its year, and hands the new token back here. Storing it is
+       * what actually keeps somebody signed in: without this, an account that
+       * shared something and came back much later would find itself signed out
+       * — which, for a free feature nobody asked to have an account for, reads
+       * as having been deactivated.
+       */
+      setStoredAuth(res.token || getStoredAuthToken()!, res.user);
       return res.user;
     }
     return null;
@@ -571,6 +579,61 @@ export async function putCloudDocument(input: {
       label: input.label,
     }),
   });
+}
+
+/**
+ * A document left with the account so it can be handed over as a short link.
+ *
+ * Etch shares by putting the whole job in the URL fragment, which needs nothing
+ * from the server and is right for anything that fits. This is for what does
+ * not: a shaded photograph is around a hundred kilobytes of link on its own,
+ * and a job of six sheets with a photograph on each is not close.
+ *
+ * Not a Pro route. A link from somebody who already uses this is how the next
+ * person finds it, and a share that required a subscription of the sender would
+ * mostly stop the link being made.
+ */
+export interface ShareMeta {
+  token: string;
+  appId: string;
+  name: string;
+  sizeBytes: number;
+  viewCount: number;
+  createdAt: string;
+}
+
+export async function createShare(input: {
+  appId: string;
+  name: string;
+  data: unknown;
+}): Promise<{ token: string; sizeBytes: number }> {
+  return request('/api/shares', {
+    method: 'POST',
+    body: JSON.stringify({ app_id: input.appId, name: input.name, data: input.data }),
+  });
+}
+
+export async function revokeShare(token: string): Promise<boolean> {
+  try {
+    await request(`/api/shares/${encodeURIComponent(token)}`, { method: 'DELETE' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opens a shared document. Deliberately usable with no account.
+ *
+ * The person following a link has usually never signed in here, and an account
+ * wall is the point at which they close the tab. `request` sends the auth
+ * header only when there is one, so this works signed in or out.
+ */
+export async function fetchSharedDocument(token: string): Promise<ShareMeta & { data: unknown }> {
+  const res = await request<{ share: ShareMeta & { data: unknown } }>(
+    `/api/shared/${encodeURIComponent(token)}`
+  );
+  return res.share;
 }
 
 export async function fetchCloudDocuments(appId?: string): Promise<CloudDocumentMeta[]> {
