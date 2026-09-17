@@ -97,7 +97,7 @@ function stripClosingPoint(c: Pt[]): Pt[] {
 }
 
 /** The closed contours an element contributes, or none. */
-function regionsOf(el: EtchElement): Pt[][] {
+export function regionsOf(el: EtchElement): Pt[][] {
   return extractElementContours(el)
     .filter(isClosedRegion)
     .map(stripClosingPoint)
@@ -133,7 +133,7 @@ function clip(
  * orientation convention on the way out, which the non-zero pass then reads
  * correctly. Skipping it and simply switching rules loses every counter.
  */
-function resolveElement(regions: Pt[][]): ClipperLib.Paths {
+export function resolveElement(regions: Pt[][]): ClipperLib.Paths {
   return clip(toClipperPaths(regions), [], ClipperLib.ClipType.ctUnion, ClipperLib.PolyFillType.pftEvenOdd);
 }
 

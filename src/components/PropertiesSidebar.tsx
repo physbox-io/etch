@@ -1,5 +1,7 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
+import { getLocalBBox } from '../utils/geom';
+import { SHAPE_KINDS, defaultsFor, type ShapeKind } from '../utils/parametricShapes';
 import { FontPicker } from './FontPicker';
 import { NumberInput } from '@physbox-io/ui';
 import type { LayerOperation, EtchLayer, MachinedLayer } from '../types/etch';
@@ -21,6 +23,8 @@ import {
   AlignHorizontalJustifyCenter,
   AlignVerticalJustifyCenter,
   Wand2,
+  Expand,
+  Shrink,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -390,8 +394,19 @@ const CncLayerCutting: React.FC<{
                 Spindle (RPM) <InfoTooltip text="Rotational speed of cutter spindle in RPM. Calculated from material surface speed and tool diameter." />
               </label>
               <NumberInput
-                step={1000}
-                min={1000}
+                /*
+                 * No floor, and a step that can reach a router's dial settings.
+                 *
+                 * This number is written straight out as the `S` word. On the
+                 * app's own default of `$30=1000` that is a 0-1000 PWM scale, so
+                 * a floor of 1000 turned a requested 60% into full output — the
+                 * only clamp in either app that moved a value in the dangerous
+                 * direction. Zero is also a real setting: a drag knife or a
+                 * laser module on a CNC gantry wants the spindle off, and the
+                 * emitter already branches on `rpm > 0`.
+                 */
+                step={100}
+                min={0}
                 allowEmpty
                 placeholder={String(recipe?.rpm ?? '')}
                 value={layer.rpmOverride}
@@ -512,10 +527,14 @@ export const PropertiesSidebar: React.FC = () => {
     eraserWidth,
     setEraserWidth,
     mandalaSettings,
+    shapeSettings,
+    setShapeSettings,
     updateElement,
     centerSelected,
     combineSelected,
     combineNotice,
+    offsetSelected,
+    offsetNotice,
     beautifySelected,
     beautifyNotice,
     setActiveLayer,
@@ -534,6 +553,15 @@ export const PropertiesSidebar: React.FC = () => {
     setPropertiesOpen,
   } = useStore();
 
+  /**
+   * How far the next offset grows or shrinks by, in mm.
+   *
+   * Component state rather than document state: it is how the operator is
+   * working right now, not a property of the drawing, and putting it in the
+   * document would mean it travelled to whoever opened the file next.
+   */
+  const [offsetDistance, setOffsetDistance] = React.useState(2);
+
   /*
     The *last* selected element, not the first one in document order. With a
     multiple selection the inspector edits the element you most recently
@@ -547,6 +575,21 @@ export const PropertiesSidebar: React.FC = () => {
     selectedIds.length > 1
       ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
       : null;
+
+  /**
+   * What the selected shape element is, and how big.
+   *
+   * The radius is read off the element's own box when it carries no
+   * `outerRadius`, which is every star drawn before the tool was parametric:
+   * the dropdown has to turn one of those into a heart of the *same size*, not
+   * of a default size.
+   */
+  const toolShapeInfo = SHAPE_KINDS.find((k) => k.id === shapeSettings.kind) ?? null;
+  const shapeKind: ShapeKind = (selectedElement?.shape ?? 'star') as ShapeKind;
+  const shapeInfo = SHAPE_KINDS.find((k) => k.id === shapeKind) ?? null;
+  const shapeBox = selectedElement ? getLocalBBox(selectedElement) : null;
+  const shapeRadius =
+    selectedElement?.outerRadius ?? (shapeBox ? Math.max(shapeBox.width, shapeBox.height) / 2 : 20);
   // Laser is the default target — most Etch documents are cut on one, and the
   // exporter treats an unset machine as a laser too.
   const machineKind = machineKindOf(document);
@@ -610,6 +653,72 @@ export const PropertiesSidebar: React.FC = () => {
         changed after the fact, by drawing a stroke and re-homing it — finding
         out where an eraser lands by making a mark and looking.
       */}
+      {/*
+        The shape tool's own panel, shown before anything is drawn.
+
+        Which of eleven shapes the tool will produce is a question nothing on
+        the canvas can answer, and the old answer — draw one and look — is the
+        same mistake the eraser's target layer used to make. The preview under
+        the cursor follows this too, so the drag shows the shape it is about to
+        make rather than always a star.
+      */}
+      {activeTool === 'star' && (
+        <div className="p-4 space-y-2 text-xs border-b border-slate-200 dark:border-slate-800/80">
+          <h3 className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+            Shape Tool
+          </h3>
+          <div>
+            <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+              Shape{' '}
+              <InfoTooltip text="What the next drag will draw. The size comes from the drag; these are everything else about it, and every one of them stays editable after the shape exists." />
+            </label>
+            <select
+              value={shapeSettings.kind}
+              onChange={(e) => setShapeSettings({ kind: e.target.value as ShapeKind })}
+              className={NUM_INPUT}
+            >
+              {SHAPE_KINDS.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {toolShapeInfo?.countLabel && (
+            <div>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                {toolShapeInfo.countLabel}
+              </label>
+              <NumberInput
+                min={3}
+                max={64}
+                fallbackOnBlur={5}
+                value={shapeSettings.pointsCount}
+                onChange={(val) => setShapeSettings({ pointsCount: val ? Math.round(val) : 5 })}
+                className={NUM_INPUT}
+              />
+            </div>
+          )}
+          {toolShapeInfo?.innerLabel && (
+            <div>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                {toolShapeInfo.innerLabel} (% of size){' '}
+                <InfoTooltip text="As a percentage rather than millimetres, because how big the shape will be is not decided until the drag has happened." />
+              </label>
+              <NumberInput
+                min={1}
+                max={99}
+                step={5}
+                fallbackOnBlur={40}
+                value={Math.round(shapeSettings.innerRatio * 100)}
+                onChange={(val) => setShapeSettings({ innerRatio: Math.min(0.99, Math.max(0.01, (val ?? 40) / 100)) })}
+                className={NUM_INPUT}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {activeTool === 'erase' && (
         <div className="p-4 space-y-2 text-xs border-b border-slate-200 dark:border-slate-800/80">
           <h3 className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
@@ -772,6 +881,59 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
 
             {/*
+              Offset: grow or shrink by a distance, as a new shape alongside the
+              original.
+
+              Not the same thing as the width and height fields below, and the
+              difference is worth stating in the tooltip: scaling a 100 x 20 mm
+              plate to 110 wide makes it 22 tall, while growing it by 5 makes it
+              110 x 30. One keeps proportions, the other keeps wall thicknesses
+              and clearances — which is what an inlay, a press fit or a sticker
+              cut line is asking for.
+
+              Two buttons rather than a signed number, because "shrink by -3" is
+              a sentence people get backwards, and getting it backwards here
+              makes a part that does not fit.
+            */}
+            <div className="col-span-2">
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                Inset / Outset (mm)
+              </label>
+              <div className="mt-1 flex gap-1">
+                <NumberInput
+                  min={0.01}
+                  step={0.5}
+                  fallbackOnBlur={2}
+                  value={offsetDistance}
+                  onChange={(val) => setOffsetDistance(val ?? 2)}
+                  className="w-16 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
+                />
+                <button
+                  onClick={() => offsetSelected(Math.abs(offsetDistance))}
+                  className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                  title={`Outset: a new outline ${Math.abs(offsetDistance)} mm outside this one. Every edge moves out by the same distance, so corners and wall thicknesses are kept — which is what scaling with the Width and Height fields does not do. Select a shape and the holes in it together and the holes are offset as holes.`}
+                >
+                  <Expand className="w-3.5 h-3.5" />
+                  Outset
+                </button>
+                <button
+                  onClick={() => offsetSelected(-Math.abs(offsetDistance))}
+                  className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                  title={`Inset: a new outline ${Math.abs(offsetDistance)} mm inside this one — for a pocket a part drops into, or a press fit.`}
+                >
+                  <Shrink className="w-3.5 h-3.5" />
+                  Inset
+                </button>
+              </div>
+              {offsetNotice && (
+                <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                  <span>{offsetNotice}</span>
+                </div>
+              )}
+            </div>
+
+            {/*
               Boolean combining. Only offered with two or more selected, because
               with one shape there is nothing to combine it with and a row of
               dead buttons reads as a broken feature.
@@ -847,6 +1009,116 @@ export const PropertiesSidebar: React.FC = () => {
                   className={NUM_INPUT}
                 />
               </div>
+            )}
+            {/*
+              The shape tool's dropdown. A star, a heart, a gear and a crescent
+              are one tool with one pair of numbers, so this is a list rather
+              than eleven buttons in the toolbar.
+
+              Changing anything here clears any baked path the element carries.
+              A star drawn before the tool was parametric has its outline
+              written into `d`, which wins over the numbers — so without the
+              clear, the dropdown would appear to do nothing on exactly the
+              shapes people have already drawn.
+            */}
+            {selectedElement.type === 'star' && (
+              <>
+                <div className="col-span-2">
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Shape
+                  </label>
+                  <select
+                    value={selectedElement.shape ?? 'star'}
+                    onChange={(e) => {
+                      const kind = e.target.value as ShapeKind;
+                      updateElement(selectedElement.id, {
+                        shape: kind,
+                        d: undefined,
+                        ...defaultsFor(kind, shapeRadius),
+                      });
+                      commitHistory();
+                    }}
+                    className={NUM_INPUT}
+                  >
+                    {SHAPE_KINDS.map((k) => (
+                      <option key={k.id} value={k.id}>
+                        {k.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Size (mm)
+                  </label>
+                  <NumberInput
+                    step={1}
+                    min={0.5}
+                    fallbackOnBlur={20}
+                    value={round1(shapeRadius * 2)}
+                    onChange={(val) =>
+                      updateElement(selectedElement.id, {
+                        d: undefined,
+                        shape: shapeKind,
+                        outerRadius: Math.max(0.25, (val ?? 40) / 2),
+                        innerRadius:
+                          selectedElement.innerRadius !== undefined
+                            ? selectedElement.innerRadius * ((val ?? 40) / 2 / shapeRadius)
+                            : undefined,
+                      })
+                    }
+                    className={NUM_INPUT}
+                  />
+                </div>
+                {shapeInfo?.countLabel && (
+                  <div>
+                    <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                      {shapeInfo.countLabel}
+                    </label>
+                    <NumberInput
+                      min={3}
+                      max={64}
+                      fallbackOnBlur={5}
+                      value={selectedElement.pointsCount ?? defaultsFor(shapeKind, shapeRadius).pointsCount ?? 5}
+                      onChange={(val) =>
+                        updateElement(selectedElement.id, {
+                          d: undefined,
+                          shape: shapeKind,
+                          outerRadius: shapeRadius,
+                          pointsCount: val ? Math.round(val) : 5,
+                        })
+                      }
+                      className={NUM_INPUT}
+                    />
+                  </div>
+                )}
+                {shapeInfo?.innerLabel && (
+                  <div className={shapeInfo.countLabel ? '' : 'col-span-1'}>
+                    <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                      {shapeInfo.innerLabel} (mm)
+                    </label>
+                    <NumberInput
+                      step={0.5}
+                      min={0.1}
+                      fallbackOnBlur={round1(shapeRadius * 0.4)}
+                      value={round1(
+                        selectedElement.innerRadius ??
+                          defaultsFor(shapeKind, shapeRadius).innerRadius ??
+                          shapeRadius * 0.4
+                      )}
+                      onChange={(val) =>
+                        updateElement(selectedElement.id, {
+                          d: undefined,
+                          shape: shapeKind,
+                          outerRadius: shapeRadius,
+                          innerRadius: val ?? shapeRadius * 0.4,
+                        })
+                      }
+                      className={NUM_INPUT}
+                    />
+                  </div>
+                )}
+              </>
             )}
             {selectedElement.sides !== undefined && (
               <div>
@@ -1296,7 +1568,7 @@ export const PropertiesSidebar: React.FC = () => {
             </button>
           </div>
         </div>
-      ) : activeTool === 'erase' ? null : (
+      ) : activeTool === 'erase' || activeTool === 'star' ? null : (
         <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
           Select any element on the canvas to inspect and edit properties.
         </div>

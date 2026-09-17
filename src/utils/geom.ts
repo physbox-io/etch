@@ -1,4 +1,5 @@
 import type { EtchElement } from '../types/etch';
+import { shapeOutlineD } from './parametricShapes';
 import { pathPoints, type Pt } from './pathFlatten';
 import { hasFreshOutline } from './textVectorizer';
 
@@ -32,27 +33,59 @@ export interface BBox {
  */
 const bboxCache = new Map<
   string,
-  { d: string; w: number; h: number; text: string; bbox: BBox }
+  {
+    d: string;
+    w: number;
+    h: number;
+    text: string;
+    /**
+     * A parametric shape has no path of its own, so its box has to be keyed on
+     * the numbers the outline is generated from. Without these, changing a
+     * star's point count in the inspector left the selection box around the
+     * shape it used to be.
+     */
+    shape: string;
+    outerRadius: number;
+    innerRadius: number;
+    pointsCount: number;
+    bbox: BBox;
+  }
 >();
+
+/** The parametric identity of an element, for the cache above. */
+function shapeKeyOf(el: EtchElement) {
+  return {
+    shape: el.shape ?? '',
+    outerRadius: el.outerRadius ?? 0,
+    innerRadius: el.innerRadius ?? 0,
+    pointsCount: el.pointsCount ?? 0,
+  };
+}
 
 export function clearGeomBBoxCache(): void {
   bboxCache.clear();
 }
 
 export function getLocalBBox(el: EtchElement): BBox {
-  const pathD = el.d || el.outlineD || '';
-  if (pathD) {
-    const cached = bboxCache.get(el.id);
-    if (
-      cached &&
-      cached.d === pathD &&
-      cached.w === (el.w || 0) &&
-      cached.h === (el.h || 0) &&
-      cached.text === (el.text || '')
-    ) {
-      return cached.bbox;
-    }
+  const key = shapeKeyOf(el);
+  const stored = el.d || el.outlineD || '';
+  const cached = bboxCache.get(el.id);
+  if (
+    cached &&
+    cached.d === stored &&
+    cached.w === (el.w || 0) &&
+    cached.h === (el.h || 0) &&
+    cached.text === (el.text || '') &&
+    cached.shape === key.shape &&
+    cached.outerRadius === key.outerRadius &&
+    cached.innerRadius === key.innerRadius &&
+    cached.pointsCount === key.pointsCount
+  ) {
+    return cached.bbox;
   }
+  // Generated only on a miss: a parametric shape's outline is rebuilt from its
+  // numbers, and this runs per element on every render and every mouse move.
+  const pathD = stored || shapeOutlineD(el);
 
   let minX = 0;
   let minY = 0;
@@ -136,7 +169,7 @@ export function getLocalBBox(el: EtchElement): BBox {
     case 'star':
     case 'bezier':
     case 'erase': {
-      const pts = el.d ? pathPoints(el.d) : [];
+      const pts = pathD ? pathPoints(pathD) : [];
       if (pts.length > 0) ({ minX, minY, width, height } = boundsOf(pts));
       break;
     }
@@ -157,10 +190,13 @@ export function getLocalBBox(el: EtchElement): BBox {
 
   if (pathD) {
     bboxCache.set(el.id, {
-      d: pathD,
+      // The *stored* path, not the generated one: a generated outline is a new
+      // string every time, so caching it would compare unequal on every hit.
+      d: stored,
       w: el.w || 0,
       h: el.h || 0,
       text: el.text || '',
+      ...key,
       bbox: res,
     });
   }
@@ -348,29 +384,55 @@ export function isOutsideStock(el: EtchElement, width: number, height: number): 
 }
 
 /**
- * Generates an SVG path string for an N-point star centred at (cx, cy).
+ * How close to a quarter turn a rotation has to be before it sticks to one, in
+ * degrees.
+ *
+ * Square is what almost every rotation is reaching for — a part squared to the
+ * stock, a label turned to read up the side — and landing on 89.4° looks
+ * identical on screen and is wrong on the material, where the part no longer
+ * lines up with the sheet or with the piece it mates to. Four degrees is wide
+ * enough to catch a hand and narrow enough that a deliberate 85° is still
+ * reachable by aiming; Alt turns it off outright. See MACHINING.md.
  */
-export function generateStarPath(
-  cx: number,
-  cy: number,
-  pointsCount: number = 5,
-  outerRadius: number = 20,
-  innerRadius: number = 8
-): string {
-  let d = '';
-  const angleStep = Math.PI / pointsCount;
+export const ROTATION_STICKY_DEG = 4;
 
-  for (let i = 0; i < 2 * pointsCount; i++) {
-    const r = i % 2 === 0 ? outerRadius : innerRadius;
-    const a = i * angleStep - Math.PI / 2;
-    const x = (cx + r * Math.cos(a)).toFixed(2);
-    const y = (cy + r * Math.sin(a)).toFixed(2);
+/** The turns a rotation sticks to. 360 is here so a hair under a full turn
+ *  sticks as readily as a hair over zero. */
+const STICKY_ANGLES = [0, 90, 180, 270, 360];
 
-    if (i === 0) d += `M ${x} ${y}`;
-    else d += ` L ${x} ${y}`;
+/**
+ * Pulls an angle onto a quarter turn when it is nearly one.
+ *
+ * `free` is the escape — Alt held — and it is a hard bypass rather than a
+ * narrowing of the window, because the reason to want 88° is that you mean 88°.
+ */
+export function stickyAngle(deg: number, free = false): number {
+  if (free || !Number.isFinite(deg)) return deg;
+  const wrapped = ((deg % 360) + 360) % 360;
+  for (const target of STICKY_ANGLES) {
+    if (Math.abs(wrapped - target) <= ROTATION_STICKY_DEG) return target % 360;
   }
-  d += ' Z';
-  return d;
+  return deg;
+}
+
+/**
+ * A drag delta adjusted so the handle being dragged lands on the grid.
+ *
+ * Snapping the *handle* rather than rounding the delta: a rounded delta only
+ * lands on the grid if the shape already started there, which is exactly the
+ * case where snapping was not needed. Rotation needs no special case — the
+ * corner lands on a grid intersection in bed space either way, and
+ * `computeResize` rotates the corrected delta into the element's own frame.
+ */
+export function snapHandleDelta(
+  from: { x: number; y: number },
+  dx: number,
+  dy: number,
+  gridSize: number
+): { dx: number; dy: number } {
+  if (!gridSize || gridSize <= 0) return { dx, dy };
+  const target = snapPoint({ x: from.x + dx, y: from.y + dy }, gridSize);
+  return { dx: target.x - from.x, dy: target.y - from.y };
 }
 
 /** Snaps a value to the nearest grid multiple. */

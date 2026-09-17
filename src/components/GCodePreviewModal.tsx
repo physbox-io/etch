@@ -70,6 +70,7 @@ export const GCodePreviewModal: React.FC = () => {
     setThickTabs,
     setShallowEtch,
     cncTools,
+    selectedIds,
   } = useStore();
 
   // Lives on the document, not in this modal: the layer inspector needs to know
@@ -164,6 +165,27 @@ export const GCodePreviewModal: React.FC = () => {
   const [showTravel, setShowTravel] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  /**
+   * Cut only what is selected, for the re-cut: one part moved, or came out
+   * wrong, and running the whole file again would re-burn a finished sheet.
+   *
+   * Off whenever it is offered, never remembered. A checkbox that stayed on
+   * from the last export would, on the next job, quietly cut whatever happened
+   * to be selected and nothing else — and the sheet it did not cut is the sheet
+   * the operator is watching it not cut.
+   */
+  const selectionKey = selectedIds.join(',');
+  const [selectionOnlyFor, setSelectionOnlyFor] = useState<string | null>(null);
+  /*
+   * The tick belongs to the selection it was made against, rather than being a
+   * setting of its own. Changing the selection — or clearing it — unticks the
+   * box, which is what stops a stale tick from a previous export cutting
+   * whatever happens to be selected on the next job and leaving the rest of the
+   * sheet uncut while the operator watches it not be cut.
+   */
+  const selectionOnly = selectionOnlyFor !== null && selectionOnlyFor === selectionKey;
+  const setSelectionOnly = (on: boolean) => setSelectionOnlyFor(on ? selectionKey : null);
+  const selectionCount = selectedIds.length;
 
   useEffect(() => webSerialManager.subscribe(setMachine), []);
 
@@ -197,9 +219,14 @@ export const GCodePreviewModal: React.FC = () => {
       finishPass,
       leadInOut,
       customCncTools: cncTools,
+      // `selectedIds` is read only when the box is ticked, so moving the
+      // selection during an ordinary export does not re-plan the job.
+      selectionOnly: selectionOnly && selectedIds.length ? selectedIds : undefined,
     }),
-    [laserMode, innerContourFirst, travelSpeed, travelOptimization, passOrder, removeOverlaps, overscan, finishPass, leadInOut, cncTools]
+    [laserMode, innerContourFirst, travelSpeed, travelOptimization, passOrder, removeOverlaps, overscan, finishPass, leadInOut, cncTools, selectionOnly, selectedIds]
   );
+  /** True when the program on screen is a subset of the drawing. */
+  const cuttingSubset = selectionOnly && selectedIds.length > 0;
 
   /**
    * The program, planned on a worker thread.
@@ -392,6 +419,42 @@ export const GCodePreviewModal: React.FC = () => {
               <Settings className="w-3.5 h-3.5 text-slate-500" />
               <span>{laserMode ? 'Cut Options' : 'Toolpath Options'}</span>
             </h3>
+
+            {/* Cut selected only. First in the list and not behind Advanced,
+                because it is the one option here that changes what the job *is*
+                rather than how it is cut — and it is only shown when there is a
+                selection to cut, so it is never a question about nothing. */}
+            {selectionCount > 0 && (
+              <div
+                className={`flex items-center justify-between p-2.5 rounded-lg border ${
+                  selectionOnly
+                    ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/40'
+                    : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700/60'
+                }`}
+              >
+                <div className="pr-3">
+                  <div className="font-semibold text-slate-800 dark:text-slate-200">
+                    Cut Selected Only{' '}
+                    <InfoTooltip
+                      text={`Machines just the ${selectionCount} selected shape${
+                        selectionCount === 1 ? '' : 's'
+                      } and leaves the rest of the sheet untouched — for re-cutting one part without burning a finished sheet again. The rest of the drawing is still read for what encloses what, so the part comes out the size it would have in the full job.`}
+                    />
+                  </div>
+                  <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                    {selectionOnly
+                      ? `Only ${selectionCount} shape${selectionCount === 1 ? '' : 's'} will be cut`
+                      : `${selectionCount} shape${selectionCount === 1 ? '' : 's'} selected on the canvas`}
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={selectionOnly}
+                  onChange={(e) => setSelectionOnly(e.target.checked)}
+                  className="w-4 h-4 accent-red-500 rounded cursor-pointer"
+                />
+              </div>
+            )}
 
             {/* Machine Mode */}
             <div>
@@ -650,6 +713,22 @@ export const GCodePreviewModal: React.FC = () => {
                     />
                   </label>
                   <NumberInput
+                    /*
+                     * A floor, because this number is a *divisor*: `planMoves`
+                     * decides whether a fill hop is worth lifting for with
+                     * `1 / seg.speed - 1 / travelSpeed`. Typing 0 made that
+                     * -Infinity, so the guard beneath it rejected every
+                     * segment and hops were silently never planned — while the
+                     * time estimate floored the same value at 1 and went on
+                     * describing a different job. The plan and the estimate
+                     * disagreed about the file in front of you.
+                     *
+                     * 60 mm/min is `MIN_CUTTING_FEED_MM_MIN`: below that
+                     * nothing here cuts anyway.
+                     */
+                    min={60}
+                    step={100}
+                    fallbackOnBlur={3000}
                     value={travelSpeed}
                     onChange={v => setTravelSpeed(v ?? 3000)}
                       className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 font-mono"
@@ -912,7 +991,7 @@ export const GCodePreviewModal: React.FC = () => {
                         );
                         const result = webSerialManager.startJob(airCutGCode, {
                           machine: laserMode ? 'laser' : 'cnc',
-                          job: jobContext('air cut'),
+                          job: jobContext(cuttingSubset ? `air cut, ${selectedIds.length} selected` : 'air cut'),
                         });
                         if (result.started) setRunKind('aircut');
                         setRunNote(`[Air Cut] ${result.message}`);
@@ -968,7 +1047,7 @@ export const GCodePreviewModal: React.FC = () => {
                         }
                         const result = webSerialManager.startJob(gcodeStr, {
                           machine: laserMode ? 'laser' : 'cnc',
-                          job: jobContext(),
+                          job: jobContext(cuttingSubset ? `${selectedIds.length} selected` : undefined),
                         });
                         if (result.started) setRunKind('job');
                         setRunNote(result.message);

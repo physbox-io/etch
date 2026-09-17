@@ -3,7 +3,10 @@ import ReactDOM from 'react-dom';
 import { useStore, jobDocument } from '../store/useStore';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
-import { importSVG, fitToBed } from '../utils/svgImporter';
+import { importSVG, fitToBed, type SvgImportResult } from '../utils/svgImporter';
+import { importDXF } from '../utils/dxfImport';
+import { analyseSheetedSvg, splitIntoSheets } from '../utils/sheetedSvg';
+import { exportToDXFString, dxfFilename } from '../utils/dxfExport';
 import { readSvgHandoff, placeUnscaled, type SvgHandoff } from '../utils/svgHandoff';
 import {
   buildShareLink,
@@ -18,11 +21,11 @@ import {
   type ShareLink,
 } from '../utils/shareLink';
 import { revokeShare, isProRequired } from '../utils/apiClient';
+import { UserProfileButton, SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from './UserProfileButton';
+import { AgentMachineBanner } from './AgentMachineBanner';
 import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
-import { UserProfileButton, SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from './UserProfileButton';
-import { AgentMachineBanner } from './AgentMachineBanner';
 import {
   Scissors,
   Sparkles,
@@ -65,6 +68,7 @@ export const TopNavbar: React.FC = () => {
     toggleMachineModal,
     toggleTestGridModal,
     toggleRegistrationModal,
+    togglePackModal,
     toggleSettings,
     isSettingsOpen,
     undo,
@@ -82,9 +86,15 @@ export const TopNavbar: React.FC = () => {
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [presetNameInput, setPresetNameInput] = useState('');
+  /**
+   * What the last import or export did, and what it could not do.
+   *
+   * Carries its own headline because an export has things to report too — a
+   * shaded photograph cannot go into a DXF — and a panel that can only say
+   * "Imported N shapes" would have left those unsaid.
+   */
   const [importReport, setImportReport] = useState<{
-    count: number;
-    size: string | null;
+    headline: string;
     notes: string[];
   } | null>(null);
   const [share, setShare] = useState<ShareLink | null>(null);
@@ -320,18 +330,20 @@ export const TopNavbar: React.FC = () => {
    * differ only in whether the artwork may be resized to fit the bed: a
    * drawing may, a part whose size is the point may not.
    */
-  const applyImportedSvg = (
-    content: string,
+  const applyImportedVector = (
+    result: SvgImportResult,
     opts: { mayScale: boolean; handoff?: SvgHandoff; replace?: boolean }
   ) => {
     const doc = useStore.getState().document;
-    const result = importSVG(content);
     const placed = opts.mayScale
       ? fitToBed(result.elements, result.bounds, doc.width, doc.height)
       : placeUnscaled(result.elements, result.bounds, doc.width, doc.height);
 
     if (placed.elements.length === 0) {
-      alert(result.warnings.join('\n') || 'Nothing could be imported from that SVG.');
+      setImportReport({
+        headline: 'Nothing could be imported',
+        notes: result.warnings.length ? result.warnings : ['That file held no cuttable geometry.'],
+      });
       return;
     }
 
@@ -381,24 +393,106 @@ export const TopNavbar: React.FC = () => {
     }
 
     setImportReport({
-      count: placed.elements.length,
-      size: result.bounds
-        ? `${result.bounds.width.toFixed(1)} × ${result.bounds.height.toFixed(1)} mm`
-        : null,
+      headline:
+        `Imported ${placed.elements.length} shape${placed.elements.length === 1 ? '' : 's'}` +
+        (result.bounds
+          ? ` · ${result.bounds.width.toFixed(1)} × ${result.bounds.height.toFixed(1)} mm`
+          : ''),
       notes,
     });
   };
 
-  const handleImportSvg = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /**
+   * Opens an SVG or a DXF, told apart by the extension.
+   *
+   * The two differ in one thing after parsing: whether the artwork may be
+   * resized to fit the stock. A DXF comes from CAD and its dimensions are the
+   * point — a bracket scaled to 95% to fit the bed is a bracket that no longer
+   * fits the thing it was drawn for — so it is placed at true size and left
+   * overhanging if it must be, with a note saying so.
+   */
+  const handleImportVector = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const isDxf = /\.dxf$/i.test(file.name);
+    const stem = file.name.replace(/\.[^.]+$/, '');
     const reader = new FileReader();
     reader.onload = (evt) => {
       const content = evt.target?.result as string;
-      if (content) applyImportedSvg(content, { mayScale: true });
+      if (!content) return;
+      if (!isDxf && openAsSheets(content, stem)) return;
+      applyImportedVector(isDxf ? importDXF(content) : importSVG(content), { mayScale: !isDxf });
     };
     reader.readAsText(file);
     e.target.value = '';
+  };
+
+  /**
+   * Opens a stacked multi-sheet export as the strip of sheets it is.
+   *
+   * Returns true when it took the file. Asked rather than assumed, because it
+   * replaces the whole job: a sheet strip cannot be merged into the open
+   * document the way a single drawing can, so the choice belongs to whoever is
+   * about to lose what is on screen. Saying no still imports the drawing the
+   * ordinary way, which is what it did before.
+   */
+  const openAsSheets = (content: string, stem: string): boolean => {
+    const stacked = analyseSheetedSvg(content);
+    if (!stacked) return false;
+
+    const { bands } = stacked;
+    const ok = window.confirm(
+      `That file holds ${bands.count} sheets` +
+        (new Set(bands.bands.map((b) => `${b.width}x${b.height}`)).size === 1
+          ? ` of ${bands.bands[0].width} × ${bands.bands[0].height} mm stock`
+          : ` of assorted stock sizes`) +
+        (bands.thicknessMm ? `, cut for ${bands.thicknessMm} mm material` : '') +
+        `.\n\n` +
+        `OK opens it as ${bands.count} sheets — this replaces everything currently open.\n` +
+        `Cancel brings it in as one drawing on the sheet you are on, which will overhang the stock.`
+    );
+    if (!ok) return false;
+
+    const doc = useStore.getState().document;
+    const imported = importSVG(stacked.cleanedSvg);
+    const split = splitIntoSheets(imported, bands, stem || 'Sheet', {
+      gridSize: doc.gridSize,
+      snapToGrid: doc.snapToGrid,
+      origin: doc.origin,
+      machine: doc.machine,
+      material: doc.material,
+    });
+    openJob(split.document);
+
+    const notes = [...imported.warnings];
+    if (bands.thicknessMm) {
+      notes.push(
+        `Stock set to ${bands.thicknessMm} mm on every sheet — the thickness the joints were cut for. ` +
+          `Check it matches what is on the bed.`
+      );
+    }
+    if (split.strays) {
+      notes.push(
+        `${split.strays} shape${split.strays === 1 ? '' : 's'} sat outside every sheet frame and ` +
+          `${split.strays === 1 ? 'was' : 'were'} put on the nearest one.`
+      );
+    }
+    setImportReport({
+      headline: `Opened ${bands.count} sheets · ${split.perSheet.join(' + ')} shapes`,
+      notes,
+    });
+    return true;
+  };
+
+  const handleExportDxf = () => {
+    const { text, notes, count } = exportToDXFString(document);
+    downloadBlob(new Blob([text], { type: 'application/dxf' }), dxfFilename(document));
+    if (notes.length) {
+      setImportReport({
+        headline: `Exported ${count} shape${count === 1 ? '' : 's'} to DXF`,
+        notes,
+      });
+    }
   };
 
   /**
@@ -477,9 +571,8 @@ export const TopNavbar: React.FC = () => {
       .catch((err) => {
         clearShareToken();
         setImportReport({
-          count: 0,
-          size: null,
-          notes: [err?.message || 'That shared link could not be opened.'],
+          headline: 'That shared link could not be opened',
+          notes: [err?.message || 'The link may have been turned off by the person who sent it.'],
         });
       });
     // Once, on mount.
@@ -490,13 +583,15 @@ export const TopNavbar: React.FC = () => {
     readShareLink()
       .then((shared) => {
         if (!shared) return;
+        const { document: open, tabs } = useStore.getState();
+        void open;
+        void tabs;
         openSharedJob(shared);
       })
       .catch((err) => {
         clearShareFragment();
         setImportReport({
-          count: 0,
-          size: null,
+          headline: 'Nothing could be opened',
           notes: [err?.message || 'That link could not be read.'],
         });
       });
@@ -520,12 +615,11 @@ export const TopNavbar: React.FC = () => {
               'OK replaces it — that sheet is not recoverable afterwards, and the other sheets are untouched.\n' +
               'Cancel keeps it and brings the artwork in alongside.'
           );
-        applyImportedSvg(handoff.svg, { mayScale: false, handoff, replace });
+        applyImportedVector(importSVG(handoff.svg), { mayScale: false, handoff, replace });
       })
       .catch((err) => {
         setImportReport({
-          count: 0,
-          size: null,
+          headline: 'Nothing could be opened',
           notes: [err?.message || 'That link could not be read.'],
         });
       });
@@ -573,6 +667,10 @@ export const TopNavbar: React.FC = () => {
               // for "make me the thing I do not want to draw by hand", and the
               // dialog says plainly that nothing on the canvas is touched.
               else if (e.target.value === 'generator:registration') toggleRegistrationModal();
+              // Also an action on the open document rather than a preset, and
+              // here for the same reason: this is where people look for "sort
+              // my sheet out for me".
+              else if (e.target.value === 'generator:pack') togglePackModal();
               else if (e.target.value) loadPreset(e.target.value);
             }}
             className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem] max-lg:flex-1 max-lg:min-w-0 max-lg:max-w-none"
@@ -590,6 +688,7 @@ export const TopNavbar: React.FC = () => {
             <optgroup label="🔧 Generators" className="bg-white dark:bg-slate-900">
               <option value="generator:test-grid">Material Test Grid…</option>
               <option value="generator:registration">Registration Holes…</option>
+              <option value="generator:pack">Pack Parts onto Stock…</option>
             </optgroup>
             {userPresetNames.length > 0 && (
               <optgroup label="📁 Saved Documents" className="bg-white dark:bg-slate-900">
@@ -679,10 +778,10 @@ export const TopNavbar: React.FC = () => {
 
           <label
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-cyan-600 dark:text-cyan-400 transition-colors cursor-pointer"
-            title="Import SVG"
+            title="Import vector artwork (.svg, .dxf)"
           >
             <Upload className="w-3.5 h-3.5" />
-            <input type="file" accept=".svg" onChange={handleImportSvg} className="hidden" />
+            <input type="file" accept=".svg,.dxf" onChange={handleImportVector} className="hidden" />
           </label>
 
           <label
@@ -707,6 +806,17 @@ export const TopNavbar: React.FC = () => {
             title="SVG"
           >
             <Download className="w-3.5 h-3.5" />
+          </button>
+
+          {/* DXF out, for the drawing going back to CAD or on to whoever is
+              cutting it. Lettered rather than another download arrow: three
+              identical icons in a row say nothing about which is which. */}
+          <button
+            onClick={handleExportDxf}
+            className="flex items-center justify-center px-1 py-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer text-[10px] font-bold tracking-tight"
+            title="Export DXF — the drawing, for CAD"
+          >
+            DXF
           </button>
 
           {/* Share: a link with the job inside it. Next to the exports because
@@ -952,10 +1062,7 @@ export const TopNavbar: React.FC = () => {
         <div className="fixed top-16 left-1/2 -translate-x-1/2 max-lg:top-1/2 max-lg:-translate-y-1/2 z-50 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="font-bold text-slate-800 dark:text-slate-100">
-                Imported {importReport.count} shape{importReport.count === 1 ? '' : 's'}
-                {importReport.size ? ` · ${importReport.size}` : ''}
-              </p>
+              <p className="font-bold text-slate-800 dark:text-slate-100">{importReport.headline}</p>
               {importReport.notes.length > 0 && (
                 <ul className="mt-1.5 space-y-1 text-[11px] text-amber-700 dark:text-amber-400 list-disc list-inside max-h-40 overflow-y-auto">
                   {importReport.notes.slice(0, 8).map((n, i) => (

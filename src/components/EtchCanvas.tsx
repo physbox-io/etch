@@ -1,5 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store/useStore';
+import { shapeOutlineD, shapePathD, SHAPE_KINDS } from '../utils/parametricShapes';
+
+/** What the shape tool is set to draw; see `shapeSettings` in the store. */
+type ShapeSettings = ReturnType<typeof useStore.getState>['shapeSettings'];
 import { useCoarsePointer } from '../hooks/useCoarsePointer';
 import type { EtchElement, BezierNode } from '../types/etch';
 import { ensureGoogleFont } from '../utils/googleFonts';
@@ -8,8 +12,10 @@ import {
   getBedBBox,
   getElementTransform,
   getPivotInBed,
-  generateStarPath,
   snapPoint,
+  stickyAngle,
+  snapHandleDelta,
+  localToBed,
   bedToLocal,
   pivotAnchoredPosition,
   bedBoxOfAll,
@@ -59,6 +65,15 @@ interface TransformStart {
   grabAngle: number;
   /** Which corner (or line end) the resize was grabbed by. */
   handle: ResizeHandle;
+  /**
+   * Where that handle was, in bed millimetres, at grab time.
+   *
+   * Resizing snaps by moving *this point* onto the grid, rather than by
+   * rounding the pointer delta: rounding the delta only lands on the grid if
+   * the shape already started there, which is exactly the case where snapping
+   * was not needed.
+   */
+  handleBed?: { x: number; y: number };
   /** Initial multi-element bounding box if >1 elements selected */
   multiBox?: {
     minX: number;
@@ -116,6 +131,7 @@ export const EtchCanvas: React.FC = () => {
     zoom,
     pan,
     mandalaSettings,
+    shapeSettings,
     eraserWidth,
     setSelectedIds,
     setPan,
@@ -827,8 +843,19 @@ export const EtchCanvas: React.FC = () => {
         return;
       }
 
-      const dx = rawCoords.x - transformStart.mouseX;
-      const dy = rawCoords.y - transformStart.mouseY;
+      let dx = rawCoords.x - transformStart.mouseX;
+      let dy = rawCoords.y - transformStart.mouseY;
+
+      /*
+       * Grid snapping for a resize, on the same terms as a move: on when the
+       * document says so, off while Alt is held. The corner being dragged is
+       * what lands on the grid — so a box dragged out on a 10 mm grid comes out
+       * a whole number of squares, which is what makes two parts drawn on the
+       * same grid actually fit each other.
+       */
+      if (isTransforming === 'resize' && snapEnabled && !e.altKey && transformStart.handleBed) {
+        ({ dx, dy } = snapHandleDelta(transformStart.handleBed, dx, dy, gridSize));
+      }
 
       if (selectedIds.length === 1 || !transformStart.multiBox) {
         // The element the drag started on, not `selectedIds[0]`: a selection
@@ -854,7 +881,10 @@ export const EtchCanvas: React.FC = () => {
           const pivot = getPivotInBed(el);
           const angle = (Math.atan2(rawCoords.y - pivot.y, rawCoords.x - pivot.x) * 180) / Math.PI;
           let next = transformStart.elRot + (angle - transformStart.grabAngle);
+          // Shift steps in fifteens; otherwise the quarter turns are sticky,
+          // and Alt lets go of them.
           if (e.shiftKey) next = Math.round(next / 15) * 15;
+          else next = stickyAngle(normalizeAngle(next), e.altKey);
           updateElement(el.id, { rotation: normalizeAngle(next) }, true);
         }
       } else if (selectedIds.length > 1 && transformStart.multiBox) {
@@ -864,6 +894,10 @@ export const EtchCanvas: React.FC = () => {
           const angle = (Math.atan2(rawCoords.y - mb.centerY, rawCoords.x - mb.centerX) * 180) / Math.PI;
           let dAngle = angle - transformStart.grabAngle;
           if (e.shiftKey) dAngle = Math.round(dAngle / 15) * 15;
+          // The *turn* rather than each member's resulting angle: a group of
+          // shapes at assorted angles has no shared angle to square, but "turn
+          // this group a quarter" is exactly what the handle is for.
+          else dAngle = stickyAngle(normalizeAngle(dAngle), e.altKey);
           const rad = (dAngle * Math.PI) / 180;
           const cos = Math.cos(rad);
           const sin = Math.sin(rad);
@@ -1024,7 +1058,7 @@ export const EtchCanvas: React.FC = () => {
 
     if (isCreatingShape && shapeStart && shapeCurrent) {
       setIsCreatingShape(false);
-      const newEl = buildShape(activeTool, shapeStart, shapeCurrent, baseElementProps());
+      const newEl = buildShape(activeTool, shapeStart, shapeCurrent, baseElementProps(), shapeSettings);
       if (newEl) addElement(newEl);
       setShapeStart(null);
       setShapeCurrent(null);
@@ -1140,6 +1174,37 @@ export const EtchCanvas: React.FC = () => {
 
     const pivotPoint = mbInfo ? { x: mbInfo.centerX, y: mbInfo.centerY } : pivot;
 
+    /*
+     * Where the grabbed handle actually is on the bed, for the resize snap.
+     * A line's handles are its two ends rather than box corners — its box is
+     * degenerate, so all four corners collapse onto the same two points — and
+     * snapping a line's end to the grid is the case that matters most.
+     */
+    let handleBed: { x: number; y: number } | undefined;
+    if (mode === 'resize') {
+      if (mbInfo) {
+        const west = handle === 'nw' || handle === 'sw';
+        const north = handle === 'nw' || handle === 'ne';
+        handleBed = {
+          x: west ? mbInfo.minX : mbInfo.minX + mbInfo.width,
+          y: north ? mbInfo.minY : mbInfo.minY + mbInfo.height,
+        };
+      } else if (el.type === 'line') {
+        const grabStart = handle === 'line-start' || handle === 'nw' || handle === 'sw';
+        handleBed = grabStart
+          ? localToBed(el, 0, 0)
+          : localToBed(el, el.x2 ?? 40, el.y2 ?? 0);
+      } else {
+        const b = getBedBBox(el);
+        const west = handle === 'nw' || handle === 'sw';
+        const north = handle === 'nw' || handle === 'ne';
+        handleBed = {
+          x: west ? b.minX : b.minX + b.width,
+          y: north ? b.minY : b.minY + b.height,
+        };
+      }
+    }
+
     setIsTransforming(mode);
     setTransformStart({
       mouseX: at.x,
@@ -1152,6 +1217,7 @@ export const EtchCanvas: React.FC = () => {
         pivotBed: getPivotInBed(m),
       })),
       multiBox: mbInfo,
+      handleBed,
       elX: el.x,
       elY: el.y,
       ...resizeSeed(el),
@@ -1592,7 +1658,7 @@ export const EtchCanvas: React.FC = () => {
               {el.type === 'line' && (
                 <line x1="0" y1="0" x2={el.x2 ?? 40} y2={el.y2 ?? 0} {...hit} />
               )}
-              {isPathish && <path d={el.d || ''} {...hit} />}
+              {isPathish && <path d={shapeOutlineD(el)} {...hit} />}
               {el.type === 'rect' && (
                 <rect
                   width={el.w || 40}
@@ -1684,7 +1750,7 @@ export const EtchCanvas: React.FC = () => {
                   {el.text}
                 </text>
               )}
-              {isPathish && <path d={el.d || ''} {...common} />}
+              {isPathish && <path d={shapeOutlineD(el)} {...common} />}
             </g>
           );
 
@@ -1830,7 +1896,7 @@ export const EtchCanvas: React.FC = () => {
 
         {/* Live Drag-to-Draw Shape Preview */}
         {isCreatingShape && shapeStart && shapeCurrent && (
-          <ShapePreview tool={activeTool} start={shapeStart} current={shapeCurrent} />
+          <ShapePreview tool={activeTool} start={shapeStart} current={shapeCurrent} shape={shapeSettings} />
         )}
 
         {/* Live Bezier Pen Preview */}
@@ -2384,7 +2450,8 @@ function buildShape(
   tool: string,
   start: { x: number; y: number },
   end: { x: number; y: number },
-  base: Record<string, unknown>
+  base: Record<string, unknown>,
+  shapeSettings: ShapeSettings
 ): EtchElement | null {
   const id = `el_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const minX = Math.min(start.x, end.x);
@@ -2420,13 +2487,22 @@ function buildShape(
       // Authored around a local origin so the element's x/y is its position;
       // path shapes pinned at 0,0 with absolute coordinates used to rotate
       // about the bed origin instead of about themselves.
+      /*
+       * Stored as numbers rather than as a baked path, so the inspector can
+       * still change what it is — a star into a heart, five points into
+       * twenty-four — long after the drag that made it. A path baked here is a
+       * path nothing can edit again.
+       */
       return {
         id,
-        name: '5-Point Star',
+        name: SHAPE_KINDS.find((k) => k.id === shapeSettings.kind)?.label ?? 'Shape',
         type: 'star',
+        shape: shapeSettings.kind,
         x: start.x,
         y: start.y,
-        d: generateStarPath(0, 0, 5, radius, radius * 0.4),
+        outerRadius: radius,
+        pointsCount: shapeSettings.pointsCount,
+        innerRadius: radius * shapeSettings.innerRatio,
         ...base,
       } as EtchElement;
     case 'text': {
@@ -2455,7 +2531,8 @@ const ShapePreview: React.FC<{
   tool: string;
   start: { x: number; y: number };
   current: { x: number; y: number };
-}> = ({ tool, start, current }) => {
+  shape: ShapeSettings;
+}> = ({ tool, start, current, shape }) => {
   const stroke = { stroke: '#f59e0b', strokeWidth: 0.5, strokeDasharray: '2,2', fill: 'none' };
   const radius = Math.hypot(current.x - start.x, current.y - start.y);
 
@@ -2492,7 +2569,17 @@ const ShapePreview: React.FC<{
         />
       )}
       {tool === 'star' && (
-        <path d={generateStarPath(start.x, start.y, 5, radius, radius * 0.4)} {...stroke} />
+        <path
+          // The shape being drawn, not always a star: the preview under the
+          // cursor is the only thing that says what the tool is about to make.
+          d={shapePathD(shape.kind, {
+            outerRadius: radius,
+            pointsCount: shape.pointsCount,
+            innerRadius: radius * shape.innerRatio,
+          })}
+          transform={`translate(${start.x}, ${start.y})`}
+          {...stroke}
+        />
       )}
       {tool === 'line' && (
         <line x1={start.x} y1={start.y} x2={current.x} y2={current.y} {...stroke} />

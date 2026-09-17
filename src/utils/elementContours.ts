@@ -1,6 +1,7 @@
 import type { EtchElement } from '../types/etch';
 import { localToBed } from './geom';
 import { flattenPath, type Pt } from './pathFlatten';
+import { shapeOutlineD } from './parametricShapes';
 
 /*
  * This lives apart from the exporter because two very different consumers must
@@ -96,7 +97,17 @@ export function extractElementContours(el: EtchElement): Pt[][] {
     case 'path':
     case 'freehand':
     case 'symbol':
-    case 'star':
+    case 'star': {
+      /*
+       * Generated from the element's numbers when it has no path of its own —
+       * which is how three shipped presets carried `pointsCount: 24` and were
+       * machined as nothing at all. Baked path data still wins, so a star drawn
+       * before the tool was parametric cuts exactly the outline it always did.
+       */
+      const d = shapeOutlineD(el);
+      if (!d) return [];
+      return flattenPath(d).map((sp) => sp.points.map((p) => xform(p.x, p.y)));
+    }
     case 'bezier': {
       if (!el.d) return [];
       // Shared flattener: handles C/S/Q/T/A as well as M/L/H/V/Z, so curves are

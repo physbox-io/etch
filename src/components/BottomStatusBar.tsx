@@ -117,7 +117,7 @@ export const BottomStatusBar: React.FC = () => {
           <NumberInput
             id="stock-width"
             min={10}
-            max={2000}
+            max={3000}
             step={10}
             fallbackOnBlur={100}
             value={document.width}
@@ -131,7 +131,7 @@ export const BottomStatusBar: React.FC = () => {
           <NumberInput
             id="stock-height"
             min={10}
-            max={2000}
+            max={3000}
             step={10}
             fallbackOnBlur={100}
             value={document.height}
@@ -146,7 +146,10 @@ export const BottomStatusBar: React.FC = () => {
             id="stock-thickness"
             min={0.1}
             max={200}
-            step={0.5}
+            // A tenth, not a half. The ladder runs from `min`, so a step of 0.5
+            // put 3, 6, 9, 12 and 18 mm — every common nominal stock — off it,
+            // and nudging 3 mm gave 3.1 rather than 3.5.
+            step={0.1}
             fallbackOnBlur={DEFAULT_STOCK_THICKNESS_MM}
             value={document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM}
             onChange={(val) => {

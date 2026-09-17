@@ -47,7 +47,9 @@ const ARM_TOOLTIP =
  */
 export function AgentMachineBanner() {
   const [arming, setArming] = useState<ArmingState>(() => machineArming.getState());
-  const [now, setNow] = useState(Date.now());
+  // Lazily, because `Date.now()` in the argument position runs on every render
+  // — an impure call during render, which is exactly what the rule objects to.
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => subscribeToArming(setArming), []);
 

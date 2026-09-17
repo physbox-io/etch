@@ -11,6 +11,7 @@ import { DocumentNoteCard } from './components/DocumentNoteCard';
 import { ClipArtModal } from './components/ClipArtModal';
 import { MaterialTestModal } from './components/MaterialTestModal';
 import { RegistrationModal } from './components/RegistrationModal';
+import { PackPartsModal } from './components/PackPartsModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { JobPauseBanner } from './components/JobPauseBanner';
@@ -244,6 +245,7 @@ export const App: React.FC = () => {
       <ClipArtModal />
       <MaterialTestModal />
       <RegistrationModal />
+      <PackPartsModal />
       <ImageImportModal />
       <GCodePreviewModal />
       <MachineControlModal />

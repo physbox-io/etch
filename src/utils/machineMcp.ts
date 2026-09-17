@@ -100,10 +100,26 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
   return { summary: `${started.message} ${lines} lines streaming.` };
 }
 
+/**
+ * What a command's arguments are before anybody has looked at them.
+ *
+ * `unknown` rather than `any`: these arrive as JSON over the bridge, from an
+ * agent that may be a different version of a different app, so every field is a
+ * claim rather than a fact. The handlers below narrow what they read, which is
+ * the point — a `power` that arrived as the string "80" should fall back to the
+ * configured one, not be handed to the machine.
+ */
+type McpArgs = Record<string, unknown>;
+
+/** A number from an argument, or the fallback when it is anything else. */
+function num(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
 /** Etch's full machine command set, keyed by the bridge command names. */
 export function createEtchMachineHandlers(): Record<
   string,
-  (args: Record<string, any>) => Promise<unknown>
+  (args: McpArgs) => Promise<unknown>
 > {
   const machine: MachineControl = webSerialManager;
 
@@ -120,8 +136,8 @@ export function createEtchMachineHandlers(): Record<
        */
       frameJob: async (bounds, args) =>
         webSerialManager.frameJob(bounds, {
-          guidePower: typeof args.guidePower === 'number' ? args.guidePower : readGuidePower(),
-          safeZ: typeof args.safeZMm === 'number' ? args.safeZMm : 5,
+          guidePower: num(args.guidePower, readGuidePower()),
+          safeZ: num(args.safeZMm, 5),
         }),
       listDevices: async () => {
         const devices = await fetchMachineDevices();
@@ -158,10 +174,11 @@ export function createEtchMachineHandlers(): Record<
      * by hand or on a shim of known thickness, and on a laser there is no Z in
      * the toolpath at all, so there is nothing to probe toward.
      */
-    MACHINE_ZERO_Z: async (args: Record<string, any>) => {
+    MACHINE_ZERO_Z: async (args: McpArgs) => {
       machineArming.requireArmed('zero_z');
-      machineArming.noteAgentCommand('zero_z', `shim=${args.shimThicknessMm ?? 0}`);
-      const result = await webSerialManager.zeroZHere(args.shimThicknessMm ?? 0);
+      const shim = num(args.shimThicknessMm, 0);
+      machineArming.noteAgentCommand('zero_z', `shim=${shim}`);
+      const result = await webSerialManager.zeroZHere(shim);
       if (!result.success) throw new Error(result.message);
       return {
         ...describeMachine(machine, machineArming),
@@ -179,11 +196,11 @@ export function createEtchMachineHandlers(): Record<
      * is on the corner of your material" is a question they can answer, and
      * "the DRO reads 12.4" is not.
      */
-    MACHINE_GUIDE_SPOT: async (args: Record<string, any>) => {
+    MACHINE_GUIDE_SPOT: async (args: McpArgs) => {
       machineArming.requireArmed('guide_spot');
       const on = args.on !== false;
       machineArming.noteAgentCommand('guide_spot', on ? 'on' : 'off');
-      if (on) await webSerialManager.guideSpotOn(args.power ?? readGuidePower());
+      if (on) await webSerialManager.guideSpotOn(num(args.power, readGuidePower()));
       else await webSerialManager.guideSpotOff();
       return { ...describeMachine(machine, machineArming), guideSpot: on };
     },
@@ -192,17 +209,20 @@ export function createEtchMachineHandlers(): Record<
      * Probes a grid across the bed, for levelling a CNC job against stock that
      * is not flat. Meaningless on a laser, which has no Z to compensate.
      */
-    MACHINE_PROBE_SURFACE: async (args: Record<string, any>) => {
+    MACHINE_PROBE_SURFACE: async (args: McpArgs) => {
       machineArming.requireArmed('probe_surface');
       machineArming.noteAgentCommand('probe_surface');
 
-      const bounds = args.bounds && typeof args.bounds === 'object' ? args.bounds : jobBounds();
+      const bounds =
+        args.bounds && typeof args.bounds === 'object'
+          ? (args.bounds as ReturnType<typeof jobBounds>)
+          : jobBounds();
       if (!bounds) throw new Error('There is nothing to probe: pass bounds, or open a document.');
 
       const grid = await webSerialManager.probeGrid(
         bounds,
-        typeof args.cols === 'number' ? args.cols : 3,
-        typeof args.rows === 'number' ? args.rows : 3
+        num(args.cols, 3),
+        num(args.rows, 3)
       );
       const zs = grid.points.flat().map((p: { z: number }) => p.z);
       return {

@@ -66,6 +66,7 @@ import { planMoves, type PlannedMove, type PassOrder } from './toolpathMoves';
 import { removeOverlapLines } from './dedupeOverlaps';
 import { fitArcsToPolyline, arcToMachineGCode } from './arcFitting';
 import { generateVCarveToolpaths, vCarveFlatBottom } from './vCarve';
+import { restrictToSelection, selectedMachinedCount } from './cutSelection';
 
 export interface GCodeOptions {
   laserMode: boolean;          // True for Laser GRBL M3/M5, False for CNC router Z-axis passes
@@ -177,6 +178,18 @@ export interface GCodeOptions {
    * waste — see `planLead`.
    */
   leadInOut?: boolean;
+  /**
+   * Machine only these element ids, leaving the rest of the drawing as
+   * reference. Undefined — the ordinary case — cuts the whole document.
+   *
+   * The restriction happens here rather than at the call site so that every
+   * route to a program obeys it identically: the preview, the exported file and
+   * the stream to the machine are all planned from one document, and a preview
+   * showing a whole sheet while the file cuts one part of it is the bug this
+   * would otherwise invite. See `cutSelection.ts` for why the unselected
+   * drawing is kept rather than filtered away.
+   */
+  selectionOnly?: string[];
 }
 // Kerf compensation is no longer an option because it is no longer optional:
 // cutting on the centreline makes every part undersized by half the cutter —
@@ -625,14 +638,31 @@ function effectiveCutWidth(cut: LayerCutting, laserMode: boolean): number {
  * G-code text and hoping the two agree.
  */
 export function planToolpath(
-  doc: EtchDocument,
+  fullDoc: EtchDocument,
   opts: Partial<GCodeOptions> = {}
 ): { segments: GCodeSegment[]; skipped: string[]; notes: string[] } {
-  const options = resolveOptions(doc, opts);
+  const options = resolveOptions(fullDoc, opts);
+
+  /*
+   * Everything below plans `doc`, which is the whole document unless the export
+   * asked for the selection only — in which case the unselected drawing is
+   * still here, demoted to reference geometry so enclosure answers the same way
+   * it would in the full job.
+   */
+  const doc = restrictToSelection(fullDoc, options.selectionOnly);
 
   const segments: GCodeSegment[] = [];
   const skipped: string[] = [];
   const notes: string[] = [];
+  if (options.selectionOnly) {
+    const n = selectedMachinedCount(fullDoc, options.selectionOnly);
+    notes.push(
+      `Selection only: ${n} shape${n === 1 ? '' : 's'} of ${fullDoc.elements.length} in the drawing ` +
+        `${n === 1 ? 'is' : 'are'} cut, and the rest of the sheet is left alone. The drawing is still ` +
+        `read for what encloses what, so a part re-cut this way comes out the size it would have the ` +
+        `first time.`
+    );
+  }
   /**
    * Whether the emit mirrors Y, which decides which winding climb-mills. Read
    * once here rather than at each site that orients a loop: half the document
@@ -732,8 +762,17 @@ export function planToolpath(
    * will be cut in the wrong place. Stated with the extent, because "outside"
    * is only actionable if you know by how much and in which direction.
    */
+  const ghostLayerIds = new Set(
+    doc.layers.filter((l) => l.operation === 'ghost').map((l) => l.id)
+  );
   const strays = doc.elements.filter(
-    (el) => el.visible !== false && isOutsideStock(el, doc.width, doc.height)
+    (el) =>
+      el.visible !== false &&
+      // A guide path — or, under "cut selected only", the part of the drawing
+      // that is not being cut — machines nothing, so it cannot come out
+      // incomplete and warning about it is noise over the stray that matters.
+      !ghostLayerIds.has(el.layerId) &&
+      isOutsideStock(el, doc.width, doc.height)
   );
   if (strays.length) {
     const box = bedBoxOfAll(strays)!;

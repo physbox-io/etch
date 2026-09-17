@@ -1,5 +1,6 @@
 import type { MaterialId } from '../utils/materials';
 import type { MotionProfile } from '../utils/motionProfile';
+import type { ShapeKind } from '../utils/parametricShapes';
 
 /**
  * What a layer does to the material.
@@ -219,6 +220,16 @@ export interface EtchElement {
   y2?: number;
   // polygon / star
   sides?: number;
+  /**
+   * Which shape a `star` element actually draws — star, heart, gear, crescent,
+   * and the rest of `parametricShapes.ts`.
+   *
+   * The type stays `star` rather than becoming one type per shape: they are one
+   * tool with one set of numbers, and every consumer that already knows how to
+   * sample a star goes on working. Absent means a plain star, which is what
+   * every document drawn before the tool grew a dropdown contains.
+   */
+  shape?: ShapeKind;
   pointsCount?: number;
   innerRadius?: number;
   outerRadius?: number;

@@ -33,6 +33,15 @@ import {
   type BooleanOp,
 } from '../utils/booleanOps';
 import { beautifyElements } from '../utils/beautify';
+import { offsetElements, MIN_OFFSET_MM } from '../utils/offsetShape';
+import { defaultsFor, type ShapeKind } from '../utils/parametricShapes';
+import {
+  clusterParts,
+  packParts,
+  applyPlacement,
+  partGapMm,
+  type Part,
+} from '../utils/packParts';
 import { cloudAutosave } from '../utils/cloudDocuments';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
@@ -313,6 +322,17 @@ interface EtchStore {
   setNotecard: (markdown: string) => void;
   setMandalaSettings: (settings: Partial<MandalaSettings>) => void;
   setEraserWidth: (width: number) => void;
+  /**
+   * What the shape tool will draw next.
+   *
+   * Held here rather than being asked for after the fact: the tool draws one of
+   * eleven shapes, and finding out which one by drawing it and looking is the
+   * same mistake the eraser's target layer used to make. `innerRatio` is a
+   * fraction of the radius rather than a length, because the size is not known
+   * until the drag has happened.
+   */
+  shapeSettings: { kind: ShapeKind; pointsCount: number; innerRatio: number };
+  setShapeSettings: (patch: Partial<{ kind: ShapeKind; pointsCount: number; innerRatio: number }>) => void;
   toggleDarkMode: () => void;
   toggleAiPanel: () => void;
   toggleGCodeModal: () => void;
@@ -321,8 +341,10 @@ interface EtchStore {
   /** The material test grid generator — see `utils/testGrid.ts`. */
   isTestGridOpen: boolean;
   isRegistrationOpen: boolean;
+  isPackOpen: boolean;
   toggleTestGridModal: () => void;
   toggleRegistrationModal: () => void;
+  togglePackModal: () => void;
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
@@ -406,7 +428,30 @@ interface EtchStore {
    * to be, smooth the rest, and snap repeated shapes onto the sizes, angles and
    * arrangement they were reaching for. See `beautify.ts`.
    */
+  /**
+   * Grows or shrinks the selected shapes by a distance, as a new shape.
+   *
+   * Not scaling: every edge moves by the same millimetres, so a frame keeps its
+   * wall thickness and a slot keeps its length. See `offsetShape.ts`. Positive
+   * grows, negative shrinks. The originals are kept — an offset is nearly
+   * always wanted *alongside* what it came from (a cut line round a logo, a
+   * pocket 0.2 mm bigger than the part going into it).
+   */
+  offsetSelected: (deltaMm: number) => void;
+  /** Why the last offset did nothing, or what it had to do. Cleared with the
+   *  selection, like the two notices above. */
+  offsetNotice: string | null;
   beautifySelected: () => void;
+  /**
+   * Rearranges the parts on this sheet so they fit in as little of the material
+   * as possible, optionally pulling the parts off the other sheets in as well.
+   *
+   * The unit is the part — an outline with its holes and its engraving — not
+   * the element; see `packParts.ts`. Nothing is resized and nothing is deleted:
+   * a part that will not fit is left exactly where it was, on whichever sheet
+   * it was on, and said so in the report.
+   */
+  packOntoStock: (opts?: { includeOtherSheets?: boolean }) => PackReport;
   /** What the last Make Pretty did, or why it did nothing. Cleared with the
    *  selection, so it cannot outlive the shapes it is talking about. */
   beautifyNotice: string | null;
@@ -489,6 +534,24 @@ function combineNoticeFor(result: {
   return parts.length ? parts.join(' ') : null;
 }
 
+/** What a pack did, for the panel that reports it. */
+export interface PackReport {
+  /** Parts moved into place on this sheet. */
+  packed: number;
+  /** How many of those were turned a quarter turn to fit. */
+  rotated: number;
+  /** Parts brought in from other sheets. */
+  pulled: number;
+  /** How many other sheets gave something up. */
+  fromSheets: number;
+  /** Parts there was no room for, left exactly where they were. */
+  leftovers: number;
+  /** Parts held in place because something in them is locked. */
+  fixed: number;
+  /** The gap left between parts, and where it came from. */
+  gapMm: number;
+}
+
 const FIRST_TAB_ID = 'sheet_1';
 
 /**
@@ -563,6 +626,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   clipboard: null,
   combineNotice: null,
   beautifyNotice: null,
+  offsetNotice: null,
   history: [defaultDoc],
   historyIndex: 0,
   zoom: 1.0,
@@ -570,6 +634,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   cursor: { x: 0, y: 0 },
   activePreset: DEFAULT_PRESET_ID,
   userPresetNames: Object.keys(readUserPresets()).sort(),
+  shapeSettings: { kind: 'star' as ShapeKind, pointsCount: 5, innerRatio: 0.4 },
   mandalaSettings: {
     sectorCount: 8,
     mirror: false,
@@ -585,6 +650,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isClipArtModalOpen: false,
   isTestGridOpen: false,
   isRegistrationOpen: false,
+  isPackOpen: false,
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
@@ -769,7 +835,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   // Clearing the combine notice here rather than on a timer: it explains why
   // *these* shapes would not combine, and once the selection moves on it is
   // talking about something that is no longer on screen.
-  setSelectedIds: (ids) => set({ selectedIds: ids, combineNotice: null, beautifyNotice: null }),
+  setSelectedIds: (ids) =>
+    set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
   setCursor: (cursor) => set({ cursor }),
@@ -793,7 +860,11 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   setDocumentSize: ({ width, height }) =>
     set((state) => {
-      const clamp = (v: number) => Math.max(10, Math.min(2000, v));
+      // 3000, because a standard ply sheet is 2440 x 1220 and 2000 silently
+      // shrank it — every part against the far edge then reading as off-stock
+      // for a reason nobody was shown. The floor stays: a stock smaller than a
+      // centimetre is a degenerate document, not a small job.
+      const clamp = (v: number) => Math.max(10, Math.min(3000, v));
       const document = {
         ...state.document,
         ...(width !== undefined && Number.isFinite(width) ? { width: clamp(width) } : {}),
@@ -1050,6 +1121,24 @@ export const useStore = create<EtchStore>((set, get) => ({
     return { done, failed };
   },
 
+  setShapeSettings: (patch) =>
+    set((state) => {
+      // Changing the shape resets the two numbers to that shape's own defaults.
+      // Twelve gear teeth make a poor five-pointed star, and carrying a number
+      // across means the dropdown quietly produces a bad version of whatever
+      // was picked.
+      if (patch.kind && patch.kind !== state.shapeSettings.kind) {
+        const d = defaultsFor(patch.kind, 1);
+        return {
+          shapeSettings: {
+            kind: patch.kind,
+            pointsCount: d.pointsCount ?? 5,
+            innerRatio: d.innerRadius ?? 0.4,
+          },
+        };
+      }
+      return { shapeSettings: { ...state.shapeSettings, ...patch } };
+    }),
   setEraserWidth: (width) =>
     set({ eraserWidth: Math.max(MIN_ERASER_WIDTH_MM, width) }),
 
@@ -1065,6 +1154,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleTestGridModal: () => set((state) => ({ isTestGridOpen: !state.isTestGridOpen })),
   toggleRegistrationModal: () =>
     set((state) => ({ isRegistrationOpen: !state.isRegistrationOpen })),
+  togglePackModal: () => set((state) => ({ isPackOpen: !state.isPackOpen })),
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
@@ -1341,6 +1431,143 @@ export const useStore = create<EtchStore>((set, get) => ({
    * undo stack under a single nudge across the stock. The caller commits on
    * key-up, so one press-and-hold undoes as one move.
    */
+  packOntoStock: (opts = {}) => {
+    const { document, tabs, activeTabId, cncTools } = get();
+    const gapMm = partGapMm(document, cncTools);
+
+    /*
+     * Parts from the other sheets arrive as copies with fresh ids and their
+     * layers remapped onto this document's. Fresh ids because two sheets
+     * duplicated from one another hold the same element ids, and two elements
+     * sharing an id in one document means selecting one selects both. The
+     * layer remap matches by name and operation — the sheets of a job are
+     * usually the same six layers under the same six names — and copies the
+     * layer in when there is nothing to match.
+     */
+    const layers = [...document.layers];
+    const layerFor = (source: EtchLayer): string => {
+      const match = layers.find(
+        (l) => l.name.toLowerCase() === source.name.toLowerCase() && l.operation === source.operation
+      );
+      if (match) return match.id;
+      const copy = { ...source, id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` };
+      layers.push(copy);
+      return copy.id;
+    };
+
+    /** New id -> where it came from, so the source sheet can give it up. */
+    const origin = new Map<string, { tabId: string; sourceId: string }>();
+    const pool = new Map<string, EtchElement>();
+    for (const el of document.elements) pool.set(el.id, el);
+
+    const foreign: EtchElement[] = [];
+    if (opts.includeOtherSheets) {
+      let seq = 0;
+      for (const tab of tabs) {
+        if (tab.id === activeTabId) continue;
+        for (const el of tab.document.elements) {
+          const sourceLayer = tab.document.layers.find((l) => l.id === el.layerId);
+          if (!sourceLayer || !sourceLayer.visible) continue;
+          const copy: EtchElement = {
+            ...el,
+            id: `packed_${Date.now()}_${seq++}`,
+            layerId: layerFor(sourceLayer),
+          };
+          origin.set(copy.id, { tabId: tab.id, sourceId: el.id });
+          foreign.push(copy);
+          pool.set(copy.id, copy);
+        }
+      }
+    }
+
+    /*
+     * Clustered per sheet, not over the pool. Two sheets are two pieces of
+     * stock: a part on one and a part on the other can sit at the same
+     * millimetre without being one part, and clustering them together would
+     * weld the six layers of a layered picture into a single lump.
+     */
+    const parts: Part[] = clusterParts(document.elements);
+    if (foreign.length) {
+      for (const tab of tabs) {
+        if (tab.id === activeTabId) continue;
+        const mine = foreign.filter((el) => origin.get(el.id)!.tabId === tab.id);
+        if (mine.length) parts.push(...clusterParts(mine));
+      }
+    }
+
+    const { placements, leftovers } = packParts(parts, { width: document.width, height: document.height }, gapMm);
+
+    const moved = new Map<string, EtchElement>();
+    let rotated = 0;
+    let pulled = 0;
+    const gaveUp = new Map<string, Set<string>>();
+    for (const placement of placements) {
+      if (placement.rotated) rotated++;
+      let fromOther = false;
+      for (const id of placement.part.ids) {
+        const el = pool.get(id);
+        if (!el) continue;
+        moved.set(id, applyPlacement(el, placement));
+        const src = origin.get(id);
+        if (src) {
+          fromOther = true;
+          const set = gaveUp.get(src.tabId) ?? new Set<string>();
+          set.add(src.sourceId);
+          gaveUp.set(src.tabId, set);
+        }
+      }
+      if (fromOther) pulled++;
+    }
+
+    // Everything that was already here stays, moved or not. Only the parts
+    // pulled in from elsewhere are conditional — one that found no room is left
+    // on the sheet it came from rather than dropped on this one.
+    const elements = [
+      ...document.elements.map((el) => moved.get(el.id) ?? el),
+      ...foreign.filter((el) => moved.has(el.id)).map((el) => moved.get(el.id)!),
+    ];
+
+    set({
+      document: { ...document, layers, elements },
+      selectedIds: foreign.filter((el) => moved.has(el.id)).map((el) => el.id),
+    });
+    get().commitHistory();
+
+    /*
+     * The sheets that gave something up are edited in place, which is the one
+     * thing actions here otherwise never do. It is safe because each one gets a
+     * history entry of its own: switch to that sheet and Ctrl+Z puts its parts
+     * back, exactly as if the removal had been done while it was open.
+     */
+    if (gaveUp.size) {
+      set({
+        tabs: get().tabs.map((tab) => {
+          const ids = gaveUp.get(tab.id);
+          if (!ids || tab.id === activeTabId) return tab;
+          const doc = { ...tab.document, elements: tab.document.elements.filter((el) => !ids.has(el.id)) };
+          const history = [...tab.history.slice(0, tab.historyIndex + 1), doc];
+          return {
+            ...tab,
+            document: doc,
+            history,
+            historyIndex: history.length - 1,
+            selectedIds: tab.selectedIds.filter((id) => !ids.has(id)),
+          };
+        }),
+      });
+    }
+
+    return {
+      packed: placements.length,
+      rotated,
+      pulled,
+      fromSheets: gaveUp.size,
+      leftovers: leftovers.length,
+      fixed: parts.filter((p) => p.fixed).length,
+      gapMm,
+    };
+  },
+
   nudgeSelected: (dx, dy) => {
     const { document, selectedIds } = get();
     if (selectedIds.length === 0 || (dx === 0 && dy === 0)) return;
@@ -1553,6 +1780,82 @@ export const useStore = create<EtchStore>((set, get) => ({
    * than by splicing, and elements it did not touch keep their identity — which
    * is what lets React skip re-rendering them.
    */
+  offsetSelected: (deltaMm) => {
+    const { document, selectedIds, history, historyIndex } = get();
+    if (!selectedIds.length) {
+      set({ offsetNotice: 'Select a shape to offset.' });
+      return;
+    }
+    if (Math.abs(deltaMm) < MIN_OFFSET_MM) {
+      set({ offsetNotice: 'Set a distance to grow or shrink by.' });
+      return;
+    }
+
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (!selected.length) return;
+
+    const result = offsetElements(selected, deltaMm);
+    if ('error' in result) {
+      set({ offsetNotice: result.error });
+      return;
+    }
+
+    const base = selected[0];
+    const grew = deltaMm > 0;
+    const offset: EtchElement = {
+      // Identity transform: the sampler baked the originals' rotations and
+      // scales into the contours already, and inheriting them would apply them
+      // a second time.
+      id: `offset_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: `${base.name} ${grew ? '+' : '−'}${Math.abs(deltaMm)}mm`,
+      type: 'path',
+      layerId: base.layerId,
+      x: result.x,
+      y: result.y,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: base.opacity,
+      strokeWidth: base.strokeWidth,
+      strokeColor: base.strokeColor,
+      strokeDash: base.strokeDash,
+      fillColor: 'none',
+      visible: true,
+      locked: false,
+      d: result.d,
+      machining: base.machining,
+    };
+
+    const newDoc = { ...document, elements: [...document.elements, offset] };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+
+    const notes: string[] = [];
+    if (result.skipped.length) {
+      notes.push(
+        `Left out ${result.skipped.map((s) => s.name).join(', ')} — an open line has no inside to offset.`
+      );
+    }
+    if (result.dropped > 0) {
+      notes.push(
+        `${result.dropped} feature${result.dropped === 1 ? '' : 's'} closed up entirely — ` +
+          `${result.dropped === 1 ? 'it was' : 'they were'} narrower than the distance could take off.`
+      );
+    }
+
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      // The new shape, not the originals: it is the thing to move, delete or
+      // put on another layer, and it is sitting exactly on top of what it came
+      // from where it cannot be picked out by clicking.
+      selectedIds: [offset.id],
+      offsetNotice: notes.length ? notes.join(' ') : null,
+    });
+  },
+
   beautifySelected: () => {
     const { document, selectedIds, history, historyIndex } = get();
     if (selectedIds.length === 0) {

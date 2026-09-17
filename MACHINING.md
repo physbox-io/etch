@@ -144,6 +144,24 @@ onto the honeycomb is the ordinary outcome of a laser cut.
 | Fall-out lattice pitch 0.4 mm | `sheetPieces.ts` | Half the narrowest bridge worth leaving, so a bridge is never lost to rounding and reported as a piece that drops. Error is half a cell — far below anything here can cut. | **Derived** (from the bridge minimum) |
 | A piece is ≥ 1 mm² **and** ≥ 3 cells across | `sheetPieces.ts` | Area alone does not separate a piece from an artefact: a 3 mm registration plug is 7 mm² and really does drop out, while the strip between two contours half a millimetre apart can be long enough to beat any area bar. What artefacts share is being one or two cells thick. | **Derived** (from the pitch) |
 
+### Editing snaps (`geom.ts`)
+
+These change the drawing rather than the toolpath, but they change it silently,
+so they are registered on the same terms as `beautify.ts`'s tolerances.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `ROTATION_STICKY_DEG = 4` | `geom.ts` | Almost every rotation is reaching for square — a part squared to the stock, a label turned to read up the side. 89.4° is indistinguishable on screen and wrong on the material, where the part stops lining up with the sheet or with the piece it mates to. Four degrees is wider than a hand's error at any usable zoom and narrow enough that a deliberate 85° is still reachable by aiming; Alt is a hard bypass. | **Judgement** |
+| Resize snaps the *dragged handle* to the grid, not the pointer delta | `snapHandleDelta`, `geom.ts` | Rounding the delta only lands on the grid if the shape already started there, which is the one case where snapping was not needed. Snapping the handle means a box dragged out on a 10 mm grid is a whole number of squares — which is what makes two parts drawn on the same grid fit each other. | **Derived** |
+
+### Packing parts onto stock (`packParts.ts`)
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `PART_CLEARANCE_MM = 2` | `packParts.ts` | What is left standing between two packed parts once both kerfs are taken out. Two jobs: it is more than the positioning error of a belt-driven hobby gantry, so parts nested this close cannot cut into each other; and it leaves a rib of material rather than a hairline, so the sheet is still one piece while the rest of the job runs. | **Judgement** |
+| Gap between parts = kerf + clearance (laser) | `partGapMm`, `packParts.ts` | The beam takes half its slot from each side of the line, so the kerf is spent once between two parts. | **Derived** (from `readLaserKerf`) |
+| Gap between parts = cutter diameter + clearance (router) | `partGapMm`, `packParts.ts` | A cut runs a radius outside the part and the tool sweeps a radius wider again. At less than one whole diameter between two parts, the cutter going round one machines into its neighbour. | **Derived** (from the tool) |
+
 ## 7. Geometry tolerances
 
 These are a **shared budget**, not per-module choices. Flattening and arc fitting
@@ -156,6 +174,7 @@ are meant to total under 0.05 mm from the drawn shape.
 | `CLIPPER_SCALE = 1000` (1 µm quantum) | `contourOffset.ts` | Three orders finer than any machine here positions to, and G-code is emitted to three decimals anyway. | **Derived** |
 | `MIN_FEATURE_MM = 0.05` (boolean sliver removal) | `booleanOps.ts` | Equal to the tolerance budget above: a feature thinner than the app's own geometric error is indistinguishable from it, and nothing here can cut it. | **Derived** (from the budget) |
 | `OVERLAP_TOLERANCE_MM = 0.05` | `dedupeOverlaps.ts` | Above the 0.02 mm chord tolerance so two copies of one curve land on the same key; below anything a hobby machine positions to. | **Derived** |
+| `SPLINE_FIT_TOLERANCE_MM = 0.005` (DXF import) | `dxfImport.ts` | A DXF SPLINE is an exact curve the CAD tool defined, not a hand's wobble to be smoothed: the importer is re-describing it, so its own error must disappear inside the 0.05 mm budget the flattener and arc fitter share rather than claim a share of it. A tenth of the budget leaves the imported curve indistinguishable from a drawn one. | **Derived** (from the budget) |
 
 ### Make Pretty (`beautify.ts`)
 
