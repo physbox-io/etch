@@ -151,7 +151,7 @@ export const ImageImportModal: React.FC = () => {
   /** Sweeps the pitch slider is about to ask for, so its cost is on screen. */
   const shadeSweepEstimate = Math.max(
     1,
-    Math.round(options.targetHeight / Math.max(0.05, options.shadePitch))
+    Math.round(options.targetHeight / Math.max(0.02, options.shadePitch))
   );
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -935,7 +935,7 @@ export const ImageImportModal: React.FC = () => {
                           onClick={() =>
                             setOptions({
                               ...options,
-                              shadePitch: Math.max(0.05, Number(mmPerPixel.toFixed(2))),
+                              shadePitch: Math.max(0.02, Number(mmPerPixel.toFixed(2))),
                             })
                           }
                           className="mt-1.5 w-full px-2 py-1 text-[10px] font-semibold rounded-lg border border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 cursor-pointer"
@@ -950,9 +950,18 @@ export const ImageImportModal: React.FC = () => {
                       </div>
                       <input
                         type="range"
-                        min={0.05}
-                        max={1}
-                        step={0.05}
+                        /*
+                         * 0.02 to match the same quantity everywhere else: the
+                         * element's own Pitch in the inspector and the engrave
+                         * fill spacing both floor at 0.02, so this dialog's
+                         * 0.05 was two and a half times stricter about the
+                         * number you would be editing five minutes later. The
+                         * ceiling is a stepover on a router, where 1 mm is far
+                         * too fine to rough with a 3 mm cutter.
+                         */
+                        min={0.02}
+                        max={3}
+                        step={0.01}
                         value={options.shadePitch}
                         onChange={(e) =>
                           setOptions({ ...options, shadePitch: Number(e.target.value) })

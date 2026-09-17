@@ -492,7 +492,16 @@ export const ToolConfigModal: React.FC = () => {
                     </label>
                     <NumberInput
                       min={1}
-                      max={10}
+                      /*
+                       * 16, and whole numbers only. `feeds.ts` multiplies chip
+                       * load by this to get the feed, so a silent 12 to 10
+                       * understates the feed by 17% — rubbing and burning
+                       * rather than cutting — and without `integer` a typed 2.5
+                       * survived the blur and multiplied the feed directly.
+                       * 12- and 16-flute finishers are ordinary tools.
+                       */
+                      max={16}
+                      integer
                       value={selectedTool.cutting?.flutes ?? 2}
                       onChange={v => updateCuttingSpec({ flutes: v ?? 1 })}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs font-mono text-right focus:ring-2 focus:ring-amber-500 outline-none"
