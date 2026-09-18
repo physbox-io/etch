@@ -1228,7 +1228,11 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
         bounds,
         cols: gx,
         rows: gy,
-        clearanceMm: 5,
+        // A *relative* lift from each surface just measured. Nothing in a probe
+        // cycle may command an absolute Z: against a datum left over from
+        // another setup that is a plunge through the work, which is how a tool
+        // and a plate were destroyed on Mesh.
+        liftMm: 5,
         travelFeed: 3000,
         takeReading: async point => {
           let action: AssistedProbeAction = 'probe';
