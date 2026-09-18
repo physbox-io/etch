@@ -10,7 +10,8 @@
     "clipart:preview": "vite-node tools/clipart/preview.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -b"
   },
   "dependencies": {
     "@physbox-io/machining": "^0.3.6",

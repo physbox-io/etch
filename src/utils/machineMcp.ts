@@ -4,6 +4,7 @@ import {
   describeMachine,
   type ArmingState,
   type MachineControl,
+  requireNumber,
 } from '@physbox-io/machining';
 import { webSerialManager } from './webSerialManager';
 import { fetchMachineDevices } from './apiClient';
@@ -106,14 +107,23 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
  * `unknown` rather than `any`: these arrive as JSON over the bridge, from an
  * agent that may be a different version of a different app, so every field is a
  * claim rather than a fact. The handlers below narrow what they read, which is
- * the point — a `power` that arrived as the string "80" should fall back to the
- * configured one, not be handed to the machine.
+ * the point — a `power` that arrived as the string "80" is a malformed request
+ * and is refused, rather than being handed to the machine or quietly swapped
+ * for a default the caller did not ask for.
  */
 type McpArgs = Record<string, unknown>;
 
-/** A number from an argument, or the fallback when it is anything else. */
-function num(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+/**
+ * A number from an argument, or the fallback when it was not sent.
+ *
+ * Anything else is refused by name. This used to fall back silently on a bad
+ * value, which is right for an argument nobody sent and wrong for one somebody
+ * got wrong: `shimThicknessMm: "0.1"` quietly became 0, and work Z0 then landed
+ * one paper-thickness low with every cut in the job that much deeper. The
+ * refusal happens before anything moves, which is what makes it free.
+ */
+function num(args: McpArgs, name: string, fallback: number): number {
+  return requireNumber(args, name, { default: fallback })!;
 }
 
 /** Etch's full machine command set, keyed by the bridge command names. */
@@ -136,8 +146,8 @@ export function createEtchMachineHandlers(): Record<
        */
       frameJob: async (bounds, args) =>
         webSerialManager.frameJob(bounds, {
-          guidePower: num(args.guidePower, readGuidePower()),
-          safeZ: num(args.safeZMm, 5),
+          guidePower: num(args, 'guidePower', readGuidePower()),
+          safeZ: num(args, 'safeZMm', 5),
         }),
       listDevices: async () => {
         const devices = await fetchMachineDevices();
@@ -176,7 +186,7 @@ export function createEtchMachineHandlers(): Record<
      */
     MACHINE_ZERO_Z: async (args: McpArgs) => {
       machineArming.requireArmed('zero_z');
-      const shim = num(args.shimThicknessMm, 0);
+      const shim = num(args, 'shimThicknessMm', 0);
       machineArming.noteAgentCommand('zero_z', `shim=${shim}`);
       const result = await webSerialManager.zeroZHere(shim);
       if (!result.success) throw new Error(result.message);
@@ -200,7 +210,7 @@ export function createEtchMachineHandlers(): Record<
       machineArming.requireArmed('guide_spot');
       const on = args.on !== false;
       machineArming.noteAgentCommand('guide_spot', on ? 'on' : 'off');
-      if (on) await webSerialManager.guideSpotOn(num(args.power, readGuidePower()));
+      if (on) await webSerialManager.guideSpotOn(num(args, 'power', readGuidePower()));
       else await webSerialManager.guideSpotOff();
       return { ...describeMachine(machine, machineArming), guideSpot: on };
     },
@@ -221,8 +231,8 @@ export function createEtchMachineHandlers(): Record<
 
       const grid = await webSerialManager.probeGrid(
         bounds,
-        num(args.cols, 3),
-        num(args.rows, 3)
+        num(args, 'cols', 3),
+        num(args, 'rows', 3)
       );
       const zs = grid.points.flat().map((p: { z: number }) => p.z);
       return {
