@@ -14,7 +14,6 @@ import {
   type MachineStatus as SharedMachineStatus,
   type OverrideStep,
   type ParsedJob,
-  type StatusReport,
   type TransportMode,
   type Vec3,
 } from '@physbox-io/machining';
@@ -265,16 +264,6 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
    */
   private jobMachine: MachineKind = 'laser';
 
-  /**
-   * Where work Z0 was last set, in **machine** coordinates.
-   *
-   * Machine rather than work coordinates because the operator may re-zero XY
-   * afterwards, which moves the work origin out from under a stored work-space
-   * point but not out from under this one. `probeGrid` needs it: a heightmap is
-   * only a correction if it reads zero at the point the datum was taken from.
-   */
-  private zDatumMachineXY: { x: number; y: number } | null = null;
-
   /** Deadline for the guide spot, so a lit beam cannot be walked away from. */
   private guideSpotTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -477,10 +466,6 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
     await this.guideSpotOff();
     await super.disconnect();
 
-    // The datum belonged to the machine that just went away; carrying it into
-    // the next connection would reference a heightmap to a point on a different
-    // setup entirely.
-    this.zDatumMachineXY = null;
     this.grblVersion = '';
     this.grblOptions = '';
     this.grblBuildName = '';
@@ -771,33 +756,20 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
 
   /** Whether Z has been zeroed since this machine was connected. */
   public hasZDatum(): boolean {
-    return this.zDatumMachineXY !== null;
-  }
-
-  /** Remembers where work Z0 was taken, for `probeGrid` to reference against. */
-  private recordZDatum(): void {
-    this.zDatumMachineXY = { x: this.state.mpos.x, y: this.state.mpos.y };
+    return this.state.zDatumTrusted === true;
   }
 
   /**
-   * The Z datum in current work coordinates, or null if Z has not been zeroed
-   * this session. Derived from the machine-space point rather than stored in
-   * work space, so a later `zeroXY` does not silently move it.
+   * A laser focuses once by hand and its Z never moves during a job, so the
+   * shared refusal to cut against an unconfirmed datum does not apply to one.
    */
-  private zDatumWorkXY(): { x: number; y: number } | null {
-    if (!this.zDatumMachineXY) return null;
-    const offset = this.state.workOffset ?? { x: 0, y: 0, z: 0 };
-    return {
-      x: this.zDatumMachineXY.x - offset.x,
-      y: this.zDatumMachineXY.y - offset.y,
-    };
+  protected hasJobZAxis(): boolean {
+    return hasJobZAxis(this.jobMachine);
   }
 
-  public async zeroAxis(axis: 'X' | 'Y' | 'Z' | 'XY' | 'ALL'): Promise<void> {
-    await super.zeroAxis(axis);
-    // Zeroing Z by hand is a datum like a probed one, and levelling has to be
-    // referenced to it either way.
-    if (axis === 'Z' || axis === 'ALL') this.recordZDatum();
+  /** What this app calls the thing on the bed, for those refusals. */
+  protected workNoun(): string {
+    return 'the stock';
   }
 
   /**
@@ -928,49 +900,6 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
       label: `Layer ${i + 2}`,
     }));
     return { lines, layers, spindleLine: lines.find(l => /\bM[34]\b/.test(l)) ?? null };
-  }
-
-  /**
-   * A CNC job's first Z move — and every other Z move streamed after it —
-   * trusts whatever G54 Z offset the controller happens to be holding, which
-   * may belong to a previous session, a different tool, or a different piece of
-   * stock. `zeroZHere`/`zeroZ` are the only things that record a datum, and only
-   * a disconnect (a different setup entirely) clears it, so a null datum here
-   * genuinely means "not zeroed since this machine was connected."
-   *
-   * A laser job has no Z to plunge with, so a datum this session has never
-   * confirmed cannot hurt it.
-   */
-  protected assertReadyToCut(): void {
-    if (hasJobZAxis(this.jobMachine) && this.zDatumMachineXY === null) {
-      throw new Error(
-        'Z zero has not been set this session. Zero it before running a job — a Z move against an unconfirmed datum can drive the tool into the stock.'
-      );
-    }
-  }
-
-  /**
-   * A hold the machine put itself into.
-   *
-   * GRBL can enter Hold on its own — a stray real-time `!` from line noise is
-   * the usual culprit, and Etch never sends one outside an explicit pause
-   * click. The base class reports the *status* correctly, but nothing has told
-   * it that the stream is paused, so Resume is a no-op and the job looks merely
-   * stalled instead of parked and recoverable.
-   *
-   * Adopting it as an operator pause is what makes Resume send the cycle start
-   * that gets the machine going again. This belongs in the shared package —
-   * Mesh and Volt have the same hole — and is here until it moves.
-   */
-  protected onStatusReport(report: StatusReport): Partial<EtchMachineState> | void {
-    if (report.state.startsWith('Hold') && this.isRunning() && !this.isJobPaused()) {
-      this.isPaused = true;
-      this.pauseKind = 'operator';
-      return {
-        pauseMessage:
-          'The machine went into hold on its own (likely line noise). Resume when ready.',
-      };
-    }
   }
 
   /** What a pause means on a laser, and on a router. */
@@ -1278,99 +1207,86 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
     let probed = 0;
     let missed = 0;
     let aborted = false;
+    /** Set from inside the reading callback, so the walk stops after this point. */
+    let operatorAborted = false;
 
     const isLive = this.state.connected;
     // Nothing to assist with when there is no machine to drive: the simulated
     // map would otherwise stop and ask the operator about points it invented.
     const assisted = isLive && opts.mode === 'assisted' && !!opts.onPointReady;
-    if (isLive) await this.sendCommandAndWait('G21 G90');
-
-    // Raw machine Z of each contact, or null where the probe never touched.
-    // Kept absolute until the whole grid is in, because which point becomes the
+    // Raw machine Z of each contact, or null where nothing was touched. Kept
+    // absolute until the whole grid is in, because which point becomes the
     // reference is not known until then.
-    const raw: Array<Array<number | null>> = [];
+    let raw: Array<Array<number | null>> = [];
     let firstContactZ: number | null = null;
 
-    for (let row = 0; row < gy && !aborted; row++) {
-      const rawRow: Array<number | null> = [];
-      const y = bounds.minY + row * stepY;
-
-      for (let col = 0; col < gx; col++) {
-        const x = bounds.minX + col * stepX;
-        let contactZ: number | null;
-
-        if (isLive) {
-          // Lift clear, *then* traverse. One combined `G0 X Y Z` is a
-          // coordinated move: starting from anywhere below the clearance height
-          // it cuts the corner and drags the tool diagonally across the work.
-          //
-          // Not clamped like a retract: the probe just below travels down a
-          // fixed 20 mm from wherever this leaves the tool, so raising this
-          // height to "wherever the tool already is" can push the probe's fixed
-          // search past the surface it is meant to find.
-          await this.sendCommandAndWait(`G0 Z5.000 F1000`);
-          await this.sendCommandAndWait(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
-
+    if (isLive) {
+      // The walk is the shared one — lift, traverse, read, retract, report —
+      // and what a *reading* is is this app's: a probe, or the operator winding
+      // the tool down onto material that will not close a circuit.
+      const walk = await this.probeGridCycle({
+        bounds,
+        cols: gx,
+        rows: gy,
+        clearanceMm: 5,
+        travelFeed: 3000,
+        takeReading: async point => {
           let action: AssistedProbeAction = 'probe';
-          if (assisted) {
-            action = await opts.onPointReady!({ index: probed, total: totalPoints, row, col, x, y });
-          }
+          if (assisted) action = await opts.onPointReady!(point);
 
           if (action === 'abort') {
-            aborted = true;
-            rawRow.push(null);
-            break;
+            operatorAborted = true;
+            return null;
           }
-
-          if (action === 'skip') {
-            contactZ = null;
-          } else if (action === 'capture') {
+          if (action === 'skip') return null;
+          if (action === 'capture') {
             // The operator has wound the tool down onto the surface, so the
-            // measurement is simply where it is standing. Machine Z, same frame
-            // `[PRB:]` reports in — mixing the work frame in here would offset
-            // hand-captured points against probed ones by the work offset.
-            contactZ = (await this.refreshPosition()).mpos.z;
-          } else {
-            contactZ = await this.probePoint(20, 50);
+            // measurement is simply where it is standing. Machine Z, the same
+            // frame `[PRB:]` reports in — mixing the work frame in here would
+            // offset hand-captured points against probed ones by the work
+            // offset.
+            return (await this.refreshPosition()).mpos.z;
           }
+          return this.probePoint(20, 50);
+        },
+        onProgress: (done, total) => {
+          probed = done;
+          onProgress?.(done, total);
+        },
+        // An alarm (a failed probe raises ALARM:5) refuses every command that
+        // follows it, so the rest of the grid would record as dead flat and
+        // then be applied to a job as though it had been measured. Stop.
+        abortWhen: () => operatorAborted || this.state.status === 'ALARM',
+      });
 
-          // Retract before the next traverse whichever way the point was taken:
-          // a captured point leaves the tool touching the work.
-          const pointRetractZ = Math.max(5, (await this.refreshPosition()).wpos.z);
-          await this.sendCommandAndWait(`G0 Z${pointRetractZ.toFixed(3)} F1000`);
-
-          if (contactZ === null) missed++;
-          else if (firstContactZ === null) firstContactZ = contactZ;
-
-          // An alarm (a failed probe raises ALARM:5) refuses every command that
-          // follows it, so the rest of the grid would record as dead flat and
-          // then be applied to a job as though it had been measured. Stop.
-          if (this.state.status === 'ALARM') {
-            aborted = true;
-            rawRow.push(contactZ);
-            break;
-          }
-        } else {
+      raw = walk.readings;
+      aborted = walk.aborted;
+      for (const row of raw) {
+        for (const z of row) {
+          if (z === null) missed++;
+          else if (firstContactZ === null) firstContactZ = z;
+        }
+      }
+      // Points never reached because the walk stopped are not misses of their
+      // own; `missed` counts them once, below.
+      missed -= Math.max(0, totalPoints - walk.taken);
+    } else {
+      for (let row = 0; row < gy; row++) {
+        const rawRow: Array<number | null> = [];
+        for (let col = 0; col < gx; col++) {
           // Simulated heightmap: slight 0.18mm bed tilt + 0.08mm dish warp.
           const normX = col / (gx - 1);
           const normY = row / (gy - 1);
           const tilt = (normX - 0.5) * 0.18 + (normY - 0.5) * 0.12;
           const warp = Math.sin(normX * Math.PI) * Math.sin(normY * Math.PI) * -0.08;
-          contactZ = parseFloat((tilt + warp).toFixed(3));
+          rawRow.push(parseFloat((tilt + warp).toFixed(3)));
+          probed++;
+          onProgress?.(probed, totalPoints);
           await new Promise(r => setTimeout(r, 80));
         }
-
-        rawRow.push(contactZ);
-        probed++;
-        onProgress?.(probed, totalPoints);
+        raw.push(rawRow);
       }
-
-      // A row cut short by an alarm still has to be square, or the bilinear
-      // lookup indexes past the end of it.
-      while (rawRow.length < gx) rawRow.push(null);
-      raw.push(rawRow);
     }
-    while (raw.length < gy) raw.push(new Array<number | null>(gx).fill(null));
 
     // Anchor the map somewhere real first: misses record flat *against the
     // measured surface*, not against zero in an absolute machine frame.
