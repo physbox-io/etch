@@ -14,7 +14,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@physbox-io/machining": "^0.3.6",
+    "@physbox-io/machining": "^0.3.7",
     "@physbox-io/ui": "^0.2.1",
     "@tailwindcss/vite": "^4.0.0",
     "clipper-lib": "^6.4.2",
