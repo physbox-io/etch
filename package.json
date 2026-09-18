@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@physbox-io/machining": "^0.3.4",
-    "@physbox-io/ui": "^0.2.0",
+    "@physbox-io/ui": "^0.2.1",
     "@tailwindcss/vite": "^4.0.0",
     "clipper-lib": "^6.4.2",
     "clsx": "^2.1.1",
@@ -23,7 +23,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.0.0",
-    "tailwindcss": "^4.0.0",
+    "tailwindcss": "^4.3.0",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
@@ -32,7 +32,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/ws": "^8.5.10",
-    "@vitejs/plugin-react": "^4.7.0",
+    "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^10.8.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
@@ -40,8 +40,8 @@
     "jsdom": "^29.1.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.66.0",
-    "vite": "^6.4.3",
-    "vitest": "^3.0.0",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.10",
     "ws": "^8.18.0"
   }
 }

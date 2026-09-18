@@ -96,22 +96,53 @@ describe('hatchContours', () => {
     expect(hatchContours([square(0.1)], 0, 1)).toHaveLength(0);
   });
 
-  it('runs sub-second on a complex multi-vertex contour with fine pitch', () => {
-    // Generate a complex star polygon with 500 vertices
-    const numPoints = 500;
-    const star: Array<{ x: number; y: number }> = [];
-    for (let i = 0; i < numPoints; i++) {
-      const angle = (i * 2 * Math.PI) / numPoints;
-      const r = i % 2 === 0 ? 100 : 50;
-      star.push({ x: 100 + r * Math.cos(angle), y: 100 + r * Math.sin(angle) });
-    }
-    const t0 = performance.now();
-    const lines = hatchContours([star], 45, 0.2); // ~1000 scanlines across 500 vertices
-    const duration = performance.now() - t0;
+  it('stays within reach of a coarse hatch when the pitch goes fine', () => {
+    // Hatching a filled photo trace is tens of thousands of edges against a
+    // thousand scanlines, and it happens on the main thread while someone
+    // waits, so a regression in this loop reads as the app hanging.
+    //
+    // It used to be asserted as "under 200 ms", which fails whenever the
+    // machine is busy — including against the rest of this suite running in
+    // parallel, where it was the one red test in 1,088 and had stopped meaning
+    // anything. The budget here is instead a multiple of the same shape hatched
+    // ten times more coarsely, measured moments earlier on the same machine: a
+    // loaded machine inflates both numbers and the ratio survives it.
+    const star = (numPoints: number) => {
+      const points: Array<{ x: number; y: number }> = [];
+      for (let i = 0; i < numPoints; i++) {
+        const angle = (i * 2 * Math.PI) / numPoints;
+        const r = i % 2 === 0 ? 100 : 50;
+        points.push({ x: 100 + r * Math.cos(angle), y: 100 + r * Math.sin(angle) });
+      }
+      return points;
+    };
 
-    expect(lines.length).toBeGreaterThan(500);
-    // Should complete in under 200ms with sweep-line optimization
-    expect(duration).toBeLessThan(200);
+    /** Best of three: the shortest run is the one that was least interrupted. */
+    const timeHatch = (numPoints: number, pitch: number) => {
+      let best = Infinity;
+      let lines: ReturnType<typeof hatchContours> = [];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const t0 = performance.now();
+        lines = hatchContours([star(numPoints)], 45, pitch);
+        best = Math.min(best, performance.now() - t0);
+      }
+      return { best, lines };
+    };
+
+    const coarse = timeHatch(500, 2); // ~100 scanlines across 500 vertices
+    const fine = timeHatch(500, 0.2); // ~1,000 scanlines across the same 500
+
+    expect(fine.lines.length).toBeGreaterThan(500);
+    expect(fine.lines.length).toBeGreaterThan(coarse.lines.length * 5);
+
+    // Ten times the scanlines over the same edges. Linear in the scanlines is
+    // about 10x; 25x leaves room for the per-call setup the coarse run pays
+    // proportionally more of, and still catches a loop that has gone quadratic.
+    expect(fine.best).toBeLessThan(Math.max(coarse.best, 1) * 25);
+
+    // And a ceiling loose enough never to fire on a busy machine, but which
+    // still catches the case where the whole thing has become pathological.
+    expect(fine.best).toBeLessThan(2000);
   });
 });
 
