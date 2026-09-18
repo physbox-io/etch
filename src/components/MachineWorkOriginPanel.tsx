@@ -595,7 +595,7 @@ export const MachineWorkOriginPanel: React.FC<{
                   moving. Nothing can detect that — it is observed once, by the
                   person watching the dot blink out. */}
               <label
-                title="For machines whose laser only fires while moving: traces a 0.1 mm cross around the spot to keep it lit. The cross returns to its own centre, so the point you are sighting does not move."
+                title="For lasers that only fire while moving: jiggles the head in a 0.1 mm cross to keep the dot lit. It ends where it started."
                 className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400 cursor-pointer select-none"
               >
                 <input
@@ -692,7 +692,7 @@ export const MachineWorkOriginPanel: React.FC<{
                         step={0.01}
                         value={shimThickness}
                         onChange={v => setShimThickness(writeShimThickness(v ?? 0))
-                        } title="Thickness of whatever is under the tool — 0.1 mm is copier paper. Set 0 if the tool is touching the work itself. Remembered between sessions."
+                        } title="Thickness of whatever is under the tool — copier paper is about 0.1 mm. Set 0 if the tool touches the work itself."
                         className={`w-20 ${numInput}`}
                     />
                     </div>
