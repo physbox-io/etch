@@ -135,21 +135,24 @@ describe('classifyJobLine', () => {
  * tracking how much it is still holding unparsed.
  */
 function attachFakeGrbl() {
+  // The protocol layer is @physbox-io/machining's now, so this reaches into
+  // the base class's internals rather than Etch's: the transport it writes
+  // through, the state it guards on, and the line parser its acks arrive at.
   const mgr = webSerialManager as unknown as {
     transport: {
       writeLine: (line: string) => Promise<void>;
       writeRealtime: (byte: number) => Promise<void>;
     } | null;
-    status: Record<string, unknown>;
-    handleIncomingLine: (line: string) => void;
+    state: Record<string, unknown>;
+    parseLine: (line: string) => void;
   };
 
   const sent: string[] = [];
   let outstanding = 0;
   const peak = { bytes: 0 };
 
-  mgr.status.connected = true;
-  mgr.status.state = 'Idle';
+  mgr.state.connected = true;
+  mgr.state.status = 'IDLE';
 
   mgr.transport = {
     async writeRealtime(byte: number) {
@@ -163,11 +166,14 @@ function attachFakeGrbl() {
       // parsed it, which is what the streamer's byte budget is counting.
       outstanding += trimmed.length + 1;
       if (outstanding > peak.bytes) peak.bytes = outstanding;
-      await new Promise<void>((resolve) => setTimeout(() => {
+      // The write resolves when the bytes are on the wire, and the `ok` comes
+      // back later — which is what lets a streamer keep several lines in
+      // flight. A fake that only resolved once it had acked would serialise
+      // the stream all by itself and then report the streamer as the culprit.
+      setTimeout(() => {
         outstanding -= trimmed.length + 1;
-        mgr.handleIncomingLine('ok');
-        resolve();
-      }, 0));
+        mgr.parseLine('ok');
+      }, 0);
     },
   };
 
@@ -177,9 +183,8 @@ function attachFakeGrbl() {
     lines: () => sent.filter((s) => s.length > 1),
     detach() {
       mgr.transport = null;
-      mgr.status.connected = false;
-      mgr.status.jobRunning = false;
-      mgr.status.jobPaused = false;
+      mgr.state.connected = false;
+      mgr.state.status = 'DISCONNECTED';
     },
   };
 }
@@ -222,13 +227,13 @@ describe('streaming a job to the controller', () => {
    * words", reported against a program that contains no such line anywhere.
    */
   it('never puts more in the buffer than GRBL can hold', async () => {
-    webSerialManager.startJob(JOB);
+    void webSerialManager.runProgram(JOB);
     await advance(30);
     expect(fake.peak.bytes).toBeLessThanOrEqual(128);
   });
 
   it("does not take an interactive command's ack as the job's own", async () => {
-    webSerialManager.startJob(JOB);
+    void webSerialManager.runProgram(JOB);
     await advance(4);
 
     // Etch lets G-code be typed at the machine console while a job runs, so
@@ -246,7 +251,7 @@ describe('streaming a job to the controller', () => {
   it('keeps the buffer full rather than sending one line at a time', async () => {
     // A stream paced one ack at a time cannot fill GRBL's 15-block planner, so
     // the controller decelerates to a stop at the end of every block.
-    webSerialManager.startJob(JOB);
+    void webSerialManager.runProgram(JOB);
     await advance(10);
     expect(fake.peak.bytes).toBeGreaterThan(60);
   });

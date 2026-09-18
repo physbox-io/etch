@@ -979,7 +979,7 @@ export const GCodePreviewModal: React.FC = () => {
                   )}
                   <div className="flex gap-2 pt-1">
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         if (!machine.connected) {
                           toggleMachineModal();
                           return;
@@ -989,7 +989,7 @@ export const GCodePreviewModal: React.FC = () => {
                           { ...exportOpts, zOffsetMm: airCutZOffset },
                           plan
                         );
-                        const result = webSerialManager.startJob(airCutGCode, {
+                        const result = await webSerialManager.runProgram(airCutGCode, {
                           machine: laserMode ? 'laser' : 'cnc',
                           job: jobContext(cuttingSubset ? `air cut, ${selectedIds.length} selected` : 'air cut'),
                         });
@@ -1040,12 +1040,12 @@ export const GCodePreviewModal: React.FC = () => {
                   )}
                   <div className="flex gap-2">
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         if (!machine.connected) {
                           toggleMachineModal();
                           return;
                         }
-                        const result = webSerialManager.startJob(gcodeStr, {
+                        const result = await webSerialManager.runProgram(gcodeStr, {
                           machine: laserMode ? 'laser' : 'cnc',
                           job: jobContext(cuttingSubset ? `${selectedIds.length} selected` : undefined),
                         });

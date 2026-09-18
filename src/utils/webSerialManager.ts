@@ -1,10 +1,29 @@
 import type { MachineStatus, BedProbeGrid, ProbePoint } from '../types/etch';
 import {
+  FEED_OVERRIDE_BYTES,
+  GrblMachine,
+  RAPID_OVERRIDE_BYTES,
+  SPINDLE_OVERRIDE_BYTES,
+  classifyPauseLine,
+  describeGrblFault,
+  stripGcodeComment,
+  type FrameJobOptions,
+  type JobLayer,
+  type JobPauseKind,
+  type MachineState as SharedMachineState,
+  type MachineStatus as SharedMachineStatus,
+  type OverrideStep,
+  type ParsedJob,
+  type StatusReport,
+  type TransportMode,
+  type Vec3,
+} from '@physbox-io/machining';
+import {
   DEFAULT_MOTION_PROFILE,
   motionProfileFromSettings,
   type MotionProfile,
 } from './motionProfile';
-import { postMachineTelemetry } from './apiClient';
+import { machineSocketUrl, postMachineTelemetry, submitMachineJob } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
 import {
   DEFAULT_PLATE_THICKNESS_MM,
@@ -13,14 +32,80 @@ import {
   guidePowerToS,
   readGuideJiggle,
   readGuidePower,
-  readLaserModeBorrowed,
   writeActiveMachineId,
   writeLaserModeBorrowed,
   writeMotionProfile,
 } from './machineSettings';
 import { describeTool, hasJobZAxis, parseToolNumber, type MachineKind } from './tooling';
-import { CloudTransport, WebSerialTransport, type GrblTransport } from './grblTransport';
-import type { MachineState as SharedMachineState } from '@physbox-io/machining';
+
+// ---------------------------------------------------------------------------
+// Etch's machine
+// ---------------------------------------------------------------------------
+//
+// The wire, the GRBL protocol, the line queue, the coordinate frames, jogging,
+// probing, the streaming loop and the overrides all live in
+// @physbox-io/machining, shared with Mesh and Volt. All three had grown their
+// own copy of that code — this one was 2,355 lines of it — and each copy
+// carried fixes the other two never got.
+//
+// What is left here is what is specific to cutting a drawing on a laser or a
+// small router: the guide spot, which is the only way to set XY zero on a
+// laser at all; the Z datum a heightmap has to be referenced to; the assisted
+// bed probe, for material that will not close a probe circuit; the machine's
+// own `$$` profile, which is what job times and feed caps are planned against;
+// and the vocabulary — a tool change means something different when the machine
+// has no tools.
+//
+// The legacy `MachineStatus` shape that the panels read is derived from the
+// shared state at the bottom of this file rather than kept alongside it. One
+// source of truth: a second copy updated in parallel is how a DRO ends up
+// showing a frame the machine is not in.
+
+export type { MachineStatus };
+/** Re-exported so the panels import the machine vocabulary from one place. */
+export type { OverrideStep, TransportMode };
+/**
+ * GRBL's real-time override bytes, re-exported from the shared package.
+ *
+ * They are 0x90 and up, which is why they are written as raw bytes rather than
+ * text: UTF-8 turns each of them into two bytes and the controller ignores the
+ * pair. `tests/machineOverrides.test.ts` pins them, because every failure mode
+ * here is silent — 0x9B trims the spindle where 0x92 trims the feed, and the
+ * machine obeys the wrong control without complaint.
+ */
+export { FEED_OVERRIDE_BYTES, RAPID_OVERRIDE_BYTES, SPINDLE_OVERRIDE_BYTES };
+
+/**
+ * What the program being cut is, for whoever is watching it remotely and for
+ * the run archive afterwards.
+ *
+ * The machine layer cannot work any of this out: it is handed a string of
+ * G-code. The run panel knows which document produced it and what it was
+ * planned at, and passes it to `startJob`.
+ */
+export interface JobContext {
+  name?: string;
+  documentId?: string | null;
+  documentRevision?: number | null;
+  settings?: Record<string, unknown> | null;
+}
+
+/** What the operator chose to do at one point of an assisted bed probe. */
+export type AssistedProbeAction = 'probe' | 'capture' | 'skip' | 'abort';
+
+export interface AssistedProbePoint {
+  index: number;
+  total: number;
+  row: number;
+  col: number;
+  x: number;
+  y: number;
+}
+
+export interface ProbeGridOptions {
+  mode?: 'auto' | 'assisted';
+  onPointReady?: (point: AssistedProbePoint) => Promise<AssistedProbeAction>;
+}
 
 /**
  * How often the machine's state is reported to the account, at most.
@@ -31,68 +116,16 @@ import type { MachineState as SharedMachineState } from '@physbox-io/machining';
  */
 const TELEMETRY_INTERVAL_MS = 2000;
 
-/** What a run is, beyond the G-code — see `webSerialManager.jobContext`. */
-export interface JobContext {
-  name?: string;
-  documentId?: string | null;
-  documentRevision?: number | null;
-  /** Material, per-layer power/speed/passes, machine profile. No fixed shape. */
-  settings?: Record<string, unknown> | null;
-}
-
-/** Which wire reaches the machine: a cable here, or a Tekno Box over WiFi. */
-export type TransportMode = 'usb' | 'wifi';
-
-type StatusListener = (status: MachineStatus) => void;
-
 /**
- * What to do with the point the tool is parked over, in an assisted bed probe.
+ * How long the guide spot may stay lit without being asked for again.
  *
- * `probe` runs the normal G38.2 cycle (a plate has been slid under the tool);
- * `capture` records where the tool is standing right now, for a surface no
- * probe circuit can reach; `skip` records a miss; `abort` ends the grid.
- */
-export type AssistedProbeAction = 'probe' | 'capture' | 'skip' | 'abort';
-
-export interface AssistedProbePoint {
-  /** 0-based position in the visit order, and how many points there are. */
-  index: number;
-  total: number;
-  row: number;
-  col: number;
-  /** Where the tool is parked, in work coordinates (mm). */
-  x: number;
-  y: number;
-}
-
-export interface ProbeGridOptions {
-  /**
-   * `auto` probes every point unattended and needs a live probe circuit across
-   * the whole job. `assisted` parks over each point and waits for
-   * `onPointReady`, which is what makes non-conductive stock levellable.
-   */
-  mode?: 'auto' | 'assisted';
-  onPointReady?: (point: AssistedProbePoint) => Promise<AssistedProbeAction>;
-}
-
-/**
- * How long the guide spot stays lit before switching itself off.
- *
- * Long enough to jog a head across the bed and line it up on a corner; short
- * enough that a browser tab closed, a modal dismissed or an operator called
- * away does not leave a beam sitting on one spot of dry material.
+ * It is a beam left burning on a stationary head at the operator's discretion,
+ * so it carries its own deadline rather than trusting anyone to come back to it.
  */
 const GUIDE_SPOT_TIMEOUT_MS = 120_000;
 
-/**
- * The jiggle that holds the spot lit on a controller that gates its laser on
- * motion. A cross, drawn from its own centre and back, so the net movement over
- * a cycle is zero and the origin being sighted does not creep.
- *
- * Half a stroke at a time: out, back through the middle to the far side, then
- * back to the middle. Six moves, one cross, no accumulated offset.
- */
-export const GUIDE_JIGGLE_PATTERN: ReadonlyArray<readonly [number, number]> = [
+/** The cross the jiggle traces, in steps of `GUIDE_JIGGLE_STEP_MM`. */
+export const GUIDE_JIGGLE_PATTERN: Array<[number, number]> = [
   [1, 0],
   [-2, 0],
   [1, 0],
@@ -102,93 +135,55 @@ export const GUIDE_JIGGLE_PATTERN: ReadonlyArray<readonly [number, number]> = [
 ];
 
 /**
- * How far, in mm. Deliberately at or below the spot size of a focused diode:
- * the point is to satisfy the controller's motion check, not to draw anything,
- * and a movement the operator can see is a movement that spoils the sighting.
+ * How far the guide jiggle moves, in mm.
+ *
+ * Inside the beam's own spot size on purpose: what the operator sees has to be
+ * a stationary dot, not a cross being drawn.
  */
 const GUIDE_JIGGLE_STEP_MM = 0.1;
 
-/**
- * How fast, in mm/min. Slow enough that each move lasts long enough to be worth
- * lighting — at 100 mm/min a 0.1 mm move takes 60 ms — and slow enough that the
- * head is genuinely in motion for most of the cycle rather than spending it
- * accelerating and stopping.
- */
+/** Feed for those moves. Slow enough to stay lit, fast enough not to crawl. */
 const GUIDE_JIGGLE_FEED_MM_MIN = 100;
 
 /**
- * How long to wait for each `ok` before giving up on it and moving on.
+ * How long one jiggle move may wait for its `ok` before the loop moves on.
  *
- * Short, unlike the 30 s a probing cycle wants: these are 60 ms moves, so a
- * reply that has not come in two seconds means the machine is not listening,
- * and the loop's own exit conditions are what should be deciding this.
+ * Short, because the loop shares the serial channel with everything else and
+ * this is how long anything else waits to get the channel to itself.
  */
 const GUIDE_JIGGLE_REPLY_TIMEOUT_MS = 2000;
 
-const INITIAL_STATUS: MachineStatus = {
-  connected: false,
-  baudRate: 115200,
-  state: 'Disconnected',
-  x: 0,
-  y: 0,
-  z: 0,
-  wx: 0,
-  wy: 0,
-  wz: 0,
-  feedRate: 0,
-  spindlePower: 0,
-  feedOverride: 100,
-  rapidOverride: 100,
-  spindleOverride: 100,
-  guideSpot: false,
-  motion: DEFAULT_MOTION_PROFILE,
-  jobRunning: false,
-  jobPaused: false,
-  currentLine: 0,
-  totalLines: 0,
-};
+/** Etch's state: the shared one, plus what only this app knows about. */
+export interface EtchMachineState extends SharedMachineState {
+  baudRate: number;
+  /**
+   * Whether the guide spot is lit — the laser held at pointer power so the
+   * operator can see where the head actually is while zeroing XY.
+   *
+   * Tracked here rather than in the panel's own state because the beam outlives
+   * any component: it is switched off by disconnecting, by the E-stop and by
+   * starting a job, and a toggle that only knows what it last clicked would go
+   * on claiming the spot is lit after any of those.
+   */
+  guideSpot: boolean;
+  /**
+   * Which machine this is, as stably as the controller can say. Settings that
+   * describe the machine rather than the job — the kerf its beam burns, above
+   * all — are wrong when carried to a different one.
+   */
+  machineId?: string;
+  machineName?: string;
+  /** What the controller says it can do, from `$$`. Jobs are planned against it. */
+  motion: MotionProfile;
+}
 
-/** How far one press moves an override, as a percentage. */
-export type OverrideStep = 10 | 1 | -1 | -10;
-
-/**
- * GRBL 1.1's real-time override commands, as byte values.
- *
- * Written as numbers because they are bytes and not characters: every one of
- * them is above 0x7F, so a string carrying them through a text encoder arrives
- * at the controller as two UTF-8 bytes and is ignored. Kept out of the class so
- * a test can check them against the GRBL documentation, where a transposed
- * value is not a bug that shows up as nothing happening — 0x9B is the spindle
- * where 0x92 is the feed.
- */
-export const FEED_OVERRIDE_BYTES: Record<OverrideStep | 'reset', number> = {
-  reset: 0x90,
-  10: 0x91,
-  [-10]: 0x92,
-  1: 0x93,
-  [-1]: 0x94,
-};
-
-export const RAPID_OVERRIDE_BYTES: Record<100 | 50 | 25, number> = {
-  100: 0x95,
-  50: 0x96,
-  25: 0x97,
-};
-
-export const SPINDLE_OVERRIDE_BYTES: Record<OverrideStep | 'reset', number> = {
-  reset: 0x99,
-  10: 0x9a,
-  [-10]: 0x9b,
-  1: 0x9c,
-  [-1]: 0x9d,
-};
+export type StatusListener = (status: MachineStatus) => void;
 
 /**
- * Strips a G-code program down to the lines a controller should receive.
+ * The lines of a program, with its comments stripped.
  *
- * Comments and blank lines are dropped here rather than sent: GRBL's serial
- * buffer is small, and filling it with text that produces no motion is how a
- * stream starves.
+ * Comments are bytes against GRBL's receive buffer and it does nothing with
+ * them, so only motion goes down the wire.
  */
 export function prepareJobLines(gcode: string): string[] {
   return scanJobProgram(gcode).lines;
@@ -207,6 +202,9 @@ export function prepareJobLines(gcode: string): string[] {
  * layer after the first. The first layer is deliberately absent — nothing has
  * been crossed into at line one, and a trim the operator dialled in before
  * pressing run is theirs.
+ *
+ * This is Etch's own marker, which is why the shared `parseJobProgram` is not
+ * used here: it reads the `; OP n/m:` headers Mesh and Volt emit.
  */
 export function scanJobProgram(gcode: string): { lines: string[]; layerStarts: number[] } {
   const lines: string[] = [];
@@ -217,7 +215,7 @@ export function scanJobProgram(gcode: string): { lines: string[]; layerStarts: n
   for (const raw of gcode.split('\n')) {
     const marker = /;.*\bLayer:\s*(\S+)/.exec(raw);
     if (marker) pendingLayer = marker[1];
-    const code = raw.replace(/;.*$/, '').trim();
+    const code = stripGcodeComment(raw);
     if (code.length === 0) continue;
     // Attributed to the line that follows the comment, not the comment itself:
     // the boundary has to be a line the streamer actually sends, or it has
@@ -233,138 +231,31 @@ export function scanJobProgram(gcode: string): { lines: string[]; layerStarts: n
   return { lines, layerStarts };
 }
 
-/*
- * What GRBL's numbered refusals and alarms mean.
- *
- * `Machine error:24` is the string that sends an operator to a forum. Written
- * out it is a fault they can act on, or at least name — and error:24 in
- * particular describes a program the app itself wrote, so an operator reading
- * the raw code has no way to tell it is not their setup at fault.
- */
-const GRBL_ERRORS: Record<number, string> = {
-  1: 'G-code letter with no number after it',
-  2: 'G-code value was missing or malformed',
-  3: 'Unsupported `$` system command',
-  4: 'A negative value was given where only positive is allowed',
-  5: 'Homing is disabled on this controller ($22=0)',
-  7: 'EEPROM read failed; defaults were restored',
-  8: '`$` command needs the machine to be idle',
-  9: 'The machine is locked out in Alarm — unlock ($X) or home ($H) it first',
-  10: 'Soft limits need homing enabled ($22=1)',
-  11: 'Line was longer than GRBL accepts',
-  15: 'Jog target exceeds the machine travel',
-  16: 'Malformed jog command',
-  17: 'Laser mode needs PWM-capable spindle pins',
-  20: 'Unsupported or invalid G-code command',
-  21: 'Two G-code commands from the same modal group on one line',
-  22: 'Feed rate has not been set (missing F)',
-  23: 'G-code command needs an integer value',
-  24: 'Two commands that both need axis words on one line',
-  25: 'A G-code word was repeated on the line',
-  26: 'G-code command is missing its axis words',
-  33: 'Invalid target — arc or motion endpoint is unreachable',
-  34: 'Arc radius geometry is invalid',
-  38: 'Tool number is out of range',
-};
-
-const GRBL_ALARMS: Record<number, string> = {
-  1: 'Hard limit triggered — the machine hit a limit switch and its position is lost. Home ($H) before doing anything else.',
-  2: 'Soft limit: the commanded move goes outside the machine travel. Check work zero and the job origin.',
-  3: 'Reset while in motion — position is lost. Home ($H) to recover.',
-  4: 'Probe failed: the probe was already triggered before the cycle started. Check the continuity clip is not shorted to the bit.',
-  5: 'Probe failed: the tool travelled its full search distance without touching the surface. Check the clip is attached and the bit started close above the plate.',
-  6: 'Homing failed — reset during the homing cycle.',
-  7: 'Homing failed — safety door opened during homing.',
-  8: 'Homing failed: the limit switch did not clear on pull-off. Check the switch and $27.',
-  9: 'Homing failed: no limit switch found within the search distance.',
-};
-
-/** Turns a raw `error:N` or `ALARM:N` line into something an operator can act on. */
-export function describeGrblFault(line: string): string {
-  const err = /^error:\s*(\d+)/.exec(line);
-  if (err) {
-    const detail = GRBL_ERRORS[Number(err[1])];
-    return detail ? `${detail} (${line})` : `Machine rejected a command (${line})`;
-  }
-  const alarm = /^ALARM:\s*(\d+)/.exec(line);
-  if (alarm) {
-    const detail = GRBL_ALARMS[Number(alarm[1])];
-    return detail ? `${detail} (${line})` : `Machine alarm: ${line}`;
-  }
-  return `Machine ${line}`;
-}
-
 /**
- * One line awaiting its `ok`.
+ * Whether a line is a deliberate stop the operator has to act on, in this app's
+ * vocabulary.
  *
- * `job` slots carry their byte cost so the streamer knows how much of GRBL's
- * serial buffer it is currently occupying; `other` slots are the interactive
- * commands, which are paced one at a time and may have someone waiting on them.
- */
-type AckSlot =
-  | { kind: 'job'; bytes: number; startsLayer?: boolean }
-  | { kind: 'other'; resolve: (() => void) | null };
-
-/**
- * GRBL's serial receive buffer, in bytes.
- *
- * The controller acknowledges a line when it has *parsed* it, not when it has
- * moved, so the streamer is free to keep the buffer full — and has to, because
- * a job streamed one line at a time can never fill the 15-block planner behind
- * it. With nothing queued to plan against, GRBL decelerates to a stop at the
- * end of every block, which on a raster of short moves is a stop at every one:
- * slow, and it chatters.
- */
-const GRBL_RX_BUFFER_BYTES = 128;
-
-/**
- * How much of that buffer the streamer will fill.
- *
- * Short of the real figure on purpose. The count is of bytes *written*, and can
- * only estimate what the controller still holds, since the reply for a line may
- * already be on the wire when the next is queued. The margin means an estimate
- * running slightly optimistic still cannot overflow the buffer, and the
- * throughput difference against the full 128 is nothing next to what
- * overflowing costs.
- */
-const RX_FILL_BYTES = GRBL_RX_BUFFER_BYTES - 16;
-
-/**
- * Whether a line is a deliberate stop the operator has to act on.
- *
- * `M6` is a tool change and `M0`/`M1` a programmed pause — neither is a fault,
- * and streaming past them would cut the rest of the job with the wrong tool.
+ * The shared classifier calls these 'tool' and 'material'; the panels here have
+ * always said 'tool-change' and 'stop'. Same rule, one translation, rather than
+ * a second regex that can drift from it.
  */
 export function classifyJobLine(line: string): 'tool-change' | 'stop' | 'motion' {
-  const code = line.toUpperCase();
-  if (/\bM0*6\b/.test(code)) return 'tool-change';
-  if (/\bM0*[01]\b/.test(code)) return 'stop';
+  const kind = classifyPauseLine(line);
+  if (kind === 'tool') return 'tool-change';
+  if (kind === 'material') return 'stop';
   return 'motion';
 }
+
+/** Turns a raw `error:N` or `ALARM:N` line into something an operator can act on. */
+export { describeGrblFault };
 
 /**
  * WebSerial link to a GRBL-class controller (GRBL 1.1, FluidNC, grblHAL).
  *
- * Beyond pushing lines at the machine this has to be able to *read a number
- * back* — the touch-plate probe reports where it made contact in a `[PRB:]`
- * line, and a probing cycle that does not wait for it is just driving the tool
- * at the bed and recording nothing. So commands used by probing go through
- * `sendAndWait`, which pairs replies to commands in order, rather than
- * returning the moment the bytes are written.
+ * Everything about the protocol is the base class's. What is added here is
+ * Etch's: see the header at the top of this file.
  */
-class WebSerialManager {
-  private statusListeners: Set<StatusListener> = new Set();
-
-  /** The active byte pipe — a USB cable, or a Tekno Box reached over WiFi. */
-  private transport: GrblTransport | null = null;
-  /** Which wire to open. Set by `setTransport` before `connect`. */
-  private transportMode: TransportMode = 'usb';
-  /** The paired machine to reach in WiFi mode, from `fetchMachineDevices`. */
-  private cloudDeviceId = '';
-  /** Accumulates RX across chunks; parsed line by line on each newline. */
-  private rxBuffer = '';
-  private statusPollTimer: ReturnType<typeof setInterval> | null = null;
-  private status: MachineStatus = { ...INITIAL_STATUS };
+class WebSerialManager extends GrblMachine<EtchMachineState> {
   /**
    * What the running job is cut on, so a T-number can be named at the pause.
    *
@@ -373,60 +264,6 @@ class WebSerialManager {
    * explicit machine narrated its pauses in router vocabulary at a laser.
    */
   private jobMachine: MachineKind = 'laser';
-
-  /**
-   * Which machine is on the other end of the cable, outside a job.
-   *
-   * `startJob` sets the same field, but telemetry is posted whenever the
-   * machine is connected, and before the session's first job this would
-   * otherwise report a router as a laser — which is how the S word gets
-   * labelled on the remote dashboard.
-   */
-  public setMachineKind(machine: MachineKind) {
-    if (!this.status.jobRunning) this.jobMachine = machine;
-  }
-
-  /**
-   * Every line sent that still owes an `ok`, oldest first.
-   *
-   * GRBL answers in the order it was asked, so one FIFO covers both kinds of
-   * traffic: the job stream, and the interactive commands the app sends
-   * alongside it. Keeping them in one queue is the point.
-   *
-   * It used to hold probe waiters only, and a job took any `ok` that no waiter
-   * claimed as its own permission to send another line. Nothing sent outside
-   * the stream registered a waiter — `sendCommand` still does not return one —
-   * so each of those lines' `ok` was miscounted as the job's and the streamer
-   * sent one line more than it had been acked for. The lead never recovers: it
-   * persists for the rest of the program, and once it is wider than GRBL's
-   * 128-byte serial buffer the controller receives two blocks fused into one
-   * and reports `error:24`, "two G-code commands that both require the use of
-   * the XYZ axis words", against a program containing no such line.
-   *
-   * The old queue also jumped the job unconditionally: a waiter registered
-   * while job lines were in flight took an `ok` belonging to one of them, and
-   * since nothing else drove the stream it then stalled for good. Order of
-   * arrival decides instead, which is the only thing the wire can tell us.
-   */
-  private ackQueue: AckSlot[] = [];
-
-  /**
-   * Bytes of job stream sitting in GRBL's serial buffer, unacknowledged.
-   *
-   * The sum of the `job` slots in `ackQueue`, kept alongside it so the pump
-   * does not have to walk the queue on every line.
-   */
-  private jobBytesInFlight = 0;
-  /**
-   * Indices into `gcodeQueue` where the program crosses into a new layer, from
-   * `scanJobProgram`. What they are for is `resetTrimAtLayerChange`.
-   */
-  private layerStartLines: Set<number> = new Set();
-  private pendingProbe: ((z: number | null) => void) | null = null;
-
-  /** The job being streamed, if any. */
-  private gcodeQueue: string[] = [];
-  private queueIndex = 0;
 
   /**
    * Where work Z0 was last set, in **machine** coordinates.
@@ -438,30 +275,8 @@ class WebSerialManager {
    */
   private zDatumMachineXY: { x: number; y: number } | null = null;
 
-  /** Whether Z has been zeroed since this machine was connected. */
-  public hasZDatum(): boolean {
-    return this.zDatumMachineXY !== null;
-  }
-
   /** Deadline for the guide spot, so a lit beam cannot be walked away from. */
   private guideSpotTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /**
-   * The controller's own `$` settings, as reported by `$$`.
-   *
-   * Two of them decide whether a guide spot is even possible, and neither can
-   * be assumed: `$30` is full-scale S (1000, 255 and 100 are all shipped
-   * defaults, and the same S word means three different powers across them) and
-   * `$32` is laser mode, which suppresses the beam whenever the machine is not
-   * in a feed move — including when it is standing still, which is exactly what
-   * a pointer is.
-   */
-  private grblSettings = new Map<number, number>();
-
-  /** From `$I`: the firmware version, its compile options, and the owner's name for it. */
-  private grblVersion = '';
-  private grblOptions = '';
-  private grblBuildName = '';
 
   /**
    * Set while the guide spot has laser mode switched off underneath it, so it
@@ -472,198 +287,130 @@ class WebSerialManager {
   /** Guard against two jiggle loops racing each other into the same buffer. */
   private guideJiggleRunning = false;
 
-  /** Telemetry pacing — see `publishTelemetry`. */
+  /** From `$I`: the firmware version, its compile options, and the owner's name for it. */
+  private grblVersion = '';
+  private grblOptions = '';
+  private grblBuildName = '';
+
+  /** Indices into the streamed queue where the program crosses into a new layer. */
+  private layerStartLines = new Set<number>();
+  /** The highest line already credited with a trim reset, so it fires once. */
+  private layerResetAt = -1;
+
+  /** Telemetry pacing — see `onStateNotified`. */
   private lastTelemetryAt = 0;
-  private lastTelemetryState = '';
+  private lastTelemetryStatus = '';
   private telemetryInFlight = false;
 
-  /**
-   * What the program being cut is, for whoever is watching it remotely and for
-   * the run archive afterwards.
-   *
-   * The machine layer cannot work any of this out: it is handed a string of
-   * G-code. The run panel knows which document produced it and what it was
-   * planned at, and passes it to `startJob`.
-   */
   private jobContext: JobContext = {};
 
-  public subscribe(listener: StatusListener): () => void {
-    this.statusListeners.add(listener);
-    listener({ ...this.status });
-    return () => {
-      this.statusListeners.delete(listener);
+  constructor() {
+    super({ endpoints: { machineSocketUrl, submitMachineJob } });
+  }
+
+  protected createInitialState(): EtchMachineState {
+    return {
+      ...super.createInitialState(),
+      baudRate: 115200,
+      guideSpot: false,
+      motion: DEFAULT_MOTION_PROFILE,
     };
   }
 
-  private notify() {
-    const snapshot = { ...this.status };
-    for (const listener of this.statusListeners) {
-      listener(snapshot);
-    }
-    this.publishTelemetry(snapshot);
+  // -------------------------------------------------------------------------
+  // Identity and what the machine can do
+  // -------------------------------------------------------------------------
+
+  protected async onConnected(): Promise<void> {
+    this.updateState({ baudRate: this.state.baudRate });
+    /*
+     * Ask GRBL what it is.
+     *
+     * `$I` costs one line and answers the only question the controller can
+     * answer about its own identity: firmware version, compile options, and
+     * the build-info string an owner can write with `$I=`. Settings that
+     * describe the machine rather than the job — the beam's kerf — are keyed
+     * on the answer, so two machines on one account stop overwriting each
+     * other's numbers.
+     */
+    this.publishMachineId();
+    void this.sendCommand('$I');
+    /*
+     * And what it can do. `$$` is the only place acceleration, per-axis rapids
+     * and the corner tolerance exist, and until this was asked the app planned
+     * every job against invented figures — a job time that could be out by a
+     * factor of fifty on acceleration alone, and a cutting feed capped at a
+     * constant regardless of what the gantry would hold.
+     *
+     * Not awaited: a machine that never answers must not stop the connection
+     * from completing, because everything else here works without it.
+     */
+    void this.readMachineSettings();
   }
 
   /**
-   * Reports the machine's state to api.physbox.io, for a phone or a second
-   * workstation to watch a running job from.
+   * `$I` replies: `[VER:1.1h.20190830:BUILD STRING]` and `[OPT:VZ,15,128]`.
    *
-   * This used to fire on every single `notify()` — the 5 Hz status poll *plus*
-   * every acknowledged line of the program, so a job cutting at a few hundred
-   * lines a minute meant a POST per line — with no interval floor, no in-flight
-   * guard, and no check that a machine was even connected, so a browser sitting
-   * on the page with nothing plugged in posted zeroes forever. The throttle below
-   * is the same one Mesh has always had.
-   *
-   * A change of state jumps the floor. A job finishing, a tool-change pause or an
-   * alarm are precisely the moments somebody is watching for, and making them
-   * wait out an interval is how a delay becomes the reason nobody trusts the
-   * dashboard.
+   * The third field of VER is free text the owner writes with `$I=`, and it is
+   * empty on every machine that has never been named. When it is there it
+   * identifies this machine exactly; when it is not, the version and options
+   * together identify the *model*, which still tells a diode engraver from a
+   * CO2 tube but cannot tell two identical machines apart.
    */
-  private publishTelemetry(snapshot: MachineStatus) {
-    if (!snapshot.connected) return;
-
-    const now = Date.now();
-    const changed = snapshot.state !== this.lastTelemetryState;
-    if (!changed && now - this.lastTelemetryAt < TELEMETRY_INTERVAL_MS) return;
-    // One at a time: a stalled network would otherwise queue a backlog of stale
-    // positions that all land at once when it recovers.
-    if (this.telemetryInFlight) return;
-
-    this.lastTelemetryAt = now;
-    this.lastTelemetryState = snapshot.state;
-    this.telemetryInFlight = true;
-
-    void postMachineTelemetry('etch', {
-      status: snapshot.state,
-      // What the job is called, so the archive has something to search by. Only
-      // the run panel knows it; the machine layer is handed it when a job starts.
-      jobName: this.jobContext.name,
-      progressPercent: snapshot.totalLines > 0 ? (snapshot.currentLine / snapshot.totalLines) * 100 : 0,
-      currentLine: snapshot.currentLine,
-      totalLines: snapshot.totalLines,
-      xyz: { x: snapshot.x, y: snapshot.y, z: snapshot.z },
-      spindleSpeed: snapshot.spindlePower,
-      // What that S word means, and what its full scale is. The dashboard has
-      // no other way to tell 840 RPM from 84% of a diode laser, and it showed
-      // the laser as a spindle running at 840 RPM.
-      machine: this.jobMachine,
-      spindleMax: this.spindlePwmMax(),
-      feedRate: snapshot.feedRate,
-      lastError: snapshot.lastError,
-      documentId: this.jobContext.documentId ?? null,
-      documentRevision: this.jobContext.documentRevision ?? null,
-      settings: this.jobContext.settings ?? null,
-    }).finally(() => {
-      this.telemetryInFlight = false;
-    });
-  }
-
-  private update(patch: Partial<MachineStatus>) {
-    this.status = { ...this.status, ...patch };
-    this.notify();
-  }
-
-  public getStatus(): MachineStatus {
-    return { ...this.status };
-  }
-
-  public isSupported(): boolean {
-    return typeof navigator !== 'undefined' && 'serial' in navigator;
-  }
-
-  /**
-   * Chooses how the machine is reached. Call before `connect`.
-   *
-   * USB is a cable to this computer. WiFi is a Tekno Box, reached through
-   * api.physbox.io rather than by address: the box sits behind the customer's
-   * router with nothing to dial, and a page served over https may not open a
-   * plain connection to a home network anyway. So the box connects out to
-   * physbox, and this meets it there.
-   */
-  public setTransport(mode: TransportMode, deviceId?: string): void {
-    this.transportMode = mode;
-    if (deviceId !== undefined) this.cloudDeviceId = deviceId;
-  }
-
-  public getTransportMode(): TransportMode {
-    return this.transportMode;
-  }
-
-  public async connect(baudRate: number = 115200): Promise<boolean> {
-    if (this.transportMode === 'usb' && !this.isSupported()) {
-      this.update({
-        lastError: 'Web Serial is not supported in this browser. Use Chrome, Edge, or Opera — or cut over WiFi with a Tekno Box.',
-      });
-      return false;
-    }
-
-    // A second connect while one is open would overwrite the transport, leaking
-    // whatever the first is still holding.
-    if (this.transport) await this.disconnect();
-
-    const transport: GrblTransport =
-      this.transportMode === 'wifi'
-        ? new CloudTransport(this.cloudDeviceId, baudRate)
-        : new WebSerialTransport(baudRate);
-
-    try {
-      this.update({ state: 'Connecting' });
-      transport.onData((chunk) => this.handleData(chunk));
-      transport.onDisconnect?.(() => {
-        void this.disconnect();
-      });
-      await transport.connect();
-
-      this.transport = transport;
-      this.rxBuffer = '';
-      this.startStatusPolling();
-
-      this.update({
-        connected: true,
-        baudRate,
-        state: 'Idle',
-        portName: this.transportMode === 'wifi' ? 'Tekno Box (WiFi)' : 'USB Machine',
-        lastError: undefined,
-        // A box has a real id. A USB controller has to be asked, below.
-        machineId: this.transportMode === 'wifi' && this.cloudDeviceId
-          ? `box:${this.cloudDeviceId}`
-          : undefined,
-        machineName: undefined,
-      });
+  protected onUnhandledLine(line: string): void {
+    if (line.startsWith('[VER:')) {
+      const body = line.slice(5).replace(/\]$/, '');
+      const firstColon = body.indexOf(':');
+      this.grblVersion = firstColon >= 0 ? body.slice(0, firstColon) : body;
+      this.grblBuildName = firstColon >= 0 ? body.slice(firstColon + 1).trim() : '';
       this.publishMachineId();
-
-      /*
-       * Ask GRBL what it is.
-       *
-       * `$I` costs one line and answers the only question the controller can
-       * answer about its own identity: firmware version, compile options, and
-       * the build-info string an owner can write with `$I=`. Settings that
-       * describe the machine rather than the job — the beam's kerf — are keyed
-       * on the answer, so two machines on one account stop overwriting each
-       * other's numbers.
-       */
-      void this.sendCommand('$I');
-      /*
-       * And what it can do. `$$` is the only place acceleration, per-axis
-       * rapids and the corner tolerance exist, and until this was asked the app
-       * planned every job against invented figures — a job time that could be
-       * out by a factor of fifty on acceleration alone, and a cutting feed
-       * capped at a constant regardless of what the gantry would hold.
-       *
-       * Not awaited: a machine that never answers must not stop the connection
-       * from completing, because everything else here works without it.
-       */
-      void this.readMachineSettings();
-      return true;
-    } catch (err) {
-      await transport.disconnect().catch(() => {});
-      this.update({
-        connected: false,
-        state: 'Disconnected',
-        lastError: err instanceof Error ? err.message : 'Failed to connect.',
-      });
-      return false;
+      return;
     }
+    if (line.startsWith('[OPT:')) {
+      this.grblOptions = line.slice(5).replace(/\]$/, '');
+      this.publishMachineId();
+    }
+  }
+
+  /**
+   * Publishes which machine is on the other end, for anything keyed on it.
+   *
+   * Written to the machine settings as well as the state, because the G-code
+   * exporter reads its machine-level figures straight from there rather than
+   * being handed the serial manager — the same way it reads the spindle range
+   * and the laser source.
+   */
+  private publishMachineId(): void {
+    const id =
+      this.getTransportMode() === 'wifi' && this.getCloudDeviceId()
+        ? `box:${this.getCloudDeviceId()}`
+        : this.grblBuildName
+          ? `name:${this.grblBuildName}`
+          : this.grblVersion
+            ? `grbl:${this.grblVersion}/${this.grblOptions}`
+            : undefined;
+    writeActiveMachineId(id ?? null);
+    this.updateState({ machineId: id, machineName: this.grblBuildName || undefined });
+  }
+
+  /**
+   * Writes a name into the controller's own EEPROM, so this machine is
+   * recognisable next time and on any other computer.
+   *
+   * Deliberately not automatic. It is a write to the controller's memory, and
+   * a machine that already carries a name — from its maker, or from another
+   * app — should not have it taken away by something the user did not ask for.
+   */
+  public async nameMachine(name: string): Promise<void> {
+    const safe = name.replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 32);
+    if (!safe) {
+      this.updateState({ lastError: 'A machine name needs some letters or digits in it.' });
+      return;
+    }
+    await this.sendCommand(`$I=${safe}`);
+    // Read it back rather than assuming: if the controller refused the write,
+    // the name it reports is still the old one and the id should say so.
+    await this.sendCommand('$I');
   }
 
   /**
@@ -674,34 +421,30 @@ class WebSerialManager {
    * attempt meant the app spent the rest of the session quoting times off
    * invented acceleration and capping feeds at a constant, on a machine that
    * was connected and answering everything else.
-   *
-   * The settings themselves are collected by `handleIncomingLine`, which has
-   * always been watching for `$N=` lines; all this does is ask the question and
-   * turn what comes back into a profile.
    */
   private async readMachineSettings(attempts = 3, timeoutMs = 4000): Promise<MotionProfile> {
     for (let attempt = 0; attempt < attempts; attempt++) {
-      if (!this.status.connected || !this.transport) return this.status.motion;
+      if (!this.state.connected) return this.state.motion;
 
-      await this.sendAndWait('$$', timeoutMs);
+      await this.sendCommandAndWait('$$', timeoutMs);
 
-      if (this.grblSettings.size === 0) {
+      if (this.getGrblSettings().size === 0) {
         // A board still booting answers nothing at all. Give it time to reach
         // its prompt rather than hammering the same question at it.
-        if (attempt < attempts - 1) await new Promise((r) => setTimeout(r, 1200));
+        if (attempt < attempts - 1) await new Promise(r => setTimeout(r, 1200));
         continue;
       }
 
-      const motion = motionProfileFromSettings(this.grblSettings);
-      this.update({ motion });
+      const motion = motionProfileFromSettings(this.getGrblSettings());
+      this.updateState({ motion });
       // Kept against this machine, so a job planned tomorrow at a desk with
       // nothing plugged in is still planned against the machine that will cut
       // it rather than against an assumption.
-      writeMotionProfile(motion, this.status.machineId ?? null);
+      writeMotionProfile(motion, this.state.machineId ?? null);
       return motion;
     }
 
-    return this.status.motion;
+    return this.state.motion;
   }
 
   /**
@@ -717,158 +460,80 @@ class WebSerialManager {
     return this.readMachineSettings();
   }
 
-  /** Splits incoming chunks into whole lines. */
-  private handleData(chunk: string) {
-    this.rxBuffer += chunk;
-    const lines = this.rxBuffer.split('\n');
-    this.rxBuffer = lines.pop() || '';
-    for (const line of lines) this.handleIncomingLine(line.trim());
+  // -------------------------------------------------------------------------
+  // Connection
+  // -------------------------------------------------------------------------
+
+  public async connect(baudRate = 115200): Promise<boolean> {
+    const ok = await super.connect(baudRate);
+    if (ok) this.updateState({ baudRate });
+    return ok;
   }
 
-  public async disconnect() {
-    this.stopStatusPolling();
-    this.failPendingWaiters();
+  public async disconnect(): Promise<void> {
     // Ordered before the port is torn down so the M5 actually reaches the
     // controller: a guide spot lit when the browser lets go of the port would
     // otherwise stay lit, with nothing left able to command it out.
     await this.guideSpotOff();
+    await super.disconnect();
 
-    // The transport owns the tear-down of whatever it is holding — a serial
-    // port's reader, writer and port each need their own guarded close, and a
-    // socket needs none of that. Cleanup errors are not actionable here either
-    // way: the wire is going away regardless.
-    if (this.transport) {
-      try {
-        await this.transport.disconnect();
-      } catch {
-        // As above.
-      }
-    }
-
-    this.transport = null;
-    this.rxBuffer = '';
     // The datum belonged to the machine that just went away; carrying it into
     // the next connection would reference a heightmap to a point on a different
     // setup entirely.
     this.zDatumMachineXY = null;
-    // The settings described the controller that just went away, and the next
-    // one plugged in may be a different machine entirely.
-    this.grblSettings.clear();
     this.grblVersion = '';
     this.grblOptions = '';
     this.grblBuildName = '';
     writeActiveMachineId(null);
     this.guideSpotRestoreLaserMode = false;
-    this.workOffset = [0, 0, 0];
-    this.status = { ...INITIAL_STATUS };
-    this.notify();
+    this.updateState({ guideSpot: false, machineId: undefined, machineName: undefined });
   }
 
   /**
-   * Publishes which machine is on the other end, for anything keyed on it.
+   * Sends one line without waiting for its `ok`.
    *
-   * Written to the machine settings as well as the status, because the G-code
-   * exporter reads its machine-level figures straight from there rather than
-   * being handed the serial manager — the same way it reads the spindle range
-   * and the laser source.
+   * The queue still books it, so the job stream cannot mistake its ack for its
+   * own — which is what used to make the stream run one line ahead of what it
+   * had been acked for, and end in an `error:24` against a program containing
+   * no such line.
    */
-  private publishMachineId(): void {
-    const id =
-      this.transportMode === 'wifi' && this.cloudDeviceId
-        ? `box:${this.cloudDeviceId}`
-        : this.grblBuildName
-          ? `name:${this.grblBuildName}`
-          : this.grblVersion
-            ? `grbl:${this.grblVersion}/${this.grblOptions}`
-            : undefined;
-    writeActiveMachineId(id ?? null);
-    this.update({ machineId: id, machineName: this.grblBuildName || undefined });
-  }
-
-  /**
-   * Writes a name into the controller's own EEPROM, so this machine is
-   * recognisable next time and on any other computer.
-   *
-   * Deliberately not automatic. It is a write to the controller's memory, and
-   * a machine that already carries a name — from its maker, or from another
-   * app — should not have it taken away by something the user did not ask for.
-   */
-  public async nameMachine(name: string): Promise<void> {
-    const safe = name.replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 32);
-    if (!safe) {
-      this.update({ lastError: 'A machine name needs some letters or digits in it.' });
-      return;
-    }
-    await this.sendCommand(`$I=${safe}`);
-    // Read it back rather than assuming: if the controller refused the write,
-    // the name it reports is still the old one and the id should say so.
-    await this.sendCommand('$I');
-  }
-
-  public async sendCommand(cmd: string) {
-    if (!this.transport || !this.status.connected) {
-      this.update({ lastError: 'Not connected to a machine.' });
+  public async sendCommand(cmd: string): Promise<void> {
+    if (!this.state.connected) {
+      this.updateState({ lastError: 'Not connected to a machine.' });
       return;
     }
     try {
-      // Booked before it goes out. Nobody is waiting on it — that is what
-      // `sendAndWait` is for — but the `ok` it will produce has to be accounted
-      // for, or the job stream takes it as permission to send a line it has not
-      // been acked for. Real-time bytes are exempt and go through
-      // `writeRealtime`, because GRBL answers those out of band, never with an
-      // `ok`.
-      this.ackQueue.push({ kind: 'other', resolve: null });
-      // Bare: each transport terminates the line the way its own wire needs.
-      await this.transport.writeLine(cmd.replace(/\n+$/, ''));
+      await this.sendLine(cmd.replace(/\n+$/, ''));
     } catch (err) {
-      this.update({
+      this.updateState({
         lastError: err instanceof Error ? err.message : 'Write to the machine failed.',
       });
     }
   }
 
   /**
-   * Writes a real-time byte, which GRBL acts on immediately and does not `ok`.
-   *
-   * Takes a code rather than a character so the high commands (0x90 and up) are
-   * expressible: they are bytes, not text, and there is no string that survives
-   * an encoder on the way to them.
+   * Sends one line and waits for the controller to accept it, so a probing
+   * sequence steps rather than races. `ok` means accepted into the planner, not
+   * finished moving — GRBL runs its queue in order, so a probe queued behind a
+   * move still happens after it.
    */
-  private async writeRealtime(byte: string | number) {
-    if (!this.transport || !this.status.connected) return;
-    const code = typeof byte === 'number' ? byte : byte.charCodeAt(0);
+  private async sendCommandAndWait(cmd: string, timeoutMs = 30000): Promise<void> {
+    if (!this.state.connected) return;
     try {
-      await this.transport.writeRealtime(code);
+      await Promise.race([
+        this.sendLine(cmd.replace(/\n+$/, '')).then(() => this.drain()),
+        new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+      ]);
     } catch {
-      /* the transport reports the disconnect */
+      // A refused line is already reported through `lastError` by the queue.
+      // Probing decides what to do about it by reading the result, not by
+      // catching here.
     }
   }
 
-  // ---------------------------------------------------------------------
-  // Jogging and work origin
-  // ---------------------------------------------------------------------
-
-  /**
-   * Nudges the machine by a relative amount — how you get the tool over the
-   * corner of the stock before zeroing.
-   *
-   * `$J=` rather than `G91 G0`: a jog is cancellable mid-move and leaves modal
-   * state alone, so a fat-fingered 10 mm step can be stopped with `jogCancel`
-   * and the next line still runs in the mode it expects.
-   */
-  public async jog(delta: { x?: number; y?: number; z?: number }, feedRate: number = 1000) {
-    const axes = (['x', 'y', 'z'] as const)
-      .filter((a) => delta[a] !== undefined && delta[a] !== 0)
-      .map((a) => `${a.toUpperCase()}${delta[a]!.toFixed(3)}`)
-      .join(' ');
-    if (!axes) return;
-    await this.sendCommand(`$J=G91 G21 ${axes} F${Math.round(feedRate)}`);
-  }
-
-  /** Cancels an in-flight jog (GRBL real-time 0x85) without disturbing modal state. */
-  public async jogCancel() {
-    await this.writeRealtime('\x85');
-  }
+  // -------------------------------------------------------------------------
+  // The guide spot
+  // -------------------------------------------------------------------------
 
   /**
    * Lights the laser at pointer power, so the operator can see where the head
@@ -884,34 +549,29 @@ class WebSerialManager {
    * with feed and is therefore *off* on a stationary head — exactly the case
    * here. `M3` is constant power and fires immediately at idle, which is why
    * `frameJob` uses it too.
-   *
-   * The beam is left burning at the operator's discretion, on a head that is not
-   * moving, so it carries its own deadline: `GUIDE_SPOT_TIMEOUT_MS` after being
-   * lit it goes out on its own. Every other exit from this state — disconnect,
-   * E-stop, starting a job — kills it too, via `guideSpotOff`.
    */
-  public async guideSpotOn(power: number = readGuidePower()) {
-    if (!this.status.connected) {
-      this.update({ lastError: 'Not connected to a machine.' });
+  public async guideSpotOn(power: number = readGuidePower()): Promise<void> {
+    if (!this.state.connected) {
+      this.updateState({ lastError: 'Not connected to a machine.' });
       return;
     }
     // Firing into a running job would fight the program's own S words, and the
     // spot would be indistinguishable from the cut anyway.
-    if (this.status.jobRunning) {
-      this.update({ lastError: 'Cannot light the guide spot while a job is running.' });
+    if (this.isRunning()) {
+      this.updateState({ lastError: 'Cannot light the guide spot while a job is running.' });
       return;
     }
     // GRBL refuses everything in alarm, `M3` included, and refuses it *quietly*
     // as far as the operator is concerned — the beam simply never appears, which
     // reads as a broken button rather than as a machine that needs unlocking.
-    if (this.status.state === 'Alarm') {
-      this.update({
+    if (this.state.status === 'ALARM') {
+      this.updateState({
         lastError: 'The machine is in alarm and will refuse to fire. Home it, or unlock ($X), first.',
       });
       return;
     }
 
-    /**
+    /*
      * Laser mode has to come off for a spot to exist at all.
      *
      * With `$32=1` GRBL only energises the laser during a G1/G2/G3 feed move,
@@ -920,10 +580,6 @@ class WebSerialManager {
      * head is stationary by definition. `M3 S<n>` is accepted, answers `ok`, and
      * produces no light, which is what a first attempt at this looked like on a
      * real machine.
-     *
-     * So laser mode goes off for as long as the spot is lit and is restored the
-     * moment it goes out. `$32` is only accepted in Idle, which the state check
-     * above has already established.
      */
     if (this.laserModeEnabled() && !this.guideSpotRestoreLaserMode) {
       // Written down before the setting is changed, not after: the case this
@@ -939,23 +595,20 @@ class WebSerialManager {
     // the percentage means nothing until it is against this machine's `$30`.
     const s = guidePowerToS(clampGuidePower(power), this.spindlePwmMax());
     await this.sendCommand(`M3 S${s}`);
-    this.update({ guideSpot: true });
+    this.updateState({ guideSpot: true });
     this.armGuideSpotTimeout();
     if (readGuideJiggle()) void this.runGuideJiggle();
   }
 
   /**
    * Keeps the spot lit on a machine that only fires while moving, by tracing a
-   * cross a tenth of a millimetre across, over and over, centred on the point
-   * being sighted.
+   * cross a tenth of a millimetre across, centred on the point being sighted.
    *
    * `$32=0` is meant to make this unnecessary, and on many controllers it does.
    * On others the PWM is gated on motion below the level any `$` setting
    * reaches, and the dot blinks out the instant the head stops. Motion is then
    * the only way to hold it, so the motion is made small enough to be no motion
-   * at all: ±0.1 mm is inside the beam's own spot size, so what the operator
-   * sees is a stationary dot, and the cross returns to its own centre every
-   * cycle rather than walking the origin across the bed.
+   * at all.
    *
    * `G1` and not `$J`: a jog is not a feed move, and a controller that only
    * lights the laser during feed moves will not light it for a jog either.
@@ -965,49 +618,49 @@ class WebSerialManager {
    * interpreted as an offset and walks the head off the job, and this loop can
    * stop at a disconnect, an alarm or a timeout — none of which run cleanup.
    */
-  private async runGuideJiggle() {
+  private async runGuideJiggle(): Promise<void> {
     if (this.guideJiggleRunning) return;
     this.guideJiggleRunning = true;
     try {
       while (
-        this.status.guideSpot &&
-        this.status.connected &&
-        !this.status.jobRunning &&
-        this.status.state !== 'Alarm' &&
+        this.state.guideSpot &&
+        this.state.connected &&
+        !this.isRunning() &&
+        this.state.status !== 'ALARM' &&
         // Re-read per cycle rather than captured on entry, so unticking the box
         // stops the movement without putting the beam out — which is the answer
         // on a machine that turns out not to need it.
         readGuideJiggle()
       ) {
-        await this.sendAndWait('G91', GUIDE_JIGGLE_REPLY_TIMEOUT_MS);
+        await this.sendCommandAndWait('G91', GUIDE_JIGGLE_REPLY_TIMEOUT_MS);
         for (const [dx, dy] of GUIDE_JIGGLE_PATTERN) {
           // Checked per move rather than per cycle: this loop shares the serial
           // channel with everything else, so how fast it notices it should stop
           // is how long anything else has to wait to have the channel to itself.
-          if (!this.status.guideSpot || !this.status.connected) break;
-          await this.sendAndWait(
+          if (!this.state.guideSpot || !this.state.connected) break;
+          await this.sendCommandAndWait(
             `G1 X${(dx * GUIDE_JIGGLE_STEP_MM).toFixed(3)} Y${(dy * GUIDE_JIGGLE_STEP_MM).toFixed(3)} ` +
               `F${GUIDE_JIGGLE_FEED_MM_MIN}`,
             GUIDE_JIGGLE_REPLY_TIMEOUT_MS
           );
         }
-        await this.sendAndWait('G90', GUIDE_JIGGLE_REPLY_TIMEOUT_MS);
+        await this.sendCommandAndWait('G90', GUIDE_JIGGLE_REPLY_TIMEOUT_MS);
       }
     } finally {
       this.guideJiggleRunning = false;
       // Whatever ended the loop, absolute mode is not optional. Cheap to assert
       // twice; expensive exactly once, if the cycle above was cut short.
-      if (this.status.connected) void this.sendCommand('G90');
+      if (this.state.connected) void this.sendCommand('G90');
     }
   }
 
   /** Puts the guide spot out. Safe to call when it was never lit. */
-  public async guideSpotOff() {
+  public async guideSpotOff(): Promise<void> {
     this.clearGuideSpotTimeout();
-    if (!this.status.connected) {
+    if (!this.state.connected) {
       // Nothing to send to, but the flag must not survive: the beam is out
       // because the machine is gone.
-      if (this.status.guideSpot) this.update({ guideSpot: false });
+      if (this.state.guideSpot) this.updateState({ guideSpot: false });
       this.guideSpotRestoreLaserMode = false;
       return;
     }
@@ -1015,7 +668,7 @@ class WebSerialManager {
     // M5 while that loop is still feeding moves in would put the tail of its
     // cross on the far side of the beam going out — and, worse, leave its `G91`
     // and the commands after it racing whatever runs next.
-    this.update({ guideSpot: false });
+    this.updateState({ guideSpot: false });
     await this.awaitJiggleStopped();
 
     await this.sendCommand('M5');
@@ -1037,10 +690,10 @@ class WebSerialManager {
    * would otherwise hold up switching the beam off, which is the one thing that
    * must not be made to wait on anything.
    */
-  private async awaitJiggleStopped(maxWaitMs = 1500) {
+  private async awaitJiggleStopped(maxWaitMs = 1500): Promise<void> {
     const deadline = Date.now() + maxWaitMs;
     while (this.guideJiggleRunning && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 30));
+      await new Promise(r => setTimeout(r, 30));
     }
   }
 
@@ -1053,7 +706,7 @@ class WebSerialManager {
    * mode, and where restoring it *late* would mean a job streaming with the
    * beam burning through its rapids.
    */
-  private restoreLaserMode() {
+  private restoreLaserMode(): void {
     if (!this.guideSpotRestoreLaserMode) return;
     this.guideSpotRestoreLaserMode = false;
     this.grblSettings.set(32, 1);
@@ -1063,7 +716,7 @@ class WebSerialManager {
 
   /** Full-scale S for this controller — `$30`, or the usual 1000 if unasked. */
   private spindlePwmMax(): number {
-    return this.grblSettings.get(30) ?? DEFAULT_SPINDLE_PWM_MAX;
+    return this.getGrblSetting(30) ?? DEFAULT_SPINDLE_PWM_MAX;
   }
 
   /**
@@ -1082,10 +735,10 @@ class WebSerialManager {
    * operator did not ask us to touch.
    */
   private laserModeEnabled(): boolean {
-    return this.grblSettings.get(32) === 1;
+    return this.getGrblSetting(32) === 1;
   }
 
-  private armGuideSpotTimeout() {
+  private armGuideSpotTimeout(): void {
     this.clearGuideSpotTimeout();
     this.guideSpotTimer = setTimeout(() => {
       this.guideSpotTimer = null;
@@ -1093,30 +746,55 @@ class WebSerialManager {
     }, GUIDE_SPOT_TIMEOUT_MS);
   }
 
-  private clearGuideSpotTimeout() {
+  private clearGuideSpotTimeout(): void {
     if (this.guideSpotTimer) {
       clearTimeout(this.guideSpotTimer);
       this.guideSpotTimer = null;
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Work origin and the Z datum
+  // -------------------------------------------------------------------------
+
   /**
-   * Sets the current XY as the G54 work origin.
+   * Which machine is on the other end of the cable, outside a job.
    *
-   * `G10 L20 P1` writes the work offset rather than `G92`'s temporary shift,
-   * which `$H` or a soft reset would discard while the job still assumed it.
+   * `startJob` sets the same field, but telemetry is posted whenever the
+   * machine is connected, and before the session's first job this would
+   * otherwise report a router as a laser — which is how the S word gets
+   * labelled on the remote dashboard.
    */
-  public async zeroXY() {
-    await this.sendCommand('G10 L20 P1 X0 Y0');
+  public setMachineKind(machine: MachineKind): void {
+    if (!this.isRunning()) this.jobMachine = machine;
   }
 
-  /** Sets the current position of one axis (or all three) as work zero. */
-  public async zeroAxis(axis: 'X' | 'Y' | 'Z' | 'ALL') {
-    if (axis === 'ALL') {
-      await this.sendCommand('G10 L20 P1 X0 Y0 Z0');
-    } else {
-      await this.sendCommand(`G10 L20 P1 ${axis}0`);
-    }
+  /** Whether Z has been zeroed since this machine was connected. */
+  public hasZDatum(): boolean {
+    return this.zDatumMachineXY !== null;
+  }
+
+  /** Remembers where work Z0 was taken, for `probeGrid` to reference against. */
+  private recordZDatum(): void {
+    this.zDatumMachineXY = { x: this.state.mpos.x, y: this.state.mpos.y };
+  }
+
+  /**
+   * The Z datum in current work coordinates, or null if Z has not been zeroed
+   * this session. Derived from the machine-space point rather than stored in
+   * work space, so a later `zeroXY` does not silently move it.
+   */
+  private zDatumWorkXY(): { x: number; y: number } | null {
+    if (!this.zDatumMachineXY) return null;
+    const offset = this.state.workOffset ?? { x: 0, y: 0, z: 0 };
+    return {
+      x: this.zDatumMachineXY.x - offset.x,
+      y: this.zDatumMachineXY.y - offset.y,
+    };
+  }
+
+  public async zeroAxis(axis: 'X' | 'Y' | 'Z' | 'XY' | 'ALL'): Promise<void> {
+    await super.zeroAxis(axis);
     // Zeroing Z by hand is a datum like a probed one, and levelling has to be
     // referenced to it either way.
     if (axis === 'Z' || axis === 'ALL') this.recordZDatum();
@@ -1131,12 +809,14 @@ class WebSerialManager {
    * No probe circuit is involved, which is the whole point: it works on wood,
    * acrylic and painted stock, where a touch plate has nothing to conduct to.
    */
-  public async zeroZHere(shimThicknessMm = 0): Promise<{ success: boolean; message: string; machineZ?: number }> {
-    if (!this.status.connected) {
+  public async zeroZHere(
+    shimThicknessMm = 0
+  ): Promise<{ success: boolean; message: string; machineZ?: number }> {
+    if (!this.state.connected) {
       return { success: false, message: 'Not connected to a machine.' };
     }
-    const machineZ = this.status.z;
-    await this.sendAndWait(`G10 L20 P1 Z${shimThicknessMm.toFixed(3)}`);
+    const machineZ = this.state.mpos.z;
+    await this.sendCommandAndWait(`G10 L20 P1 Z${shimThicknessMm.toFixed(3)}`);
     // A hand-set datum is still a datum, and a heightmap has to be referenced
     // to it exactly as it would be to a probed one.
     this.recordZDatum();
@@ -1149,56 +829,9 @@ class WebSerialManager {
     };
   }
 
-  /** Remembers where work Z0 was taken, for `probeGrid` to reference against. */
-  private recordZDatum() {
-    this.zDatumMachineXY = { x: this.status.x, y: this.status.y };
-  }
-
-  /**
-   * The Z datum in current work coordinates, or null if Z has not been zeroed
-   * this session. Derived from the machine-space point rather than stored in
-   * work space, so a later `zeroXY` does not silently move it.
-   */
-  private zDatumWorkXY(): { x: number; y: number } | null {
-    if (!this.zDatumMachineXY) return null;
-    return {
-      x: this.zDatumMachineXY.x - this.workOffset[0],
-      y: this.zDatumMachineXY.y - this.workOffset[1],
-    };
-  }
-
-  /**
-   * Reads back the live work Z and clamps a requested retract height to never
-   * sit below it — a work height is only clear of the job when Z0 belongs to
-   * the stock clamped down now, and against a datum left over from a
-   * different setup it can be below the tool already, turning a move meant
-   * to retract into a plunge. May only move Z away from the stock, never
-   * toward it — same rule `frameJob` already applies to its own retract.
-   */
-  private async clampedRetractZ(safeZ: number): Promise<number> {
-    await this.nextStatusReport();
-    return Math.max(safeZ, this.status.wz);
-  }
-
-  /** Retracts and drives to the work XY origin, to check where zero landed. */
-  public async gotoWorkOrigin(safeZ = 5) {
-    await this.sendCommand('G21 G90');
-    const retractZ = await this.clampedRetractZ(safeZ);
-    await this.sendCommand(`G0 Z${retractZ.toFixed(3)}`);
-    await this.sendCommand('G0 X0.000 Y0.000 F3000');
-  }
-
-  public async home() {
-    await this.sendCommand('$H');
-  }
-
-  /**
-   * Clears a GRBL alarm. Not a soft reset — that is `\x18`, which `emergencyStop`
-   * sends. Unlocking re-enables motion on a machine that may have lost position
-   * after a limit trip, so home again before trusting coordinates.
-   */
-  public async unlockAlarm() {
-    await this.sendCommand('$X');
+  /** Clears a GRBL alarm, then re-asserts the modal state an alarm discarded. */
+  public async unlockAlarm(): Promise<void> {
+    await super.unlockAlarm();
     // An alarm refuses G-code, so whatever was in flight when it tripped may
     // never have been applied — including the `G90` that ends a probing cycle.
     // Re-asserting the modal state here is what stops the next positioning move
@@ -1206,28 +839,26 @@ class WebSerialManager {
     await this.sendCommand('G21 G90');
   }
 
-  public async emergencyStop() {
-    // Order matters: kill motion first, then tidy up. A job left streaming
-    // would keep feeding lines into a controller that has just been reset.
-    this.gcodeQueue = [];
-    this.queueIndex = 0;
+  /** `homeMachine()` under the name this app's panels have always called it. */
+  public async home(): Promise<void> {
+    await this.homeMachine();
+  }
+
+  /**
+   * Stops the job now. This is the button someone reaches for when a cut is
+   * going wrong, so it kills output first and tidies state after.
+   */
+  public async emergencyStop(): Promise<void> {
     this.clearGuideSpotTimeout();
     // Ordered before the reset so it is delivered to a controller that is still
     // listening: `$32` lives in EEPROM and survives the reset, so a spot lit at
     // the moment of an E-stop would otherwise leave laser mode off for whatever
     // is run next.
     this.restoreLaserMode();
-    await this.writeRealtime('\x18'); // Ctrl-X soft reset, acted on immediately
+    await this.eStop();
     await this.sendCommand('M5');
-    this.failPendingWaiters();
-    this.update({
-      state: 'Hold',
-      jobRunning: false,
-      jobPaused: false,
-      pauseMessage: undefined,
-      // The M5 above put the guide spot out along with everything else.
-      guideSpot: false,
-    });
+    // The M5 above put the guide spot out along with everything else.
+    this.updateState({ guideSpot: false, pauseMessage: undefined });
   }
 
   /**
@@ -1242,17 +873,28 @@ class WebSerialManager {
    *    A router sits at work Z0 after zeroing, which is the surface of the
    *    stock; framing there with `M3` running drags a spinning cutter right
    *    around the outline of the part before a single line of the job has run.
+   *
+   * The CNC path is the shared one. The laser path is not: the beam has to be
+   * lit at a *percentage* of this machine's full-scale S, and no other app has
+   * a machine whose framing pass fires.
    */
   public async frameJob(
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
-    opts: { laserMode?: boolean; guidePower?: number; safeZ?: number } = {}
-  ) {
-    // The framing power and the guide spot's are the same setting — both are the
-    // beam being used as a pointer, and a machine that needs 2% to show a
-    // visible dot needs it for both. A **percentage**, like the setting it comes
-    // from: this used to be a hardcoded `5` emitted as a raw S word, which is
-    // half a percent on a `$30` of 1000 and five percent on a `$30` of 100.
+    opts: FrameJobOptions & { laserMode?: boolean; guidePower?: number; safeZ?: number } = {}
+  ): Promise<void> {
     const { laserMode = true, guidePower = readGuidePower(), safeZ = 5 } = opts;
+
+    // Framing drives the head, and it commands its own beam state at its own
+    // power. Putting a lit guide spot out first means the flag matches the
+    // machine afterwards rather than claiming a beam this method has since
+    // switched off.
+    if (this.state.guideSpot) await this.guideSpotOff();
+
+    if (!laserMode) {
+      await super.frameJob(bounds, { ...opts, retractZmm: opts.retractZmm ?? safeZ });
+      return;
+    }
+
     const { minX, minY, maxX, maxY } = bounds;
     const corners: Array<[number, number]> = [
       [maxX, minY],
@@ -1260,82 +902,141 @@ class WebSerialManager {
       [minX, maxY],
       [minX, minY],
     ];
-
-    // Framing drives the head, and it commands its own beam state at its own
-    // power. Putting a lit guide spot out first means the flag matches the
-    // machine afterwards rather than claiming a beam this method has since
-    // switched off.
-    if (this.status.guideSpot) await this.guideSpotOff();
-
     await this.sendCommand('G21 G90');
-    if (!laserMode) {
-      // `safeZ` is a *work* height, so it only means "clear of the job" when Z0
-      // belongs to the stock that is clamped down now. Against a zero left over
-      // from an earlier run it can sit below the tool, and the retract that is
-      // meant to make framing safe becomes a plunge followed by a lap dragging
-      // the bit through the work. Framing may only ever move Z away from it, so
-      // the retract is clamped to where the tool already is: a stale reading can
-      // leave it higher than asked for, never lower.
-      await this.nextStatusReport();
-      const retractZ = Math.max(safeZ, this.status.wz);
-      await this.sendCommand(`G0 Z${retractZ.toFixed(3)}`);
-    }
     await this.sendCommand(`G0 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
+    // A **percentage**, like the setting it comes from: this used to be a
+    // hardcoded `5` emitted as a raw S word, which is half a percent on a `$30`
+    // of 1000 and five percent on a `$30` of 100.
+    await this.sendCommand(`M3 S${guidePowerToS(guidePower, this.spindlePwmMax())}`);
+    for (const [x, y] of corners) {
+      await this.sendCommand(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+    }
+    await this.sendCommand('M5');
+  }
 
-    if (laserMode) {
-      await this.sendCommand(`M3 S${guidePowerToS(guidePower, this.spindlePwmMax())}`);
-      for (const [x, y] of corners) {
-        await this.sendCommand(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
-      }
-      await this.sendCommand('M5');
-    } else {
-      for (const [x, y] of corners) {
-        await this.sendCommand(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
-      }
+  // -------------------------------------------------------------------------
+  // Running a job
+  // -------------------------------------------------------------------------
+
+  /** Etch's own layer markers, rather than the `; OP n/m:` headers of the others. */
+  protected parseJob(gcode: string): ParsedJob {
+    const { lines, layerStarts } = scanJobProgram(gcode);
+    this.layerStartLines = new Set(layerStarts);
+    this.layerResetAt = -1;
+    const layers: JobLayer[] = layerStarts.map((startIndex, i) => ({
+      startIndex,
+      label: `Layer ${i + 2}`,
+    }));
+    return { lines, layers, spindleLine: lines.find(l => /\bM[34]\b/.test(l)) ?? null };
+  }
+
+  /**
+   * A CNC job's first Z move — and every other Z move streamed after it —
+   * trusts whatever G54 Z offset the controller happens to be holding, which
+   * may belong to a previous session, a different tool, or a different piece of
+   * stock. `zeroZHere`/`zeroZ` are the only things that record a datum, and only
+   * a disconnect (a different setup entirely) clears it, so a null datum here
+   * genuinely means "not zeroed since this machine was connected."
+   *
+   * A laser job has no Z to plunge with, so a datum this session has never
+   * confirmed cannot hurt it.
+   */
+  protected assertReadyToCut(): void {
+    if (hasJobZAxis(this.jobMachine) && this.zDatumMachineXY === null) {
+      throw new Error(
+        'Z zero has not been set this session. Zero it before running a job — a Z move against an unconfirmed datum can drive the tool into the stock.'
+      );
     }
   }
 
-  // ---------------------------------------------------------------------
-  // Running a job
-  // ---------------------------------------------------------------------
+  /**
+   * A hold the machine put itself into.
+   *
+   * GRBL can enter Hold on its own — a stray real-time `!` from line noise is
+   * the usual culprit, and Etch never sends one outside an explicit pause
+   * click. The base class reports the *status* correctly, but nothing has told
+   * it that the stream is paused, so Resume is a no-op and the job looks merely
+   * stalled instead of parked and recoverable.
+   *
+   * Adopting it as an operator pause is what makes Resume send the cycle start
+   * that gets the machine going again. This belongs in the shared package —
+   * Mesh and Volt have the same hole — and is here until it moves.
+   */
+  protected onStatusReport(report: StatusReport): Partial<EtchMachineState> | void {
+    if (report.state.startsWith('Hold') && this.isRunning() && !this.isJobPaused()) {
+      this.isPaused = true;
+      this.pauseKind = 'operator';
+      return {
+        pauseMessage:
+          'The machine went into hold on its own (likely line noise). Resume when ready.',
+      };
+    }
+  }
+
+  /** What a pause means on a laser, and on a router. */
+  protected describePause(
+    kind: JobPauseKind,
+    line: string
+  ): { status: SharedMachineStatus; message: string } | null {
+    if (kind !== 'tool') {
+      return { status: 'PAUSED_MATERIAL', message: 'Programmed stop. Resume when ready.' };
+    }
+
+    const tool = parseToolNumber(line);
+    const what = tool === null ? 'the next tool' : describeTool(this.jobMachine, tool);
+
+    // The spindle speed the next operation asks for, so the operator can set
+    // the dial while the machine is stopped. A router with a knob on the side
+    // ignores the S word entirely, and nothing else in the job ever says it.
+    let rpmText = '';
+    for (const ahead of this.linesAhead(5)) {
+      const match = ahead.match(/M3\s+S(\d+)/i);
+      if (match) {
+        const val = parseInt(match[1], 10);
+        if (this.jobMachine === 'cnc' && val > 0) {
+          rpmText = ` (set spindle to ${val.toLocaleString()} RPM)`;
+        }
+        break;
+      }
+    }
+
+    return {
+      status: 'PAUSED_TOOL',
+      message:
+        this.jobMachine === 'laser'
+          ? `Tool change: fit ${what}, re-focus, then resume.`
+          : `Tool change: fit ${what}${rpmText}, re-zero Z on the new tool, then resume.`,
+    };
+  }
+
+  /** The next few lines of the program, for looking ahead at a pause. */
+  private linesAhead(n: number): string[] {
+    const from = this.currentQueueIndex;
+    return this.gcodeQueue.slice(from, from + n);
+  }
 
   /**
-   * Streams a G-code program to the machine, one line at a time.
-   *
-   * Paced by the controller's own `ok` rather than by a timer: GRBL's serial
-   * buffer is small, and pushing lines faster than it acknowledges them
-   * overflows it and drops motion mid-cut. One line in flight is slower than a
-   * character-counting stream but cannot lose a move, which is the right trade
-   * for a machine holding a spinning cutter.
-   *
-   * Comments and blank lines are stripped here rather than sent, so the buffer
-   * carries only motion.
+   * Streams a program. Etch's callers get a result rather than an exception:
+   * every one of them is a button that has to say why it did nothing.
    */
-  public startJob(
+  public async runProgram(
     gcode: string,
     opts: { machine?: MachineKind; job?: JobContext } = {}
-  ): { started: boolean; message: string } {
-    if (!this.status.connected) {
-      return { started: false, message: 'Connect to a machine first.' };
-    }
-    if (this.status.jobRunning) {
-      return { started: false, message: 'A job is already running.' };
-    }
-    if (this.status.state === 'Alarm') {
+  ): Promise<{ started: boolean; message: string }> {
+    if (!this.state.connected) return { started: false, message: 'Connect to a machine first.' };
+    if (this.isRunning()) return { started: false, message: 'A job is already running.' };
+    if (this.state.status === 'ALARM') {
       return {
         started: false,
         message: 'The machine is in alarm. Home it, or unlock, before running a job.',
       };
     }
-    /**
+    /*
      * A jiggling guide spot has moves of its own in flight on the same serial
      * link, and they would interleave with the program's opening lines and eat
      * the `ok`s that pace it. So the spot is put out here and the job refused
      * *this* time: the loop unwinds within a move or two, and pressing run again
      * starts a job with the channel to itself.
-     *
-     * Refusing rather than waiting keeps `startJob` synchronous, which is what
-     * lets every caller report the outcome without having to be async.
      */
     if (this.guideJiggleRunning) {
       void this.guideSpotOff();
@@ -1345,415 +1046,150 @@ class WebSerialManager {
       };
     }
 
-    /*
-     * A laser job has no Z to plunge with, so a datum this session has never
-     * confirmed cannot hurt it. A CNC job's first Z move — and every other Z
-     * move `startJob` streams after it — otherwise trusts whatever G54 Z
-     * offset the controller happens to be holding, which may belong to a
-     * previous session, a different tool, or a different piece of stock.
-     * `zeroZHere`/`zeroZ` are the only things that record a datum, and only a
-     * disconnect (a different setup entirely) clears it, so a null datum here
-     * genuinely means "not zeroed since this machine was connected."
-     */
-    if (hasJobZAxis(opts.machine ?? 'laser') && this.zDatumMachineXY === null) {
-      return {
-        started: false,
-        message: 'Z zero has not been set this session. Zero it before running a job — a Z move against an unconfirmed datum can drive the tool into the stock.',
-      };
-    }
-
-    const { lines, layerStarts } = scanJobProgram(gcode);
-
-    if (lines.length === 0) {
-      return { started: false, message: 'That program has no machine commands in it.' };
-    }
-
-    // Recorded before the first line goes out, so the very first telemetry frame
-    // already says what this run is — that frame is what opens the archived run.
-    this.jobContext = opts.job ?? {};
-
-    this.gcodeQueue = lines;
-    this.queueIndex = 0;
-    this.layerStartLines = new Set(layerStarts);
-    /*
-     * The stream owns the ack channel from here.
-     *
-     * A slot left over from a probe or a zeroing move that timed out would eat
-     * the first `ok` the program earns — after which the byte count never comes
-     * back down and the stream sits at line one, for ever, showing Run. There
-     * is nothing left for those to wait for anyway: whatever they were pacing
-     * finished before this program started.
-     */
-    const stale = this.ackQueue;
-    this.ackQueue = [];
-    this.jobBytesInFlight = 0;
-    for (const slot of stale) if (slot.kind === 'other') slot.resolve?.();
-    // A guide spot left lit would be a beam already firing as the program's
-    // first rapid runs, dragging a burn across the stock on the way to the
-    // start point. `M5` is sent directly rather than through `guideSpotOff`
-    // because that one sends a second line after an await, and it would land in
-    // the middle of the job's opening lines — including on top of the header's
-    // own power word.
-    this.clearGuideSpotTimeout();
-    if (this.status.guideSpot) this.sendCommand('M5');
-    // Laser mode back on *before* the first line goes out. A program streamed
-    // with `$32=0` cuts correctly and burns a line through every rapid on the
-    // way between contours.
-    this.restoreLaserMode();
     // Kept for the tool-change prompt: a T-number alone tells the operator
     // nothing about which bit to reach for, and only the document knows what T3
     // is. Laser jobs never raise one — that machine has no tools to change.
     this.jobMachine = opts.machine ?? 'laser';
-    this.update({
-      jobRunning: true,
-      jobPaused: false,
-      guideSpot: false,
-      currentLine: 0,
-      totalLines: lines.length,
-      pauseMessage: undefined,
-      lastError: undefined,
-      state: 'Run',
-    });
+    // Recorded before the first line goes out, so the very first telemetry frame
+    // already says what this run is — that frame is what opens the archived run.
+    this.jobContext = opts.job ?? {};
 
-    this.pumpJobQueue();
-    return { started: true, message: `Running ${lines.length} lines.` };
-  }
+    // A guide spot left lit would be a beam already firing as the program's
+    // first rapid runs, dragging a burn across the stock on the way to the
+    // start point.
+    this.clearGuideSpotTimeout();
+    if (this.state.guideSpot) await this.sendCommand('M5');
+    // Laser mode back on *before* the first line goes out. A program streamed
+    // with `$32=0` cuts correctly and burns a line through every rapid on the
+    // way between contours.
+    this.restoreLaserMode();
+    this.updateState({ guideSpot: false });
 
-  /**
-   * Sends as much of the program as GRBL's serial buffer will hold.
-   *
-   * The character-counting protocol: keep a running total of the bytes written
-   * that have not yet been acknowledged, and send the next line whenever it
-   * fits inside `RX_FILL_BYTES`. GRBL acks on parse rather than on motion, so
-   * the buffer stays full and the 15-block planner behind it always has moves
-   * to look ahead at — which is what lets it carry speed through a corner
-   * instead of decelerating to a stop at the end of every block.
-   *
-   * A pause stops the pump where it stands. The lines already in the buffer
-   * still run, which is correct: GRBL executes them in order, so the retract
-   * that `pauseForOperator` sends lands after the last of the cutting moves
-   * rather than in the middle of them.
-   */
-  private pumpJobQueue() {
-    while (this.status.jobRunning && !this.status.jobPaused) {
-      if (this.queueIndex >= this.gcodeQueue.length) {
-        // Everything is sent, but the machine may still be working through what
-        // is in its buffer. The job is over when the last line is acked.
-        if (this.jobBytesInFlight === 0) {
-          this.gcodeQueue = [];
-          this.update({
-            jobRunning: false,
-            jobPaused: false,
-            currentLine: this.status.totalLines,
-            state: 'Idle',
-          });
-        }
-        return;
-      }
-
-      const bytes = this.gcodeQueue[this.queueIndex].length + 1;
-      // Always allow one line through, however long: a line that cannot fit an
-      // empty buffer would otherwise stall the job for ever.
-      if (this.jobBytesInFlight > 0 && this.jobBytesInFlight + bytes > RX_FILL_BYTES) return;
-
-      if (!this.sendNextJobLine(bytes)) return;
-    }
-  }
-
-  /**
-   * Sends one line, or takes the pause it asks for.
-   *
-   * Returns false when the pump must stop — the line was a tool change or a
-   * programmed stop, and nothing further should go out until the operator says
-   * so.
-   */
-  private sendNextJobLine(bytes: number): boolean {
-    const line = this.gcodeQueue[this.queueIndex];
-    this.queueIndex++;
-    this.update({ currentLine: this.queueIndex });
-
-    // A tool change or a programmed stop is the operator's cue, not a fault:
-    // park safely and wait to be told to carry on.
-    const kind = classifyJobLine(line);
-    if (kind === 'tool-change') {
-      const tool = parseToolNumber(line);
-      const what = tool === null ? 'the next tool' : describeTool(this.jobMachine, tool);
-      
-      // Look ahead in queue for target spindle speed RPM
-      let rpmText = '';
-      for (let i = this.queueIndex; i < Math.min(this.gcodeQueue.length, this.queueIndex + 5); i++) {
-        const match = this.gcodeQueue[i].match(/M3\s+S(\d+)/i);
-        if (match) {
-          const val = parseInt(match[1], 10);
-          if (this.jobMachine === 'cnc' && val > 0) {
-            rpmText = ` (set spindle to ${val.toLocaleString()} RPM)`;
-          }
-          break;
-        }
-      }
-
-      void this.pauseForOperator(
-        this.jobMachine === 'laser'
-          ? `Tool change: fit ${what}, re-focus, then resume.`
-          : `Tool change: fit ${what}${rpmText}, re-zero Z on the new tool, then resume.`
-      );
-      return false;
-    }
-    if (kind === 'stop') {
-      void this.pauseForOperator('Programmed stop. Resume when ready.');
-      return false;
+    const lineCount = scanJobProgram(gcode).lines.length;
+    if (lineCount === 0) {
+      return { started: false, message: 'That program has no machine commands in it.' };
     }
 
-    if (!this.transport || !this.status.connected) return false;
-    // Booked as a job slot rather than going through `sendCommand`, so its ack
-    // is credited back to the stream's byte count and not to an interactive
-    // command that never asked for one.
-    this.ackQueue.push({ kind: 'job', bytes, startsLayer: this.layerStartLines.has(this.queueIndex - 1) });
-    this.jobBytesInFlight += bytes;
-    void this.transport.writeLine(line);
-    return true;
-  }
-
-  /** Parks the tool and waits for the operator. */
-  private async pauseForOperator(message: string) {
-    this.update({ jobPaused: true, pauseMessage: message, state: 'Hold' });
-    await this.sendCommand('M5'); // laser/spindle off
-    await this.sendCommand('G91 G0 Z5');
-    await this.sendCommand('G90');
-  }
-
-  /** Feed hold — decelerates and stops without losing position. */
-  public async pauseJob() {
-    if (!this.status.jobRunning || this.status.jobPaused) return;
-    await this.writeRealtime('!');
-    this.update({ jobPaused: true, pauseMessage: 'Paused.', state: 'Hold' });
-  }
-
-  public async resumeJob() {
-    if (!this.status.jobRunning || !this.status.jobPaused) return;
-    this.update({ jobPaused: false, pauseMessage: undefined, state: 'Run' });
-    await this.writeRealtime('~'); // cycle start
-    this.pumpJobQueue();
+    try {
+      void this.startJob(gcode);
+    } catch (err) {
+      return {
+        started: false,
+        message: err instanceof Error ? err.message : 'The job could not be started.',
+      };
+    }
+    return { started: true, message: `Running ${lineCount} lines.` };
   }
 
   /**
-   * Live feed and power trim, while the job runs.
-   *
-   * The thing this replaces is aborting a job because it is cutting a little
-   * too fast, changing a number, and starting the whole thing again — on a
-   * piece of material that has already been cut into and can no longer be
-   * re-registered. GRBL applies these to the motion it is already executing,
-   * so a job that is scorching can be backed off in the second it takes to
-   * notice.
-   *
-   * These are steps, not a slider, because that is what the protocol is: GRBL
-   * has no "set the feed to 87%" command, only nudges and a reset. A slider
-   * would have to walk there in ten-percent hops and would lie about where it
-   * had got to on the way.
-   *
-   * They are also real-time bytes, which means they are acted on immediately
-   * and are not queued behind the thousands of lines already sent — the whole
-   * point, since the buffered lines are exactly what needs slowing down.
-   */
-  public async nudgeFeedOverride(step: OverrideStep) {
-    await this.writeRealtime(FEED_OVERRIDE_BYTES[step]);
-  }
-
-  /** Back to the feed the program asked for. */
-  public async resetFeedOverride() {
-    await this.writeRealtime(FEED_OVERRIDE_BYTES.reset);
-  }
-
-  /**
-   * Laser power or spindle speed trim. Same contract as the feed.
-   *
-   * On a laser this is the one that matters: too dark is a scorched edge and
-   * too light is a cut that does not go through, and both are visible within a
-   * few centimetres of the start.
-   */
-  public async nudgeSpindleOverride(step: OverrideStep) {
-    await this.writeRealtime(SPINDLE_OVERRIDE_BYTES[step]);
-  }
-
-  public async resetSpindleOverride() {
-    await this.writeRealtime(SPINDLE_OVERRIDE_BYTES.reset);
-  }
-
-  /**
-   * Drops the feed and power trims back to 100% when the job reaches a new
+   * Puts feed and spindle trim back to 100% as the program crosses into a new
    * layer.
    *
-   * A trim is an adjustment to *this layer's* numbers: "the cut layer is
-   * scorching at the speed it was given." The next layer was given different
-   * numbers — a different speed, a different power, often a different
-   * operation entirely — and carrying a percentage across means an etch pass
-   * inherits a correction made for a through-cut. Nobody dialling in a cut
-   * means "and do the same to whatever comes next", and an override that
-   * quietly survives a layer boundary is invisible: the readout is offscreen
-   * for most of a job and the only symptom is a layer that came out wrong.
-   *
-   * Fired on the *ack* of the layer's first line rather than when it is
-   * queued, which is as late as the protocol allows: the ack means the
-   * controller has taken the line, so everything from the previous layer has
-   * at least been parsed. It is still ahead of the motion by whatever the
-   * planner is looking at, so the last block or two of the old layer may run
-   * untrimmed — still far better than resetting a whole buffer-fill of long
-   * cutting moves early, which is what doing it at send time would have meant.
+   * A trim belongs to the cut it was dialled in for. Carrying an 80% feed from
+   * an engraving layer into the cut-through underneath it is how a part is left
+   * attached; carrying a boost the other way is how one is scorched.
    *
    * Rapids are deliberately left alone. They are not a layer setting — the
    * traverse speed is the same all job — and quarter-speed rapids are what
    * someone sets to stay in reach of the stop button on a first run of an
-   * unfamiliar file. Putting that back to full without being asked would be
-   * the app overruling a safety choice.
+   * unfamiliar file. Putting that back to full without being asked would be the
+   * app overruling a safety choice.
    */
-  private async resetTrimAtLayerChange() {
+  protected onStateNotified(state: EtchMachineState): void {
+    if (this.isRunning() && this.layerStartLines.size > 0) {
+      const crossed = state.currentLine;
+      if (crossed > this.layerResetAt && this.layerStartLines.has(crossed)) {
+        this.layerResetAt = crossed;
+        void this.resetTrimAtLayerChange();
+      }
+    }
+    this.publishTelemetry(state);
+  }
+
+  private async resetTrimAtLayerChange(): Promise<void> {
     // Sent whether or not the mirrored percentages say a trim is in force.
     // Those come from the controller's `Ov:` field, which is not on every
     // status frame, so a trim dialled in a moment ago may not have been
     // reported yet — and skipping the reset on a stale 100% would lose exactly
     // the case this exists for. The bytes are real-time and cost nothing.
-    await this.writeRealtime(FEED_OVERRIDE_BYTES.reset);
-    await this.writeRealtime(SPINDLE_OVERRIDE_BYTES.reset);
+    await this.resetFeedOverride();
+    await this.resetSpindleOverride();
   }
 
   /**
-   * Rapid traverse trim: full, half or quarter speed, and nothing between —
-   * those are the only three GRBL implements.
+   * Reports the machine's state to api.physbox.io, for a phone or a second
+   * workstation to watch a running job from.
+   *
+   * This used to fire on every single notify — the 5 Hz status poll *plus*
+   * every acknowledged line of the program, so a job cutting at a few hundred
+   * lines a minute meant a POST per line — with no interval floor, no in-flight
+   * guard, and no check that a machine was even connected.
+   *
+   * A change of state jumps the floor. A job finishing, a tool-change pause or
+   * an alarm are precisely the moments somebody is watching for, and making
+   * them wait out an interval is how a delay becomes the reason nobody trusts
+   * the dashboard.
    */
-  public async setRapidOverride(percent: 100 | 50 | 25) {
-    await this.writeRealtime(RAPID_OVERRIDE_BYTES[percent]);
-  }
+  private publishTelemetry(state: EtchMachineState): void {
+    if (!state.connected) return;
 
-  /**
-   * Stops the job now. This is the button someone reaches for when a cut is
-   * going wrong, so it kills output first and tidies state after.
-   */
-  public async cancelJob() {
-    const wasRunning = this.status.jobRunning;
-    this.gcodeQueue = [];
-    this.queueIndex = 0;
-    this.layerStartLines.clear();
-    this.update({ jobRunning: false, jobPaused: false, pauseMessage: undefined, totalLines: 0, currentLine: 0 });
-    if (wasRunning) await this.emergencyStop();
-  }
+    const now = Date.now();
+    const changed = state.status !== this.lastTelemetryStatus;
+    if (!changed && now - this.lastTelemetryAt < TELEMETRY_INTERVAL_MS) return;
+    // One at a time: a stalled network would otherwise queue a backlog of stale
+    // positions that all land at once when it recovers.
+    if (this.telemetryInFlight) return;
 
-  /** Ends a job because the machine refused something. */
-  private abortJob(message: string) {
-    this.gcodeQueue = [];
-    this.queueIndex = 0;
-    this.layerStartLines.clear();
-    this.status = {
-      ...this.status,
-      jobRunning: false,
-      jobPaused: false,
-      pauseMessage: undefined,
-      lastError: message,
-    };
-    this.writeRealtime('\x18'); // soft reset: stop motion, do not keep cutting
-  }
+    this.lastTelemetryAt = now;
+    this.lastTelemetryStatus = state.status;
+    this.telemetryInFlight = true;
 
-  // ---------------------------------------------------------------------
-  // Probing
-  // ---------------------------------------------------------------------
-
-  /**
-   * Sends one line and waits for the controller to accept it, so a probing
-   * sequence steps rather than races. `ok` means accepted into the planner, not
-   * finished moving — GRBL runs its queue in order, so a probe queued behind a
-   * move still happens after it.
-   */
-  private sendAndWait(command: string, timeoutMs = 30000): Promise<void> {
-    if (!this.transport || !this.status.connected) return Promise.resolve();
-    // Captured here: inside the promise callback the compiler no longer knows
-    // the guard above held, and a disconnect between the two would in any case
-    // be better answered by writing to the transport we checked than to none.
-    const transport = this.transport;
-    return new Promise<void>((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        // Give the slot up rather than dropping it: the reply may still arrive,
-        // and a slot removed from the middle would shift every later ack onto
-        // the wrong command.
-        for (const slot of this.ackQueue) {
-          if (slot.kind === 'other' && slot.resolve === finish) slot.resolve = null;
-        }
-        finish();
-      }, timeoutMs);
-      this.ackQueue.push({ kind: 'other', resolve: finish });
-      void transport.writeLine(command.replace(/\n+$/, ''));
+    void postMachineTelemetry('etch', {
+      status: state.grblState ?? state.status,
+      jobName: this.jobContext.name,
+      progressPercent: state.progressPercent,
+      currentLine: state.currentLine,
+      totalLines: state.totalLines,
+      xyz: { x: state.mpos.x, y: state.mpos.y, z: state.mpos.z },
+      spindleSpeed: state.spindleSpeed ?? 0,
+      // What that S word means, and what its full scale is. The dashboard has
+      // no other way to tell 840 RPM from 84% of a diode laser, and it showed
+      // the laser as a spindle running at 840 RPM.
+      machine: this.jobMachine,
+      spindleMax: this.spindlePwmMax(),
+      feedRate: state.feedRate ?? 0,
+      lastError: state.lastError,
+      documentId: this.jobContext.documentId ?? null,
+      documentRevision: this.jobContext.documentRevision ?? null,
+      settings: this.jobContext.settings ?? null,
+    }).finally(() => {
+      this.telemetryInFlight = false;
     });
   }
 
-  /**
-   * How many job lines GRBL has been sent but not yet answered.
-   *
-   * The streamer keeps the buffer full, so the line the controller just refused
-   * is not the one most recently sent — it is the oldest still unanswered.
-   * Counting these back off the send index is what makes the line number in the
-   * error point at the line the operator has to go and look at.
-   */
-  private jobLinesInFlight(): number {
-    let n = 0;
-    for (const slot of this.ackQueue) if (slot.kind === 'job') n++;
-    return n;
-  }
-
-  /** Releases everything waiting on the machine, so a reset does not hang a cycle. */
-  private failPendingWaiters() {
-    const probe = this.pendingProbe;
-    this.pendingProbe = null;
-    if (probe) probe(null);
-    const waiters = this.ackQueue;
-    this.ackQueue = [];
-    // Whatever GRBL was still holding is gone with the reset or the refusal, so
-    // the acks those lines owed are never coming.
-    this.jobBytesInFlight = 0;
-    for (const slot of waiters) if (slot.kind === 'other') slot.resolve?.();
-  }
+  // -------------------------------------------------------------------------
+  // Probing
+  // -------------------------------------------------------------------------
 
   /**
    * Runs one probing move and returns the machine Z where the tip touched, or
    * null if it never made contact.
-   *
-   * The probe is sent relative, so the search is a distance below wherever the
-   * tool is now rather than an absolute Z that depends on where the datum was
-   * set — under G90 a `Z-20` on a machine zeroed high is a 20 mm dive past it.
    */
-  public async probePoint(searchDepthMm = 20, feedRate = 50, timeoutMs = 120000): Promise<number | null> {
-    if (!this.transport || !this.status.connected) return null;
+  public async probePoint(searchDepthMm = 20, feedRate = 50): Promise<number | null> {
+    if (!this.state.connected) return null;
+    try {
+      const contact = await this.probeDownFrom(searchDepthMm, feedRate);
+      return contact.z;
+    } catch {
+      // No contact. The caller decides what that means — for `zeroZ` it is a
+      // refusal to set a datum, for a grid point it is a hole in the map.
+      return null;
+    }
+  }
 
-    let settle: (z: number | null) => void;
-    const reported = new Promise<number | null>((resolve) => {
-      settle = resolve;
-    });
-    let done = false;
-    const finish = (z: number | null) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      settle(z);
-    };
-    const timer = setTimeout(() => {
-      if (this.pendingProbe === finish) this.pendingProbe = null;
-      finish(null);
-    }, timeoutMs);
-    this.pendingProbe = finish;
-
-    // GRBL reports [PRB:] before acknowledging the probe, so by the time these
-    // return the measurement is already in hand.
-    await this.sendAndWait(`G91 G38.2 Z-${searchDepthMm.toFixed(3)} F${Math.round(feedRate)}`, timeoutMs);
-    await this.sendAndWait('G90', timeoutMs);
-
-    // A probe that ran its full travel without touching reports no contact and
-    // never sends [PRB:], so stop waiting on it here.
-    finish(null);
-    return reported;
+  /** The shared probe cycle, which is protected on the base class. */
+  private async probeDownFrom(searchDepthMm: number, feedRate: number): Promise<Vec3> {
+    return this.probeDown(searchDepthMm, feedRate);
   }
 
   /**
@@ -1770,29 +1206,29 @@ class WebSerialManager {
     searchDepthMm = 25,
     feedRate = 50
   ): Promise<{ success: boolean; message: string; machineZ?: number }> {
-    if (!this.status.connected) {
+    if (!this.state.connected) {
       return { success: false, message: 'Not connected to a machine.' };
     }
 
-    await this.sendAndWait('G21 G90');
+    await this.sendCommandAndWait('G21 G90');
     const contactZ = await this.probePoint(searchDepthMm, feedRate);
 
     if (contactZ === null) {
       const message =
         `Probe never made contact within ${searchDepthMm} mm — Z zero was NOT set. ` +
         `Check the probe clip and lead, and start with the tool closer to the plate.`;
-      this.update({ lastError: message });
+      this.updateState({ lastError: message });
       return { success: false, message };
     }
 
-    await this.sendAndWait(`G10 L20 P1 Z${touchPlateThicknessMm.toFixed(3)}`);
+    await this.sendCommandAndWait(`G10 L20 P1 Z${touchPlateThicknessMm.toFixed(3)}`);
     // Where the datum was taken, so a later heightmap can be referenced to it.
     // XY has not moved during the probe, so this is the plate's position.
     this.recordZDatum();
     // Relative retract: it clears the plate by the same 5 mm wherever the datum
     // ended up, and does not depend on the offset just written.
-    await this.sendAndWait('G91 G0 Z5.000');
-    await this.sendAndWait('G90');
+    await this.sendCommandAndWait('G91 G0 Z5.000');
+    await this.sendCommandAndWait('G90');
 
     return {
       success: true,
@@ -1813,18 +1249,11 @@ class WebSerialManager {
    * Referencing every point to the first probed one instead put a constant bias
    * through the whole job equal to the surface height difference between the
    * touch-off point and that corner: precisely the error levelling exists to
-   * remove, applied everywhere at once. So when the Z datum is known, the grid
-   * is shifted so its interpolated height there is exactly zero. Without one
-   * (bed probed before Z was zeroed) it falls back to the first contact and
-   * says so in `referencedTo`.
+   * remove, applied everywhere at once.
    *
    * Disconnected, it returns a plausible tilt and dish so the rest of the
    * pipeline can be exercised without hardware — flagged `simulated`, never
    * presented as a measurement.
-   *
-   * No touch plate thickness here, unlike `zeroZ`: heights are differences, and
-   * a constant plate thickness cancels out of one. A point that never makes
-   * contact is recorded flat rather than guessed at.
    *
    * In `assisted` mode the cycle stops at every point and asks the caller what
    * to do, which is what makes this usable on wood, acrylic and anything else
@@ -1850,11 +1279,11 @@ class WebSerialManager {
     let missed = 0;
     let aborted = false;
 
-    const isLive = this.status.connected;
+    const isLive = this.state.connected;
     // Nothing to assist with when there is no machine to drive: the simulated
     // map would otherwise stop and ask the operator about points it invented.
     const assisted = isLive && opts.mode === 'assisted' && !!opts.onPointReady;
-    if (isLive) await this.sendAndWait('G21 G90');
+    if (isLive) await this.sendCommandAndWait('G21 G90');
 
     // Raw machine Z of each contact, or null where the probe never touched.
     // Kept absolute until the whole grid is in, because which point becomes the
@@ -1877,24 +1306,14 @@ class WebSerialManager {
           //
           // Not clamped like a retract: the probe just below travels down a
           // fixed 20 mm from wherever this leaves the tool, so raising this
-          // height to "wherever the tool already is" — as a retract clamp
-          // would, on a work offset well above the nominal 5 mm — can push the
-          // probe's fixed search past the surface it is meant to find. This
-          // routine's own precondition is a Z zeroed just before it runs, same
-          // as `zeroZ`/`zeroZHere` right above it.
-          await this.sendAndWait(`G0 Z5.000 F1000`);
-          await this.sendAndWait(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+          // height to "wherever the tool already is" can push the probe's fixed
+          // search past the surface it is meant to find.
+          await this.sendCommandAndWait(`G0 Z5.000 F1000`);
+          await this.sendCommandAndWait(`G0 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
 
           let action: AssistedProbeAction = 'probe';
           if (assisted) {
-            action = await opts.onPointReady!({
-              index: probed,
-              total: totalPoints,
-              row,
-              col,
-              x,
-              y,
-            });
+            action = await opts.onPointReady!({ index: probed, total: totalPoints, row, col, x, y });
           }
 
           if (action === 'abort') {
@@ -1910,15 +1329,15 @@ class WebSerialManager {
             // measurement is simply where it is standing. Machine Z, same frame
             // `[PRB:]` reports in — mixing the work frame in here would offset
             // hand-captured points against probed ones by the work offset.
-            contactZ = await this.settledMachineZ();
+            contactZ = (await this.refreshPosition()).mpos.z;
           } else {
             contactZ = await this.probePoint(20, 50);
           }
 
           // Retract before the next traverse whichever way the point was taken:
           // a captured point leaves the tool touching the work.
-          const pointRetractZ = await this.clampedRetractZ(5);
-          await this.sendAndWait(`G0 Z${pointRetractZ.toFixed(3)} F1000`);
+          const pointRetractZ = Math.max(5, (await this.refreshPosition()).wpos.z);
+          await this.sendCommandAndWait(`G0 Z${pointRetractZ.toFixed(3)} F1000`);
 
           if (contactZ === null) missed++;
           else if (firstContactZ === null) firstContactZ = contactZ;
@@ -1926,7 +1345,7 @@ class WebSerialManager {
           // An alarm (a failed probe raises ALARM:5) refuses every command that
           // follows it, so the rest of the grid would record as dead flat and
           // then be applied to a job as though it had been measured. Stop.
-          if (this.status.state === 'Alarm') {
+          if (this.state.status === 'ALARM') {
             aborted = true;
             rawRow.push(contactZ);
             break;
@@ -1938,7 +1357,7 @@ class WebSerialManager {
           const tilt = (normX - 0.5) * 0.18 + (normY - 0.5) * 0.12;
           const warp = Math.sin(normX * Math.PI) * Math.sin(normY * Math.PI) * -0.08;
           contactZ = parseFloat((tilt + warp).toFixed(3));
-          await new Promise((r) => setTimeout(r, 80));
+          await new Promise(r => setTimeout(r, 80));
         }
 
         rawRow.push(contactZ);
@@ -1987,23 +1406,23 @@ class WebSerialManager {
     }
 
     if (isLive) {
-      const finalRetractZ = await this.clampedRetractZ(10);
-      await this.sendAndWait(`G0 Z${finalRetractZ.toFixed(3)} F3000`);
+      const finalRetractZ = Math.max(10, (await this.refreshPosition()).wpos.z);
+      await this.sendCommandAndWait(`G0 Z${finalRetractZ.toFixed(3)} F3000`);
       if (aborted) {
-        this.update({
+        this.updateState({
           lastError:
             `Bed probing stopped after ${probed} of ${totalPoints} points — the machine went into ` +
             `alarm. The heightmap is incomplete and should not be used. Clear the alarm, check the ` +
             `probe clip and starting Z, and probe again.`,
         });
       } else if (missed > 0) {
-        this.update({
+        this.updateState({
           lastError:
             `Probe made no contact at ${missed} of ${totalPoints} points — those are recorded flat, ` +
             `so levelling will be wrong there. Check the probe clip and the starting Z.`,
         });
       } else if (!datum) {
-        this.update({
+        this.updateState({
           lastError:
             `Heightmap measured, but work Z0 has not been set this session — it is referenced to the ` +
             `first probed point instead. Probe Z zero, then probe the bed again, or cut depth will be ` +
@@ -2015,282 +1434,47 @@ class WebSerialManager {
     return grid;
   }
 
-  // ---------------------------------------------------------------------
-  // Reading
-  // ---------------------------------------------------------------------
-
-  /** Polls GRBL status with '?' every 300ms so the DRO tracks the machine. */
-  /** Resolves on the next status report, which it also asks for. */
-  private nextStatusReport(timeoutMs = 1000): Promise<void> {
-    return new Promise((resolve) => {
-      const fire = () => {
-        clearTimeout(timer);
-        this.statusWaiters.delete(fire);
-        resolve();
-      };
-      const timer = setTimeout(fire, timeoutMs);
-      this.statusWaiters.add(fire);
-      this.writeRealtime('?');
-    });
-  }
-
-  /**
-   * Machine Z once the tool has actually stopped moving.
-   *
-   * Status is polled every 300 ms and a jog returns as soon as it is accepted,
-   * not when it finishes — so reading `status.z` the moment the operator says
-   * "use this position" can record a height the tool was merely passing
-   * through, on its way further down. Two agreeing reports in `Idle` is the
-   * cheap proof that the axis has come to rest.
-   */
-  private async settledMachineZ(timeoutMs = 5000): Promise<number> {
-    const deadline = Date.now() + timeoutMs;
-    let previous = NaN;
-    while (Date.now() < deadline) {
-      await this.nextStatusReport();
-      if (this.status.state === 'Idle' && this.status.z === previous) return this.status.z;
-      previous = this.status.z;
-    }
-    return this.status.z;
-  }
-
-  private startStatusPolling() {
-    this.stopStatusPolling();
-    this.statusPollTimer = setInterval(() => {
-      if (this.status.connected && this.transport) {
-        this.writeRealtime('?');
-      }
-    }, 300);
-  }
-
-  private stopStatusPolling() {
-    if (this.statusPollTimer) {
-      clearInterval(this.statusPollTimer);
-      this.statusPollTimer = null;
-    }
-  }
-
-  private handleIncomingLine(line: string) {
-    if (!line) return;
-    this.status.lastResponse = line;
-
-    // GRBL status: <Idle|MPos:10.000,20.000,0.000|FS:0,0|WCO:0.000,0.000,0.000>
-    if (line.startsWith('<') && line.endsWith('>')) {
-      this.parseStatusReport(line.slice(1, -1));
-      return;
-    }
-
-    // A `$$` dump, one setting per line: `$30=1000`. Kept because the guide
-    // spot has to know full-scale S and whether laser mode is suppressing a
-    // stationary beam — both unknowable from anything else the machine says.
-    const setting = /^\$(\d+)\s*=\s*(-?[\d.]+)/.exec(line);
-    if (setting) {
-      const number = Number(setting[1]);
-      const value = Number(setting[2]);
-      if (Number.isFinite(value)) this.grblSettings.set(number, value);
-      // Laser mode found off, with a note from a previous session saying we are
-      // the ones who turned it off — a tab closed while a guide spot was lit.
-      // The controller kept the setting in EEPROM, so this is the first chance
-      // anything has had to put it back, and the next job is what it would
-      // otherwise ruin.
-      if (number === 32 && value === 0 && readLaserModeBorrowed()) {
-        this.guideSpotRestoreLaserMode = true;
-        this.restoreLaserMode();
-      }
-      // No `return`: a `$$` line is followed by its own `ok`, and the waiter
-      // logic below is what pairs that up.
-    }
-
-    /*
-     * `$I` reply: `[VER:1.1h.20190830:BUILD STRING]` and `[OPT:VZ,15,128]`.
-     *
-     * The third field of VER is free text the owner writes with `$I=`, and it
-     * is empty on every machine that has never been named. When it is there it
-     * identifies this machine exactly; when it is not, the version and options
-     * together identify the *model*, which still tells a diode engraver from a
-     * CO2 tube but cannot tell two identical machines apart. Named beats
-     * derived, which is why the UI offers to write one.
-     */
-    if (line.startsWith('[VER:')) {
-      const body = line.slice(5).replace(/\]$/, '');
-      const firstColon = body.indexOf(':');
-      const version = firstColon >= 0 ? body.slice(0, firstColon) : body;
-      const name = firstColon >= 0 ? body.slice(firstColon + 1).trim() : '';
-      this.grblVersion = version;
-      this.grblBuildName = name;
-      this.publishMachineId();
-      return;
-    }
-    if (line.startsWith('[OPT:')) {
-      this.grblOptions = line.slice(5).replace(/\]$/, '');
-      this.publishMachineId();
-      return;
-    }
-
-    // Probe result: [PRB:0.000,0.000,-12.345:1] — where the probe triggered,
-    // and 1/0 for whether it made contact at all.
-    if (line.startsWith('[PRB:')) {
-      const body = line.slice(5).replace(/\]$/, '');
-      const [coords, success] = body.split(':');
-      const parts = coords.split(',').map(Number);
-      const contact = success === undefined || success.trim() === '1';
-      const z = parts.length >= 3 && Number.isFinite(parts[2]) ? parts[2] : null;
-      const resolve = this.pendingProbe;
-      this.pendingProbe = null;
-      if (resolve) resolve(contact ? z : null);
-      this.notify();
-      return;
-    }
-
-    if (line.startsWith('ok')) {
-      // Replies come back in the order the lines went out, so the ack belongs
-      // to the oldest unanswered line whatever kind it was.
-      const slot = this.ackQueue.shift();
-      if (slot?.kind === 'job') {
-        this.jobBytesInFlight = Math.max(0, this.jobBytesInFlight - slot.bytes);
-        if (slot.startsLayer) void this.resetTrimAtLayerChange();
-        this.pumpJobQueue();
-      } else if (slot?.kind === 'other') {
-        slot.resolve?.();
-      }
-    } else if (line.startsWith('error:') || line.startsWith('ALARM:')) {
-      // A refused command never completes, so release whoever is waiting on it
-      // rather than hanging the cycle until its timeout.
-      this.status.lastError = describeGrblFault(line);
-      // Read before the queue is released, since that is what holds the count.
-      const refusedLine = Math.max(1, this.queueIndex - this.jobLinesInFlight() + 1);
-      this.failPendingWaiters();
-      // Streaming the rest of a job after the controller refused a line means
-      // cutting the remainder in a state nobody intended, so a running job stops
-      // here and says why.
-      if (this.status.jobRunning) {
-        this.abortJob(`Job stopped at line ${refusedLine}. ${describeGrblFault(line)}`);
-      }
-    }
-
-    this.notify();
-  }
-
-  /**
-   * GRBL 1.1 reports MPos *or* WPos, never both, with a `WCO:` offset to
-   * convert between them — so the other one has to be derived rather than left
-   * at zero, which is what a DRO showing the wrong frame comes from.
-   */
-  private parseStatusReport(body: string) {
-    const parts = body.split('|');
-    const grblState = parts[0].split(':')[0] as MachineStatus['state'];
-    if (grblState) this.status.state = grblState;
-
-    // GRBL can enter Hold on its own — a stray real-time `!` from line noise is
-    // the usual culprit, and Etch never sends one outside an explicit pause
-    // click. Without this, `jobPaused` stays false because nothing here ever
-    // set it, so the pause banner never shows and Resume is a no-op: the job
-    // looks merely stalled instead of parked and recoverable.
-    if (grblState === 'Hold' && this.status.jobRunning && !this.status.jobPaused) {
-      this.status.jobPaused = true;
-      this.status.pauseMessage =
-        'The machine went into hold on its own (likely line noise). Resume when ready.';
-    }
-
-    let mpos: [number, number, number] | null = null;
-    let wpos: [number, number, number] | null = null;
-    let wco: [number, number, number] | null = null;
-
-    for (const part of parts.slice(1)) {
-      const [key, rawValue] = [part.slice(0, part.indexOf(':')), part.slice(part.indexOf(':') + 1)];
-      const nums = rawValue?.split(',').map(Number);
-
-      if (key === 'MPos' && nums && nums.length >= 3) mpos = [nums[0], nums[1], nums[2]];
-      else if (key === 'WPos' && nums && nums.length >= 3) wpos = [nums[0], nums[1], nums[2]];
-      else if (key === 'WCO' && nums && nums.length >= 3) wco = [nums[0], nums[1], nums[2]];
-      else if (key === 'FS' && nums && nums.length >= 2) {
-        this.status.feedRate = nums[0] || 0;
-        this.status.spindlePower = nums[1] || 0;
-      } else if (key === 'F' && nums && nums.length >= 1) {
-        this.status.feedRate = nums[0] || 0;
-      } else if (key === 'Ov' && nums && nums.length >= 3) {
-        // Reported only when it changes, and once every ~20 reports otherwise,
-        // so these are held rather than cleared when the field is absent —
-        // blanking them each poll would make the readout flicker back to 100%
-        // while the machine was in fact still trimmed.
-        this.status.feedOverride = nums[0] || 100;
-        this.status.rapidOverride = nums[1] || 100;
-        this.status.spindleOverride = nums[2] || 100;
-      }
-    }
-
-    // WCO is only sent every ~10th report, so the last one seen is retained.
-    if (wco) this.workOffset = wco;
-    const offset = this.workOffset;
-
-    if (mpos) {
-      [this.status.x, this.status.y, this.status.z] = mpos;
-      this.status.wx = mpos[0] - offset[0];
-      this.status.wy = mpos[1] - offset[1];
-      this.status.wz = mpos[2] - offset[2];
-    } else if (wpos) {
-      [this.status.wx, this.status.wy, this.status.wz] = wpos;
-      this.status.x = wpos[0] + offset[0];
-      this.status.y = wpos[1] + offset[1];
-      this.status.z = wpos[2] + offset[2];
-    }
-
-    for (const waiter of [...this.statusWaiters]) waiter();
-
-    this.notify();
-  }
-
-  private workOffset: [number, number, number] = [0, 0, 0];
-  /** One-shot callbacks awaiting the next status report (see `settledMachineZ`). */
-  private statusWaiters = new Set<() => void>();
-
   // -------------------------------------------------------------------------
-  // MachineControl
+  // The legacy status shape
   // -------------------------------------------------------------------------
   //
-  // What the shared MCP machine tools talk to (`@physbox-io/machining`). This
-  // app's own status is a flat shape with `x`/`wx` and a GRBL state word, which
-  // is the right shape for the panels that read it and the wrong one for a set
-  // of tools that has to mean the same thing in three apps. So this is a
-  // translation, not a second source of truth — every field below is read off
-  // `this.status`.
-  //
-  // The aliases exist for the same reason: `home` and `emergencyStop` are good
-  // names and are called from a dozen places, so they keep them, and the shared
-  // vocabulary is added alongside rather than renamed underneath.
+  // The panels in this app read a flat `MachineStatus` with `x`/`wx` and GRBL's
+  // own state word. It is derived from the shared state rather than kept beside
+  // it, so there is exactly one thing to be wrong.
 
-  /** This app's status, in the shared vocabulary. */
-  public getState(): SharedMachineState {
-    const s = this.status;
+  public getStatus(): MachineStatus {
+    const s = this.state;
     return {
-      status: sharedStatusOf(s),
       connected: s.connected,
       portName: s.portName,
-      grblState: s.state,
-      mpos: { x: s.x, y: s.y, z: s.z },
-      wpos: { x: s.wx, y: s.wy, z: s.wz },
-      workOffset: { x: s.x - s.wx, y: s.y - s.wy, z: s.z - s.wz },
+      baudRate: s.baudRate,
+      state: legacyStateWord(s),
+      x: s.mpos.x,
+      y: s.mpos.y,
+      z: s.mpos.z,
+      wx: s.wpos.x,
+      wy: s.wpos.y,
+      wz: s.wpos.z,
+      feedRate: s.feedRate ?? 0,
+      spindlePower: s.spindleSpeed ?? 0,
+      feedOverride: s.overrides?.feed ?? 100,
+      rapidOverride: s.overrides?.rapid ?? 100,
+      spindleOverride: s.overrides?.spindle ?? 100,
+      guideSpot: s.guideSpot,
+      machineId: s.machineId,
+      machineName: s.machineName,
+      motion: s.motion,
+      jobRunning: this.isRunning(),
+      jobPaused: this.isJobPaused(),
       currentLine: s.currentLine,
       totalLines: s.totalLines,
-      progressPercent: s.totalLines > 0 ? Math.round((s.currentLine / s.totalLines) * 100) : 0,
-      feedRate: s.feedRate,
-      spindleSpeed: s.spindlePower,
-      overrides: {
-        feed: s.feedOverride,
-        rapid: s.rapidOverride,
-        spindle: s.spindleOverride,
-      },
       pauseMessage: s.pauseMessage,
       lastError: s.lastError,
     };
   }
 
-  public isRunning(): boolean {
-    return this.status.jobRunning;
-  }
-
-  public isJobPaused(): boolean {
-    return this.status.jobPaused;
+  public subscribe(listener: StatusListener): () => void {
+    return this.addListener(() => listener(this.getStatus()));
   }
 
   /**
@@ -2304,52 +1488,20 @@ class WebSerialManager {
   public getCurrentLayer(): null {
     return null;
   }
-
-  public getGrblSettings(): Map<number, number> {
-    return new Map(this.grblSettings);
-  }
-
-  /**
-   * Asks the controller where it is and waits for the answer, so a caller about
-   * to reason about the head's position reads one from now rather than from up
-   * to a poll interval ago.
-   */
-  public async refreshPosition(): Promise<SharedMachineState> {
-    if (this.status.connected) await this.nextStatusReport();
-    return this.getState();
-  }
-
-  /** `home()` under the name the shared tools use. */
-  public async homeMachine(): Promise<void> {
-    await this.home();
-  }
-
-  /** `emergencyStop()` under the name the shared tools use. */
-  public async eStop(): Promise<void> {
-    await this.emergencyStop();
-  }
 }
 
 /**
- * GRBL's state word, and this app's own connection states, mapped onto the
- * shared vocabulary.
+ * GRBL's state word as this app's panels expect it.
  *
- * A pause is the interesting one. GRBL sits `Idle` through a tool change — it
- * has run everything it was given — so the controller's word cannot tell a
- * finished job from a job waiting for someone to change a tool. The app knows,
- * and that is what is reported.
+ * The controller's own word is carried through where there is one. Before the
+ * first status report there is not, and the connection state is the honest
+ * answer instead.
  */
-function sharedStatusOf(s: MachineStatus): SharedMachineState['status'] {
-  if (!s.connected) return s.state === 'Connecting' ? 'CONNECTING' : 'DISCONNECTED';
-  if (s.state === 'Alarm') return 'ALARM';
-  if (s.jobPaused) {
-    if (/tool/i.test(s.pauseMessage ?? '')) return 'PAUSED_TOOL';
-    if (/material|sheet/i.test(s.pauseMessage ?? '')) return 'PAUSED_MATERIAL';
-    return 'PAUSED_OPERATOR';
-  }
-  if (s.jobRunning) return 'RUNNING';
-  if (s.state === 'Home' || s.state === 'Jog' || s.state === 'Run') return 'RUNNING';
-  return 'IDLE';
+function legacyStateWord(s: EtchMachineState): MachineStatus['state'] {
+  if (!s.connected) return s.status === 'CONNECTING' ? 'Connecting' : 'Disconnected';
+  if (s.status === 'ALARM') return 'Alarm';
+  const word = s.grblState as MachineStatus['state'] | undefined;
+  return word ?? 'Idle';
 }
 
 export const webSerialManager = new WebSerialManager();

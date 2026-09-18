@@ -93,7 +93,7 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
     );
   }
 
-  const started = webSerialManager.startJob(gcode);
+  const started = await webSerialManager.runProgram(gcode);
   if (!started.started) throw new Error(started.message);
 
   const lines = gcode.split('\n').filter(l => l.trim()).length;
