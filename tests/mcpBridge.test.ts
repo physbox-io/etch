@@ -141,6 +141,12 @@ describe('MCP: etch_list_capabilities', () => {
     expect(r.booleanOps).toEqual(['union', 'subtract', 'intersect', 'exclude']);
     expect(r.imageDitherModes).toContain('floyd');
     expect(r.generators).toContain('test-grid');
+    // Every generator in the menu is drivable, or an agent has to reproduce
+    // layout rules — a hinge's half-period row offset, a grille's minimum web —
+    // that exist precisely because they are not obvious.
+    expect(r.generators).toEqual(
+      expect.arrayContaining(['test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation'])
+    );
     // A laser's tool catalogue is deliberately empty.
     expect(r.machine).toBe('laser');
     expect(r.tools).toEqual([]);
@@ -290,5 +296,62 @@ describe('MCP: user presets', () => {
     load([]);
     expect((await handleMCPCommand('etch_load_preset', { preset: 'user:absent' })).ok).toBe(false);
     expect((await handleMCPCommand('etch_delete_preset', { name: 'absent' })).ok).toBe(false);
+  });
+});
+
+describe('MCP: the generators an agent can drive', () => {
+  it('cuts a living hinge and reports what it will fold to', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_living_hinge', {
+      x: 40, y: 40, width: 200, height: 80, pitchMm: 4, bridgeMm: 3, slitLengthMm: 24,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.rows).toBeGreaterThanOrEqual(3);
+    expect(r.slits).toBeGreaterThan(50);
+    expect(r.minBendRadiusMm).toBeCloseTo((80 * 2) / Math.PI, 1);
+    // One compound path, not one element per slit.
+    expect((r.addedIds as string[]).length).toBe(1);
+  });
+
+  it('takes its numbers as strings, because that is what arrives', async () => {
+    // An agent quotes about half the time. Refusing "3" is being strict, not
+    // being careful: it is a perfectly good three millimetres.
+    load([]);
+    const r = await handleMCPCommand('etch_make_living_hinge', {
+      x: '40', y: '40', width: '200', height: '80', pitchMm: '4', bridgeMm: '3',
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('refuses a hinge too narrow to bend, and says why', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_living_hinge', { height: 8, pitchMm: 4 });
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/at least 3/);
+  });
+
+  it('rejects a size that is not a number rather than cutting NaN', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_perforation', { pitchMm: 'wide' });
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/must be a number/);
+  });
+
+  it('perforates, and reports the web that decides whether it survives', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_perforation', {
+      x: 20, y: 20, width: 140, height: 100, sizeMm: 4, pitchMm: 7, lattice: 'hex',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.holes).toBeGreaterThan(50);
+    expect(r.minWebMm).toBeGreaterThan(0);
+    expect(r.openAreaPercent).toBeGreaterThan(0);
+    expect((r.addedIds as string[]).length).toBe(1);
+  });
+
+  it('refuses a grille whose web would tear out', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_perforation', { sizeMm: 7.2, pitchMm: 7 });
+    expect(r.ok).toBe(false);
   });
 });

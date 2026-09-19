@@ -13,6 +13,7 @@ import { MaterialTestModal } from './components/MaterialTestModal';
 import { RegistrationModal } from './components/RegistrationModal';
 import { PackPartsModal } from './components/PackPartsModal';
 import { LivingHingeModal } from './components/LivingHingeModal';
+import { PerforationModal } from './components/PerforationModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { JobPauseBanner } from './components/JobPauseBanner';
@@ -248,6 +249,7 @@ export const App: React.FC = () => {
       <RegistrationModal />
       <PackPartsModal />
       <LivingHingeModal />
+      <PerforationModal />
       <ImageImportModal />
       <GCodePreviewModal />
       <MachineControlModal />

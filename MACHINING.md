@@ -306,7 +306,7 @@ All **Documented**, from the GRBL v1.1 documentation (`gnea/grbl` wiki):
 
 ## 10. Generated patterns
 
-`src/utils/livingHinge.ts`
+`src/utils/livingHinge.ts`, `src/utils/perforation.ts`
 
 A living hinge is a mechanism, not a mark: these numbers decide whether a panel
 folds or snaps, and none of them has been cut in anger yet.
@@ -321,6 +321,11 @@ folds or snaps, and none of them has been cut in anger yet.
 | Minimum bend radius = 2W / π for a right angle | `livingHinge.ts` | The width across the hinge becomes the arc: a 90° bend of radius r consumes r·π/2 of it. | **Derived** |
 | Warn when row pitch < stock thickness | `livingHinge.ts` | Beams deeper than they are wide twist badly rather than evenly. A pitch of about the thickness or more is what bends cleanly. | **Judgement** |
 | Hinge layer is `cutSide: 'on'`, `tabs: false` | `livingHinge.ts` | A slit is an open cut with no inside to offset towards; offsetting makes every beam a kerf wider on one side and narrower on the other. A tab across a slit is a beam that was meant to be cut. | **Derived** |
+| `MIN_WEB_MM = 1` | `perforation.ts` | The material left between two neighbouring holes. Below this it tears out as the cutter passes and the grille becomes a hole. | **Judgement** |
+| Hex lattice by default | `perforation.ts` | At one pitch a staggered lattice leaves a wider web than a square one for the same open area — the stronger panel for the same air. | **Derived** |
+| Warn past 60% open area | `perforation.ts` | Past roughly this the sheet stops behaving like one: it flexes, and it moves as it is cut. The figure is a judgement, the effect is not. | **Judgement** |
+| Perforation layer is `cutSide: 'inside'` | `perforation.ts` | A closed shape with nothing enclosing it reads to the planner as a disc to be cut out, so the tool would be driven round the outside and every hole would come out a full tool-width oversize. | **Derived** |
+| Warn when hole diameter < stock thickness on a router | `perforation.ts` | A hole deeper than it is wide needs a cutter that fits and a pecking cycle rather than a straight plunge. | **Published** (standard practice for deep-hole drilling in wood and plastics) |
 
 ---
 

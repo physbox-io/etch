@@ -93,6 +93,15 @@ What the app already has, so you do not draw from scratch what it can place:
   diode needs dark stock (Volt exports a printed black shim), a fibre laser
   should cut stainless instead. Never PVC, on any machine, and cutting film
   needs ducted extraction.
+- A living hinge generator and a perforation generator, under Generators in the
+  preset dropdown and drivable as etch_make_living_hinge and
+  etch_make_perforation. Both ADD to the open document rather than replacing
+  it. Reach for them whenever the user wants a panel that bends, or a grille,
+  vent or diffuser: the layout rules are the reason they exist — a hinge's rows
+  must be offset half a period or it does not bend at all, and a grille's web
+  (the material between two holes) tears out under about a millimetre. Say the
+  bend radius the hinge reports, and the web the perforation reports, rather
+  than leaving either to be discovered in the material.
 - A material test grid generator, under Generators in the preset dropdown. When
   the user asks what speed or power to use on a material the app cannot pin
   down — an unlabelled sheet, a tube that has aged — point them at it rather

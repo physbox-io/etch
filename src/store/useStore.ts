@@ -23,6 +23,7 @@ import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type T
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 import type { LivingHingePlan } from '../utils/livingHinge';
+import type { PerforationPlan } from '../utils/perforation';
 import { getBedBBox } from '../utils/geom';
 import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import type { RegistrationPlan } from '../utils/registration';
@@ -345,12 +346,17 @@ interface EtchStore {
   isPackOpen: boolean;
   /** The living hinge generator — see `utils/livingHinge.ts`. */
   isLivingHingeOpen: boolean;
+  /** The perforation generator — see `utils/perforation.ts`. */
+  isPerforationOpen: boolean;
   toggleTestGridModal: () => void;
   toggleRegistrationModal: () => void;
   togglePackModal: () => void;
   toggleLivingHingeModal: () => void;
+  togglePerforationModal: () => void;
   /** Adds a hinge's slits to the open document, as one undo step. */
   addLivingHinge: (plan: LivingHingePlan) => void;
+  /** Adds a perforation field to the open document, as one undo step. */
+  addPerforation: (plan: PerforationPlan) => void;
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
@@ -621,6 +627,39 @@ function parkedTab(id: string, doc: EtchDocument, activePreset: string): SheetTa
   };
 }
 
+/**
+ * What every generator that ADDS to the document does with its plan.
+ *
+ * One `set` and one `commitHistory`, which is what makes a four-hundred-slit
+ * hinge a single undo rather than four hundred of them. Shared because the
+ * third copy of `addRegistrationHoles` would have been the one that drifted.
+ */
+interface GeneratedPlan {
+  elements: EtchElement[];
+  layer: EtchLayer;
+  layerNeeded: boolean;
+}
+
+function addGenerated(
+  get: () => EtchStore,
+  set: (partial: Partial<EtchStore>) => void,
+  plan: GeneratedPlan
+): void {
+  const { document } = get();
+  if (plan.elements.length === 0) return;
+  set({
+    document: {
+      ...document,
+      layers: plan.layerNeeded ? [...document.layers, plan.layer] : document.layers,
+      elements: [...document.elements, ...plan.elements],
+    },
+    // Selected, because the first thing anyone does with a generated field in
+    // the wrong place is move it.
+    selectedIds: plan.elements.map((el) => el.id),
+  });
+  get().commitHistory();
+}
+
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
   tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, DEFAULT_PRESET_ID)],
@@ -658,6 +697,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isRegistrationOpen: false,
   isPackOpen: false,
   isLivingHingeOpen: false,
+  isPerforationOpen: false,
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
@@ -1163,6 +1203,7 @@ export const useStore = create<EtchStore>((set, get) => ({
     set((state) => ({ isRegistrationOpen: !state.isRegistrationOpen })),
   togglePackModal: () => set((state) => ({ isPackOpen: !state.isPackOpen })),
   toggleLivingHingeModal: () => set((state) => ({ isLivingHingeOpen: !state.isLivingHingeOpen })),
+  togglePerforationModal: () => set((state) => ({ isPerforationOpen: !state.isPerforationOpen })),
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
@@ -1984,19 +2025,9 @@ export const useStore = create<EtchStore>((set, get) => ({
    * hinge is four hundred of them — taking it back out would take four hundred
    * presses of Ctrl+Z.
    */
-  addLivingHinge: (plan) => {
-    const { document } = get();
-    if (plan.elements.length === 0) return;
-    set({
-      document: {
-        ...document,
-        layers: plan.layerNeeded ? [...document.layers, plan.layer] : document.layers,
-        elements: [...document.elements, ...plan.elements],
-      },
-      selectedIds: plan.elements.map((el) => el.id),
-    });
-    get().commitHistory();
-  },
+  addLivingHinge: (plan) => addGenerated(get, set, plan),
+
+  addPerforation: (plan) => addGenerated(get, set, plan),
 
   addRegistrationToAll: (build) => {
     const state = get();

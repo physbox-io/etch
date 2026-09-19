@@ -27,9 +27,26 @@ import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask
 import type { Pt } from '../utils/pathFlatten';
 import type { EtchElement } from '../types/etch';
 import { defaultRegistration, planRegistration } from '../utils/registration';
+import { defaultLivingHinge, planLivingHinge } from '../utils/livingHinge';
+import { defaultPerforation, planPerforation } from '../utils/perforation';
 
 /** Millimetres, to the micron — past that it is float noise, not a dimension. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/**
+ * Read a number an agent sent, falling back when it sent nothing.
+ *
+ * Accepts the string form as well as the number. An agent sends `"0.1"` about
+ * half the time — it is JSON on the wire and the model on the other end is not
+ * consistent about quoting — and refusing that is being strict rather than
+ * being careful: the value is a perfectly good tenth of a millimetre. What is
+ * NOT accepted is a string that is not a number, which comes back as NaN and is
+ * caught by the caller's own check.
+ */
+const num = (v: unknown, fallback: number): number => {
+  if (v === undefined || v === null || v === '') return fallback;
+  return typeof v === 'number' ? v : Number(v);
+};
 
 /**
  * One MCP command, applied to the store.
@@ -795,6 +812,84 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       };
     }
 
+    case 'etch_make_living_hinge':
+    case 'MAKE_LIVING_HINGE': {
+      /*
+       * A hinge is four hundred slits on an exact pitch, which is the kind of
+       * thing an agent should ask for by name rather than emit as four hundred
+       * elements. The layout rules — alternate rows offset half a period, no
+       * slit reaching the edge — are what make it bend rather than tear, and
+       * they are not obvious enough to expect a caller to reproduce.
+       */
+      const doc = store.document;
+      const derived = defaultLivingHinge(doc);
+      const opts = {
+        x: num(msg.x, derived.x),
+        y: num(msg.y, derived.y),
+        width: num(msg.width, derived.width),
+        height: num(msg.height, derived.height),
+        axis: msg.axis === 'y' ? 'y' as const : 'x' as const,
+        slitLengthMm: num(msg.slitLengthMm, derived.slitLengthMm),
+        bridgeMm: num(msg.bridgeMm, derived.bridgeMm),
+        pitchMm: num(msg.pitchMm, derived.pitchMm),
+      };
+      for (const [k, v] of Object.entries(opts)) {
+        if (typeof v === 'number' && !Number.isFinite(v)) {
+          return { ok: false, error: `${k} must be a number, in mm` };
+        }
+      }
+      const plan = planLivingHinge(doc, opts, store.cncTools);
+      if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
+      store.addLivingHinge(plan);
+      return {
+        ok: true,
+        addedIds: plan.elements.map((el) => el.id),
+        layerId: plan.layer.id,
+        rows: plan.rows,
+        slits: plan.slits,
+        minBendRadiusMm: round3(plan.minBendRadiusMm),
+        note: plan.notes.join(' ') || undefined,
+      };
+    }
+
+    case 'etch_make_perforation':
+    case 'MAKE_PERFORATION': {
+      const doc = store.document;
+      const derived = defaultPerforation(doc);
+      const lattice = msg.lattice === 'grid' ? 'grid' as const : 'hex' as const;
+      const shape = msg.shape === 'slot' ? 'slot' as const : 'round' as const;
+      const ramp = msg.ramp === 'linear' || msg.ramp === 'radial' ? msg.ramp : 'none' as const;
+      const opts = {
+        x: num(msg.x, derived.x),
+        y: num(msg.y, derived.y),
+        width: num(msg.width, derived.width),
+        height: num(msg.height, derived.height),
+        lattice,
+        shape,
+        ramp,
+        sizeMm: num(msg.sizeMm, derived.sizeMm),
+        slotLengthMm: num(msg.slotLengthMm, derived.slotLengthMm),
+        pitchMm: num(msg.pitchMm, derived.pitchMm),
+      };
+      for (const [k, v] of Object.entries(opts)) {
+        if (typeof v === 'number' && !Number.isFinite(v)) {
+          return { ok: false, error: `${k} must be a number, in mm` };
+        }
+      }
+      const plan = planPerforation(doc, opts, store.cncTools);
+      if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
+      store.addPerforation(plan);
+      return {
+        ok: true,
+        addedIds: plan.elements.map((el) => el.id),
+        layerId: plan.layer.id,
+        holes: plan.holes,
+        minWebMm: round3(plan.minWebMm),
+        openAreaPercent: round3(plan.openArea * 100),
+        note: plan.notes.join(' ') || undefined,
+      };
+    }
+
     case 'etch_update_layer':
     case 'UPDATE_LAYER': {
       /*
@@ -1009,7 +1104,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         // handing a thresholder an already-dithered image traces the dots.
         imageDitherModes: Object.keys(DITHER_LABELS),
         booleanOps: Object.keys(BOOLEAN_OP_LABEL),
-        generators: ['test-grid', 'registration-holes'],
+        generators: ['test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation'],
         clipartCount: CLIP_ART_INDEX.length,
         drawingTools: [
           'select', 'freehand', 'grid-freehand', 'bezier', 'node-edit',
