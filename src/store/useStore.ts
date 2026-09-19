@@ -22,6 +22,7 @@ import {
 import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type ToolProfile } from '../utils/tooling';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
+import type { LivingHingePlan } from '../utils/livingHinge';
 import { getBedBBox } from '../utils/geom';
 import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import type { RegistrationPlan } from '../utils/registration';
@@ -342,9 +343,14 @@ interface EtchStore {
   isTestGridOpen: boolean;
   isRegistrationOpen: boolean;
   isPackOpen: boolean;
+  /** The living hinge generator — see `utils/livingHinge.ts`. */
+  isLivingHingeOpen: boolean;
   toggleTestGridModal: () => void;
   toggleRegistrationModal: () => void;
   togglePackModal: () => void;
+  toggleLivingHingeModal: () => void;
+  /** Adds a hinge's slits to the open document, as one undo step. */
+  addLivingHinge: (plan: LivingHingePlan) => void;
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
@@ -651,6 +657,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isTestGridOpen: false,
   isRegistrationOpen: false,
   isPackOpen: false,
+  isLivingHingeOpen: false,
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
@@ -1155,6 +1162,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleRegistrationModal: () =>
     set((state) => ({ isRegistrationOpen: !state.isRegistrationOpen })),
   togglePackModal: () => set((state) => ({ isPackOpen: !state.isPackOpen })),
+  toggleLivingHingeModal: () => set((state) => ({ isLivingHingeOpen: !state.isLivingHingeOpen })),
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
@@ -1965,6 +1973,26 @@ export const useStore = create<EtchStore>((set, get) => ({
       },
       // Selected, because the first thing anyone does with a hole in the wrong
       // place is move it.
+      selectedIds: plan.elements.map((el) => el.id),
+    });
+    get().commitHistory();
+  },
+
+  /**
+   * The same shape as `addRegistrationHoles`: one `set`, then one history
+   * entry. Looping `addElement` would push an undo step per element, and a
+   * hinge is four hundred of them — taking it back out would take four hundred
+   * presses of Ctrl+Z.
+   */
+  addLivingHinge: (plan) => {
+    const { document } = get();
+    if (plan.elements.length === 0) return;
+    set({
+      document: {
+        ...document,
+        layers: plan.layerNeeded ? [...document.layers, plan.layer] : document.layers,
+        elements: [...document.elements, ...plan.elements],
+      },
       selectedIds: plan.elements.map((el) => el.id),
     });
     get().commitHistory();

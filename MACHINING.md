@@ -304,6 +304,26 @@ All **Documented**, from the GRBL v1.1 documentation (`gnea/grbl` wiki):
 - Spindle *state* changes (`M3`/`M5`) do sync the planner — which is why the
   overscan path never toggles them mid-fill.
 
+## 10. Generated patterns
+
+`src/utils/livingHinge.ts`
+
+A living hinge is a mechanism, not a mark: these numbers decide whether a panel
+folds or snaps, and none of them has been cut in anger yet.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `MIN_BRIDGE_MM = 1.2` | `livingHinge.ts` | The torsion beam between two slits in a row. Thinner bends more easily and breaks sooner — in ply it is short grain, in acrylic a stress riser. | **Judgement** |
+| `MIN_ROWS = 3` | `livingHinge.ts` | The bend is shared between the rows. With one or two, all of it lands on a handful of beams and they tear. | **Judgement** |
+| `MIN_SLIT_KERF_MM = 0.15` | `livingHinge.ts` | A cut narrower than the beam or bit is not a cut. Fragments below this are dropped rather than emitted as dots. | **Derived** |
+| Alternate rows offset half a period | `livingHinge.ts` | Rows in phase leave continuous uncut lines straight across the hinge, and it does not bend at all. | **Derived** |
+| No slit within one beam width of the region edge | `livingHinge.ts` | A slit that reaches the edge is a split, and the panel tears along it on the first fold. | **Derived** |
+| Minimum bend radius = 2W / π for a right angle | `livingHinge.ts` | The width across the hinge becomes the arc: a 90° bend of radius r consumes r·π/2 of it. | **Derived** |
+| Warn when row pitch < stock thickness | `livingHinge.ts` | Beams deeper than they are wide twist badly rather than evenly. A pitch of about the thickness or more is what bends cleanly. | **Judgement** |
+| Hinge layer is `cutSide: 'on'`, `tabs: false` | `livingHinge.ts` | A slit is an open cut with no inside to offset towards; offsetting makes every beam a kerf wider on one side and narrower on the other. A tab across a slit is a beam that was meant to be cut. | **Derived** |
+
+---
+
 ## Sources
 
 - **Machinery's Handbook** (Industrial Press, 31st Edition) — standard milling
