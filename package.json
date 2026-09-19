@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:image": "vite build",
     "lint": "eslint .",
     "clipart:preview": "vite-node tools/clipart/preview.ts",
     "test": "vitest run",

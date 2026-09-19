@@ -11,7 +11,12 @@ ENV GITHUB_TOKEN=$GITHUB_TOKEN
 
 # Build the frontend application
 RUN npm install
-RUN npm run build
+# `build:image`, not `build`: the latter is `tsc -b && vite build`, and the
+# typecheck half already ran in CI, which is what gates this image being built
+# at all. Both tsconfigs are noEmit, so `tsc -b` produces nothing vite needs -
+# running it here only repeats the check against the same lockfile, in a
+# container with no cache, on every deploy.
+RUN npm run build:image
 
 # Production stage
 FROM nginx:stable-alpine
