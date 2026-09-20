@@ -1582,18 +1582,28 @@ export const EtchCanvas: React.FC = () => {
           const isGhost = layer?.operation === 'ghost';
           const strokeColor = isSelected ? '#f59e0b' : el.strokeColor || layer?.color || (isGhost ? '#94a3b8' : '#ef4444');
           const strokeW = isSelected ? (el.strokeWidth || 0.5) + 0.3 : el.strokeWidth || 0.5;
+          // A filled element is hatched edge to edge by the planner, so the
+          // canvas paints it solid. Only the paint bucket used to set an
+          // explicit `fillColor`, which is why switching a rectangle to
+          // "filled" in the sidebar looked like it did nothing while the
+          // G-code came back full of scanlines.
           const fillColor =
             isGhost
               ? 'none'
               : el.fillColor && el.fillColor !== 'none'
                 ? el.fillColor
-                : layer?.operation === 'fill'
+                : el.machining === 'filled' || layer?.operation === 'fill'
                   ? strokeColor
                   : 'none';
           const common = {
             stroke: strokeColor,
             strokeWidth: strokeW,
             fill: fillColor,
+            // Even-odd within an element, matching booleanOps and the hatcher,
+            // so a traced glyph's counter reads as a hole on screen as well as
+            // on the material. SVG's default is non-zero, which would paint it
+            // solid and disagree with the toolpath.
+            fillRule: 'evenodd' as const,
             opacity: (el.opacity ?? 1) * (isGhost ? 0.6 : 1),
             strokeDasharray:
               el.strokeDash === 'dashed'
