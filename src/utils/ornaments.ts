@@ -399,11 +399,11 @@ const foliage: OrnamentSpec = {
   },
   fields: [
     { kind: 'number', key: 'scrolls', label: 'Scrolls', min: 2, max: 14, step: 1,
-      hint: 'How many times the vine turns back on itself. Each turn is a C-scroll, alternating hand.' },
+      hint: 'Volutes hung off the stem, alternating above and below it. Each is one C-scroll curling to an eye.' },
     { kind: 'number', key: 'leafEvery', label: 'Leaves per scroll', min: 0, max: 20, step: 1 },
     { kind: 'number', key: 'leafSizeMm', label: 'Leaf size', min: 1, max: 80, step: 0.5, unit: 'mm' },
     { kind: 'number', key: 'tendrils', label: 'Tendrils per scroll', min: 0, max: 6, step: 1,
-      hint: 'Curling shoots springing off the vine. Most of what makes it read as ornament rather than as a plant.' },
+      hint: 'Curling shoots springing off the scroll. Most of what makes it read as ornament rather than as a plant.' },
     { kind: 'choice', key: 'midrib', label: 'Leaf detail', options: [
       { value: 'on', label: 'Midrib' },
       { value: 'off', label: 'Plain' },
@@ -416,9 +416,9 @@ const foliage: OrnamentSpec = {
   ],
   build(region, opts) {
     const scrolls = Math.max(2, Math.round(num(opts, 'scrolls', 4)));
-    const leafEvery = Math.max(0, Math.round(num(opts, 'leafEvery', 7)));
+    const leafEvery = Math.max(0, Math.round(num(opts, 'leafEvery', 3)));
     const leafSize = Math.max(0.5, num(opts, 'leafSizeMm', 15));
-    const tendrilsPer = Math.max(0, Math.round(num(opts, 'tendrils', 2)));
+    const tendrilsPer = Math.max(0, Math.round(num(opts, 'tendrils', 1)));
     const midrib = str(opts, 'midrib', 'on') === 'on';
     const mirrored = str(opts, 'symmetry', 'none') === 'mirror';
     const seed = Math.round(num(opts, 'seed', 1));
@@ -438,71 +438,115 @@ const foliage: OrnamentSpec = {
     const strokes: Pt2[][] = [];
 
     /*
-     * The spine is a chain of circular arcs of alternating hand — a C-scroll,
-     * then a counter-scroll, then another.
+     * Nothing is drawn over something already there.
      *
-     * Not a sine wave. A sine's flanks are nearly straight, so it reads as a
-     * zigzag with bends at the ends rather than as a vine; an arc chain is
-     * curving everywhere, which is what makes it look grown rather than
-     * plotted. The radius shortens along the length so the scrolls tighten
-     * towards the tip, the way carved rinceau does.
+     * Leaves are claimed as discs before they are drawn, and a leaf that would
+     * land on one already claimed is dropped. Ornament is read by its outline;
+     * a dozen leaves piled in one place stop being leaves and become a blot —
+     * which is exactly what an engraver burns them as.
      */
-    const SEG = 26;
-    const spine: Pt2[] = [];
+    const discs: Array<[number, number, number]> = [];
+    const room = (cx: number, cy: number, r: number): boolean => {
+      for (const [dx, dy, dr] of discs) if (Math.hypot(cx - dx, cy - dy) < 0.72 * (r + dr)) return false;
+      discs.push([cx, cy, r]);
+      return true;
+    };
+
+    /*
+     * The stem is a shallow wave that travels along the panel, and the scrolls
+     * hang off it. It is not itself scrolled.
+     *
+     * It used to be: the stem itself was a chain of half-turn arcs, so the vine
+     * spent its whole length doubling back through ground it had already
+     * covered, and four scrolls came out as a ball of overlapping loops with
+     * the leaves lost inside it. A vine reads as a vine because it *goes*
+     * somewhere; the ornament is what springs off it. Keep the sweep of each
+     * half-wave well under half a turn or the stem starts crossing itself
+     * again.
+     */
+    const SEG = 24;
+    const SWEEP = Math.PI * 0.55;
+    const baseLen = 34;
+    const spine: Pt2[] = [[0, 0]];
+    const attach: Array<{ p: Pt2; tan: number; out: number; scale: number }> = [];
     let x = 0;
     let y = 0;
-    const baseLen = 34;
-    // Each PAIR of arcs uses one magnitude, turned one way then the other, so
-    // the vine comes back to the heading it set out on and travels along the
-    // panel. Letting each arc pick its own magnitude leaves a little unturned
-    // rotation every time, and twenty of those add up to a vine running off
-    // diagonally into a corner.
-    const sweeps: number[] = [];
-    const lengths: number[] = [];
-    for (let k = 0; k < scrolls; k += 2) {
-      const mag = Math.PI * 0.95 * (0.9 + rnd() * 0.2);
-      const len = baseLen * (0.85 + rnd() * 0.3);
-      sweeps.push(mag, -mag);
-      lengths.push(len, len);
-    }
-    let dir = -sweeps[0] / 2;
+    // Starting half a sweep back leaves the wave centred on its own axis, so
+    // the vine travels level along the panel instead of climbing out of it.
+    let dir = -SWEEP / 2;
     for (let k = 0; k < scrolls; k++) {
-      const taper = 1 - 0.45 * (k / scrolls);
-      const len = lengths[k] * taper;
-      const sweep = sweeps[k];
+      const hand = k % 2 === 0 ? 1 : -1;
+      const sweep = hand * SWEEP * (0.9 + rnd() * 0.2);
+      const taper = 1 - 0.3 * (k / scrolls);
+      const len = baseLen * (0.85 + rnd() * 0.3) * taper;
       for (let i = 0; i < SEG; i++) {
         dir += sweep / SEG;
         x += Math.cos(dir) * (len / SEG);
         y += Math.sin(dir) * (len / SEG);
         spine.push([x, y]);
+        // The crest of the wave, and the scroll springs from its outside —
+        // into the open air rather than into the belly of the curve.
+        if (i === Math.floor(SEG * 0.5)) attach.push({ p: [x, y], tan: dir, out: -hand, scale: taper });
       }
     }
     /*
-     * The tip curls in on itself, which is how a scroll ends — and it stops
-     * while the turns are still apart.
+     * How each end finishes is rolled for, and the two ends are rolled
+     * separately.
      *
-     * A spiral run to its limit puts every remaining turn inside a millimetre,
-     * and an engraver asked to cut that burns a solid black eye. Just over a
-     * turn is what reads as a curl; past about a turn and a half it is a blot.
+     * Both used to curl, always, and always the same way round: a vine whose
+     * two ends spiral identically looks stamped, and the pair of matching
+     * curls was the first thing to give the generator away. So an end curls
+     * one way, or the other, or does not curl at all and finishes on a leaf
+     * instead — what it must not do is simply stop, which reads as a sawn end.
+     *
+     * A curl stops while its turns are still apart. A spiral run to its limit
+     * puts every remaining turn inside a millimetre, and an engraver asked to
+     * cut that burns a solid black eye.
      */
-    let tipDir = dir;
-    let tr = baseLen * 0.30;
-    const TIP_STEPS = 34;
-    for (let i = 0; i < TIP_STEPS; i++) {
-      tipDir += 0.22;
-      tr *= 0.955;
-      if (tr < baseLen * 0.055) break;
-      x += Math.cos(tipDir) * tr * 0.30;
-      y += Math.sin(tipDir) * tr * 0.30;
-      spine.push([x, y]);
-    }
-    strokes.push(spine);
-
-    const tangentAt = (i: number): number => {
-      const a = spine[Math.max(0, i - 1)];
-      const b = spine[Math.min(spine.length - 1, i + 1)];
-      return Math.atan2(b[1] - a[1], b[0] - a[0]);
+    const endFinish = (): { curl: number; rate: number; radius: number } => {
+      const roll = rnd();
+      return {
+        curl: roll < 0.22 ? 0 : roll < 0.68 ? 1 : -1,
+        rate: 0.19 + rnd() * 0.1,
+        radius: 0.2 + rnd() * 0.12,
+      };
     };
+
+    const tip = endFinish();
+    if (tip.curl) {
+      let tipDir = dir;
+      let tr = baseLen * tip.radius;
+      for (let i = 0; i < 34; i++) {
+        tipDir += tip.rate * tip.curl;
+        tr *= 0.95;
+        if (tr < baseLen * 0.05) break;
+        x += Math.cos(tipDir) * tr * 0.3;
+        y += Math.sin(tipDir) * tr * 0.3;
+        spine.push([x, y]);
+      }
+    }
+    const tail = endFinish();
+    if (tail.curl) {
+      let tx = 0;
+      let ty = 0;
+      // Walking backwards out of the start of the stem, so the curl grows away
+      // from the vine rather than back over it.
+      let td = -SWEEP / 2 + Math.PI;
+      let trr = baseLen * tail.radius * 0.6;
+      const back: Pt2[] = [];
+      for (let i = 0; i < 22; i++) {
+        td += tail.rate * tail.curl;
+        trr *= 0.94;
+        tx += Math.cos(td) * trr * 0.3;
+        ty += Math.sin(td) * trr * 0.3;
+        back.push([tx, ty]);
+      }
+      spine.unshift(...back.reverse());
+    }
+    const ends: Array<{ p: Pt2; dir: number }> = [];
+    if (!tip.curl) ends.push({ p: [x, y], dir });
+    if (!tail.curl) ends.push({ p: [0, 0], dir: -SWEEP / 2 + Math.PI });
+    strokes.push(spine);
 
     /*
      * A leaf: two cubics meeting at a point, with a shoulder near the base.
@@ -512,10 +556,11 @@ const foliage: OrnamentSpec = {
      * comes out a lozenge.
      */
     const addLeaf = (px: number, py: number, d0: number, size: number): void => {
+      if (!room(px + Math.cos(d0) * size * 0.5, py + Math.sin(d0) * size * 0.5, size * 0.42)) return;
       const tip: Pt2 = [px + Math.cos(d0) * size, py + Math.sin(d0) * size];
       const nx = Math.cos(d0 + Math.PI / 2);
       const ny = Math.sin(d0 + Math.PI / 2);
-      const belly = size * 0.46;
+      const belly = size * 0.42;
       const sh = size * 0.26;
       const base: Pt2 = [px, py];
       const side = (sgn: number): Pt2[] => sampleCubic(
@@ -532,48 +577,192 @@ const foliage: OrnamentSpec = {
       }
     };
 
+    // An end that did not curl finishes on a leaf, pointing the way the stem
+    // was going.
+    for (const e of ends) addLeaf(e.p[0], e.p[1], e.dir, leafSize * 0.9);
+
     /*
-     * A tendril: a logarithmic spiral springing off the vine and curling in.
+     * A scroll arm springing off the stem. Every one is drawn the same way —
+     * step forward, turn a little, shorten the step — because a constant turn
+     * with a geometrically shrinking step *is* a logarithmic spiral, the curve
+     * the Ionic volute and every carved rinceau after it are drawn on.
+     *
+     * What differs between arms is the *plan*: how much turning is spent, in
+     * how many bouts, and which way each bout goes. One plan for all of them
+     * gave a row of nautilus shells — every arm the same spiral at a different
+     * size, which is the tell of a generator rather than of a carver. Three
+     * plans, chosen per arm:
+     *
+     *   volute — the classic, all its turning in one hand, ending in a tight eye
+     *   ogee   — a counter-curve first, bending the other way, then the volute
+     *   shoot  — nearly straight, a long rise that only hooks at the end
+     *
+     * It hands back a lookup by fraction of its own LENGTH rather than of its
+     * point count: the steps shrink towards the eye, so the last third of the
+     * points are all eye, and leaves spaced by index all landed in the knot.
+     */
+    type ArmBout = { frac: number; turn: number };
+    const armPlan = (unfurl: number): { bouts: ArmBout[]; eye: number; spring: number } => {
+      const pick = rnd();
+      if (pick < 0.3) {
+        // A counter-curve out of the stem before the scroll takes hold. The
+        // reversal is what the eye reads as a line that was drawn rather than
+        // wound, and it is ordinary in carved work — the S is the other half
+        // of the vocabulary the C belongs to.
+        return {
+          bouts: [
+            { frac: 0.45, turn: -Math.PI * (0.22 + 0.2 * unfurl) },
+            { frac: 0.55, turn: Math.PI * (1 + 0.7 * unfurl) },
+          ],
+          eye: 0.16,
+          // Sprung steeper out of the stem than a plain volute needs to be:
+          // the counter-curve spends its first third bending back the way it
+          // came, and off a shallow spring that lands it in the stem.
+          spring: 0.95,
+        };
+      }
+      if (pick < 0.58) {
+        // A young shoot: it has barely started to curl. The eye is left open,
+        // because a shoot that shrinks to a point tapers away like a wisp
+        // instead of ending in the blunt hook a growing tip actually is.
+        return {
+          bouts: [
+            { frac: 0.75, turn: Math.PI * (0.12 + 0.18 * unfurl) },
+            { frac: 0.25, turn: Math.PI * (0.35 + 0.4 * unfurl) },
+          ],
+          eye: 0.5,
+          // Laid along the stem rather than thrown off it: a straight shoot
+          // sprung square stands up like a mast.
+          spring: 0.6,
+        };
+      }
+      // The full volute. How far it is wound varies too, and the eye tightens
+      // with the turning rather than being set apart from it.
+      return {
+        bouts: [{ frac: 1, turn: Math.PI * (0.9 + 1.05 * unfurl) }],
+        eye: 0.34 - 0.26 * unfurl,
+        spring: 0.75,
+      };
+    };
+
+    const scrollArm = (
+      px: number, py: number, dir0: number, len: number, hand: number, unfurl: number
+    ) => {
+      const N = 80;
+      const { bouts, eye, spring } = armPlan(unfurl);
+      const q = Math.exp(Math.log(eye) / N);
+      const s0 = (len * (1 - q)) / (1 - Math.pow(q, N));
+      const pts: Pt2[] = [[px, py]];
+      const run: number[] = [0];
+      // Which way the arm is bending at each point, so a leaf goes on the
+      // outside of the bend it grows from — on an ogee that side changes.
+      const bend: number[] = [Math.sign(bouts[0].turn) || 1];
+      let ax = px;
+      let ay = py;
+      // Each plan wants its own angle out of the stem; 0.75 is what the
+      // caller sprung it at.
+      let ad = dir0 + (spring - 0.75) * hand * (Math.PI / 2);
+      let s = s0;
+      let total = 0;
+      let bout = 0;
+      let boutEnd = bouts[0].frac * N;
+      let boutSteps = boutEnd;
+      for (let i = 0; i < N; i++) {
+        while (i >= boutEnd && bout < bouts.length - 1) {
+          bout++;
+          boutSteps = bouts[bout].frac * N;
+          boutEnd += boutSteps;
+        }
+        ad += (hand * bouts[bout].turn) / Math.max(1, boutSteps);
+        ax += Math.cos(ad) * s;
+        ay += Math.sin(ad) * s;
+        total += s;
+        s *= q;
+        pts.push([ax, ay]);
+        run.push(total);
+        bend.push(Math.sign(bouts[bout].turn) || 1);
+      }
+      strokes.push(pts);
+      const atLength = (f: number): number => {
+        const want = f * total;
+        let i = 1;
+        while (i < run.length - 2 && run[i] < want) i++;
+        return i;
+      };
+      return { pts, atLength, bend };
+    };
+
+    /*
+     * A tendril: a logarithmic spiral springing off the scroll and curling in.
      *
      * Logarithmic, not Archimedean — the turns have to tighten towards the eye
      * or it reads as a spring rather than as a shoot.
      */
-    const addTendril = (px: number, py: number, d0: number, size: number, hand: number): void => {
+    const addTendril = (px: number, py: number, d0: number, size: number, hand: number): boolean => {
       // Just over a turn, opened out. Two and a half turns at a tight decay
       // packs the inner ones into a dot, which on the panel is a dark speck
       // rather than a shoot.
-      const turns = 1.05 + rnd() * 0.45;
-      const b = 0.17;
-      const a = size / Math.exp(b * turns * Math.PI * 2);
+      const sweep = (1.05 + rnd() * 0.35) * Math.PI * 2;
+      const b = 0.2;
+      const a = size / Math.exp(b * sweep);
       const pts: Pt2[] = [];
-      for (let i = 0; i <= 70; i++) {
-        const th = (i / 70) * turns * Math.PI * 2;
-        const r = a * Math.exp(b * (turns * Math.PI * 2 - th));
+      for (let i = 0; i <= 56; i++) {
+        const th = (i / 56) * sweep;
+        const r = a * Math.exp(b * (sweep - th));
         const ang = d0 + hand * th;
-        pts.push([px + Math.cos(ang) * r, py + Math.sin(ang) * r]);
+        pts.push([Math.cos(ang) * r, Math.sin(ang) * r]);
       }
-      strokes.push(pts);
+      // A spiral drawn about a centre starts a radius away from it. Slide it so
+      // it starts on the stroke it springs from: a tendril left about its own
+      // centre floats beside the vine, reading as a stray mark.
+      const [sx, sy] = pts[0];
+      const placed = pts.map(([qx, qy]) => [px + qx - sx, py + qy - sy] as Pt2);
+      // The eye of the spiral is where it is densest, so that is what it
+      // claims: a tendril curling through a leaf is a knot at the machine.
+      const eye = placed[placed.length - 1];
+      if (!room(eye[0], eye[1], size * 0.38)) return false;
+      strokes.push(placed);
+      return true;
     };
 
-    const leafTotal = leafEvery * scrolls;
-    for (let n = 0; n < leafTotal; n++) {
-      const t = (n + 0.5) / leafTotal;
-      const idx = Math.round(t * (spine.length - 1));
-      const side = n % 2 === 0 ? 1 : -1;
-      const tan = tangentAt(idx);
-      // Leaves spring forward along the vine as well as out from it — square to
-      // the stem looks pinned on rather than grown.
-      addLeaf(spine[idx][0], spine[idx][1], tan + side * (Math.PI / 2) * 0.66,
-        leafSize * (1 - 0.45 * t) * (0.8 + rnd() * 0.4));
-    }
-
-    const tendrilTotal = tendrilsPer * scrolls;
-    for (let n = 0; n < tendrilTotal; n++) {
-      const t = (n + 0.5) / tendrilTotal;
-      const idx = Math.round(t * (spine.length - 1));
-      const side = n % 2 === 0 ? -1 : 1;
-      addTendril(spine[idx][0], spine[idx][1], tangentAt(idx) + side * (Math.PI / 2) * 0.8,
-        leafSize * (0.85 + rnd() * 0.6), side);
+    for (const at of attach) {
+      const hand = at.out;
+      const arm = scrollArm(
+        at.p[0], at.p[1],
+        at.tan + at.out * (Math.PI / 2) * 0.75,
+        baseLen * (1.65 + rnd() * 0.5) * at.scale,
+        hand,
+        rnd()
+      );
+      const tangentAt = (i: number): number =>
+        Math.atan2(arm.pts[i + 1][1] - arm.pts[i][1], arm.pts[i + 1][0] - arm.pts[i][0]);
+      for (let n = 0; n < leafEvery; n++) {
+        const f = 0.12 + ((n + 0.5) / Math.max(1, leafEvery)) * 0.72;
+        const i = arm.atLength(f);
+        // On the arm's outer flank, and leaning forward along it — square to
+        // the stem looks pinned on rather than grown.
+        addLeaf(arm.pts[i][0], arm.pts[i][1], tangentAt(i) - hand * arm.bend[i] * (Math.PI / 2) * 0.62,
+          leafSize * at.scale * (1 - 0.5 * f) * (0.85 + rnd() * 0.3));
+      }
+      /*
+       * Tendrils are not laid out on a grid the way the leaves are.
+       *
+       * They used to be, and with the leaves on their own even spacing the two
+       * rows lined up: every leaf had a tendril of the same size and the same
+       * hand facing it, all the way down the arm. So each one picks its own
+       * place, its own size and its own hand, and takes the disc that stops it
+       * landing on a leaf already there — trying a few places before giving up
+       * rather than drawing itself over one.
+       */
+      for (let n = 0; n < tendrilsPer; n++) {
+        const size = leafSize * (0.38 + rnd() * 0.45) * at.scale;
+        const curl = (rnd() < 0.3 ? 1 : -1) * hand * arm.bend[0];
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const i = arm.atLength(0.15 + rnd() * 0.62);
+          const out = -hand * arm.bend[i] * (Math.PI / 2) * (0.7 + rnd() * 0.5);
+          if (addTendril(arm.pts[i][0], arm.pts[i][1], tangentAt(i) + out, size, curl)) break;
+        }
+      }
     }
 
     // Fit everything to the region: the drawing decides its own proportions and
