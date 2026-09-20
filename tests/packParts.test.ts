@@ -47,6 +47,47 @@ describe('finding parts', () => {
     expect(parts).toHaveLength(1);
   });
 
+  /*
+   * Duplicating a part and dropping the copy on top of the original is how
+   * anyone makes six of something. Read as one part, the whole sheet welds into
+   * a lump and packing it does nothing you can see.
+   */
+  it('separates overlapping copies of one part', () => {
+    clearGeomBBoxCache();
+    const keychain = (n: string, x: number, y: number) => [
+      rect(`body${n}`, x, y, 70, 40),
+      rect(`text${n}`, x + 8, y + 8, 40, 10, { layerId: 'etch' }),
+    ];
+    const els = [...keychain('1', 10, 10), ...keychain('2', 22, 18), ...keychain('3', 34, 26)];
+    const parts = clusterParts(els);
+    expect(parts).toHaveLength(3);
+    // And each copy kept its own engraving rather than the neighbour's.
+    for (const part of parts) {
+      expect(part.ids).toHaveLength(2);
+      const suffix = part.ids.map((id) => id.slice(-1));
+      expect(suffix[0]).toBe(suffix[1]);
+    }
+  });
+
+  // A bracket drawn as two overlapping rectangles is one part, not two copies:
+  // the boxes are different sizes, which is what tells them apart.
+  it('keeps two differently sized overlapping shapes together', () => {
+    clearGeomBBoxCache();
+    const parts = clusterParts([rect('arm', 0, 0, 60, 15), rect('leg', 0, 0, 15, 50)]);
+    expect(parts).toHaveLength(1);
+  });
+
+  // An outline scored on one layer and cut on another is exactly coincident.
+  // Separating those would cut the part away from its own engraving.
+  it('keeps a scored and a cut copy of the same outline together', () => {
+    clearGeomBBoxCache();
+    const parts = clusterParts([
+      rect('score', 40, 40, 50, 30, { layerId: 'etch' }),
+      rect('cut', 40, 40, 50, 30),
+    ]);
+    expect(parts).toHaveLength(1);
+  });
+
   it('separates two parts that do not touch', () => {
     clearGeomBBoxCache();
     const parts = clusterParts([rect('a', 0, 0, 20, 20), rect('b', 100, 100, 20, 20)]);

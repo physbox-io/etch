@@ -9,10 +9,10 @@
  *
  * The unit is the **part**, not the element. A bracket is an outline, four
  * holes and a name engraved on it, and moving the outline without the holes is
- * not a rearrangement, it is a ruined part. Parts are found by geometry —
- * anything whose bed box touches or contains another's belongs with it — rather
- * than by layer, because an engraved name is on a different layer from the
- * outline it sits on and that is the whole point of layers.
+ * not a rearrangement, it is a ruined part. Parts are found by geometry — what
+ * sits inside an outline belongs to it — rather than by layer, because an
+ * engraved name is on a different layer from the outline it sits on and that is
+ * the whole point of layers.
  */
 import type { EtchDocument, EtchElement } from '../types/etch';
 import { getBedBBox, getLocalBBox, getPivotInBed } from './geom';
@@ -78,13 +78,61 @@ const touches = (a: PartBox, b: PartBox, slack: number) =>
   a.minX - slack <= b.maxX && b.minX - slack <= a.maxX &&
   a.minY - slack <= b.maxY && b.minY - slack <= a.maxY;
 
+const area = (b: PartBox) => Math.max(0, b.maxX - b.minX) * Math.max(0, b.maxY - b.minY);
+
+/** How much of `b` falls inside `a`, 0..1. */
+function coverage(a: PartBox, b: PartBox): number {
+  const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+  const oy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+  if (ox <= 0 || oy <= 0) return 0;
+  const ab = area(b);
+  return ab > 1e-9 ? (ox * oy) / ab : 0;
+}
+
+/**
+ * Two boxes that are copies of one thing rather than two pieces of one part.
+ *
+ * Duplicating a part and dropping the copy over the original is how anyone
+ * makes six of something, and every copy then overlaps its neighbours. Read as
+ * "these touch, so they are one part", the whole sheet welds into a single lump
+ * and packing it moves that lump one place and reports one part — which looks
+ * exactly like the button doing nothing, and is what it did.
+ *
+ * The tell is that copies are the *same size*. Two pieces of one part are a
+ * plate and a tab, or a bracket drawn as two rectangles: different boxes that
+ * happen to meet. Same width, same height, and clearly offset from each other
+ * is a copy, and no arrangement of one part looks like that.
+ *
+ * Stacked in the same place is deliberately not a copy: an outline scored on
+ * one layer and cut on another is exactly coincident, and separating those onto
+ * different parts of the sheet would cut the part away from its own engraving.
+ */
+function looksLikeCopies(a: PartBox, b: PartBox): boolean {
+  const sameSize = (p: number, q: number) => Math.abs(p - q) <= Math.max(0.5, Math.max(p, q) * 0.02);
+  if (!sameSize(a.maxX - a.minX, b.maxX - b.minX)) return false;
+  if (!sameSize(a.maxY - a.minY, b.maxY - b.minY)) return false;
+  const cover = Math.max(coverage(a, b), coverage(b, a));
+  return cover > 0 && cover < 0.95;
+}
+
 /**
  * Groups elements into the parts they make up.
  *
- * Transitively: an outline, a hole inside it and a label on the hole are one
- * part even though the label never touches the outline. The slack is a hair
- * rather than zero so a label drawn a hundredth of a millimetre clear of the
- * shape it belongs to is not orphaned onto the far side of the sheet.
+ * Two passes, and the order is what stops a sheet of copies welding together.
+ *
+ * First **containment**: everything joins the smallest box that encloses it, so
+ * a hole and an engraved label go with the outline they sit inside and with
+ * nothing else. Done by touching instead, a label inside one copy of a keychain
+ * also overlaps the copy next to it, and that one link chains every part on the
+ * sheet into one.
+ *
+ * Then **touching**, between the outlines that nothing encloses: a bracket drawn
+ * as two overlapping rectangles is one part, and a tab that sticks out past the
+ * plate is still part of the plate. Copies are excluded here — see above.
+ *
+ * The slack is a hair rather than zero so a label drawn a hundredth of a
+ * millimetre proud of the shape it belongs to is not orphaned onto the far side
+ * of the sheet.
  */
 export function clusterParts(elements: EtchElement[], slack = 0.5): Part[] {
   const items = elements
@@ -97,12 +145,55 @@ export function clusterParts(elements: EtchElement[], slack = 0.5): Part[] {
       };
     });
 
-  // Union-find over overlapping boxes.
   const parent = items.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const union = (i: number, j: number) => {
+    parent[find(i)] = find(j);
+  };
+
+  const encloses = (a: PartBox, b: PartBox) =>
+    a.minX - slack <= b.minX && a.maxX + slack >= b.maxX &&
+    a.minY - slack <= b.minY && a.maxY + slack >= b.maxY;
+
+  /*
+   * Pass one: the smallest strictly larger box that encloses this one. Strictly
+   * larger, or two coincident outlines each claim the other and the tie is
+   * decided by loop order.
+   *
+   * A label in the overlap of two copies is enclosed by both, and geometry has
+   * no answer — the boxes are identical. Z-order does: the pieces of one part
+   * are made, copied and pasted together, so they sit next to each other in the
+   * element list, and the nearer neighbour is the copy this label was made with.
+   */
+  const container: Array<number | null> = items.map(() => null);
   for (let i = 0; i < items.length; i++) {
+    let best: number | null = null;
+    for (let j = 0; j < items.length; j++) {
+      if (i === j) continue;
+      if (area(items[j].box) <= area(items[i].box) * 1.001) continue;
+      if (!encloses(items[j].box, items[i].box)) continue;
+      if (best === null) {
+        best = j;
+        continue;
+      }
+      const da = area(items[j].box) - area(items[best].box);
+      if (da < -1e-6) best = j;
+      else if (da < 1e-6 && Math.abs(j - i) < Math.abs(best - i)) best = j;
+    }
+    container[i] = best;
+  }
+  for (let i = 0; i < items.length; i++) {
+    if (container[i] !== null) union(i, container[i]!);
+  }
+
+  // Pass two: the outlines nothing encloses, joined where they meet.
+  for (let i = 0; i < items.length; i++) {
+    if (container[i] !== null) continue;
     for (let j = i + 1; j < items.length; j++) {
-      if (touches(items[i].box, items[j].box, slack)) parent[find(i)] = find(j);
+      if (container[j] !== null) continue;
+      if (!touches(items[i].box, items[j].box, slack)) continue;
+      if (looksLikeCopies(items[i].box, items[j].box)) continue;
+      union(i, j);
     }
   }
 
