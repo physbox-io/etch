@@ -83,11 +83,9 @@ describe('where the holes go', () => {
     expect(plan.notes.join(' ')).toContain('does not fit');
   });
 
-  it('says what two holes cannot do', () => {
+  it('places exactly the number of holes asked for', () => {
     const doc = sheet();
-    const plan = planRegistration(doc, { ...defaultRegistration(doc), count: 2 });
-    expect(plan.holes).toHaveLength(2);
-    expect(plan.notes.join(' ')).toContain('end for end');
+    expect(planRegistration(doc, { ...defaultRegistration(doc), count: 2 }).holes).toHaveLength(2);
   });
 
   it('names artwork the holes would be cut through', () => {

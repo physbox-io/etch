@@ -303,6 +303,12 @@ All **Documented**, from the GRBL v1.1 documentation (`gnea/grbl` wiki):
   power with velocity.
 - Spindle *state* changes (`M3`/`M5`) do sync the planner — which is why the
   overscan path never toggles them mid-fill.
+- `G38.2` stops only when the probe input closes, and alarms (ALARM:5) if the
+  search runs out first; the status report lists `P` in `Pn:` while the input
+  is closed. So the circuit is proved by hand (seen closed once, and open now)
+  before any probe, and `ZERO_SEARCH_MM = 10` bounds what an unproved circuit
+  could cost — the tool is parked a few mm above the plate, so 10 covers it.
+  (`webSerialManager.ts`) **Judgement** on the 10.
 
 ## 10. Generated patterns
 
@@ -313,19 +319,22 @@ folds or snaps, and none of them has been cut in anger yet.
 
 | Value | Where | Basis | Source |
 |---|---|---|---|
-| `MIN_BRIDGE_MM = 1.2` | `livingHinge.ts` | The torsion beam between two slits in a row. Thinner bends more easily and breaks sooner — in ply it is short grain, in acrylic a stress riser. | **Judgement** |
 | `MIN_ROWS = 3` | `livingHinge.ts` | The bend is shared between the rows. With one or two, all of it lands on a handful of beams and they tear. | **Judgement** |
 | `MIN_SLIT_KERF_MM = 0.15` | `livingHinge.ts` | A cut narrower than the beam or bit is not a cut. Fragments below this are dropped rather than emitted as dots. | **Derived** |
 | Alternate rows offset half a period | `livingHinge.ts` | Rows in phase leave continuous uncut lines straight across the hinge, and it does not bend at all. | **Derived** |
 | No slit within one beam width of the region edge | `livingHinge.ts` | A slit that reaches the edge is a split, and the panel tears along it on the first fold. | **Derived** |
 | Minimum bend radius = 2W / π for a right angle | `livingHinge.ts` | The width across the hinge becomes the arc: a 90° bend of radius r consumes r·π/2 of it. | **Derived** |
-| Warn when row pitch < stock thickness | `livingHinge.ts` | Beams deeper than they are wide twist badly rather than evenly. A pitch of about the thickness or more is what bends cleanly. | **Judgement** |
 | Hinge layer is `cutSide: 'on'`, `tabs: false` | `livingHinge.ts` | A slit is an open cut with no inside to offset towards; offsetting makes every beam a kerf wider on one side and narrower on the other. A tab across a slit is a beam that was meant to be cut. | **Derived** |
-| `MIN_WEB_MM = 1` | `perforation.ts` | The material left between two neighbouring holes. Below this it tears out as the cutter passes and the grille becomes a hole. | **Judgement** |
+| Resize re-plans the field rather than scaling it | `generatedField.ts`, `livingHinge.ts`, `perforation.ts` | A hinge and a grille are a spacing rule over a region, not a shape. Scaled, the beam width and the pitch scale with the box, so the field no longer matches the spec it was generated from — and nothing on screen shows it. Dragging a corner changes how many slits or holes fit, never how big they are. | **Derived** |
 | Hex lattice by default | `perforation.ts` | At one pitch a staggered lattice leaves a wider web than a square one for the same open area — the stronger panel for the same air. | **Derived** |
-| Warn past 60% open area | `perforation.ts` | Past roughly this the sheet stops behaving like one: it flexes, and it moves as it is cut. The figure is a judgement, the effect is not. | **Judgement** |
 | Perforation layer is `cutSide: 'inside'` | `perforation.ts` | A closed shape with nothing enclosing it reads to the planner as a disc to be cut out, so the tool would be driven round the outside and every hole would come out a full tool-width oversize. | **Derived** |
-| Warn when hole diameter < stock thickness on a router | `perforation.ts` | A hole deeper than it is wide needs a cutter that fits and a pecking cycle rather than a straight plunge. | **Published** (standard practice for deep-hole drilling in wood and plastics) |
+
+The four ornament generators — guilloche, maze, animal print and vine
+scrollwork — introduce no numbers of their own that reach material. They draw
+onto a layer and that layer's speed, power and depth decide what happens, the
+same as any other artwork. The one thing worth knowing is not a constant: an
+animal print defaults to a **cut** layer, so the markings drop out of the panel.
+That is what a cut-out coat is, and the dialog and the MCP tool both say it.
 
 ---
 

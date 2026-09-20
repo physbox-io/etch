@@ -145,14 +145,6 @@ export function planRegistration(
     );
   }
 
-  if (opts.count === 2) {
-    notes.push(
-      `Two holes on the diagonal stop a sheet going in rotated a quarter turn or flipped, but not ` +
-        `turned end for end — the pattern looks the same upside down. Three holes cannot be put in ` +
-        `wrong at all.`
-    );
-  }
-
   // A hole through the picture is worse than no hole: it is cut, it is in the
   // work, and it cannot be taken back out of the material.
   const clashes = new Set<string>();
