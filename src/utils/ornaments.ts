@@ -381,7 +381,7 @@ const foliage: OrnamentSpec = {
   operation: 'etch',
   defaults: {
     scrolls: 4, leafEvery: 3, leafSizeMm: 15, tendrils: 1,
-    stemWidthMm: 1.2, midrib: 'on', symmetry: 'none', seed: 1,
+    stemWidthMm: 1.2, spread: 0.75, midrib: 'on', symmetry: 'none', seed: 1,
   },
   fields: [
     { kind: 'number', key: 'scrolls', label: 'Scrolls', min: 2, max: 14, step: 1,
@@ -390,8 +390,10 @@ const foliage: OrnamentSpec = {
     { kind: 'number', key: 'leafSizeMm', label: 'Leaf size', min: 1, max: 80, step: 0.5, unit: 'mm' },
     { kind: 'number', key: 'tendrils', label: 'Tendrils per scroll', min: 0, max: 6, step: 1,
       hint: 'Curling shoots springing off the scroll. Most of what makes it read as ornament rather than as a plant.' },
-    { kind: 'number', key: 'stemWidthMm', label: 'Stem width', min: 0, max: 6, step: 0.1, unit: 'mm',
-      hint: 'The stem and its scrolls are drawn as a tapering outline of this width. Zero draws them as a single hairline instead. Set the layer to fill to flood the stem solid.' },
+    { kind: 'number', key: 'stemWidthMm', label: 'Double line', min: 0, max: 6, step: 0.1, unit: 'mm',
+      hint: 'A second line run alongside the stem at this distance, closing on it towards each tip. Zero leaves the stem a single line. This is the drawn gap, not the engraved line weight — that is the stroke width in the sidebar.' },
+    { kind: 'number', key: 'spread', label: 'Scroll angle', min: 0, max: 1.2, step: 0.05,
+      hint: 'How far off the stem the scrolls spring. Low lays them along it for a long low band; 1 throws them square to it, and past that they lean back the way the vine came.' },
     { kind: 'choice', key: 'midrib', label: 'Leaf detail', options: [
       { value: 'on', label: 'Midrib' },
       { value: 'off', label: 'Plain' },
@@ -407,7 +409,8 @@ const foliage: OrnamentSpec = {
     const leafEvery = Math.max(0, Math.round(num(opts, 'leafEvery', 3)));
     const leafSize = Math.max(0.5, num(opts, 'leafSizeMm', 15));
     const tendrilsPer = Math.max(0, Math.round(num(opts, 'tendrils', 1)));
-    const stemWidth = Math.max(0, num(opts, 'stemWidthMm', 1.2));
+    const doubleGap = Math.max(0, num(opts, 'stemWidthMm', 1.2));
+    const spread = Math.max(0, num(opts, 'spread', 0.75));
     const midrib = str(opts, 'midrib', 'on') === 'on';
     const mirrored = str(opts, 'symmetry', 'none') === 'mirror';
     const seed = Math.round(num(opts, 'seed', 1));
@@ -427,8 +430,8 @@ const foliage: OrnamentSpec = {
     const strokes: Pt2[][] = [];
     /*
      * The stem and its scrolls are held back as centrelines with a weight
-     * each, and turned into outlines only once the fit to the region is
-     * known: a stem width is asked for in millimetres, and until the scale
+     * each, and doubled only once the fit to the region is known: the gap
+     * between the two lines is asked for in millimetres, and until the scale
      * is settled a millimetre is not a distance in this space.
      */
     const vine: Array<{ pts: Pt2[]; w0: number; w1: number }> = [];
@@ -542,8 +545,8 @@ const foliage: OrnamentSpec = {
     const ends: Array<{ p: Pt2; dir: number }> = [];
     if (!tip.curl) ends.push({ p: [x, y], dir });
     if (!tail.curl) ends.push({ p: [0, 0], dir: -SWEEP / 2 + Math.PI });
-    // Thickest at the root and thinning along its length, the way a stem
-    // grows and the way every carved one is cut.
+    // Widest at the root and narrowing along its length, the way a stem grows
+    // and the way every carved one is cut.
     vine.push({ pts: spine, w0: 1, w1: 0.32 });
 
     /*
@@ -642,7 +645,7 @@ const foliage: OrnamentSpec = {
           // Sprung steeper out of the stem than a plain volute needs to be:
           // the counter-curve spends its first third bending back the way it
           // came, and off a shallow spring that lands it in the stem.
-          spring: 0.95,
+          spring: 1.27,
         };
       }
       if (pick < 0.58) {
@@ -657,7 +660,7 @@ const foliage: OrnamentSpec = {
           eye: 0.5,
           // Laid along the stem rather than thrown off it: a straight shoot
           // sprung square stands up like a mast.
-          spring: 0.6,
+          spring: 0.8,
         };
       }
       // The full volute. How far it is wound varies too, and the eye tightens
@@ -665,7 +668,7 @@ const foliage: OrnamentSpec = {
       return {
         bouts: [{ frac: 1, turn: Math.PI * (0.9 + 1.05 * unfurl) }],
         eye: 0.34 - 0.26 * unfurl,
-        spring: 0.75,
+        spring: 1,
       };
     };
 
@@ -683,9 +686,10 @@ const foliage: OrnamentSpec = {
       const bend: number[] = [Math.sign(bouts[0].turn) || 1];
       let ax = px;
       let ay = py;
-      // Each plan wants its own angle out of the stem; 0.75 is what the
-      // caller sprung it at.
-      let ad = dir0 + (spring - 0.75) * hand * (Math.PI / 2);
+      // Square to the stem is the whole of `spread`; each plan leans its own
+      // way off that, because an ogee needs room for its counter-curve and a
+      // straight shoot sprung square stands up like a mast.
+      let ad = dir0 + hand * (Math.PI / 2) * spread * spring;
       let s = s0;
       let total = 0;
       let bout = 0;
@@ -706,10 +710,8 @@ const foliage: OrnamentSpec = {
         run.push(total);
         bend.push(Math.sign(bouts[bout].turn) || 1);
       }
-      // An arm leaves the stem thinner than the stem is and all but vanishes
-      // at the eye. That is not only how it grows: an outline wider than the
-      // curl it is drawn round crosses itself, and the eye is the tightest
-      // curvature in the whole drawing.
+      // An arm leaves the stem narrower than the stem is and closes to a
+      // single line before the eye.
       vine.push({ pts, w0: 0.68, w1: 0.1 });
       const atLength = (f: number): number => {
         const want = f * total;
@@ -757,7 +759,7 @@ const foliage: OrnamentSpec = {
       const hand = at.out;
       const arm = scrollArm(
         at.p[0], at.p[1],
-        at.tan + at.out * (Math.PI / 2) * 0.75,
+        at.tan,
         baseLen * (1.65 + rnd() * 0.5) * at.scale,
         hand,
         rnd()
@@ -797,12 +799,12 @@ const foliage: OrnamentSpec = {
      * Fit everything to the region: the drawing decides its own proportions
      * and the panel decides its size.
      *
-     * Twice over, because the stem width is a figure in millimetres and the
-     * scale is what turns it into a distance here. The first fit is measured
-     * on the centrelines, the outlines are built at that scale, and the second
-     * fit takes in the half-width the outlines added. The two differ by that
-     * half-width, so the stem comes out a hair under the width asked for
-     * rather than the drawing coming out a hair over the region.
+     * Twice over, because the gap between the stem's two lines is a figure in
+     * millimetres and the scale is what turns it into a distance here. The
+     * first fit is measured on the centrelines, the second line is run at that
+     * scale, and the second fit takes in the width it added. The two differ by
+     * that gap, so the stem comes out a hair under the gap asked for rather
+     * than the drawing coming out a hair over the region.
      */
     const fit = (): { k: number; offX: number; offY: number } => {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -824,29 +826,54 @@ const foliage: OrnamentSpec = {
       };
     };
 
-    /** A centreline to a closed outline, the half-width tapering along it. */
-    const thicken = (pts: Pt2[], hw0: number, hw1: number): Pt2[] => {
+    /*
+     * A second line run alongside the stem, the way a pen draws a stem: not a
+     * closed outline, just a companion that keeps roughly the same distance,
+     * wanders a little, and closes onto the line as it nears the tip.
+     *
+     * It was an outline first — two exact offsets joined round the ends —
+     * which drew a hollow ribbon rather than a stem, and made the engraved
+     * line weight look like it belonged to the ornament when it belongs to
+     * the layer. It also stops where the curl gets tighter than the gap it is
+     * holding: past that the companion has to cross itself, and an eye is the
+     * tightest curvature in the drawing.
+     */
+    const companion = (pts: Pt2[], g0: number, g1: number, phase: number): Pt2[] => {
       const n = pts.length;
-      const left: Pt2[] = [];
-      const right: Pt2[] = [];
-      for (let i = 0; i < n; i++) {
-        const prev = pts[Math.max(0, i - 1)];
-        const next = pts[Math.min(n - 1, i + 1)];
+      const out: Pt2[] = [];
+      for (let i = 1; i < n - 1; i++) {
+        const t = i / (n - 1);
+        const prev = pts[i - 1];
+        const next = pts[i + 1];
         const tx = next[0] - prev[0];
         const ty = next[1] - prev[1];
         const m = Math.hypot(tx, ty) || 1;
-        const hw = hw0 + (hw1 - hw0) * (i / (n - 1));
-        left.push([pts[i][0] + (-ty / m) * hw, pts[i][1] + (tx / m) * hw]);
-        right.push([pts[i][0] - (-ty / m) * hw, pts[i][1] - (tx / m) * hw]);
+        // Local radius: how far the heading swings over how far it travels.
+        const d0 = Math.atan2(pts[i][1] - prev[1], pts[i][0] - prev[0]);
+        const d1 = Math.atan2(next[1] - pts[i][1], next[0] - pts[i][0]);
+        let dth = d1 - d0;
+        while (dth > Math.PI) dth -= Math.PI * 2;
+        while (dth < -Math.PI) dth += Math.PI * 2;
+        const radius = Math.abs(dth) > 1e-6 ? m / 2 / Math.abs(dth) : Infinity;
+        let g = g0 + (g1 - g0) * t;
+        // Hand-drawn, not offset: the gap breathes along the length.
+        g *= 1 + 0.16 * Math.sin(phase * 6.283 + t * 9);
+        // Closing onto the line near the tip, and left open at the root — a
+        // line that converges at both ends is an outline again.
+        if (t > 0.8) g *= (1 - t) / 0.2;
+        if (radius < g * 3) break;
+        out.push([pts[i][0] + (-ty / m) * g, pts[i][1] + (tx / m) * g]);
       }
-      return [...left, ...right.reverse(), left[0]];
+      return out;
     };
 
-    if (stemWidth > 0) {
-      const hw = stemWidth / 2 / Math.max(1e-6, fit().k);
-      for (const v of vine) strokes.push(thicken(v.pts, hw * v.w0, hw * v.w1));
-    } else {
-      for (const v of vine) strokes.push(v.pts);
+    for (const v of vine) strokes.push(v.pts);
+    if (doubleGap > 0) {
+      const g = doubleGap / Math.max(1e-6, fit().k);
+      for (const v of vine) {
+        const alongside = companion(v.pts, g * v.w0, g * v.w1, rnd());
+        if (alongside.length > 3) strokes.push(alongside);
+      }
     }
     vine.length = 0;
 
