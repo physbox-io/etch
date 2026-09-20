@@ -108,7 +108,10 @@ What the app already has, so you do not draw from scratch what it can place:
   These are decoration rather than mechanism, so reach for them when the user
   wants a panel to look like something rather than to do something. An animal
   print lands on a CUT layer, so its markings are cut out of the panel; move it
-  to Etch if the piece has to stay in one piece.
+  to Etch if the piece has to stay in one piece. The vine takes an alongPath
+  option holding the id of something already on the sheet, and then grows along
+  it the way text follows a path — a border, an arc, a letter — instead of
+  filling the region it was given.
 - A material test grid generator, under Generators in the preset dropdown. When
   the user asks what speed or power to use on a material the app cannot pin
   down — an unlabelled sheet, a tube that has aged — point them at it rather

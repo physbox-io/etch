@@ -151,6 +151,96 @@ describe('guilloche', () => {
     };
     expect(spread(0.6)).toBeGreaterThan(spread(0.15));
   });
+
+  /*
+   * Turns drew nothing for a long time: a whole number of lobes per revolution
+   * retraces the same closed curve, so the second lap and every one after it
+   * landed exactly on the first — the same geometry, burnt twice over. The
+   * petal frequency carries the turn count now, which is what makes the laps
+   * interleave, so the guard is that the figure actually changes.
+   */
+  it('weaves a different figure at every turn count, in every figure it draws', () => {
+    for (const figure of ['rosette', 'spiro', 'band']) {
+      const drawn = [1, 2, 3, 5].map((turns) =>
+        spec.build(region, { ...spec.defaults, figure, turns })
+      );
+      expect(new Set(drawn).size, figure).toBe(drawn.length);
+      for (const d of drawn) {
+        expect(d.length, figure).toBeGreaterThan(50);
+        expect(d, figure).not.toMatch(/NaN|Infinity/);
+      }
+    }
+  });
+
+  it('keeps every figure inside the region whatever it is asked for', () => {
+    for (const figure of ['rosette', 'spiro', 'band']) {
+      for (const depth of [0.05, 0.42, 0.9]) {
+        const d = spec.build(region, { ...spec.defaults, figure, depth, turns: 4, ripple: 1, rings: 5 });
+        for (const m of [...d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)]) {
+          expect(Number(m[1]), `${figure} ${depth}`).toBeGreaterThanOrEqual(-1);
+          expect(Number(m[1]), `${figure} ${depth}`).toBeLessThanOrEqual(region.width + 1);
+          expect(Number(m[2]), `${figure} ${depth}`).toBeGreaterThanOrEqual(-1);
+          expect(Number(m[2]), `${figure} ${depth}`).toBeLessThanOrEqual(region.height + 1);
+        }
+      }
+    }
+  });
+
+  it('draws the laps once when the lobes and turns close early', () => {
+    // Six lobes over three turns is two lobes over one: the same figure, and
+    // drawing three laps of it would put three burns on one line.
+    const short = spec.build(region, { ...spec.defaults, rings: 1, lobes: 6, turns: 3 });
+    const once = spec.build(region, { ...spec.defaults, rings: 1, lobes: 2, turns: 1 });
+    expect(short).toBe(once);
+  });
+});
+
+/*
+ * A vine laid along something already drawn, the way text is laid along a
+ * path. What it must do is follow that line rather than the region: the region
+ * stops being an input at all and becomes a report of where the drawing landed.
+ */
+describe('vines on a path', () => {
+  const spec = ornamentById('foliage')!;
+  const line = {
+    id: 'guide', name: 'Guide', type: 'line', layerId: 'cut',
+    x: 40, y: 120, x2: 220, y2: 0, rotation: 0, scaleX: 1, scaleY: 1,
+    opacity: 1, strokeWidth: 0.4, visible: true, locked: false,
+  };
+  const doc = () => base({ elements: [{ ...line }] as never });
+
+  it('grows along the chosen element instead of filling the region', () => {
+    const plan = planOrnament(doc(), spec, region, { ...spec.defaults, alongPath: 'guide' });
+    expect(plan.fits).toBe(true);
+    // The stem lies on the line, so the drawing has to reach both of its ends.
+    const el = plan.elements[0];
+    const pts = [...el.d!.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)]
+      .map((m) => [plan.region.x + Number(m[1]), plan.region.y + Number(m[2])] as [number, number]);
+    const near = (x: number, y: number) =>
+      pts.some(([px, py]) => Math.hypot(px - x, py - y) < 2);
+    expect(near(40, 120)).toBe(true);
+    expect(near(260, 120)).toBe(true);
+  });
+
+  it('reports the region it needed rather than the one it was handed', () => {
+    const plan = planOrnament(doc(), spec, region, { ...spec.defaults, alongPath: 'guide' });
+    expect(plan.region).not.toEqual(region);
+    expect(plan.elements[0].x).toBeCloseTo(plan.region.x);
+    expect(plan.elements[0].y).toBeCloseTo(plan.region.y);
+  });
+
+  it('falls back to the region, and says so, when the path has gone', () => {
+    const plan = planOrnament(base(), spec, region, { ...spec.defaults, alongPath: 'gone' });
+    expect(plan.fits).toBe(true);
+    expect(plan.region).toEqual(region);
+    expect(plan.notes.join(' ')).toMatch(/no longer on the sheet/);
+  });
+
+  it('draws the same vine twice for the same path and seed', () => {
+    const opts = { ...spec.defaults, alongPath: 'guide' };
+    expect(planOrnament(doc(), spec, region, opts, undefined, 1).elements[0].d)
+      .toBe(planOrnament(doc(), spec, region, opts, undefined, 1).elements[0].d);
+  });
 });
 
 describe('planOrnament', () => {

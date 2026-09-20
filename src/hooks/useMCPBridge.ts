@@ -870,7 +870,15 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
             error: `${spec.id} has no option "${k}". It takes: ${spec.fields.map((f) => f.key).join(', ')}`,
           };
         }
-        if (field.kind === 'choice') {
+        if (field.kind === 'path') {
+          // An element id, not a number. Empty means "no path", which is how
+          // an agent takes a vine back off the shape it was following.
+          const id = String(v);
+          if (id && !doc.elements.some((el) => el.id === id)) {
+            return { ok: false, error: `${k} must be the id of an element on this sheet` };
+          }
+          opts[k] = id;
+        } else if (field.kind === 'choice') {
           const allowed = field.options.map((o) => o.value);
           if (!allowed.includes(String(v))) {
             return { ok: false, error: `${k} must be one of: ${allowed.join(', ')}` };

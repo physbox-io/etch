@@ -445,6 +445,7 @@ interface EtchStore {
   /** Dissolves an object. Its elements stay exactly where they are. */
   ungroupSelected: (objectId: string) => void;
   renameObject: (objectId: string, name: string) => void;
+  setObjectVisible: (objectId: string, visible: boolean) => void;
   /** Selects everything in an object, which is what clicking its row does. */
   selectObject: (objectId: string) => void;
   centerSelected: (axis: 'horizontal' | 'vertical') => void;
@@ -1872,6 +1873,28 @@ export const useStore = create<EtchStore>((set, get) => ({
     // Transient, like every other text field: one undo entry per rename, not
     // one per keystroke. The panel commits on blur.
     set({ document: { ...document, objects } });
+  },
+
+  /**
+   * Hide or show everything in an object at once.
+   *
+   * It writes each member's own `visible` rather than putting a flag on the
+   * object, because that flag is what the canvas and the planner already read:
+   * an object-level one would be a second source of truth, and a hidden object
+   * whose elements still said `visible: true` would be drawn on the material
+   * while being invisible on screen — which is the one direction of that bug
+   * that costs a sheet of ply.
+   */
+  setObjectVisible: (objectId, visible) => {
+    const { document } = get();
+    if (!document.elements.some((el) => el.objectId === objectId)) return;
+    set({
+      document: {
+        ...document,
+        elements: document.elements.map((el) => (el.objectId === objectId ? { ...el, visible } : el)),
+      },
+    });
+    get().commitHistory();
   },
 
   selectObject: (objectId) => {

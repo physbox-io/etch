@@ -1,6 +1,7 @@
 import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
 import { machineKind, suggestTool, type ToolProfile } from './tooling';
 import { traceBinaryGrid } from './imageProcessor';
+import { extractElementContours } from './elementContours';
 
 /**
  * Ornament generators: the decorative half of the Generators menu.
@@ -20,6 +21,12 @@ import { traceBinaryGrid } from './imageProcessor';
 export type OrnamentField =
   | { kind: 'number'; key: string; label: string; min: number; max: number; step: number; unit?: string; hint?: string }
   | { kind: 'choice'; key: string; label: string; options: Array<{ value: string; label: string }>; hint?: string }
+  /**
+   * An element already on the sheet, for an ornament that is laid along
+   * something the operator drew. The dialog fills the options from the
+   * document; the value is an element id, or empty for "no path".
+   */
+  | { kind: 'path'; key: string; label: string; hint?: string }
   | { kind: 'seed'; key: string; label: string; hint?: string };
 
 export type OrnamentOptions = Record<string, number | string>;
@@ -29,6 +36,20 @@ export interface OrnamentRegion {
   y: number;
   width: number;
   height: number;
+}
+
+/**
+ * What the dialog resolved out of the document for this build.
+ *
+ * `build` is otherwise a pure function of a box and a bag of numbers, which is
+ * what makes every ornament testable without a document. A path field is the
+ * one thing that needs more, so it arrives already sampled: the spec never
+ * looks an element up, and nothing here has to know how a rounded rect or a
+ * traced photograph is turned into points.
+ */
+export interface OrnamentContext {
+  /** The chosen path, sampled into region-local millimetres. */
+  spine?: Pt2[];
 }
 
 export interface OrnamentSpec {
@@ -44,7 +65,7 @@ export interface OrnamentSpec {
    * Draw it. Returns SVG path data relative to the region's top-left corner,
    * or an empty string when the settings produce nothing.
    */
-  build(region: OrnamentRegion, opts: OrnamentOptions): string;
+  build(region: OrnamentRegion, opts: OrnamentOptions, ctx?: OrnamentContext): string;
 }
 
 const num = (o: OrnamentOptions, k: string, d: number): number => {
@@ -90,6 +111,51 @@ export function clampPathToRegion(d: string, width: number, height: number): str
   );
 }
 
+type Pt2 = [number, number];
+
+/** How far a polyline runs, end to end. */
+function polylineLength(pts: Pt2[]): number {
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  return total;
+}
+
+/**
+ * Re-space a polyline evenly along its own length.
+ *
+ * A drawn path arrives sampled however it was flattened — dense round the
+ * curves, sparse down the straights — and everything hung off a stem here is
+ * placed by index. Without this, the scrolls all pile into the corners.
+ */
+function resampleEvenly(pts: Pt2[], count: number): Pt2[] {
+  const total = polylineLength(pts);
+  if (!(total > 0)) return pts.slice();
+  const step = total / (count - 1);
+  const out: Pt2[] = [pts[0]];
+  let i = 1;
+  let carried = 0;
+  for (let n = 1; n < count; n++) {
+    let want = step;
+    while (i < pts.length) {
+      const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) - carried;
+      if (seg >= want) {
+        const t = (carried + want) / Math.max(1e-9, Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+        out.push([
+          pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t,
+          pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+        ]);
+        carried += want;
+        break;
+      }
+      want -= seg;
+      carried = 0;
+      i++;
+    }
+    if (i >= pts.length) out.push(pts[pts.length - 1]);
+  }
+  return out;
+}
+
 /** Points to one open polyline. */
 function polyline(pts: Array<[number, number]>): string {
   if (pts.length < 2) return '';
@@ -99,37 +165,81 @@ function polyline(pts: Array<[number, number]>): string {
 
 // --- Guilloche --------------------------------------------------------------
 
+/**
+ * Engine turning: a line whose distance from the centre swings as it goes
+ * round, the way a rose engine's rocking chuck makes it swing.
+ *
+ * `turns` used to do nothing, and it is worth saying why, because the fix is
+ * the whole idea of the pattern. The radius was `cos(lobes · t)` and the sweep
+ * was `2π · turns`: a whole number of lobes per revolution retraces the same
+ * closed curve on the second lap and every one after it, so ten turns drew one
+ * ring ten times over — identical geometry, and on a laser ten burns of it. The
+ * petal frequency is `lobes / turns` now, so the pattern only closes after that
+ * many revolutions and each lap lands between the last two. That interleaving
+ * *is* what a guilloche is; a single lap is the degenerate case.
+ */
+
+/** Reduce a ratio, so a lobe/turn pair that closes early is drawn once. */
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+
 const guilloche: OrnamentSpec = {
   id: 'guilloche',
   label: 'Guilloche',
   blurb: 'The engine-turned rosette from a banknote or a watch dial, drawn as one continuous line.',
   operation: 'etch',
-  defaults: { rings: 3, lobes: 7, depth: 0.42, turns: 1, spacing: 6 },
+  defaults: { figure: 'rosette', rings: 3, lobes: 7, depth: 0.42, turns: 1, ripple: 0, spacing: 6 },
   fields: [
+    { kind: 'choice', key: 'figure', label: 'Figure', options: [
+      { value: 'rosette', label: 'Rosette' },
+      { value: 'spiro', label: 'Spirograph' },
+      { value: 'band', label: 'Woven band' },
+    ], hint: 'A rosette is the watch-dial flower. A spirograph is the looping figure a pin in a rolling wheel draws — the same maths a rose engine cuts. A band is the same weave run along a border instead of around a centre.' },
     { kind: 'number', key: 'rings', label: 'Rings', min: 1, max: 12, step: 1,
-      hint: 'Nested copies, each a little smaller.' },
+      hint: 'Nested copies, each a little smaller — or, on a band, strands laid one under the next.' },
     { kind: 'number', key: 'lobes', label: 'Lobes', min: 2, max: 60, step: 1,
       hint: 'Petals around the rosette. A lobe count that shares a factor with the ring count makes the rings line up; one that does not makes them interleave.' },
     { kind: 'number', key: 'depth', label: 'Lobe depth', min: 0.02, max: 0.9, step: 0.01,
       hint: 'How far the line swings in and out. Past about 0.6 the loops start crossing themselves.' },
     { kind: 'number', key: 'turns', label: 'Turns', min: 1, max: 12, step: 1,
-      hint: 'More than one turn precesses the pattern and weaves it into itself.' },
+      hint: 'How many laps the line takes before it closes. Each lap falls between the last two, which is what weaves the figure into itself. Turns that share a factor with the lobes close early and draw a simpler figure.' },
+    { kind: 'number', key: 'ripple', label: 'Ripple', min: 0, max: 1, step: 0.05,
+      hint: 'A finer tremble carried on top of the lobes, as a second rocking cut over the first. Zero is the plain figure.' },
     { kind: 'number', key: 'spacing', label: 'Ring spacing', min: 0.5, max: 60, step: 0.5, unit: 'mm' },
   ],
   build(region, opts) {
+    const figure = str(opts, 'figure', 'rosette');
     const rings = Math.max(1, Math.round(num(opts, 'rings', 3)));
     const lobes = Math.max(2, Math.round(num(opts, 'lobes', 7)));
     const depth = Math.min(0.95, Math.max(0.01, num(opts, 'depth', 0.42)));
     const turns = Math.max(1, Math.round(num(opts, 'turns', 1)));
+    const ripple = Math.min(1, Math.max(0, num(opts, 'ripple', 0)));
     const spacing = Math.max(0.1, num(opts, 'spacing', 6));
 
     const cx = region.width / 2;
     const cy = region.height / 2;
     const outer = Math.min(region.width, region.height) / 2;
 
-    // One sample per third of a degree of the whole sweep: fine enough that a
-    // 60-lobe rosette has no visible facets, cheap enough to redraw per key.
-    const steps = Math.max(720, lobes * turns * 48);
+    // The ripple is a harmonic of the lobing rather than a figure of its own:
+    // an unrelated frequency beats against the lobes and reads as a wobble in
+    // the machine, which is the one thing engine turning is admired for not
+    // having.
+    // Normalised so the tremble only ever takes radius away: a ripple that
+    // added any would push the outermost ring out of the region, and the box
+    // an ornament is given is a promise rather than a suggestion.
+    const rippleAmp = ripple * 0.09;
+    const rippleAt = (phase: number): number =>
+      ripple === 0 ? 1 : (1 + rippleAmp * Math.cos(phase * 5)) / (1 + rippleAmp);
+
+    if (figure === 'band') return guillocheBand(region, { rings, lobes, depth, turns, spacing, rippleAt });
+
+    // `lobes / turns` petals per revolution, so the line only comes home after
+    // a whole number of laps. A lobe and turn count that share a factor close
+    // sooner — six lobes over three turns is two over one — and drawing the
+    // laps past that point would retrace what is already there.
+    const petals = lobes / turns;
+    const laps = turns / gcd(lobes, turns);
+    const steps = Math.max(720, lobes * 48);
+
     let d = '';
     for (let ring = 0; ring < rings; ring++) {
       const R = outer - ring * spacing;
@@ -137,19 +247,95 @@ const guilloche: OrnamentSpec = {
       // Each ring is rotated by half a lobe from the last, which is what makes
       // nested rings interleave instead of sitting in each other's shadow.
       const phase = (ring * Math.PI) / lobes;
-      const pts: Array<[number, number]> = [];
+      const pts: Pt2[] = [];
       for (let i = 0; i <= steps; i++) {
-        const t = (i / steps) * Math.PI * 2 * turns;
-        // A rose curve: the radius itself swings with the angle, which is the
-        // whole of engine turning.
-        const rr = R * (1 - depth + depth * Math.cos(lobes * t + phase));
-        pts.push([cx + rr * Math.cos(t), cy + rr * Math.sin(t)]);
+        const t = (i / steps) * Math.PI * 2 * laps;
+        pts.push(
+          figure === 'spiro'
+            ? spiroPoint(t, R, petals, depth, phase, rippleAt)
+            : rosettePoint(t, R, petals, depth, phase, rippleAt)
+        );
       }
-      d += (d ? ' ' : '') + polyline(pts) + ' Z';
+      d += (d ? ' ' : '') + polyline(pts.map(([px, py]) => [cx + px, cy + py] as Pt2)) + ' Z';
     }
     return d;
   },
 };
+
+/** A rose curve about the origin: the radius itself swings with the angle. */
+function rosettePoint(
+  t: number, R: number, petals: number, depth: number, phase: number,
+  rippleAt: (phase: number) => number
+): Pt2 {
+  const swing = petals * t + phase;
+  const rr = R * (1 - depth + depth * Math.cos(swing)) * rippleAt(swing);
+  return [rr * Math.cos(t), rr * Math.sin(t)];
+}
+
+/**
+ * A hypotrochoid: a point carried by a wheel rolling inside a ring.
+ *
+ * It is scaled onto the ring radius afterwards rather than being derived to
+ * land there, because how far the tracing point sits from the wheel's centre —
+ * which is what `depth` sets — moves the figure's own extent about as much as
+ * it changes its shape. Without the rescale, raising the lobe depth grew the
+ * whole rosette out of its region instead of deepening it.
+ */
+function spiroPoint(
+  t: number, R: number, petals: number, depth: number, phase: number,
+  rippleAt: (phase: number) => number
+): Pt2 {
+  const r = 1 / petals;                // wheel radius, as a fraction of the ring
+  const a = 1 - r;                     // where the wheel's centre runs
+  const dd = r * (0.35 + depth * 1.9); // the tracing point's arm
+  const ang = (a / r) * t - phase;
+  const x = a * Math.cos(t) + dd * Math.cos(ang);
+  const y = a * Math.sin(t) - dd * Math.sin(ang);
+  // Normalised on the figure's own reach, which is |a| + |dd| by construction.
+  const k = (R / (a + dd)) * rippleAt(petals * t + phase);
+  return [x * k, y * k];
+}
+
+/**
+ * The same weave run along a border rather than around a centre.
+ *
+ * A guilloche band is what a banknote's edge carries, and it is the shape most
+ * often wanted here: the rosette wants a square panel, and a border on a
+ * 300 x 40 strip came out as one small flower with bare stock either side.
+ * Each strand is the same wave, started a fraction of a wavelength further on,
+ * which is what makes the strands cross rather than run parallel.
+ */
+function guillocheBand(
+  region: OrnamentRegion,
+  o: { rings: number; lobes: number; depth: number; turns: number; spacing: number;
+       rippleAt: (phase: number) => number }
+): string {
+  const { rings, lobes, depth, turns, spacing, rippleAt } = o;
+  const mid = region.height / 2;
+  // The strands sit either side of the centreline, so a band stays centred in
+  // its region however many of them there are.
+  const span = (rings - 1) * spacing;
+  if (span > region.height) return '';
+  // Measured on the room the outermost strand has left, so a band with many
+  // strands sits closer together rather than swinging out of its region.
+  const amp = ((region.height - span) / 2) * depth;
+  const steps = Math.max(240, lobes * 24);
+  const out: string[] = [];
+  for (let s = 0; s < rings; s++) {
+    const y0 = mid - span / 2 + s * spacing;
+    // Turns is the phase the weave advances per strand, in whole half-waves:
+    // it is what decides whether the strands cross once, twice or braid.
+    const phase = (Math.PI * turns * s) / Math.max(1, rings);
+    const pts: Pt2[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const u = i / steps;
+      const th = u * Math.PI * 2 * lobes;
+      pts.push([u * region.width, y0 + amp * Math.sin(th + phase) * rippleAt(th + phase)]);
+    }
+    out.push(polyline(pts));
+  }
+  return out.filter(Boolean).join(' ');
+}
 
 // --- Maze -------------------------------------------------------------------
 
@@ -372,18 +558,18 @@ const animalPrint: OrnamentSpec = {
 
 // --- Foliage ----------------------------------------------------------------
 
-type Pt2 = [number, number];
-
 const foliage: OrnamentSpec = {
   id: 'foliage',
   label: 'Vines & Leaves',
   blurb: 'Ornate scrollwork: a vine of curling scrolls, hung with leaves and tendrils.',
   operation: 'etch',
   defaults: {
-    scrolls: 4, leafEvery: 3, leafSizeMm: 15, tendrils: 1,
+    alongPath: '', scrolls: 4, leafEvery: 3, leafSizeMm: 15, tendrils: 1,
     stemWidthMm: 1.2, spread: 0.75, midrib: 'on', symmetry: 'none', seed: 1,
   },
   fields: [
+    { kind: 'path', key: 'alongPath', label: 'Grow along',
+      hint: 'A shape already on the sheet for the vine to follow, as text follows a path. The vine then sits where that shape is, at the size the shape is, and the region below is whatever it came out needing — a border, a letter, an arc. Leave it unset and the vine draws its own wave inside the region.' },
     { kind: 'number', key: 'scrolls', label: 'Scrolls', min: 2, max: 14, step: 1,
       hint: 'Volutes hung off the stem, alternating above and below it. Each is one C-scroll curling to an eye.' },
     { kind: 'number', key: 'leafEvery', label: 'Leaves per scroll', min: 0, max: 20, step: 1 },
@@ -404,7 +590,7 @@ const foliage: OrnamentSpec = {
     ] },
     seedField(),
   ],
-  build(region, opts) {
+  build(region, opts, ctx) {
     const scrolls = Math.max(2, Math.round(num(opts, 'scrolls', 4)));
     const leafEvery = Math.max(0, Math.round(num(opts, 'leafEvery', 3)));
     const leafSize = Math.max(0.5, num(opts, 'leafSizeMm', 15));
@@ -465,86 +651,135 @@ const foliage: OrnamentSpec = {
      */
     const SEG = 24;
     const SWEEP = Math.PI * 0.55;
-    const baseLen = 34;
-    const spine: Pt2[] = [[0, 0]];
+    /*
+     * A path chosen in the dialog stands in for the wave, the way text on a
+     * path stands in for a baseline: the vine grows along something already
+     * drawn instead of along the shallow wave below.
+     *
+     * Nothing downstream changes. The scrolls, leaves and tendrils only ever
+     * knew the stem as a list of points with attachment crests along it, so
+     * this branch has one job — produce those two things — and the rest of the
+     * generator cannot tell which kind of stem it was handed.
+     */
+    const laid = ctx?.spine && ctx.spine.length >= 2 ? resampleEvenly(ctx.spine, 240) : null;
+    /*
+     * How much stem one scroll gets. Everything hung off the vine is sized
+     * from it, so on a path it has to come from the path: a fixed figure drew
+     * the same small scrolls on a 40 mm arc and on a 2 m border.
+     */
+    const baseLen = laid ? Math.max(1, polylineLength(laid) / scrolls) : 34;
+    const spine: Pt2[] = laid ? laid.slice() : [[0, 0]];
     const attach: Array<{ p: Pt2; tan: number; out: number; scale: number }> = [];
+    const ends: Array<{ p: Pt2; dir: number }> = [];
     let x = 0;
     let y = 0;
-    // Starting half a sweep back leaves the wave centred on its own axis, so
-    // the vine travels level along the panel instead of climbing out of it.
+    // Starting half a sweep back leaves the wave centred on its own axis, so a
+    // free vine travels level along the panel instead of climbing out of it.
     let dir = -SWEEP / 2;
-    for (let k = 0; k < scrolls; k++) {
-      const hand = k % 2 === 0 ? 1 : -1;
-      const sweep = hand * SWEEP * (0.9 + rnd() * 0.2);
-      const taper = 1 - 0.3 * (k / scrolls);
-      const len = baseLen * (0.85 + rnd() * 0.3) * taper;
-      for (let i = 0; i < SEG; i++) {
-        dir += sweep / SEG;
-        x += Math.cos(dir) * (len / SEG);
-        y += Math.sin(dir) * (len / SEG);
-        spine.push([x, y]);
-        // The crest of the wave, and the scroll springs from its outside —
-        // into the open air rather than into the belly of the curve.
-        if (i === Math.floor(SEG * 0.5)) attach.push({ p: [x, y], tan: dir, out: -hand, scale: taper });
-      }
-    }
-    /*
-     * How each end finishes is rolled for, and the two ends are rolled
-     * separately.
-     *
-     * Both used to curl, always, and always the same way round: a vine whose
-     * two ends spiral identically looks stamped, and the pair of matching
-     * curls was the first thing to give the generator away. So an end curls
-     * one way, or the other, or does not curl at all and finishes on a leaf
-     * instead — what it must not do is simply stop, which reads as a sawn end.
-     *
-     * A curl stops while its turns are still apart. A spiral run to its limit
-     * puts every remaining turn inside a millimetre, and an engraver asked to
-     * cut that burns a solid black eye.
-     */
-    const endFinish = (): { curl: number; rate: number; radius: number } => {
-      const roll = rnd();
-      return {
-        curl: roll < 0.22 ? 0 : roll < 0.68 ? 1 : -1,
-        rate: 0.19 + rnd() * 0.1,
-        radius: 0.2 + rnd() * 0.12,
+    if (laid) {
+      const tanAt = (i: number): number => {
+        const a = laid[Math.max(0, i - 1)];
+        const b = laid[Math.min(laid.length - 1, i + 1)];
+        return Math.atan2(b[1] - a[1], b[0] - a[0]);
       };
-    };
+      // Crests spaced evenly along the drawn line and alternating side, which
+      // is what the wave's own crests were.
+      for (let k = 0; k < scrolls; k++) {
+        const i = Math.round(((k + 0.5) / scrolls) * (laid.length - 1));
+        attach.push({
+          p: laid[i],
+          tan: tanAt(i),
+          out: k % 2 === 0 ? 1 : -1,
+          scale: 1 - 0.3 * (k / scrolls),
+        });
+      }
+      /*
+       * A drawn path ends where it was drawn to end, so no curl is invented on
+       * it: a curl walks the stem on past its last point, which on a path is
+       * the one place the vine must not go. The ends get a leaf pointing the
+       * way the line was going instead — and a closed path gets neither, or
+       * both leaves land in the same place on the join.
+       */
+      const closed = Math.hypot(
+        laid[0][0] - laid[laid.length - 1][0], laid[0][1] - laid[laid.length - 1][1]
+      ) < baseLen * 0.05;
+      if (!closed) {
+        ends.push({ p: laid[laid.length - 1], dir: tanAt(laid.length - 1) });
+        ends.push({ p: laid[0], dir: tanAt(0) + Math.PI });
+      }
+    } else {
+      for (let k = 0; k < scrolls; k++) {
+        const hand = k % 2 === 0 ? 1 : -1;
+        const sweep = hand * SWEEP * (0.9 + rnd() * 0.2);
+        const taper = 1 - 0.3 * (k / scrolls);
+        const len = baseLen * (0.85 + rnd() * 0.3) * taper;
+        for (let i = 0; i < SEG; i++) {
+          dir += sweep / SEG;
+          x += Math.cos(dir) * (len / SEG);
+          y += Math.sin(dir) * (len / SEG);
+          spine.push([x, y]);
+          // The crest of the wave, and the scroll springs from its outside —
+          // into the open air rather than into the belly of the curve.
+          if (i === Math.floor(SEG * 0.5)) attach.push({ p: [x, y], tan: dir, out: -hand, scale: taper });
+        }
+      }
+      /*
+       * How each end finishes is rolled for, and the two ends are rolled
+       * separately.
+       *
+       * Both used to curl, always, and always the same way round: a vine whose
+       * two ends spiral identically looks stamped, and the pair of matching
+       * curls was the first thing to give the generator away. So an end curls
+       * one way, or the other, or does not curl at all and finishes on a leaf
+       * instead — what it must not do is simply stop, which reads as a sawn end.
+       *
+       * A curl stops while its turns are still apart. A spiral run to its limit
+       * puts every remaining turn inside a millimetre, and an engraver asked to
+       * cut that burns a solid black eye.
+       */
+      const endFinish = (): { curl: number; rate: number; radius: number } => {
+        const roll = rnd();
+        return {
+          curl: roll < 0.22 ? 0 : roll < 0.68 ? 1 : -1,
+          rate: 0.19 + rnd() * 0.1,
+          radius: 0.2 + rnd() * 0.12,
+        };
+      };
 
-    const tip = endFinish();
-    if (tip.curl) {
-      let tipDir = dir;
-      let tr = baseLen * tip.radius;
-      for (let i = 0; i < 34; i++) {
-        tipDir += tip.rate * tip.curl;
-        tr *= 0.95;
-        if (tr < baseLen * 0.05) break;
-        x += Math.cos(tipDir) * tr * 0.3;
-        y += Math.sin(tipDir) * tr * 0.3;
-        spine.push([x, y]);
+      const tip = endFinish();
+      if (tip.curl) {
+        let tipDir = dir;
+        let tr = baseLen * tip.radius;
+        for (let i = 0; i < 34; i++) {
+          tipDir += tip.rate * tip.curl;
+          tr *= 0.95;
+          if (tr < baseLen * 0.05) break;
+          x += Math.cos(tipDir) * tr * 0.3;
+          y += Math.sin(tipDir) * tr * 0.3;
+          spine.push([x, y]);
+        }
       }
-    }
-    const tail = endFinish();
-    if (tail.curl) {
-      let tx = 0;
-      let ty = 0;
-      // Walking backwards out of the start of the stem, so the curl grows away
-      // from the vine rather than back over it.
-      let td = -SWEEP / 2 + Math.PI;
-      let trr = baseLen * tail.radius * 0.6;
-      const back: Pt2[] = [];
-      for (let i = 0; i < 22; i++) {
-        td += tail.rate * tail.curl;
-        trr *= 0.94;
-        tx += Math.cos(td) * trr * 0.3;
-        ty += Math.sin(td) * trr * 0.3;
-        back.push([tx, ty]);
+      const tail = endFinish();
+      if (tail.curl) {
+        let tx = 0;
+        let ty = 0;
+        // Walking backwards out of the start of the stem, so the curl grows away
+        // from the vine rather than back over it.
+        let td = -SWEEP / 2 + Math.PI;
+        let trr = baseLen * tail.radius * 0.6;
+        const back: Pt2[] = [];
+        for (let i = 0; i < 22; i++) {
+          td += tail.rate * tail.curl;
+          trr *= 0.94;
+          tx += Math.cos(td) * trr * 0.3;
+          ty += Math.sin(td) * trr * 0.3;
+          back.push([tx, ty]);
+        }
+        spine.unshift(...back.reverse());
       }
-      spine.unshift(...back.reverse());
+      if (!tip.curl) ends.push({ p: [x, y], dir });
+      if (!tail.curl) ends.push({ p: [0, 0], dir: -SWEEP / 2 + Math.PI });
     }
-    const ends: Array<{ p: Pt2; dir: number }> = [];
-    if (!tip.curl) ends.push({ p: [x, y], dir });
-    if (!tail.curl) ends.push({ p: [0, 0], dir: -SWEEP / 2 + Math.PI });
     // Widest at the root and narrowing along its length, the way a stem grows
     // and the way every carved one is cut.
     vine.push({ pts: spine, w0: 1, w1: 0.32 });
@@ -807,6 +1042,10 @@ const foliage: OrnamentSpec = {
      * than the drawing coming out a hair over the region.
      */
     const fit = (): { k: number; offX: number; offY: number } => {
+      // A vine laid on a path is already in millimetres and already where it
+      // belongs. Fitting it to the region would slide it off the line it was
+      // grown along, which is the whole of what was asked for.
+      if (laid) return { k: 1, offX: 0, offY: 0 };
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       const all = [...strokes, ...vine.map((v) => v.pts)];
       for (const st of all) for (const [px, py] of st) {
@@ -918,7 +1157,9 @@ const foliage: OrnamentSpec = {
       .map((st) => polyline(st.map(([px, py]) => [px * k + offX, py * k + offY] as Pt2)))
       .filter(Boolean)
       .join(' ');
-    if (!mirrored) return drawn;
+    // Mirroring reflects about the region's centreline, which has nothing to
+    // do with a path the operator drew — the reflection would land beside it.
+    if (!mirrored || laid) return drawn;
 
     // Reflected about the centreline, so the two halves match exactly — which
     // is the point of symmetry in ornament, and something a second random vine
@@ -943,6 +1184,14 @@ export const ORNAMENT_LAYER_ID = 'ornament';
 
 export interface OrnamentPlan {
   elements: EtchElement[];
+  /**
+   * Where the drawing ended up.
+   *
+   * Usually the region asked for. An ornament grown along a path decides its
+   * own: it goes where the path goes, and what it needs around it is not
+   * something the operator can be asked for in advance.
+   */
+  region: OrnamentRegion;
   layer: Omit<EtchLayer, 'id'> & { id: string };
   layerNeeded: boolean;
   notes: string[];
@@ -960,16 +1209,115 @@ export function defaultOrnamentRegion(doc: EtchDocument): OrnamentRegion {
   };
 }
 
+/**
+ * Which elements an ornament can be grown along.
+ *
+ * Anything with a line in it. An image is excluded because what it offers is
+ * tone rather than an outline, and an eraser stroke because it is a mask over
+ * the drawing rather than part of it — a vine grown along one would be
+ * machined while the thing it was rubbing out was not.
+ */
+export function ornamentPathOptions(doc: EtchDocument): Array<{ id: string; label: string }> {
+  return doc.elements
+    .filter((el) => el.visible !== false && el.type !== 'image' && el.type !== 'erase')
+    .map((el) => ({ id: el.id, label: el.name || el.type }));
+}
+
+/** The longest run of points an element has, in bed millimetres. */
+function longestContour(el: EtchElement): Pt2[] | null {
+  let best: Pt2[] | null = null;
+  let bestLen = 0;
+  for (const contour of extractElementContours(el)) {
+    if (contour.length < 2) continue;
+    const pts = contour.map((q) => [q.x, q.y] as Pt2);
+    const len = polylineLength(pts);
+    if (len > bestLen) { best = pts; bestLen = len; }
+  }
+  return bestLen > 0 ? best : null;
+}
+
+/**
+ * Pull the region in onto what was actually drawn.
+ *
+ * An ornament grown along a path is built inside a box padded generously
+ * enough that nothing it throws off the line can fall outside it, because how
+ * far a scroll springs is not known until it is drawn. The box is then closed
+ * onto the drawing, which costs one pass over the coordinates and is what
+ * makes the dialog's preview and the element's own bounds honest.
+ */
+function tightenToDrawing(region: OrnamentRegion, d: string): { region: OrnamentRegion; d: string } {
+  const coords = [...d.matchAll(/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g)];
+  if (coords.length === 0) return { region, d };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const m of coords) {
+    const px = Number(m[1]);
+    const py = Number(m[2]);
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
+  }
+  const pad = 1;
+  const shiftX = minX - pad;
+  const shiftY = minY - pad;
+  return {
+    region: {
+      x: region.x + shiftX,
+      y: region.y + shiftY,
+      width: maxX - minX + pad * 2,
+      height: maxY - minY + pad * 2,
+    },
+    d: d.replace(
+      /(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g,
+      (_m, px: string, py: string) => `${r3(Number(px) - shiftX)},${r3(Number(py) - shiftY)}`
+    ),
+  };
+}
+
 export function planOrnament(
   doc: EtchDocument,
   spec: OrnamentSpec,
-  region: OrnamentRegion,
+  askedRegion: OrnamentRegion,
   opts: OrnamentOptions,
   tools?: ToolProfile[],
   timestamp = Date.now()
 ): OrnamentPlan {
   const notes: string[] = [];
-  const d = region.width > 0 && region.height > 0 ? spec.build(region, opts) : '';
+
+  /*
+   * A path field is resolved here rather than in the spec: `build` stays a
+   * function of a box and a bag of numbers, which is what lets every ornament
+   * be tested without a document behind it.
+   */
+  const pathKey = spec.fields.find((f) => f.kind === 'path')?.key;
+  const chosenId = pathKey ? str(opts, pathKey, '') : '';
+  const source = chosenId ? doc.elements.find((el) => el.id === chosenId) : undefined;
+  let region = askedRegion;
+  let ctx: OrnamentContext | undefined;
+  if (chosenId && !source) {
+    notes.push('The shape this was set to follow is no longer on the sheet, so the region below is used instead.');
+  } else if (source) {
+    const spine = longestContour(source);
+    if (!spine) {
+      notes.push(`"${source.name || source.type}" has no line to follow — pick a shape with an outline, or clear it to draw inside the region.`);
+    } else {
+      // Padded by the length of the line it follows: an ornament throws its
+      // scrolls off the stem by a fraction of a scroll's own stretch of it, so
+      // nothing can land further out than that. The box is closed onto the
+      // drawing afterwards.
+      const pad = Math.max(10, polylineLength(spine) * 0.5);
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [px, py] of spine) {
+        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
+      }
+      region = { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
+      ctx = { spine: spine.map(([px, py]) => [px - region.x, py - region.y] as Pt2) };
+    }
+  }
+
+  const built = region.width > 0 && region.height > 0 ? spec.build(region, opts, ctx) : '';
+  const tightened = ctx ? tightenToDrawing(region, built) : { region, d: built };
+  region = tightened.region;
+  const d = tightened.d;
   const subpaths = (d.match(/M/g) ?? []).length;
 
   if (!d) {
@@ -1015,5 +1363,5 @@ export function planOrnament(
       }]
     : [];
 
-  return { elements, layer, layerNeeded: !existing && elements.length > 0, notes, fits: elements.length > 0, subpaths };
+  return { elements, region, layer, layerNeeded: !existing && elements.length > 0, notes, fits: elements.length > 0, subpaths };
 }

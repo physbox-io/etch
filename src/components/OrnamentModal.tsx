@@ -3,7 +3,7 @@ import { X, Sparkles, AlertTriangle, Shuffle } from 'lucide-react';
 import { NumberInput } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
 import {
-  ornamentById, planOrnament, defaultOrnamentRegion,
+  ornamentById, planOrnament, defaultOrnamentRegion, ornamentPathOptions,
   type OrnamentOptions, type OrnamentRegion,
 } from '../utils/ornaments';
 
@@ -41,8 +41,19 @@ export const OrnamentModal: React.FC = () => {
     () => (spec ? planOrnament(document, spec, activeRegion, opts, cncTools) : null),
     [document, spec, activeRegion, opts, cncTools]
   );
+  const pathChoices = useMemo(() => ornamentPathOptions(document), [document]);
 
   if (!spec || !plan) return null;
+
+  /*
+   * An ornament grown along a path decides its own region, so the preview and
+   * the boxes below show what it came out as rather than what was typed. They
+   * are read-only while a path is chosen: typing in them would change nothing,
+   * which is worse than not being able to.
+   */
+  const pathKey = spec.fields.find((f) => f.kind === 'path')?.key;
+  const onPath = Boolean(pathKey && opts[pathKey]);
+  const shownRegion = onPath ? plan.region : activeRegion;
 
   const set = (key: string, value: number | string | undefined) => {
     if (value === undefined) return;
@@ -79,13 +90,13 @@ export const OrnamentModal: React.FC = () => {
 
           <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 p-2">
             <svg
-              viewBox={`-2 -2 ${activeRegion.width + 4} ${activeRegion.height + 4}`}
+              viewBox={`-2 -2 ${shownRegion.width + 4} ${shownRegion.height + 4}`}
               className="w-full h-auto max-h-56"
               role="img"
               aria-label={`${spec.label} preview`}
             >
               <rect
-                x={0} y={0} width={activeRegion.width} height={activeRegion.height}
+                x={0} y={0} width={shownRegion.width} height={shownRegion.height}
                 fill="none" stroke="currentColor" strokeWidth={0.4}
                 className="text-slate-300 dark:text-slate-600" strokeDasharray="3 2"
               />
@@ -116,6 +127,29 @@ export const OrnamentModal: React.FC = () => {
                       onChange={(v) => set(f.key, v)}
                       className={field}
                     />
+                  </div>
+                );
+              }
+              if (f.kind === 'path') {
+                return (
+                  <div key={f.key} className="col-span-2" title={f.hint}>
+                    <label className={label} htmlFor={`orn-${f.key}`}>{f.label}</label>
+                    <select
+                      id={`orn-${f.key}`}
+                      value={String(opts[f.key] ?? '')}
+                      onChange={(e) => set(f.key, e.target.value)}
+                      className={`${field} cursor-pointer`}
+                    >
+                      <option value="">Nothing — draw inside the region</option>
+                      {pathChoices.map((o) => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                      ))}
+                    </select>
+                    {f.hint && (
+                      <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        {f.hint}
+                      </p>
+                    )}
                   </div>
                 );
               }
@@ -163,21 +197,27 @@ export const OrnamentModal: React.FC = () => {
 
           <div className="grid grid-cols-4 gap-3">
             {([
-              ['orn-x', 'Left', activeRegion.x, (v: number) => setRegionPatch({ x: v })],
-              ['orn-y', 'Top', activeRegion.y, (v: number) => setRegionPatch({ y: v })],
-              ['orn-w', 'Width', activeRegion.width, (v: number) => setRegionPatch({ width: v })],
-              ['orn-h', 'Height', activeRegion.height, (v: number) => setRegionPatch({ height: v })],
+              ['orn-x', 'Left', shownRegion.x, (v: number) => setRegionPatch({ x: v })],
+              ['orn-y', 'Top', shownRegion.y, (v: number) => setRegionPatch({ y: v })],
+              ['orn-w', 'Width', shownRegion.width, (v: number) => setRegionPatch({ width: v })],
+              ['orn-h', 'Height', shownRegion.height, (v: number) => setRegionPatch({ height: v })],
             ] as const).map(([fid, name, value, onSet]) => (
               <div key={fid}>
                 <label className={label} htmlFor={fid}>{name}</label>
                 <NumberInput
                   id={fid} min={0} max={3000} step={1} fallbackOnBlur={0}
-                  value={value}
+                  value={Math.round(value * 10) / 10}
                   onChange={(v) => v !== undefined && onSet(v)}
-                  className={field}
+                  disabled={onPath}
+                  className={`${field} ${onPath ? 'opacity-50 cursor-not-allowed' : ''}`}
                 />
               </div>
             ))}
+            {onPath && (
+              <p className="col-span-4 text-[10px] text-slate-500 dark:text-slate-400">
+                Where the shape it follows put it.
+              </p>
+            )}
           </div>
 
           {plan.notes.map((note) => (

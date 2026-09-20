@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight, Boxes, Ungroup, Group as GroupIcon } from 'lucide-react';
+import { ChevronRight, Boxes, Ungroup, Group as GroupIcon, Eye, EyeOff } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import type { EtchElement } from '../types/etch';
 
@@ -25,6 +25,8 @@ export const ObjectsPanel: React.FC = () => {
   const groupSelected = useStore((s) => s.groupSelected);
   const ungroupSelected = useStore((s) => s.ungroupSelected);
   const renameObject = useStore((s) => s.renameObject);
+  const setObjectVisible = useStore((s) => s.setObjectVisible);
+  const updateElement = useStore((s) => s.updateElement);
   const commitHistory = useStore((s) => s.commitHistory);
 
   const [open, setOpen] = React.useState(false);
@@ -97,6 +99,10 @@ export const ObjectsPanel: React.FC = () => {
             // elements is — otherwise every row lights up while a single shape
             // inside one of them is being edited.
             const whole = members.length > 0 && members.every((el) => selected.has(el.id));
+            // Shown as hidden only when the whole object is. A part of one
+            // that has been hidden on its own leaves the eye open, so the row
+            // does not claim the rest of it is gone too.
+            const anyVisible = members.some((el) => el.visible !== false);
 
             return (
               <div
@@ -132,6 +138,18 @@ export const ObjectsPanel: React.FC = () => {
                   />
 
                   <button
+                    onClick={() => setObjectVisible(object.id, !anyVisible)}
+                    disabled={members.length === 0}
+                    title={
+                      anyVisible
+                        ? 'Hide this object — hidden elements are not drawn and are not machined'
+                        : 'Show this object'
+                    }
+                    className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {anyVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                  </button>
+                  <button
                     onClick={() => selectObject(object.id)}
                     title="Select everything in this object"
                     className="text-[10px] font-semibold text-slate-400 hover:text-violet-500 px-1 cursor-pointer"
@@ -150,16 +168,25 @@ export const ObjectsPanel: React.FC = () => {
                 {isOpen && (
                   <ul className="pb-1 pl-6 pr-1.5 space-y-0.5">
                     {members.map((el) => (
-                      <li key={el.id}>
+                      <li key={el.id} className="flex items-center gap-1">
                         <button
                           onClick={() => setSelectedIds([el.id])}
-                          className={`w-full text-left text-[11px] truncate px-1.5 py-0.5 rounded cursor-pointer ${
+                          className={`flex-1 min-w-0 text-left text-[11px] truncate px-1.5 py-0.5 rounded cursor-pointer ${
                             selected.has(el.id)
                               ? 'bg-violet-500/20 text-violet-700 dark:text-violet-200'
                               : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-800'
-                          }`}
+                          } ${el.visible === false ? 'line-through opacity-50' : ''}`}
                         >
                           {el.name || el.type}
+                        </button>
+                        <button
+                          onClick={() => updateElement(el.id, { visible: el.visible === false })}
+                          title={el.visible === false ? 'Show' : 'Hide'}
+                          className="shrink-0 p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                        >
+                          {el.visible === false
+                            ? <EyeOff className="w-3 h-3" />
+                            : <Eye className="w-3 h-3" />}
                         </button>
                       </li>
                     ))}
