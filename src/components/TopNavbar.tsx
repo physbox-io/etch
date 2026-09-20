@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useStore, jobDocument } from '../store/useStore';
+import { ORNAMENTS } from '../utils/ornaments';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed, type SvgImportResult } from '../utils/svgImporter';
@@ -71,6 +72,7 @@ export const TopNavbar: React.FC = () => {
     togglePackModal,
     toggleLivingHingeModal,
     togglePerforationModal,
+    openOrnament,
     toggleSettings,
     isSettingsOpen,
     undo,
@@ -677,6 +679,9 @@ export const TopNavbar: React.FC = () => {
               // rather than a mark: four hundred slits nobody would draw.
               else if (e.target.value === 'generator:living-hinge') toggleLivingHingeModal();
               else if (e.target.value === 'generator:perforation') togglePerforationModal();
+              // The ornaments share one dialog; the value after the colon says
+              // which of them it opens on.
+              else if (e.target.value.startsWith('ornament:')) openOrnament(e.target.value.slice('ornament:'.length));
               else if (e.target.value) loadPreset(e.target.value);
             }}
             className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem] max-lg:flex-1 max-lg:min-w-0 max-lg:max-w-none"
@@ -697,6 +702,9 @@ export const TopNavbar: React.FC = () => {
               <option value="generator:pack">Pack Parts onto Stock…</option>
               <option value="generator:living-hinge">Living Hinge…</option>
               <option value="generator:perforation">Perforation…</option>
+              {ORNAMENTS.map((o) => (
+                <option key={o.id} value={`ornament:${o.id}`}>{o.label}…</option>
+              ))}
             </optgroup>
             {userPresetNames.length > 0 && (
               <optgroup label="📁 Saved Documents" className="bg-white dark:bg-slate-900">

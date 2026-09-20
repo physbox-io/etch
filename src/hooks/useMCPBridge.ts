@@ -29,6 +29,7 @@ import type { EtchElement } from '../types/etch';
 import { defaultRegistration, planRegistration } from '../utils/registration';
 import { defaultLivingHinge, planLivingHinge } from '../utils/livingHinge';
 import { defaultPerforation, planPerforation } from '../utils/perforation';
+import { ORNAMENTS, ornamentById, planOrnament, defaultOrnamentRegion } from '../utils/ornaments';
 
 /** Millimetres, to the micron — past that it is float noise, not a dimension. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -812,6 +813,72 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       };
     }
 
+    case 'etch_make_ornament':
+    case 'MAKE_ORNAMENT': {
+      /*
+       * One tool for the four decorative generators rather than four.
+       *
+       * They take the same three things — which one, where, and its own
+       * settings — and the settings are described by the generator itself, so
+       * a separate tool per ornament would be four copies of this that differ
+       * only in a string.
+       */
+      const kind = String(msg.kind ?? '');
+      const spec = ornamentById(kind);
+      if (!spec) {
+        return {
+          ok: false,
+          error: `kind must be one of: ${ORNAMENTS.map((o) => o.id).join(', ')}`,
+        };
+      }
+      const doc = store.document;
+      const derived = defaultOrnamentRegion(doc);
+      const region = {
+        x: num(msg.x, derived.x),
+        y: num(msg.y, derived.y),
+        width: num(msg.width, derived.width),
+        height: num(msg.height, derived.height),
+      };
+      for (const [k, v] of Object.entries(region)) {
+        if (!Number.isFinite(v)) return { ok: false, error: `${k} must be a number, in mm` };
+      }
+      // Only the keys this ornament actually has; anything else is a typo the
+      // caller should hear about rather than have silently ignored.
+      const opts: Record<string, number | string> = { ...spec.defaults };
+      const sent = (msg.options ?? {}) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(sent)) {
+        const field = spec.fields.find((f) => f.key === k);
+        if (!field) {
+          return {
+            ok: false,
+            error: `${spec.id} has no option "${k}". It takes: ${spec.fields.map((f) => f.key).join(', ')}`,
+          };
+        }
+        if (field.kind === 'choice') {
+          const allowed = field.options.map((o) => o.value);
+          if (!allowed.includes(String(v))) {
+            return { ok: false, error: `${k} must be one of: ${allowed.join(', ')}` };
+          }
+          opts[k] = String(v);
+        } else {
+          const n = num(v, NaN);
+          if (!Number.isFinite(n)) return { ok: false, error: `${k} must be a number` };
+          opts[k] = n;
+        }
+      }
+      const plan = planOrnament(doc, spec, region, opts, store.cncTools);
+      if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
+      store.addOrnament(plan);
+      return {
+        ok: true,
+        addedIds: plan.elements.map((el) => el.id),
+        layerId: plan.layer.id,
+        operation: plan.layer.operation,
+        subpaths: plan.subpaths,
+        note: plan.notes.join(' ') || undefined,
+      };
+    }
+
     case 'etch_make_living_hinge':
     case 'MAKE_LIVING_HINGE': {
       /*
@@ -1104,7 +1171,10 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         // handing a thresholder an already-dithered image traces the dots.
         imageDitherModes: Object.keys(DITHER_LABELS),
         booleanOps: Object.keys(BOOLEAN_OP_LABEL),
-        generators: ['test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation'],
+        generators: [
+          'test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation',
+          ...ORNAMENTS.map((o) => o.id),
+        ],
         clipartCount: CLIP_ART_INDEX.length,
         drawingTools: [
           'select', 'freehand', 'grid-freehand', 'bezier', 'node-edit',

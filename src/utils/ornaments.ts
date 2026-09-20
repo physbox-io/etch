@@ -1,0 +1,697 @@
+import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
+import { machineKind, suggestTool, type ToolProfile } from './tooling';
+import { traceBinaryGrid } from './imageProcessor';
+
+/**
+ * Ornament generators: the decorative half of the Generators menu.
+ *
+ * The living hinge and the perforation are mechanisms — what they make has to
+ * survive being folded or cut, and their numbers are registered in
+ * MACHINING.md because they reach material. These four are marks. Nothing here
+ * decides whether a part holds together, so nothing here needs a graded row;
+ * what they need instead is to be quick to try, which is why they share one
+ * dialog and describe their own controls rather than each getting bespoke JSX.
+ *
+ * `parametricShapes.ts` reached the same shape for the same reason.
+ */
+
+// --- The descriptor the shared dialog renders from --------------------------
+
+export type OrnamentField =
+  | { kind: 'number'; key: string; label: string; min: number; max: number; step: number; unit?: string; hint?: string }
+  | { kind: 'choice'; key: string; label: string; options: Array<{ value: string; label: string }>; hint?: string }
+  | { kind: 'seed'; key: string; label: string; hint?: string };
+
+export type OrnamentOptions = Record<string, number | string>;
+
+export interface OrnamentRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OrnamentSpec {
+  id: string;
+  label: string;
+  /** One line under the title: what this is for. */
+  blurb: string;
+  /** Which operation the marks want. Line art engraves; filled shapes cut. */
+  operation: 'etch' | 'cut';
+  defaults: OrnamentOptions;
+  fields: OrnamentField[];
+  /**
+   * Draw it. Returns SVG path data relative to the region's top-left corner,
+   * or an empty string when the settings produce nothing.
+   */
+  build(region: OrnamentRegion, opts: OrnamentOptions): string;
+}
+
+const num = (o: OrnamentOptions, k: string, d: number): number => {
+  const v = o[k];
+  const n = typeof v === 'string' ? Number(v) : v;
+  return typeof n === 'number' && Number.isFinite(n) ? n : d;
+};
+const str = (o: OrnamentOptions, k: string, d: string): string =>
+  typeof o[k] === 'string' ? (o[k] as string) : d;
+
+const seedField = (): OrnamentField => ({
+  kind: 'seed', key: 'seed', label: 'Seed',
+  hint: 'The same seed always draws the same thing. Change it for another of the same kind.',
+});
+
+/** A small deterministic PRNG, so a drawing can be reproduced from its seed. */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const r3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+/**
+ * Hold every coordinate in a path inside the region it belongs to.
+ *
+ * Curve fitting puts control points outside the outline they describe — that is
+ * what makes them curves — so a traced marking, or a stem bent off its chord,
+ * can carry a point beyond the box even when everything it was fitted through
+ * was inside. Clamping moves such a point by a fraction of a millimetre and
+ * keeps the promise the dialog makes: what you place in a region stays in it.
+ */
+export function clampPathToRegion(d: string, width: number, height: number): string {
+  return d.replace(
+    /(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g,
+    (_m, x: string, y: string) =>
+      `${r3(Math.min(width, Math.max(0, Number(x))))},${r3(Math.min(height, Math.max(0, Number(y))))}`
+  );
+}
+
+/** Points to one open polyline. */
+function polyline(pts: Array<[number, number]>): string {
+  if (pts.length < 2) return '';
+  return `M ${r3(pts[0][0])},${r3(pts[0][1])} ` +
+    pts.slice(1).map(([x, y]) => `L ${r3(x)},${r3(y)}`).join(' ');
+}
+
+// --- Guilloche --------------------------------------------------------------
+
+const guilloche: OrnamentSpec = {
+  id: 'guilloche',
+  label: 'Guilloche',
+  blurb: 'The engine-turned rosette from a banknote or a watch dial, drawn as one continuous line.',
+  operation: 'etch',
+  defaults: { rings: 3, lobes: 7, depth: 0.42, turns: 1, spacing: 6 },
+  fields: [
+    { kind: 'number', key: 'rings', label: 'Rings', min: 1, max: 12, step: 1,
+      hint: 'Nested copies, each a little smaller.' },
+    { kind: 'number', key: 'lobes', label: 'Lobes', min: 2, max: 60, step: 1,
+      hint: 'Petals around the rosette. A lobe count that shares a factor with the ring count makes the rings line up; one that does not makes them interleave.' },
+    { kind: 'number', key: 'depth', label: 'Lobe depth', min: 0.02, max: 0.9, step: 0.01,
+      hint: 'How far the line swings in and out. Past about 0.6 the loops start crossing themselves.' },
+    { kind: 'number', key: 'turns', label: 'Turns', min: 1, max: 12, step: 1,
+      hint: 'More than one turn precesses the pattern and weaves it into itself.' },
+    { kind: 'number', key: 'spacing', label: 'Ring spacing', min: 0.5, max: 60, step: 0.5, unit: 'mm' },
+  ],
+  build(region, opts) {
+    const rings = Math.max(1, Math.round(num(opts, 'rings', 3)));
+    const lobes = Math.max(2, Math.round(num(opts, 'lobes', 7)));
+    const depth = Math.min(0.95, Math.max(0.01, num(opts, 'depth', 0.42)));
+    const turns = Math.max(1, Math.round(num(opts, 'turns', 1)));
+    const spacing = Math.max(0.1, num(opts, 'spacing', 6));
+
+    const cx = region.width / 2;
+    const cy = region.height / 2;
+    const outer = Math.min(region.width, region.height) / 2;
+
+    // One sample per third of a degree of the whole sweep: fine enough that a
+    // 60-lobe rosette has no visible facets, cheap enough to redraw per key.
+    const steps = Math.max(720, lobes * turns * 48);
+    let d = '';
+    for (let ring = 0; ring < rings; ring++) {
+      const R = outer - ring * spacing;
+      if (R <= spacing * 0.2) break;
+      // Each ring is rotated by half a lobe from the last, which is what makes
+      // nested rings interleave instead of sitting in each other's shadow.
+      const phase = (ring * Math.PI) / lobes;
+      const pts: Array<[number, number]> = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = (i / steps) * Math.PI * 2 * turns;
+        // A rose curve: the radius itself swings with the angle, which is the
+        // whole of engine turning.
+        const rr = R * (1 - depth + depth * Math.cos(lobes * t + phase));
+        pts.push([cx + rr * Math.cos(t), cy + rr * Math.sin(t)]);
+      }
+      d += (d ? ' ' : '') + polyline(pts) + ' Z';
+    }
+    return d;
+  },
+};
+
+// --- Maze -------------------------------------------------------------------
+
+const maze: OrnamentSpec = {
+  id: 'maze',
+  label: 'Maze',
+  blurb: 'A perfect maze — exactly one route between any two points, and no loops.',
+  operation: 'etch',
+  defaults: { cellMm: 8, seed: 1, border: 'closed' },
+  fields: [
+    { kind: 'number', key: 'cellMm', label: 'Cell size', min: 1, max: 60, step: 0.5, unit: 'mm' },
+    { kind: 'choice', key: 'border', label: 'Border', options: [
+      { value: 'closed', label: 'Closed' },
+      { value: 'open', label: 'Way in and out' },
+    ] },
+    seedField(),
+  ],
+  build(region, opts) {
+    const cell = Math.max(0.5, num(opts, 'cellMm', 8));
+    const seed = Math.round(num(opts, 'seed', 1));
+    const openEnds = str(opts, 'border', 'closed') === 'open';
+    const cols = Math.floor(region.width / cell);
+    const rows = Math.floor(region.height / cell);
+    if (cols < 2 || rows < 2) return '';
+
+    const ox = (region.width - cols * cell) / 2;
+    const oy = (region.height - rows * cell) / 2;
+
+    // Recursive backtracker, carving a spanning tree over the cells. A spanning
+    // tree is exactly what "perfect" means: every cell reachable, and one route
+    // between any two, because a second route would need a cycle.
+    const right = new Uint8Array(cols * rows); // wall on the cell's right
+    const down = new Uint8Array(cols * rows);  // wall below the cell
+    right.fill(1);
+    down.fill(1);
+    const seen = new Uint8Array(cols * rows);
+    const rnd = mulberry32(seed);
+    const stack: number[] = [0];
+    seen[0] = 1;
+    while (stack.length) {
+      const cur = stack[stack.length - 1];
+      const cx = cur % cols;
+      const cy = Math.floor(cur / cols);
+      const options: Array<[number, number]> = [];
+      if (cx > 0 && !seen[cur - 1]) options.push([cur - 1, 0]);
+      if (cx < cols - 1 && !seen[cur + 1]) options.push([cur + 1, 1]);
+      if (cy > 0 && !seen[cur - cols]) options.push([cur - cols, 2]);
+      if (cy < rows - 1 && !seen[cur + cols]) options.push([cur + cols, 3]);
+      if (options.length === 0) { stack.pop(); continue; }
+      const [next, dir] = options[Math.floor(rnd() * options.length)];
+      if (dir === 0) right[next] = 0;
+      else if (dir === 1) right[cur] = 0;
+      else if (dir === 2) down[next] = 0;
+      else down[cur] = 0;
+      seen[next] = 1;
+      stack.push(next);
+    }
+
+    const seg: string[] = [];
+    const line = (x0: number, y0: number, x1: number, y1: number) =>
+      seg.push(`M ${r3(ox + x0)},${r3(oy + y0)} L ${r3(ox + x1)},${r3(oy + y1)}`);
+
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const i = y * cols + x;
+        if (right[i] && x < cols - 1) line((x + 1) * cell, y * cell, (x + 1) * cell, (y + 1) * cell);
+        if (down[i] && y < rows - 1) line(x * cell, (y + 1) * cell, (x + 1) * cell, (y + 1) * cell);
+      }
+    }
+    // The outer wall, with an entrance at the top left and an exit at the
+    // bottom right when one is asked for.
+    line(0, 0, cols * cell, 0);
+    line(0, rows * cell, cols * cell, rows * cell);
+    if (openEnds) {
+      line(0, cell, 0, rows * cell);
+      line(cols * cell, 0, cols * cell, (rows - 1) * cell);
+    } else {
+      line(0, 0, 0, rows * cell);
+      line(cols * cell, 0, cols * cell, rows * cell);
+    }
+    return seg.join(' ');
+  },
+};
+
+// --- Animal print -----------------------------------------------------------
+
+/**
+ * Markings drawn as outlines to engrave or cut.
+ *
+ * The field is evaluated on a grid and then traced, rather than each marking
+ * being emitted as its own shape: a tiger's bars taper and break, and the shape
+ * of a break is a property of the field rather than of any one bar.
+ *
+ * Reaction-diffusion is not used here for the same reason it is not used in
+ * Mesh: it is isotropic, so it cannot prefer a direction and cannot make the
+ * parallel bars of a tiger.
+ */
+const animalPrint: OrnamentSpec = {
+  id: 'animal_print',
+  label: 'Animal Print',
+  blurb: 'Tiger and zebra bars, leopard rosettes, cheetah spots, cow blotches.',
+  operation: 'cut',
+  defaults: { coat: 'tiger', scaleMm: 22, boldness: 0.45, wander: 0.9, seed: 7 },
+  fields: [
+    { kind: 'choice', key: 'coat', label: 'Coat', options: [
+      { value: 'tiger', label: 'Tiger' },
+      { value: 'zebra', label: 'Zebra' },
+      { value: 'leopard', label: 'Leopard' },
+      { value: 'cheetah', label: 'Cheetah' },
+      { value: 'cow', label: 'Cow' },
+    ] },
+    { kind: 'number', key: 'scaleMm', label: 'Marking size', min: 2, max: 200, step: 1, unit: 'mm' },
+    { kind: 'number', key: 'boldness', label: 'Boldness', min: 0.05, max: 0.95, step: 0.05,
+      hint: 'How much of the panel the markings cover.' },
+    { kind: 'number', key: 'wander', label: 'Wander', min: 0, max: 2, step: 0.05,
+      hint: 'How far they stray from regular. Zero is wallpaper.' },
+    seedField(),
+  ],
+  build(region, opts) {
+    const coat = str(opts, 'coat', 'tiger');
+    const scale = Math.max(1, num(opts, 'scaleMm', 22));
+    const boldness = Math.min(0.95, Math.max(0.05, num(opts, 'boldness', 0.45)));
+    const wander = Math.max(0, num(opts, 'wander', 0.9));
+    const seed = Math.round(num(opts, 'seed', 7));
+
+    // Half a millimetre a cell: finer than a laser's spot and far finer than
+    // any cutter, so tracing it is not what limits the edge.
+    const step = 0.5;
+    const w = Math.max(4, Math.round(region.width / step));
+    const h = Math.max(4, Math.round(region.height / step));
+    const grid = new Uint8Array(w * h);
+
+    const hash = (x: number, y: number, s: number): number => {
+      let n = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(s | 0, 0x9e3779b9);
+      n = Math.imul(n ^ (n >>> 15), 0x85ebca6b);
+      n = Math.imul(n ^ (n >>> 13), 0xc2b2ae35);
+      return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+    };
+    const fade = (t: number) => t * t * (3 - 2 * t);
+    const vn = (x: number, y: number, s: number): number => {
+      const x0 = Math.floor(x); const y0 = Math.floor(y);
+      const fx = fade(x - x0); const fy = fade(y - y0);
+      const a = hash(x0, y0, s); const b = hash(x0 + 1, y0, s);
+      const c = hash(x0, y0 + 1, s); const dd = hash(x0 + 1, y0 + 1, s);
+      return (a + (b - a) * fx) + ((c + (dd - c) * fx) - (a + (b - a) * fx)) * fy;
+    };
+    const fbm = (x: number, y: number, s: number, oct = 4): number => {
+      let sum = 0; let amp = 1; let norm = 0; let fx = x; let fy = y;
+      for (let i = 0; i < oct; i++) { sum += vn(fx, fy, s + i * 1013) * amp; norm += amp; amp *= 0.5; fx *= 2; fy *= 2; }
+      return norm ? sum / norm : 0;
+    };
+    const fract = (v: number) => v - Math.floor(v);
+    const c01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+    const sstep = (e0: number, e1: number, x: number) => {
+      const t = c01((x - e0) / Math.max(1e-9, e1 - e0));
+      return t * t * (3 - 2 * t);
+    };
+
+    const stripe = (x: number, y: number, pitch: number, duty: number, wob: number): number => {
+      const wx = (fbm(x / (pitch * 7), y / (pitch * 2.2), seed, 4) - 0.5) * 2 * wob * pitch;
+      const dd = Math.abs(fract((x + wx) / pitch) - 0.5) * 2;
+      const taper = 0.25 + 1.5 * fbm(x / (pitch * 9), y / (pitch * 0.7), seed ^ 0x77, 3);
+      return 1 - sstep(c01(duty * taper) * 0.75, c01(duty * taper) * 1.25, dd);
+    };
+    const spot = (x: number, y: number, pitch: number, radius: number, ringed: boolean): number => {
+      const cxi = Math.floor(x / pitch); const cyi = Math.floor(y / pitch);
+      let best = Infinity; let bx = 0; let by = 0; let gi = 0; let gj = 0;
+      for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+        const gx = cxi + i; const gy = cyi + j;
+        const px = (gx + 0.15 + 0.7 * hash(gx, gy, seed)) * pitch;
+        const py = (gy + 0.15 + 0.7 * hash(gx, gy, seed ^ 0x51)) * pitch;
+        const dd = Math.hypot(x - px, y - py);
+        if (dd < best) { best = dd; bx = px; by = py; gi = gx; gj = gy; }
+      }
+      const rr = radius * (0.65 + 0.7 * hash(gi, gj, seed ^ 0x99));
+      const t = best / Math.max(1e-9, rr);
+      if (t > 1.2) return 0;
+      if (!ringed) return 1 - sstep(0.8, 1, t);
+      const ang = Math.atan2(y - by, x - bx);
+      const arc = fbm(Math.cos(ang) * 1.6 + gi * 3.1, Math.sin(ang) * 1.6 + gj * 3.1, seed ^ 0x33, 2);
+      const gate = 0.25 + 0.75 * sstep(0.36, 0.54, arc);
+      const ring = (1 - sstep(0.82, 1, t)) * sstep(0.46, 0.68, t) * gate;
+      const core = (1 - sstep(0.2, 0.34, t)) * 0.5;
+      return Math.max(ring, core);
+    };
+
+    for (let gy = 0; gy < h; gy++) {
+      const y = gy * step;
+      for (let gx = 0; gx < w; gx++) {
+        const x = gx * step;
+        let v: number;
+        switch (coat) {
+          case 'zebra': v = stripe(x, y, scale * 1.4, boldness * 1.35, wander * 0.6); break;
+          case 'leopard': v = spot(x, y, scale, scale * 0.34 * (0.7 + boldness), true); break;
+          case 'cheetah': v = spot(x, y, scale * 0.55, scale * 0.13 * (0.7 + boldness), false); break;
+          case 'cow': {
+            const n = fbm(x / (scale * 1.6), y / (scale * 1.6), seed, 4);
+            const edge = 0.04 + 0.05 * wander;
+            v = sstep(0.5 - edge, 0.5 + edge, n + (boldness - 0.5) * 0.4);
+            break;
+          }
+          default: v = stripe(x, y, scale, boldness, wander);
+        }
+        grid[gy * w + gx] = v > 0.5 ? 1 : 0;
+      }
+    }
+
+    // The same walker the flood fill and the image trace use, so a marking and
+    // a traced photograph come out fitted the same way.
+    const paths = traceBinaryGrid(
+      grid, w, h,
+      { simplifyPx: 0.8, smoothing: true, minHoleArea: 6 },
+      step, step
+    );
+    // The tracer fits curves, so its control points can sit outside the grid
+    // it walked. Hold them to the region.
+    return clampPathToRegion(paths.join(' '), region.width, region.height);
+  },
+};
+
+// --- Foliage ----------------------------------------------------------------
+
+type Pt2 = [number, number];
+
+/** Sample a cubic Bezier into points, so everything can be fitted alike. */
+function sampleCubic(p0: Pt2, c1: Pt2, c2: Pt2, p1: Pt2, steps: number): Pt2[] {
+  const out: Pt2[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    out.push([
+      u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p1[0],
+      u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p1[1],
+    ]);
+  }
+  return out;
+}
+
+const foliage: OrnamentSpec = {
+  id: 'foliage',
+  label: 'Vines & Leaves',
+  blurb: 'Ornate scrollwork: a vine of curling scrolls, hung with leaves and tendrils.',
+  operation: 'etch',
+  defaults: {
+    scrolls: 4, leafEvery: 3, leafSizeMm: 15, tendrils: 1,
+    midrib: 'on', symmetry: 'none', seed: 1,
+  },
+  fields: [
+    { kind: 'number', key: 'scrolls', label: 'Scrolls', min: 2, max: 14, step: 1,
+      hint: 'How many times the vine turns back on itself. Each turn is a C-scroll, alternating hand.' },
+    { kind: 'number', key: 'leafEvery', label: 'Leaves per scroll', min: 0, max: 20, step: 1 },
+    { kind: 'number', key: 'leafSizeMm', label: 'Leaf size', min: 1, max: 80, step: 0.5, unit: 'mm' },
+    { kind: 'number', key: 'tendrils', label: 'Tendrils per scroll', min: 0, max: 6, step: 1,
+      hint: 'Curling shoots springing off the vine. Most of what makes it read as ornament rather than as a plant.' },
+    { kind: 'choice', key: 'midrib', label: 'Leaf detail', options: [
+      { value: 'on', label: 'Midrib' },
+      { value: 'off', label: 'Plain' },
+    ] },
+    { kind: 'choice', key: 'symmetry', label: 'Symmetry', options: [
+      { value: 'none', label: 'Free' },
+      { value: 'mirror', label: 'Mirrored' },
+    ] },
+    seedField(),
+  ],
+  build(region, opts) {
+    const scrolls = Math.max(2, Math.round(num(opts, 'scrolls', 4)));
+    const leafEvery = Math.max(0, Math.round(num(opts, 'leafEvery', 7)));
+    const leafSize = Math.max(0.5, num(opts, 'leafSizeMm', 15));
+    const tendrilsPer = Math.max(0, Math.round(num(opts, 'tendrils', 2)));
+    const midrib = str(opts, 'midrib', 'on') === 'on';
+    const mirrored = str(opts, 'symmetry', 'none') === 'mirror';
+    const seed = Math.round(num(opts, 'seed', 1));
+    const rnd = mulberry32(seed);
+
+    if (region.width < 4 || region.height < 4) return '';
+
+    /*
+     * Everything is built in its own space and fitted to the region at the end.
+     *
+     * A vine that has to stay inside a box while it is being drawn has to be
+     * cut short, and a scroll cut short is the one thing that looks wrong. So
+     * it grows as far as it likes, and the finished drawing is scaled to sit in
+     * the region — which also means it fills the panel at any aspect rather
+     * than leaving a bare margin down one side.
+     */
+    const strokes: Pt2[][] = [];
+
+    /*
+     * The spine is a chain of circular arcs of alternating hand — a C-scroll,
+     * then a counter-scroll, then another.
+     *
+     * Not a sine wave. A sine's flanks are nearly straight, so it reads as a
+     * zigzag with bends at the ends rather than as a vine; an arc chain is
+     * curving everywhere, which is what makes it look grown rather than
+     * plotted. The radius shortens along the length so the scrolls tighten
+     * towards the tip, the way carved rinceau does.
+     */
+    const SEG = 26;
+    const spine: Pt2[] = [];
+    let x = 0;
+    let y = 0;
+    const baseLen = 34;
+    // Each PAIR of arcs uses one magnitude, turned one way then the other, so
+    // the vine comes back to the heading it set out on and travels along the
+    // panel. Letting each arc pick its own magnitude leaves a little unturned
+    // rotation every time, and twenty of those add up to a vine running off
+    // diagonally into a corner.
+    const sweeps: number[] = [];
+    const lengths: number[] = [];
+    for (let k = 0; k < scrolls; k += 2) {
+      const mag = Math.PI * 0.95 * (0.9 + rnd() * 0.2);
+      const len = baseLen * (0.85 + rnd() * 0.3);
+      sweeps.push(mag, -mag);
+      lengths.push(len, len);
+    }
+    let dir = -sweeps[0] / 2;
+    for (let k = 0; k < scrolls; k++) {
+      const taper = 1 - 0.45 * (k / scrolls);
+      const len = lengths[k] * taper;
+      const sweep = sweeps[k];
+      for (let i = 0; i < SEG; i++) {
+        dir += sweep / SEG;
+        x += Math.cos(dir) * (len / SEG);
+        y += Math.sin(dir) * (len / SEG);
+        spine.push([x, y]);
+      }
+    }
+    /*
+     * The tip curls in on itself, which is how a scroll ends — and it stops
+     * while the turns are still apart.
+     *
+     * A spiral run to its limit puts every remaining turn inside a millimetre,
+     * and an engraver asked to cut that burns a solid black eye. Just over a
+     * turn is what reads as a curl; past about a turn and a half it is a blot.
+     */
+    let tipDir = dir;
+    let tr = baseLen * 0.30;
+    const TIP_STEPS = 34;
+    for (let i = 0; i < TIP_STEPS; i++) {
+      tipDir += 0.22;
+      tr *= 0.955;
+      if (tr < baseLen * 0.055) break;
+      x += Math.cos(tipDir) * tr * 0.30;
+      y += Math.sin(tipDir) * tr * 0.30;
+      spine.push([x, y]);
+    }
+    strokes.push(spine);
+
+    const tangentAt = (i: number): number => {
+      const a = spine[Math.max(0, i - 1)];
+      const b = spine[Math.min(spine.length - 1, i + 1)];
+      return Math.atan2(b[1] - a[1], b[0] - a[0]);
+    };
+
+    /*
+     * A leaf: two cubics meeting at a point, with a shoulder near the base.
+     *
+     * Cubics rather than quadratics because a leaf has both — a full shoulder
+     * and a fine tip — and one control point cannot do both; a quadratic leaf
+     * comes out a lozenge.
+     */
+    const addLeaf = (px: number, py: number, d0: number, size: number): void => {
+      const tip: Pt2 = [px + Math.cos(d0) * size, py + Math.sin(d0) * size];
+      const nx = Math.cos(d0 + Math.PI / 2);
+      const ny = Math.sin(d0 + Math.PI / 2);
+      const belly = size * 0.46;
+      const sh = size * 0.26;
+      const base: Pt2 = [px, py];
+      const side = (sgn: number): Pt2[] => sampleCubic(
+        base,
+        [px + Math.cos(d0) * sh + nx * belly * sgn, py + Math.sin(d0) * sh + ny * belly * sgn],
+        [px + Math.cos(d0) * size * 0.76 + nx * belly * 0.5 * sgn, py + Math.sin(d0) * size * 0.76 + ny * belly * 0.5 * sgn],
+        tip, 16
+      );
+      strokes.push([...side(1), ...side(-1).reverse()]);
+      if (midrib) {
+        // Stops short of the tip: a rib drawn into the point crosses the
+        // outline and burns a blot where the two meet.
+        strokes.push([base, [px + Math.cos(d0) * size * 0.78, py + Math.sin(d0) * size * 0.78]]);
+      }
+    };
+
+    /*
+     * A tendril: a logarithmic spiral springing off the vine and curling in.
+     *
+     * Logarithmic, not Archimedean — the turns have to tighten towards the eye
+     * or it reads as a spring rather than as a shoot.
+     */
+    const addTendril = (px: number, py: number, d0: number, size: number, hand: number): void => {
+      // Just over a turn, opened out. Two and a half turns at a tight decay
+      // packs the inner ones into a dot, which on the panel is a dark speck
+      // rather than a shoot.
+      const turns = 1.05 + rnd() * 0.45;
+      const b = 0.17;
+      const a = size / Math.exp(b * turns * Math.PI * 2);
+      const pts: Pt2[] = [];
+      for (let i = 0; i <= 70; i++) {
+        const th = (i / 70) * turns * Math.PI * 2;
+        const r = a * Math.exp(b * (turns * Math.PI * 2 - th));
+        const ang = d0 + hand * th;
+        pts.push([px + Math.cos(ang) * r, py + Math.sin(ang) * r]);
+      }
+      strokes.push(pts);
+    };
+
+    const leafTotal = leafEvery * scrolls;
+    for (let n = 0; n < leafTotal; n++) {
+      const t = (n + 0.5) / leafTotal;
+      const idx = Math.round(t * (spine.length - 1));
+      const side = n % 2 === 0 ? 1 : -1;
+      const tan = tangentAt(idx);
+      // Leaves spring forward along the vine as well as out from it — square to
+      // the stem looks pinned on rather than grown.
+      addLeaf(spine[idx][0], spine[idx][1], tan + side * (Math.PI / 2) * 0.66,
+        leafSize * (1 - 0.45 * t) * (0.8 + rnd() * 0.4));
+    }
+
+    const tendrilTotal = tendrilsPer * scrolls;
+    for (let n = 0; n < tendrilTotal; n++) {
+      const t = (n + 0.5) / tendrilTotal;
+      const idx = Math.round(t * (spine.length - 1));
+      const side = n % 2 === 0 ? -1 : 1;
+      addTendril(spine[idx][0], spine[idx][1], tangentAt(idx) + side * (Math.PI / 2) * 0.8,
+        leafSize * (0.85 + rnd() * 0.6), side);
+    }
+
+    // Fit everything to the region: the drawing decides its own proportions and
+    // the panel decides its size.
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const st of strokes) for (const [px, py] of st) {
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+    }
+    const spanW = mirrored ? region.width / 2 : region.width;
+    const pad = Math.min(spanW, region.height) * 0.04;
+    const k = Math.min(
+      (spanW - pad * 2) / Math.max(1e-6, maxX - minX),
+      (region.height - pad * 2) / Math.max(1e-6, maxY - minY)
+    );
+    const offX = pad + (spanW - pad * 2 - (maxX - minX) * k) / 2 - minX * k;
+    const offY = pad + (region.height - pad * 2 - (maxY - minY) * k) / 2 - minY * k;
+
+    const drawn = strokes
+      .map((st) => polyline(st.map(([px, py]) => [px * k + offX, py * k + offY] as Pt2)))
+      .filter(Boolean)
+      .join(' ');
+    if (!mirrored) return drawn;
+
+    // Reflected about the centreline, so the two halves match exactly — which
+    // is the point of symmetry in ornament, and something a second random vine
+    // cannot give you.
+    const flipped = drawn.replace(
+      /(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g,
+      (_m, fx: string, fy: string) => `${r3(region.width - Number(fx))},${fy}`
+    );
+    return `${drawn} ${flipped}`;
+  },
+};
+
+// --- The registry -----------------------------------------------------------
+
+export const ORNAMENTS: OrnamentSpec[] = [guilloche, maze, animalPrint, foliage];
+
+export function ornamentById(id: string): OrnamentSpec | undefined {
+  return ORNAMENTS.find((o) => o.id === id);
+}
+
+export const ORNAMENT_LAYER_ID = 'ornament';
+
+export interface OrnamentPlan {
+  elements: EtchElement[];
+  layer: Omit<EtchLayer, 'id'> & { id: string };
+  layerNeeded: boolean;
+  notes: string[];
+  fits: boolean;
+  /** How many subpaths the drawing came out as. */
+  subpaths: number;
+}
+
+export function defaultOrnamentRegion(doc: EtchDocument): OrnamentRegion {
+  return {
+    x: doc.width * 0.15,
+    y: doc.height * 0.15,
+    width: doc.width * 0.7,
+    height: doc.height * 0.7,
+  };
+}
+
+export function planOrnament(
+  doc: EtchDocument,
+  spec: OrnamentSpec,
+  region: OrnamentRegion,
+  opts: OrnamentOptions,
+  tools?: ToolProfile[],
+  timestamp = Date.now()
+): OrnamentPlan {
+  const notes: string[] = [];
+  const d = region.width > 0 && region.height > 0 ? spec.build(region, opts) : '';
+  const subpaths = (d.match(/M/g) ?? []).length;
+
+  if (!d) {
+    notes.push('Nothing to draw at these settings — the region is too small for the size asked for.');
+  }
+
+  const kind = machineKind(doc);
+  const layerId = `${ORNAMENT_LAYER_ID}_${spec.operation}`;
+  const existing = doc.layers.find((l) => l.id === layerId);
+  const layer: Omit<EtchLayer, 'id'> & { id: string } = existing ?? {
+    id: layerId,
+    name: spec.operation === 'cut' ? 'Ornament (cut)' : 'Ornament',
+    color: '#a855f7',
+    operation: spec.operation,
+    visible: true,
+    locked: false,
+    speed: spec.operation === 'cut' ? 400 : 1200,
+    power: spec.operation === 'cut' ? 90 : 35,
+    passes: 1,
+    zDepth: spec.operation === 'cut' ? (doc.stockThickness ?? 3) + 0.3 : 0.4,
+    ...(spec.operation === 'cut' ? { cutSide: 'inside' as const, tabs: false } : {}),
+    ...(kind === 'cnc' ? { tool: suggestTool(kind, spec.operation === 'cut' ? 'cut' : 'etch', tools) } : {}),
+  };
+
+  const elements: EtchElement[] = d
+    ? [{
+        id: `orn_${spec.id}_${timestamp}`,
+        name: spec.label,
+        type: 'path',
+        layerId: layer.id,
+        d,
+        x: region.x,
+        y: region.y,
+        rotation: 0,
+        scaleX: 1,
+        scaleY: 1,
+        opacity: 1,
+        strokeWidth: 0.4,
+        strokeColor: layer.color,
+        fillColor: 'none',
+        visible: true,
+        locked: false,
+      }]
+    : [];
+
+  return { elements, layer, layerNeeded: !existing && elements.length > 0, notes, fits: elements.length > 0, subpaths };
+}

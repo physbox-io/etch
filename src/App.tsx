@@ -14,6 +14,7 @@ import { RegistrationModal } from './components/RegistrationModal';
 import { PackPartsModal } from './components/PackPartsModal';
 import { LivingHingeModal } from './components/LivingHingeModal';
 import { PerforationModal } from './components/PerforationModal';
+import { OrnamentModal } from './components/OrnamentModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { JobPauseBanner } from './components/JobPauseBanner';
@@ -250,6 +251,7 @@ export const App: React.FC = () => {
       <PackPartsModal />
       <LivingHingeModal />
       <PerforationModal />
+      <OrnamentModal />
       <ImageImportModal />
       <GCodePreviewModal />
       <MachineControlModal />

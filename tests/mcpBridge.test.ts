@@ -145,7 +145,10 @@ describe('MCP: etch_list_capabilities', () => {
     // layout rules — a hinge's half-period row offset, a grille's minimum web —
     // that exist precisely because they are not obvious.
     expect(r.generators).toEqual(
-      expect.arrayContaining(['test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation'])
+      expect.arrayContaining([
+        'test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation',
+        'guilloche', 'maze', 'animal_print', 'foliage',
+      ])
     );
     // A laser's tool catalogue is deliberately empty.
     expect(r.machine).toBe('laser');
@@ -353,5 +356,60 @@ describe('MCP: the generators an agent can drive', () => {
     load([]);
     const r = await handleMCPCommand('etch_make_perforation', { sizeMm: 7.2, pitchMm: 7 });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('MCP: the ornaments', () => {
+  it('draws each of the four', async () => {
+    for (const kind of ['guilloche', 'maze', 'animal_print', 'foliage']) {
+      load([]);
+      const r = await handleMCPCommand('etch_make_ornament', { kind, width: 160, height: 120 });
+      expect(r.ok, `${kind}: ${r.error ?? ''}`).toBe(true);
+      expect((r.addedIds as string[]).length).toBe(1);
+      expect(r.subpaths as number).toBeGreaterThan(0);
+    }
+  });
+
+  it('puts an animal print on a cut layer', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_ornament', { kind: 'animal_print' });
+    expect(r.ok).toBe(true);
+    expect(r.operation).toBe('cut');
+  });
+
+  it('names the options a generator has, rather than ignoring a typo', async () => {
+    // Silently dropping an unknown option is how an agent ends up insisting it
+    // set something it never set.
+    load([]);
+    const r = await handleMCPCommand('etch_make_ornament', {
+      kind: 'maze', options: { cellSize: 8 },
+    });
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/has no option "cellSize"/);
+    expect(String(r.error)).toMatch(/cellMm/);
+  });
+
+  it('refuses a choice that is not on the list', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_ornament', {
+      kind: 'animal_print', options: { coat: 'dinosaur' },
+    });
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/must be one of/);
+  });
+
+  it('refuses a kind it does not have, and lists the ones it does', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_ornament', { kind: 'paisley' });
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toMatch(/guilloche/);
+  });
+
+  it('takes its numbers as strings here too', async () => {
+    load([]);
+    const r = await handleMCPCommand('etch_make_ornament', {
+      kind: 'maze', width: '160', height: '120', options: { cellMm: '9' },
+    });
+    expect(r.ok).toBe(true);
   });
 });
