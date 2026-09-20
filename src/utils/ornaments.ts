@@ -374,20 +374,6 @@ const animalPrint: OrnamentSpec = {
 
 type Pt2 = [number, number];
 
-/** Sample a cubic Bezier into points, so everything can be fitted alike. */
-function sampleCubic(p0: Pt2, c1: Pt2, c2: Pt2, p1: Pt2, steps: number): Pt2[] {
-  const out: Pt2[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const u = 1 - t;
-    out.push([
-      u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p1[0],
-      u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p1[1],
-    ]);
-  }
-  return out;
-}
-
 const foliage: OrnamentSpec = {
   id: 'foliage',
   label: 'Vines & Leaves',
@@ -395,7 +381,7 @@ const foliage: OrnamentSpec = {
   operation: 'etch',
   defaults: {
     scrolls: 4, leafEvery: 3, leafSizeMm: 15, tendrils: 1,
-    midrib: 'on', symmetry: 'none', seed: 1,
+    stemWidthMm: 1.2, midrib: 'on', symmetry: 'none', seed: 1,
   },
   fields: [
     { kind: 'number', key: 'scrolls', label: 'Scrolls', min: 2, max: 14, step: 1,
@@ -404,6 +390,8 @@ const foliage: OrnamentSpec = {
     { kind: 'number', key: 'leafSizeMm', label: 'Leaf size', min: 1, max: 80, step: 0.5, unit: 'mm' },
     { kind: 'number', key: 'tendrils', label: 'Tendrils per scroll', min: 0, max: 6, step: 1,
       hint: 'Curling shoots springing off the scroll. Most of what makes it read as ornament rather than as a plant.' },
+    { kind: 'number', key: 'stemWidthMm', label: 'Stem width', min: 0, max: 6, step: 0.1, unit: 'mm',
+      hint: 'The stem and its scrolls are drawn as a tapering outline of this width. Zero draws them as a single hairline instead. Set the layer to fill to flood the stem solid.' },
     { kind: 'choice', key: 'midrib', label: 'Leaf detail', options: [
       { value: 'on', label: 'Midrib' },
       { value: 'off', label: 'Plain' },
@@ -419,6 +407,7 @@ const foliage: OrnamentSpec = {
     const leafEvery = Math.max(0, Math.round(num(opts, 'leafEvery', 3)));
     const leafSize = Math.max(0.5, num(opts, 'leafSizeMm', 15));
     const tendrilsPer = Math.max(0, Math.round(num(opts, 'tendrils', 1)));
+    const stemWidth = Math.max(0, num(opts, 'stemWidthMm', 1.2));
     const midrib = str(opts, 'midrib', 'on') === 'on';
     const mirrored = str(opts, 'symmetry', 'none') === 'mirror';
     const seed = Math.round(num(opts, 'seed', 1));
@@ -436,6 +425,13 @@ const foliage: OrnamentSpec = {
      * than leaving a bare margin down one side.
      */
     const strokes: Pt2[][] = [];
+    /*
+     * The stem and its scrolls are held back as centrelines with a weight
+     * each, and turned into outlines only once the fit to the region is
+     * known: a stem width is asked for in millimetres, and until the scale
+     * is settled a millimetre is not a distance in this space.
+     */
+    const vine: Array<{ pts: Pt2[]; w0: number; w1: number }> = [];
 
     /*
      * Nothing is drawn over something already there.
@@ -546,34 +542,62 @@ const foliage: OrnamentSpec = {
     const ends: Array<{ p: Pt2; dir: number }> = [];
     if (!tip.curl) ends.push({ p: [x, y], dir });
     if (!tail.curl) ends.push({ p: [0, 0], dir: -SWEEP / 2 + Math.PI });
-    strokes.push(spine);
+    // Thickest at the root and thinning along its length, the way a stem
+    // grows and the way every carved one is cut.
+    vine.push({ pts: spine, w0: 1, w1: 0.32 });
 
     /*
-     * A leaf: two cubics meeting at a point, with a shoulder near the base.
+     * A leaf: a midrib bent into a slight sickle with a width profile hung off
+     * it, and every leaf rolls its own.
      *
-     * Cubics rather than quadratics because a leaf has both — a full shoulder
-     * and a fine tip — and one control point cannot do both; a quadratic leaf
-     * comes out a lozenge.
+     * They used to be one shape at one size ratio, and a row of identical
+     * leaves is the same stencil look the scroll plans were fixed for. The
+     * profile is t^a·(1−t)^b: `a` says how full the shoulder is near the base,
+     * `b` how finely the tip draws out, so a fat bay leaf and a narrow willow
+     * one come off the same two numbers. A pair of cubics gave one leaf a
+     * shoulder and a point but no family of them.
      */
     const addLeaf = (px: number, py: number, d0: number, size: number): void => {
-      if (!room(px + Math.cos(d0) * size * 0.5, py + Math.sin(d0) * size * 0.5, size * 0.42)) return;
-      const tip: Pt2 = [px + Math.cos(d0) * size, py + Math.sin(d0) * size];
-      const nx = Math.cos(d0 + Math.PI / 2);
-      const ny = Math.sin(d0 + Math.PI / 2);
-      const belly = size * 0.42;
-      const sh = size * 0.26;
-      const base: Pt2 = [px, py];
-      const side = (sgn: number): Pt2[] => sampleCubic(
-        base,
-        [px + Math.cos(d0) * sh + nx * belly * sgn, py + Math.sin(d0) * sh + ny * belly * sgn],
-        [px + Math.cos(d0) * size * 0.76 + nx * belly * 0.5 * sgn, py + Math.sin(d0) * size * 0.76 + ny * belly * 0.5 * sgn],
-        tip, 16
-      );
-      strokes.push([...side(1), ...side(-1).reverse()]);
+      // The tip exponent is kept at or above one: below it the profile meets
+      // the tip with a vertical tangent, which draws a leaf with a rounded
+      // end — a petal, not a leaf.
+      const a = 0.55 + rnd() * 0.4;
+      const b = 1 + rnd() * 0.9;
+      const belly = size * (0.28 + rnd() * 0.2);
+      // One flank fuller than the other, which is what a leaf seen at an angle
+      // does and what stops a row of them reading as machined.
+      const lean = 0.78 + rnd() * 0.44;
+      const bendAmp = (rnd() - 0.5) * 0.36 * size;
+      const cos0 = Math.cos(d0);
+      const sin0 = Math.sin(d0);
+      const S = 20;
+      const mid: Pt2[] = [];
+      for (let i = 0; i <= S; i++) {
+        const t = i / S;
+        const along = t * size;
+        const across = bendAmp * 4 * t * (1 - t);
+        mid.push([px + along * cos0 - across * sin0, py + along * sin0 + across * cos0]);
+      }
+      if (!room(mid[S / 2][0], mid[S / 2][1], size * 0.42)) return;
+      // Normalised on its own fattest point, so `belly` means the same width
+      // whatever shoulder and tip it was rolled.
+      const tPeak = a / (a + b);
+      const peak = Math.pow(tPeak, a) * Math.pow(1 - tPeak, b);
+      const flank = (sgn: number, amp: number): Pt2[] => mid.map(([mx, my], i) => {
+        const t = i / S;
+        const prev = mid[Math.max(0, i - 1)];
+        const next = mid[Math.min(S, i + 1)];
+        const tx = next[0] - prev[0];
+        const ty = next[1] - prev[1];
+        const m = Math.hypot(tx, ty) || 1;
+        const w = (belly * Math.pow(t, a) * Math.pow(1 - t, b)) / peak;
+        return [mx + (-ty / m) * w * sgn * amp, my + (tx / m) * w * sgn * amp] as Pt2;
+      });
+      strokes.push([...flank(1, 1), ...flank(-1, lean).reverse()]);
       if (midrib) {
         // Stops short of the tip: a rib drawn into the point crosses the
         // outline and burns a blot where the two meet.
-        strokes.push([base, [px + Math.cos(d0) * size * 0.78, py + Math.sin(d0) * size * 0.78]]);
+        strokes.push(mid.slice(0, Math.round(S * 0.8)));
       }
     };
 
@@ -682,7 +706,11 @@ const foliage: OrnamentSpec = {
         run.push(total);
         bend.push(Math.sign(bouts[bout].turn) || 1);
       }
-      strokes.push(pts);
+      // An arm leaves the stem thinner than the stem is and all but vanishes
+      // at the eye. That is not only how it grows: an outline wider than the
+      // curl it is drawn round crosses itself, and the eye is the tightest
+      // curvature in the whole drawing.
+      vine.push({ pts, w0: 0.68, w1: 0.1 });
       const atLength = (f: number): number => {
         const want = f * total;
         let i = 1;
@@ -765,22 +793,64 @@ const foliage: OrnamentSpec = {
       }
     }
 
-    // Fit everything to the region: the drawing decides its own proportions and
-    // the panel decides its size.
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const st of strokes) for (const [px, py] of st) {
-      if (px < minX) minX = px; if (px > maxX) maxX = px;
-      if (py < minY) minY = py; if (py > maxY) maxY = py;
-    }
-    const spanW = mirrored ? region.width / 2 : region.width;
-    const pad = Math.min(spanW, region.height) * 0.04;
-    const k = Math.min(
-      (spanW - pad * 2) / Math.max(1e-6, maxX - minX),
-      (region.height - pad * 2) / Math.max(1e-6, maxY - minY)
-    );
-    const offX = pad + (spanW - pad * 2 - (maxX - minX) * k) / 2 - minX * k;
-    const offY = pad + (region.height - pad * 2 - (maxY - minY) * k) / 2 - minY * k;
+    /*
+     * Fit everything to the region: the drawing decides its own proportions
+     * and the panel decides its size.
+     *
+     * Twice over, because the stem width is a figure in millimetres and the
+     * scale is what turns it into a distance here. The first fit is measured
+     * on the centrelines, the outlines are built at that scale, and the second
+     * fit takes in the half-width the outlines added. The two differ by that
+     * half-width, so the stem comes out a hair under the width asked for
+     * rather than the drawing coming out a hair over the region.
+     */
+    const fit = (): { k: number; offX: number; offY: number } => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      const all = [...strokes, ...vine.map((v) => v.pts)];
+      for (const st of all) for (const [px, py] of st) {
+        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
+      }
+      const spanW = mirrored ? region.width / 2 : region.width;
+      const pad = Math.min(spanW, region.height) * 0.04;
+      const k = Math.min(
+        (spanW - pad * 2) / Math.max(1e-6, maxX - minX),
+        (region.height - pad * 2) / Math.max(1e-6, maxY - minY)
+      );
+      return {
+        k,
+        offX: pad + (spanW - pad * 2 - (maxX - minX) * k) / 2 - minX * k,
+        offY: pad + (region.height - pad * 2 - (maxY - minY) * k) / 2 - minY * k,
+      };
+    };
 
+    /** A centreline to a closed outline, the half-width tapering along it. */
+    const thicken = (pts: Pt2[], hw0: number, hw1: number): Pt2[] => {
+      const n = pts.length;
+      const left: Pt2[] = [];
+      const right: Pt2[] = [];
+      for (let i = 0; i < n; i++) {
+        const prev = pts[Math.max(0, i - 1)];
+        const next = pts[Math.min(n - 1, i + 1)];
+        const tx = next[0] - prev[0];
+        const ty = next[1] - prev[1];
+        const m = Math.hypot(tx, ty) || 1;
+        const hw = hw0 + (hw1 - hw0) * (i / (n - 1));
+        left.push([pts[i][0] + (-ty / m) * hw, pts[i][1] + (tx / m) * hw]);
+        right.push([pts[i][0] - (-ty / m) * hw, pts[i][1] - (tx / m) * hw]);
+      }
+      return [...left, ...right.reverse(), left[0]];
+    };
+
+    if (stemWidth > 0) {
+      const hw = stemWidth / 2 / Math.max(1e-6, fit().k);
+      for (const v of vine) strokes.push(thicken(v.pts, hw * v.w0, hw * v.w1));
+    } else {
+      for (const v of vine) strokes.push(v.pts);
+    }
+    vine.length = 0;
+
+    const { k, offX, offY } = fit();
     const drawn = strokes
       .map((st) => polyline(st.map(([px, py]) => [px * k + offX, py * k + offY] as Pt2)))
       .filter(Boolean)
