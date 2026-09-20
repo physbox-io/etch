@@ -827,52 +827,88 @@ const foliage: OrnamentSpec = {
     };
 
     /*
-     * A second line run alongside the stem, the way a pen draws a stem: not a
-     * closed outline, just a companion that keeps roughly the same distance,
-     * wanders a little, and closes onto the line as it nears the tip.
+     * A second line run alongside the stem, the way a pen draws one: two
+     * strokes that set off from the same place, hold roughly the same
+     * distance apart, and come back together at the far end.
      *
      * It was an outline first — two exact offsets joined round the ends —
-     * which drew a hollow ribbon rather than a stem, and made the engraved
-     * line weight look like it belonged to the ornament when it belongs to
-     * the layer. It also stops where the curl gets tighter than the gap it is
-     * holding: past that the companion has to cross itself, and an eye is the
-     * tightest curvature in the drawing.
+     * which drew a hollow ribbon rather than a stem, and put the engraved
+     * line weight inside the ornament when it belongs to the element. Then it
+     * was left open at the root, and a line that only joins at one end is not
+     * a doubled stem, it is a stray mark beside one. It closes at both.
+     *
+     * Where the line curls tighter than the gap it is holding the companion
+     * would have to cross itself, so it stands out of those stretches rather
+     * than stopping at the first one: the stem's own end curls are the
+     * tightest thing in the drawing and sit at both ends of it, and breaking
+     * at the first tight point left the whole stem single while every arm got
+     * its second line.
+     *
+     * Which side it runs, how wide, and how the gap breathes are all rolled,
+     * so the seed changes the doubling as it changes everything else.
      */
-    const companion = (pts: Pt2[], g0: number, g1: number, phase: number): Pt2[] => {
+    const companion = (
+      pts: Pt2[], g0: number, g1: number, side: number, scale: number, phase: number
+    ): Pt2[][] => {
       const n = pts.length;
-      const out: Pt2[] = [];
-      for (let i = 1; i < n - 1; i++) {
+      const gapAt = (i: number): number => {
         const t = i / (n - 1);
-        const prev = pts[i - 1];
-        const next = pts[i + 1];
+        return (g0 + (g1 - g0) * t) * scale * (1 + 0.16 * Math.sin(phase * 6.283 + t * 9));
+      };
+      const normals: Pt2[] = [];
+      const open: boolean[] = [];
+      for (let i = 0; i < n; i++) {
+        const prev = pts[Math.max(0, i - 1)];
+        const next = pts[Math.min(n - 1, i + 1)];
         const tx = next[0] - prev[0];
         const ty = next[1] - prev[1];
         const m = Math.hypot(tx, ty) || 1;
+        normals.push([-ty / m, tx / m]);
         // Local radius: how far the heading swings over how far it travels.
-        const d0 = Math.atan2(pts[i][1] - prev[1], pts[i][0] - prev[0]);
-        const d1 = Math.atan2(next[1] - pts[i][1], next[0] - pts[i][0]);
-        let dth = d1 - d0;
+        const a0 = Math.atan2(pts[i][1] - prev[1], pts[i][0] - prev[0]);
+        const a1 = Math.atan2(next[1] - pts[i][1], next[0] - pts[i][0]);
+        let dth = a1 - a0;
         while (dth > Math.PI) dth -= Math.PI * 2;
         while (dth < -Math.PI) dth += Math.PI * 2;
         const radius = Math.abs(dth) > 1e-6 ? m / 2 / Math.abs(dth) : Infinity;
-        let g = g0 + (g1 - g0) * t;
-        // Hand-drawn, not offset: the gap breathes along the length.
-        g *= 1 + 0.16 * Math.sin(phase * 6.283 + t * 9);
-        // Closing onto the line near the tip, and left open at the root — a
-        // line that converges at both ends is an outline again.
-        if (t > 0.8) g *= (1 - t) / 0.2;
-        if (radius < g * 3) break;
-        out.push([pts[i][0] + (-ty / m) * g, pts[i][1] + (tx / m) * g]);
+        open.push(i > 0 && i < n - 1 && radius > gapAt(i) * 3);
       }
-      return out;
+      const runs: Pt2[][] = [];
+      let i = 0;
+      while (i < n) {
+        if (!open[i]) { i++; continue; }
+        let j = i;
+        while (j + 1 < n && open[j + 1]) j++;
+        // Short stretches are not a doubled stem, they are dashes beside one.
+        if (j - i >= 12) {
+          const span = j - i;
+          const out: Pt2[] = [];
+          for (let m2 = i; m2 <= j; m2++) {
+            const u = (m2 - i) / span;
+            // Closing onto the line at both ends of the run, over a fifth of
+            // it each side, smoothly enough that the join reads as one stroke
+            // splitting rather than as a corner.
+            const ramp = Math.min(1, Math.min(u, 1 - u) / 0.2);
+            const ease = ramp * ramp * (3 - 2 * ramp);
+            const g = gapAt(m2) * ease * side;
+            out.push([pts[m2][0] + normals[m2][0] * g, pts[m2][1] + normals[m2][1] * g]);
+          }
+          runs.push(out);
+        }
+        i = j + 1;
+      }
+      return runs;
     };
 
     for (const v of vine) strokes.push(v.pts);
     if (doubleGap > 0) {
       const g = doubleGap / Math.max(1e-6, fit().k);
       for (const v of vine) {
-        const alongside = companion(v.pts, g * v.w0, g * v.w1, rnd());
-        if (alongside.length > 3) strokes.push(alongside);
+        const side = rnd() < 0.5 ? -1 : 1;
+        const scale = 0.85 + rnd() * 0.3;
+        for (const run of companion(v.pts, g * v.w0, g * v.w1, side, scale, rnd())) {
+          strokes.push(run);
+        }
       }
     }
     vine.length = 0;
