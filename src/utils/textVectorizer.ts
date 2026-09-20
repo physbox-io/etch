@@ -158,42 +158,34 @@ export async function loadFont(family: string, weight: string = '400'): Promise<
 }
 
 /**
- * Outline path for a text element, in the element's LOCAL coordinates.
- *
- * The canvas draws text with dominant-baseline="hanging", so local y=0 is the
- * top of the em box; the baseline is placed at the font's ascender to match.
- */
-/**
- * Cleans path commands produced by opentype.js.
- *
- * 1. Replaces NaN or invalid numbers with 0.
- * 2. Clamps coordinates within `threshold` of zero to 0. This works around a
- *    bug in opentype.js's `toPathData()` packing logic: when a coordinate is a
- *    tiny negative float (e.g. -1.776e-15 from baseline scaling), opentype.js
- *    omits the space separator because `-1.776e-15 < 0` is true, but then
- *    rounds it to "0". Without a leading minus sign or space, the previous
- *    coordinate and "0" merge (e.g. `L2.25000`), breaking the SVG path parser
- *    and causing browser text vector rendering to halt mid-string.
- */
-/**
  * Cleans path commands produced by opentype.js and ensures all contours are closed.
  *
  * 1. Replaces NaN or invalid numbers with 0.
- * 2. Clamps coordinates within `threshold` of zero to 0. This works around a
- *    bug in opentype.js's `toPathData()` packing logic: when a coordinate is a
- *    tiny negative float (e.g. -1.776e-15 from baseline scaling), opentype.js
- *    omits the space separator because `-1.776e-15 < 0` is true, but then
- *    rounds it to "0". Without a leading minus sign or space, the previous
- *    coordinate and "0" merge (e.g. `L2.25000`), breaking the SVG path parser
- *    and causing browser text vector rendering to halt mid-string.
- * 3. Ensures every open contour sequence starting with `M` ends with `Z` before
+ * 2. Rounds every coordinate to the same `decimalPlaces` that `toPathData()`
+ *    will print at. This is not tidiness: opentype.js rounds with
+ *    `Math.round(decimalPart + "e+" + places)`, and when the fractional part is
+ *    a denormal crumb left by baseline scaling — 7.000000000000001 has a
+ *    fractional part of 8.88e-16 — JavaScript stringifies it in exponential
+ *    notation and the concatenation becomes "8.88e-16e+4", which parses to NaN.
+ *    One glyph in a word is then emitted as `Q3.55 NaN 3.57 7.31`: the whole
+ *    string fails validation, layout falls back to per-glyph, and that glyph is
+ *    dropped on its own — "Tom Grek" was machined as "Tom Gre". Rounding here
+ *    hands opentype.js a fractional part it can print, and it is font- and
+ *    size-independent, so it is not a fix for one letter of one family.
+ * 3. Clamps coordinates within half a print step of zero to 0, and normalises
+ *    -0 to 0. `toPathData()` omits the space separator ahead of a negative
+ *    number because `v < 0`, then prints -0 and -1.776e-15 alike as "0"; with
+ *    no minus sign and no space the previous coordinate and "0" merge (e.g.
+ *    `L2.25000`), breaking the SVG path parser mid-string.
+ * 4. Ensures every open contour sequence starting with `M` ends with `Z` before
  *    the next `M` or end-of-path, preventing stroke gaps when SVG renders unfilled paths.
  */
-function sanitizePathCommands(
+export function sanitizePathCommands(
   commands: OTPathCommand[],
   decimalPlaces = 4
 ): OTPathCommand[] {
-  const threshold = Math.pow(10, -decimalPlaces) / 2;
+  const scaleFactor = Math.pow(10, decimalPlaces);
+  const threshold = 1 / scaleFactor / 2;
   const newCommands: OTPathCommand[] = [];
   let hasCommandsInContour = false;
 
@@ -204,7 +196,13 @@ function sanitizePathCommands(
     for (const key of ['x', 'y', 'x1', 'y1', 'x2', 'y2'] as const) {
       const value = cmd[key];
       if (typeof value !== 'number') continue;
-      if (Number.isNaN(value) || Math.abs(value) < threshold) cmd[key] = 0;
+      if (Number.isNaN(value) || Math.abs(value) < threshold) {
+        cmd[key] = 0;
+        continue;
+      }
+      const rounded = Math.round(value * scaleFactor) / scaleFactor;
+      // Object.is, because -0 survives the rounding and prints without its sign.
+      cmd[key] = Object.is(rounded, -0) ? 0 : rounded;
     }
 
     if (cmd.type === 'M') {
