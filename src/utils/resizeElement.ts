@@ -1,5 +1,6 @@
 import type { EtchElement } from '../types/etch';
 import { getLocalBBox, localToBed } from './geom';
+import { isGeneratedField } from './generatedField';
 
 /** The element's size at the moment the drag started, captured by the canvas. */
 export interface ResizeStart {
@@ -19,6 +20,10 @@ export interface ResizeStart {
  * state and pushed history while the shape on screen never moved.
  */
 export function isScaleDriven(el: EtchElement): boolean {
+  // A hinge or a perforation is a path, but it is sized rather than scaled:
+  // the field is re-laid at the new `w`/`h` with the same spacing. See
+  // `generatedField.ts`.
+  if (isGeneratedField(el)) return false;
   return !['circle', 'ellipse', 'line', 'rect', 'image'].includes(el.type);
 }
 
@@ -185,6 +190,19 @@ export function computeResize(
 
   const localBefore = getLocalBBox(el);
   const anchorBefore = anchorCorner(localBefore, handle);
+
+  /*
+   * A generated field is asked for by size, not scaled. The store re-lays it at
+   * the new region with the same spacing, so dragging a corner changes how many
+   * slits or holes there are and never how big they are. Stretching the path
+   * instead is what made a hinge impossible to drag to a size: every frame
+   * changed the pattern as well as the box.
+   */
+  if (isGeneratedField(el)) {
+    const { w, h } = sized(start.elW, start.elH, signW * ldx, signH * ldy, 1);
+    const localAfterField = getLocalBBox({ ...el, w, h } as EtchElement);
+    return anchorTo(el, { w, h }, anchorBefore, anchorCorner(localAfterField, handle));
+  }
 
   let patch: Partial<EtchElement>;
   switch (el.type) {

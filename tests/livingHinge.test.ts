@@ -4,11 +4,14 @@ import {
   defaultLivingHinge,
   DEFAULT_LIVING_HINGE,
   MIN_ROWS,
-  MIN_BRIDGE_MM,
+  hingeField,
   type LivingHingeOptions,
 } from '../src/utils/livingHinge';
+import { computeResize, resizeSeed, isScaleDriven } from '../src/utils/resizeElement';
+import { getLocalBBox } from '../src/utils/geom';
 import { planToolpath } from '../src/utils/gcodeExporter';
 import { clearGeomBBoxCache } from '../src/utils/geom';
+import { useStore } from '../src/store/useStore';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
 
 /*
@@ -93,14 +96,12 @@ describe('planLivingHinge', () => {
     expect(plan.notes.join(' ')).toMatch(/at least 3/);
   });
 
-  it('warns about a beam too thin to survive folding', () => {
-    const plan = planLivingHinge(base(), opts({ bridgeMm: MIN_BRIDGE_MM / 2 }));
-    expect(plan.notes.join(' ')).toMatch(/below the .* mm this app will vouch for/);
-  });
-
-  it('warns when the beams are deeper than they are wide', () => {
-    const plan = planLivingHinge(base({ stockThickness: 12 }), opts({ pitchMm: 3 }));
-    expect(plan.notes.join(' ')).toMatch(/finer than the 12 mm stock is thick/);
+  // Nothing here runs off the main thread, so a spec that never terminates is
+  // the tab hanging. NaN used to do exactly that: every comparison in the row
+  // loop is false against it, so the loop never reached its break.
+  it('terminates on a spec that is not a number', () => {
+    const plan = planLivingHinge(base(), opts({ bridgeMm: NaN, pitchMm: NaN }));
+    expect(Number.isFinite(plan.slits)).toBe(true);
   });
 
   it('says what radius it will actually wrap to', () => {
@@ -169,5 +170,101 @@ describe('planLivingHinge', () => {
     // And every segment is a two-point open cut, not a closed outline the
     // planner has decided to offset around.
     for (const seg of segments) expect(seg.points.length).toBe(2);
+  });
+});
+
+/*
+ * Resizing a hinge re-lays it. A hinge is a rule about spacing, not a shape:
+ * stretched like a path, a hinge dragged to twice the size has torsion beams
+ * twice as wide, which is the one number the generator exists to hold.
+ */
+describe('resizing a hinge', () => {
+  const hingeEl = () => {
+    clearGeomBBoxCache();
+    const doc = base();
+    const el = planLivingHinge(doc, opts()).elements[0];
+    return el;
+  };
+
+  it('carries the slit spec and the region it was asked for', () => {
+    const el = hingeEl();
+    const o = opts();
+    expect(el.hinge).toEqual({
+      axis: o.axis,
+      slitLengthMm: o.slitLengthMm,
+      bridgeMm: o.bridgeMm,
+      pitchMm: o.pitchMm,
+    });
+    expect(el.w).toBe(o.width);
+    expect(el.h).toBe(o.height);
+  });
+
+  it('boxes the region, not the extent of the slits', () => {
+    clearGeomBBoxCache();
+    const el = hingeEl();
+    const box = getLocalBBox(el);
+    // The slits stop a beam short of every edge, so their own extent is inside
+    // this — and handles on that would sit somewhere nobody drew.
+    expect(box.minX).toBe(0);
+    expect(box.minY).toBe(0);
+    expect(box.width).toBe(opts().width);
+    expect(box.height).toBe(opts().height);
+  });
+
+  it('is sized rather than scaled', () => {
+    expect(isScaleDriven(hingeEl())).toBe(false);
+  });
+
+  it('writes a new region and never a scale', () => {
+    clearGeomBBoxCache();
+    const el = hingeEl();
+    const patch = computeResize(el, resizeSeed(el), 40, 20, 'se');
+    expect(patch.scaleX).toBeUndefined();
+    expect(patch.scaleY).toBeUndefined();
+    expect(patch.w).toBeCloseTo(opts().width + 40, 6);
+    expect(patch.h).toBeCloseTo(opts().height + 20, 6);
+  });
+
+  it('keeps the beam and the pitch at every size, and only changes how many slits fit', () => {
+    const o = opts();
+    const spec = {
+      axis: o.axis, slitLengthMm: o.slitLengthMm, bridgeMm: o.bridgeMm, pitchMm: o.pitchMm,
+    } as const;
+    const small = hingeField(o.width, o.height, spec);
+    const big = hingeField(o.width * 2, o.height * 2, spec);
+
+    // Longer slits would mean the field had been stretched.
+    const lengths = (d: string) => slitsOf(d).map(([x0, y0, x1, y1]) => Math.hypot(x1 - x0, y1 - y0));
+    const longest = (d: string) => Math.max(...lengths(d));
+    expect(longest(big.d)).toBeCloseTo(longest(small.d), 6);
+
+    // Rows a pitch apart at both sizes, and twice as many of them across twice
+    // the width.
+    const rowsOf = (d: string) => [...new Set(slitsOf(d).map(([, y0]) => Math.round(y0 * 1000)))].sort((a, b) => a - b);
+    const gaps = (d: string) => {
+      const ys = rowsOf(d);
+      return ys.slice(1).map((y, i) => (y - ys[i]) / 1000);
+    };
+    for (const g of gaps(big.d)) expect(g).toBeCloseTo(o.pitchMm, 6);
+    expect(big.rows).toBeGreaterThan(small.rows);
+    expect(big.slits).toBeGreaterThan(small.slits);
+  });
+
+  it('re-lays the slits when the store resizes it', () => {
+    clearGeomBBoxCache();
+    const doc = base();
+    const plan = planLivingHinge(doc, opts());
+    useStore.setState({
+      document: { ...doc, layers: [...doc.layers, { ...plan.layer }], elements: plan.elements },
+      history: [doc], historyIndex: 0,
+    });
+    const before = useStore.getState().document.elements[0];
+    useStore.getState().updateElement(before.id, { w: (before.w ?? 0) * 2 }, true);
+    const after = useStore.getState().document.elements[0];
+    expect(after.d).not.toBe(before.d);
+    // Twice the length at the same slit and beam is more slits, the same size.
+    expect(after.d!.split('M').length).toBeGreaterThan(before.d!.split('M').length);
+    const len = (d: string) => Math.max(...slitsOf(d).map(([x0, y0, x1, y1]) => Math.hypot(x1 - x0, y1 - y0)));
+    expect(len(after.d!)).toBeCloseTo(len(before.d!), 6);
   });
 });

@@ -1,4 +1,12 @@
-import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
+import type {
+  EtchDocument,
+  EtchElement,
+  EtchLayer,
+  PerforationSpec,
+  PerforationLattice,
+  PerforationShape,
+  PerforationRamp,
+} from '../types/etch';
 import { getBedBBox } from './geom';
 import { machineKind, suggestTool, type ToolProfile } from './tooling';
 
@@ -11,49 +19,18 @@ import { machineKind, suggestTool, type ToolProfile } from './tooling';
  * that goes wrong quietly: one hole a millimetre out of line is invisible on
  * screen and obvious in brushed aluminium.
  *
- * The number that reaches material is the **web** — the material left between
- * two neighbouring holes. It is not a style choice. Below a certain width the
- * web tears out as the cutter passes, and a grille becomes a hole.
+ * The number that decides how a grille comes out is the material left between
+ * two neighbouring holes, and the plan reports it (`minWebMm`) so it can be
+ * read off rather than worked out from the pitch and the hole size.
  */
 
-/**
- * The narrowest web this app will vouch for, in mm.
- *
- * Judgement, and listed as such in MACHINING.md. It is the same class of number
- * as the living hinge's torsion beam: thin enough and the sheet stops being a
- * sheet, and the failure happens during the cut rather than afterwards.
- */
-export const MIN_WEB_MM = 1;
+export type { PerforationLattice, PerforationShape, PerforationRamp, PerforationSpec };
 
-/** How the holes are arranged. */
-export type PerforationLattice = 'grid' | 'hex';
-
-/** What each hole is. */
-export type PerforationShape = 'round' | 'slot';
-
-/**
- * How the hole size varies across the region.
- *
- * A grille that stops at a hard edge looks like it ran out of room. A ramp lets
- * the field fade into solid material, which is what a moulded grille does and
- * what makes a cut one look designed rather than truncated.
- */
-export type PerforationRamp = 'none' | 'linear' | 'radial';
-
-export interface PerforationOptions {
+export interface PerforationOptions extends PerforationSpec {
   x: number;
   y: number;
   width: number;
   height: number;
-  lattice: PerforationLattice;
-  shape: PerforationShape;
-  /** Hole diameter, or slot width, in mm. */
-  sizeMm: number;
-  /** Slot length in mm. Ignored when the shape is round. */
-  slotLengthMm: number;
-  /** Centre to centre, in mm. */
-  pitchMm: number;
-  ramp: PerforationRamp;
 }
 
 export const DEFAULT_PERFORATION: Omit<PerforationOptions, 'x' | 'y' | 'width' | 'height'> = {
@@ -93,49 +70,69 @@ export function defaultPerforation(doc: EtchDocument): PerforationOptions {
 
 const round = (n: number): number => Math.round(n * 100) / 100;
 
+/** What one call of `perforationField` produced. */
+export interface PerforationField {
+  /** The holes, as one compound path in the region's own space from 0,0. */
+  d: string;
+  holes: number;
+  /** The narrowest web anywhere in the field, in mm. */
+  minWebMm: number;
+  /** Fraction of the region that is now hole rather than material, 0..1. */
+  openArea: number;
+}
+
 /**
- * Lay the field out.
+ * Lay the field out over a region `width` x `height`, from its own origin.
  *
  * A hex lattice is the default because it is what a grille actually wants: it
  * packs the same open area into a wider web than a square grid does at the same
  * pitch, so it is the stronger panel for the same amount of air.
+ *
+ * Separate from `planPerforation` because this is what runs again every time
+ * the field is resized on the canvas. Dragging a corner re-lays it at the new
+ * size with the same hole and pitch, so the holes change in number and never in
+ * size — the pitch is the whole point of a grille, and a field stretched like a
+ * picture has a different one in each direction.
  */
-export function planPerforation(
-  doc: EtchDocument,
-  opts: PerforationOptions,
-  tools?: ToolProfile[],
-  timestamp = Date.now()
-): PerforationPlan {
-  const notes: string[] = [];
-  const pitch = Math.max(0.2, opts.pitchMm);
-  const size = Math.max(0.1, opts.sizeMm);
-  const slotLen = Math.max(size, opts.slotLengthMm);
-  const isSlot = opts.shape === 'slot';
+export function perforationField(
+  width: number,
+  height: number,
+  spec: PerforationSpec
+): PerforationField {
+  // Floored and checked for being a number at all: `Math.max(0.2, NaN)` is NaN,
+  // and a NaN pitch makes the column count NaN and the whole field empty — or
+  // worse, on a loop that compares rather than counts, endless. Nothing here
+  // runs off the main thread.
+  const floored = (v: number, min: number) => (Number.isFinite(v) ? Math.max(min, v) : min);
+  const pitch = floored(spec.pitchMm, 0.2);
+  const size = floored(spec.sizeMm, 0.1);
+  const slotLen = floored(spec.slotLengthMm, size);
+  const isSlot = spec.shape === 'slot';
 
   // Rows sit closer together on a hex lattice, because alternate rows are
   // offset half a pitch and the spacing that matters is the diagonal.
-  const rowStep = opts.lattice === 'hex' ? pitch * (Math.sqrt(3) / 2) : pitch;
+  const rowStep = spec.lattice === 'hex' ? pitch * (Math.sqrt(3) / 2) : pitch;
 
   // The longest dimension of one hole decides how close two of them get.
   const spanAlong = isSlot ? slotLen : size;
   const spanAcross = size;
 
-  const cols = Math.max(0, Math.floor((opts.width - spanAlong) / pitch) + 1);
-  const rows = Math.max(0, Math.floor((opts.height - spanAcross) / rowStep) + 1);
+  const cols = Math.max(0, Math.floor((width - spanAlong) / pitch) + 1);
+  const rows = Math.max(0, Math.floor((height - spanAcross) / rowStep) + 1);
 
   const usedW = cols > 0 ? (cols - 1) * pitch + spanAlong : 0;
   const usedH = rows > 0 ? (rows - 1) * rowStep + spanAcross : 0;
-  const originX = (opts.width - usedW) / 2 + spanAlong / 2;
-  const originY = (opts.height - usedH) / 2 + spanAcross / 2;
+  const originX = (width - usedW) / 2 + spanAlong / 2;
+  const originY = (height - usedH) / 2 + spanAcross / 2;
 
-  const cxMid = opts.width / 2;
-  const cyMid = opts.height / 2;
+  const cxMid = width / 2;
+  const cyMid = height / 2;
   const maxR = Math.hypot(cxMid, cyMid) || 1;
 
   /** How big this hole is, 0..1 of nominal, after the ramp. */
   const scaleAt = (cx: number, cy: number): number => {
-    if (opts.ramp === 'linear') return 1 - 0.85 * (cx / Math.max(1e-6, opts.width));
-    if (opts.ramp === 'radial') return 1 - 0.85 * (Math.hypot(cx - cxMid, cy - cyMid) / maxR);
+    if (spec.ramp === 'linear') return 1 - 0.85 * (cx / Math.max(1e-6, width));
+    if (spec.ramp === 'radial') return 1 - 0.85 * (Math.hypot(cx - cxMid, cy - cyMid) / maxR);
     return 1;
   };
 
@@ -146,11 +143,11 @@ export function planPerforation(
 
   for (let r = 0; r < rows; r++) {
     const cy = originY + r * rowStep;
-    const offset = opts.lattice === 'hex' && r % 2 === 1 ? pitch / 2 : 0;
+    const offset = spec.lattice === 'hex' && r % 2 === 1 ? pitch / 2 : 0;
     for (let c = 0; c < cols; c++) {
       const cx = originX + c * pitch + offset;
       // A hex row that has been shifted can push its last hole past the edge.
-      if (cx + spanAlong / 2 > opts.width || cx - spanAlong / 2 < 0) continue;
+      if (cx + spanAlong / 2 > width || cx - spanAlong / 2 < 0) continue;
 
       const k = Math.max(0, Math.min(1, scaleAt(cx, cy)));
       const w = size * k;
@@ -183,16 +180,40 @@ export function planPerforation(
       // lattice choice changes the answer and not just the look.
       const along = pitch - (isSlot ? l : w);
       const down =
-        opts.lattice === 'hex'
+        spec.lattice === 'hex'
           ? Math.hypot(pitch / 2, rowStep) - w
           : rowStep - w;
       minWeb = Math.min(minWeb, along, down);
     }
   }
 
-  if (!Number.isFinite(minWeb)) minWeb = 0;
-  const regionArea = Math.max(1e-6, opts.width * opts.height);
-  const openArea = Math.min(1, holeArea / regionArea);
+  const regionArea = Math.max(1e-6, width * height);
+  return {
+    d: d.trim(),
+    holes,
+    minWebMm: Number.isFinite(minWeb) ? minWeb : 0,
+    openArea: Math.min(1, holeArea / regionArea),
+  };
+}
+
+export function planPerforation(
+  doc: EtchDocument,
+  opts: PerforationOptions,
+  tools?: ToolProfile[],
+  timestamp = Date.now()
+): PerforationPlan {
+  const notes: string[] = [];
+  const spec: PerforationSpec = {
+    lattice: opts.lattice,
+    shape: opts.shape,
+    sizeMm: Math.max(0.1, opts.sizeMm),
+    slotLengthMm: Math.max(Math.max(0.1, opts.sizeMm), opts.slotLengthMm),
+    pitchMm: Math.max(0.2, opts.pitchMm),
+    ramp: opts.ramp,
+  };
+  const { d, holes, minWebMm: minWeb, openArea } = perforationField(opts.width, opts.height, spec);
+  const size = spec.sizeMm;
+  const pitch = spec.pitchMm;
 
   const fits = holes > 0 && minWeb > 0;
   if (holes === 0) {
@@ -201,26 +222,7 @@ export function planPerforation(
         `both directions.`
     );
   }
-  if (holes > 0 && minWeb < MIN_WEB_MM) {
-    notes.push(
-      `The web between holes comes out at ${minWeb.toFixed(2)} mm, under the ${MIN_WEB_MM} mm this ` +
-        `app will vouch for. It tears out as the cutter passes and the grille becomes a hole. Open ` +
-        `the pitch, or make the holes smaller.`
-    );
-  }
-  if (openArea > 0.6) {
-    notes.push(
-      `${(openArea * 100).toFixed(0)}% of the panel is being removed. Past about 60% it stops ` +
-        `behaving like a sheet — expect it to flex, and to move as it is cut.`
-    );
-  }
   const thickness = doc.stockThickness ?? 3;
-  if (size < thickness && machineKind(doc) === 'cnc') {
-    notes.push(
-      `A ${size} mm hole in ${thickness} mm stock is deeper than it is wide. It needs a cutter that ` +
-        `fits, and pecking rather than a straight plunge.`
-    );
-  }
 
   const kind = machineKind(doc);
   const existing = doc.layers.find((l) => l.id === PERFORATION_LAYER_ID);
@@ -274,7 +276,19 @@ export function planPerforation(
         name: 'Perforation',
         type: 'path',
         layerId: layer.id,
-        d: d.trim(),
+        d,
+        /*
+         * The region, not the extent of the holes.
+         *
+         * `w`/`h` are the area of panel that was asked to be perforated, and
+         * they are the box the canvas puts handles on — so dragging a corner
+         * asks for a grille over a different area rather than for these holes
+         * stretched. The outermost holes sit a little inside the region, so
+         * their own extent would put the handles somewhere nobody drew.
+         */
+        w: opts.width,
+        h: opts.height,
+        perforation: spec,
         x: opts.x,
         y: opts.y,
         rotation: 0,

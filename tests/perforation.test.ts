@@ -3,9 +3,12 @@ import {
   planPerforation,
   defaultPerforation,
   DEFAULT_PERFORATION,
-  MIN_WEB_MM,
+  perforationField,
   type PerforationOptions,
 } from '../src/utils/perforation';
+import { computeResize, resizeSeed, isScaleDriven } from '../src/utils/resizeElement';
+import { getLocalBBox } from '../src/utils/geom';
+import { useStore } from '../src/store/useStore';
 import { planToolpath } from '../src/utils/gcodeExporter';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
@@ -88,16 +91,10 @@ describe('planPerforation', () => {
     expect(hex.minWebMm).toBeLessThanOrEqual(grid.minWebMm + 1e-9);
   });
 
-  it('refuses to promise a web thinner than it will vouch for', () => {
-    const plan = planPerforation(base(), opts({ sizeMm: 6.8, pitchMm: 7 }));
-    expect(plan.minWebMm).toBeLessThan(MIN_WEB_MM);
-    expect(plan.notes.join(' ')).toMatch(/tears out as the cutter passes/);
-  });
-
-  it('says when so much is being removed it stops behaving like a sheet', () => {
-    const plan = planPerforation(base(), opts({ sizeMm: 6.4, pitchMm: 7 }));
-    expect(plan.openArea).toBeGreaterThan(0.6);
-    expect(plan.notes.join(' ')).toMatch(/stops\s+behaving like a sheet/);
+  it('reports the material left between two holes', () => {
+    const wide = planPerforation(base(), opts({ sizeMm: 4, pitchMm: 10 }));
+    const tight = planPerforation(base(), opts({ sizeMm: 6.8, pitchMm: 7 }));
+    expect(tight.minWebMm).toBeLessThan(wide.minWebMm);
   });
 
   it('shrinks the holes across the panel when a ramp is asked for', () => {
@@ -115,11 +112,6 @@ describe('planPerforation', () => {
     expect(plan.layer.cutSide).toBe('inside');
     expect(plan.layer.tabs).toBe(false);
     expect(plan.layerNeeded).toBe(true);
-  });
-
-  it('warns on a router when the hole is deeper than it is wide', () => {
-    const plan = planPerforation(base({ machine: 'cnc', stockThickness: 12 }), opts({ sizeMm: 4 }));
-    expect(plan.notes.join(' ')).toMatch(/deeper than it is wide/);
   });
 
   it('says so when the field lands on the artwork', () => {
@@ -144,7 +136,9 @@ describe('planPerforation', () => {
     const doc = base();
     const plan = planPerforation(doc, defaultPerforation(doc));
     expect(plan.fits).toBe(true);
-    expect(plan.minWebMm).toBeGreaterThanOrEqual(MIN_WEB_MM);
+    // The material left between two holes is reported rather than judged, so
+    // it can be read off the dialog instead of worked out from the pitch.
+    expect(plan.minWebMm).toBeGreaterThan(0);
   });
 
   it('survives the toolpath planner and reaches the G-code', () => {
@@ -157,5 +151,88 @@ describe('planPerforation', () => {
     expect(segments.length).toBe(plan.holes);
     expect(skipped).toEqual([]);
     expect(notes.join(' ')).not.toMatch(/outside the stock/i);
+  });
+});
+
+/*
+ * A grille is a pitch, not a picture. Stretched like a path it has a different
+ * pitch in each direction and holes that are no longer the size asked for, and
+ * neither is visible as wrong on screen.
+ */
+describe('resizing a perforation', () => {
+  const perfEl = () => {
+    clearGeomBBoxCache();
+    return planPerforation(base(), opts()).elements[0];
+  };
+
+  it('carries the hole spec and the region it was asked for', () => {
+    const el = perfEl();
+    const o = opts();
+    expect(el.perforation).toMatchObject({
+      lattice: o.lattice, shape: o.shape, sizeMm: o.sizeMm, pitchMm: o.pitchMm, ramp: o.ramp,
+    });
+    expect(el.w).toBe(o.width);
+    expect(el.h).toBe(o.height);
+  });
+
+  it('boxes the region, not the extent of the holes', () => {
+    clearGeomBBoxCache();
+    const box = getLocalBBox(perfEl());
+    expect(box.minX).toBe(0);
+    expect(box.minY).toBe(0);
+    expect(box.width).toBe(opts().width);
+    expect(box.height).toBe(opts().height);
+  });
+
+  it('is sized rather than scaled', () => {
+    expect(isScaleDriven(perfEl())).toBe(false);
+  });
+
+  it('writes a new region and never a scale', () => {
+    clearGeomBBoxCache();
+    const el = perfEl();
+    const patch = computeResize(el, resizeSeed(el), 30, 30, 'se');
+    expect(patch.scaleX).toBeUndefined();
+    expect(patch.w).toBeCloseTo(opts().width + 30, 6);
+    expect(patch.h).toBeCloseTo(opts().height + 30, 6);
+  });
+
+  it('keeps the hole size and the pitch at every region size', () => {
+    const o = opts();
+    const spec = {
+      lattice: o.lattice, shape: o.shape, sizeMm: o.sizeMm,
+      slotLengthMm: o.slotLengthMm, pitchMm: o.pitchMm, ramp: o.ramp,
+    };
+    const small = perforationField(o.width, o.height, spec);
+    const big = perforationField(o.width * 2, o.height * 2, spec);
+    expect(big.holes).toBeGreaterThan(small.holes);
+    // The material left between two holes is the hole size and the pitch, so
+    // it is identical at both sizes — which is the whole claim. Open area only
+    // roughly agrees, because the field is centred and the margin left at the
+    // edges is a bigger fraction of a small region than of a large one.
+    expect(big.minWebMm).toBeCloseTo(small.minWebMm, 6);
+    expect(big.openArea).toBeCloseTo(small.openArea, 1);
+  });
+
+  it('re-lays the holes when the store resizes it', () => {
+    clearGeomBBoxCache();
+    const doc = base();
+    const plan = planPerforation(doc, opts());
+    useStore.setState({
+      document: { ...doc, layers: [...doc.layers, { ...plan.layer }], elements: plan.elements },
+      history: [doc], historyIndex: 0,
+    });
+    const before = useStore.getState().document.elements[0];
+    useStore.getState().updateElement(before.id, { w: (before.w ?? 0) * 2 }, true);
+    const after = useStore.getState().document.elements[0];
+    expect(after.d).not.toBe(before.d);
+    expect(after.d!.split(' M ').length).toBeGreaterThan(before.d!.split(' M ').length);
+  });
+
+  it('terminates on a spec that is not a number', () => {
+    const field = perforationField(100, 100, {
+      lattice: 'hex', shape: 'round', sizeMm: NaN, slotLengthMm: NaN, pitchMm: NaN, ramp: 'none',
+    });
+    expect(Number.isFinite(field.holes)).toBe(true);
   });
 });

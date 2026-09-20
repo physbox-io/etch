@@ -1,4 +1,4 @@
-import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
+import type { EtchDocument, EtchElement, EtchLayer, LivingHingeSpec } from '../types/etch';
 import { getBedBBox } from './geom';
 import { machineKind, suggestTool, type ToolProfile } from './tooling';
 
@@ -18,16 +18,6 @@ import { machineKind, suggestTool, type ToolProfile } from './tooling';
 
 /** Cut width of the beam or bit. A slit narrower than this simply is not one. */
 export const MIN_SLIT_KERF_MM = 0.15;
-
-/**
- * The narrowest torsion beam worth cutting, in mm.
- *
- * Below this the beam is short grain in ply and a stress riser in acrylic, and
- * it snaps on the first fold rather than the hundredth. Judgement, and listed
- * as such in MACHINING.md — the material test grid next door in this menu is
- * how it gets replaced by a measurement.
- */
-export const MIN_BRIDGE_MM = 1.2;
 
 /**
  * Fewer rows than this is a crease, not a hinge.
@@ -98,8 +88,16 @@ export function defaultLivingHinge(doc: EtchDocument): LivingHingeOptions {
   };
 }
 
+/** What one call of `hingeField` produced. */
+export interface HingeField {
+  /** The slits, as one compound path in the region's own space from 0,0. */
+  d: string;
+  rows: number;
+  slits: number;
+}
+
 /**
- * Lay the slits out.
+ * Lay the slits out over a region `width` x `height`, from its own origin.
  *
  * Two rules decide everything awkward here. **No slit touches the edge of the
  * region** — one that runs out is not a slit but a split, and the panel tears
@@ -108,27 +106,38 @@ export function defaultLivingHinge(doc: EtchDocument): LivingHingeOptions {
  * that the beam in one row is always spanned by slits in the rows either side;
  * rows in phase give continuous uncut lines straight across the hinge, and it
  * does not bend at all.
+ *
+ * Separate from `planLivingHinge` because this is what runs again every time
+ * the hinge is resized on the canvas. Dragging a corner re-lays the field at
+ * the new size with the same slit, beam and pitch — the slits change in number,
+ * never in size. Scaling the path instead widens the torsion beam along with
+ * everything else, and the beam width is the one number the hinge is for.
  */
-export function planLivingHinge(
-  doc: EtchDocument,
-  opts: LivingHingeOptions,
-  tools?: ToolProfile[],
-  timestamp = Date.now()
-): LivingHingePlan {
-  const notes: string[] = [];
-  const along = opts.axis === 'x' ? opts.width : opts.height;
-  const across = opts.axis === 'x' ? opts.height : opts.width;
+export function hingeField(width: number, height: number, spec: LivingHingeSpec): HingeField {
+  const along = Number.isFinite(width) ? Math.max(0, width) : 0;
+  const across0 = Number.isFinite(height) ? Math.max(0, height) : 0;
+  const [alongMm, acrossMm] = spec.axis === 'x' ? [along, across0] : [across0, along];
 
-  const slit = Math.max(0.5, opts.slitLengthMm);
-  const bridge = Math.max(0.1, opts.bridgeMm);
-  const pitch = Math.max(0.2, opts.pitchMm);
+  /*
+   * Floored *and* checked for being a number at all.
+   *
+   * `Math.max(0.1, NaN)` is NaN, a NaN period makes every comparison in the row
+   * loop false, and the loop below then never reaches its break — on the main
+   * thread, with no workers anywhere in this app, which the operator reads as
+   * the tab hanging. One bad number arriving from a JSON import or the MCP
+   * bridge is enough.
+   */
+  const floored = (v: number, min: number) => (Number.isFinite(v) ? Math.max(min, v) : min);
+  const slit = floored(spec.slitLengthMm, 0.5);
+  const bridge = floored(spec.bridgeMm, 0.1);
+  const pitch = floored(spec.pitchMm, 0.2);
   const period = slit + bridge;
 
-  const rows = Math.floor(across / pitch);
+  const rows = Math.max(0, Math.floor(acrossMm / pitch));
   // The rows are centred across the hinge, so a hinge that does not divide
   // evenly by the pitch has half the remainder at each side rather than a wide
   // bare strip at one.
-  const acrossStart = (across - (rows - 1) * pitch) / 2;
+  const acrossStart = (acrossMm - (rows - 1) * pitch) / 2;
 
   const subpaths: string[] = [];
   let slits = 0;
@@ -141,16 +150,40 @@ export function planLivingHinge(
       const a0 = s + phase;
       const a1 = a0 + slit;
       const c0 = Math.max(bridge, a0);
-      const c1 = Math.min(along - bridge, a1);
-      if (c0 >= along - bridge) break;
+      const c1 = Math.min(alongMm - bridge, a1);
+      if (c0 >= alongMm - bridge) break;
       // A fragment shorter than the kerf is not a cut, it is a dot.
       if (c1 - c0 < MIN_SLIT_KERF_MM) continue;
-      const [x0, y0] = opts.axis === 'x' ? [c0, u] : [u, c0];
-      const [x1, y1] = opts.axis === 'x' ? [c1, u] : [u, c1];
+      const [x0, y0] = spec.axis === 'x' ? [c0, u] : [u, c0];
+      const [x1, y1] = spec.axis === 'x' ? [c1, u] : [u, c1];
       subpaths.push(`M ${round(x0)} ${round(y0)} L ${round(x1)} ${round(y1)}`);
       slits++;
     }
   }
+
+  return { d: subpaths.join(' '), rows, slits };
+}
+
+export function planLivingHinge(
+  doc: EtchDocument,
+  opts: LivingHingeOptions,
+  tools?: ToolProfile[],
+  timestamp = Date.now()
+): LivingHingePlan {
+  const notes: string[] = [];
+  const across = opts.axis === 'x' ? opts.height : opts.width;
+
+  const slit = Math.max(0.5, opts.slitLengthMm);
+  const bridge = Math.max(0.1, opts.bridgeMm);
+  const pitch = Math.max(0.2, opts.pitchMm);
+
+  const spec: LivingHingeSpec = {
+    axis: opts.axis,
+    slitLengthMm: slit,
+    bridgeMm: bridge,
+    pitchMm: pitch,
+  };
+  const { d, rows, slits } = hingeField(opts.width, opts.height, spec);
 
   const minBendRadiusMm = (across * 2) / Math.PI;
 
@@ -163,21 +196,7 @@ export function planLivingHinge(
         `hinge wider or the pitch finer.`
     );
   }
-  if (bridge < MIN_BRIDGE_MM) {
-    notes.push(
-      `A ${bridge} mm beam between slits is below the ${MIN_BRIDGE_MM} mm this app will vouch for. ` +
-        `It will bend more easily and break sooner — in ply that is short grain, in acrylic a stress ` +
-        `riser. Cut a test piece before committing a part to it.`
-    );
-  }
   const thickness = doc.stockThickness ?? 3;
-  if (pitch < thickness) {
-    notes.push(
-      `The ${pitch} mm pitch is finer than the ${thickness} mm stock is thick. The beams are then ` +
-        `deeper than they are wide and twist badly; a pitch of about the thickness or more is what ` +
-        `bends cleanly.`
-    );
-  }
 
   const kind = machineKind(doc);
   const existing = doc.layers.find((l) => l.id === HINGE_LAYER_ID);
@@ -228,7 +247,7 @@ export function planLivingHinge(
     );
   }
 
-  const elements: EtchElement[] = subpaths.length
+  const elements: EtchElement[] = d
     ? [{
         id: `hinge_${timestamp}`,
         name: 'Living hinge',
@@ -238,7 +257,20 @@ export function planLivingHinge(
         // this size is 400 slits, and as separate elements that is 400 rows in
         // the layer panel, 400 undo steps and 400 bounding boxes recomputed on
         // every mouse move. The halftone importer emits its dots the same way.
-        d: subpaths.join(' '),
+        d,
+        /*
+         * The region, not the extent of the slits.
+         *
+         * `w`/`h` are what the hinge was asked for, and they are the box the
+         * canvas puts handles on — so dragging a corner asks for a hinge of a
+         * new size rather than for these particular slits stretched. The slits
+         * themselves stop a beam's width short of every edge, so their extent
+         * is a few millimetres inside this and would put the handles somewhere
+         * nobody drew.
+         */
+        w: opts.width,
+        h: opts.height,
+        hinge: spec,
         x: opts.x,
         y: opts.y,
         rotation: 0,

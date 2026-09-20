@@ -169,6 +169,23 @@ export function getLocalBBox(el: EtchElement): BBox {
     case 'star':
     case 'bezier':
     case 'erase': {
+      /*
+       * A generated field — a living hinge, a perforation — is boxed by the
+       * region it was asked for, not by the extent of its slits or holes.
+       * Those stop short of the edge by design, so the geometry alone is a few
+       * millimetres inside the region: handles on it would sit somewhere
+       * nobody drew, and a resize would be measured against that inset extent
+       * rather than against the size the operator typed. The check is inline
+       * rather than `isGeneratedField` so that nothing in here has to import
+       * the generators, which import this file.
+       */
+      if (el.hinge || el.perforation) {
+        minX = 0;
+        minY = 0;
+        width = el.w || 0;
+        height = el.h || 0;
+        break;
+      }
       const pts = pathD ? pathPoints(pathD) : [];
       if (pts.length > 0) ({ minX, minY, width, height } = boundsOf(pts));
       break;
