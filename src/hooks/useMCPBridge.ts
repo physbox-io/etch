@@ -164,6 +164,21 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           locked: l.locked,
           elementCount: byLayer.get(l.id) || 0,
         })),
+        /*
+         * Which elements make up one thing. Omitted entirely when nothing is
+         * grouped, rather than sent as an empty array, so the common summary
+         * does not grow a line that says nothing — and so an agent reading one
+         * can tell "no objects" from "this build has no objects".
+         */
+        ...((doc.objects ?? []).length
+          ? {
+              objects: doc.objects!.map((o) => ({
+                id: o.id,
+                name: o.name,
+                elementIds: doc.elements.filter((el) => el.objectId === o.id).map((el) => el.id),
+              })),
+            }
+          : {}),
         elements: doc.elements.map((el) => {
           const b = getBedBBox(el);
           return {
@@ -178,6 +193,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
             width: round3(b.width),
             height: round3(b.height),
             rotation: el.rotation || 0,
+            ...(el.objectId ? { objectId: el.objectId } : {}),
             ...(el.type === 'text' ? { text: (el as { text?: string }).text } : {}),
           };
         }),

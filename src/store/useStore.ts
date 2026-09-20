@@ -3,6 +3,7 @@ import type {
   EtchDocument,
   EtchElement,
   EtchLayer,
+  EtchObject,
   ToolMode,
   MandalaSettings,
   BedProbeGrid,
@@ -22,8 +23,11 @@ import {
 import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type ToolProfile } from '../utils/tooling';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
+import { replanField } from '../utils/generatedField';
+import { groupElements, newObjectId, objectNameFor, pruneObjects, ungroupObject } from '../utils/objects';
 import type { LivingHingePlan } from '../utils/livingHinge';
 import type { PerforationPlan } from '../utils/perforation';
+import type { OrnamentPlan } from '../utils/ornaments';
 import { getBedBBox } from '../utils/geom';
 import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import type { RegistrationPlan } from '../utils/registration';
@@ -93,9 +97,12 @@ export function sanitizeDoc(doc: EtchDocument): EtchDocument {
     const rest = { ...doc, elements };
     delete rest.sheets;
     delete rest.sheetIndex;
-    return rest;
+    return pruneObjects(rest);
   }
-  return touched ? { ...doc, elements } : doc;
+  // An element naming an object the file does not contain, or an object with
+  // nothing left in it, both read as clutter in the panel and neither is
+  // visible in the drawing. Every entry point comes through here.
+  return pruneObjects(touched ? { ...doc, elements } : doc);
 }
 
 /**
@@ -348,15 +355,21 @@ interface EtchStore {
   isLivingHingeOpen: boolean;
   /** The perforation generator — see `utils/perforation.ts`. */
   isPerforationOpen: boolean;
+  /** Which ornament's dialog is open, if any — see `utils/ornaments.ts`. */
+  ornamentId: string | null;
   toggleTestGridModal: () => void;
   toggleRegistrationModal: () => void;
   togglePackModal: () => void;
   toggleLivingHingeModal: () => void;
   togglePerforationModal: () => void;
+  openOrnament: (id: string) => void;
+  closeOrnament: () => void;
   /** Adds a hinge's slits to the open document, as one undo step. */
   addLivingHinge: (plan: LivingHingePlan) => void;
   /** Adds a perforation field to the open document, as one undo step. */
   addPerforation: (plan: PerforationPlan) => void;
+  /** Adds an ornament to the open document, as one undo step. */
+  addOrnament: (plan: OrnamentPlan) => void;
   openImageImport: (file?: File) => void;
   closeImageImport: () => void;
   toggleSettings: () => void;
@@ -424,6 +437,16 @@ interface EtchStore {
   commitHistory: () => void;
   deleteElements: (ids: string[]) => void;
   duplicateSelected: () => void;
+  /**
+   * Puts the selection in a new object. Fewer than two elements is not a group
+   * and does nothing — the button says so rather than making an object of one.
+   */
+  groupSelected: () => void;
+  /** Dissolves an object. Its elements stay exactly where they are. */
+  ungroupSelected: (objectId: string) => void;
+  renameObject: (objectId: string, name: string) => void;
+  /** Selects everything in an object, which is what clicking its row does. */
+  selectObject: (objectId: string) => void;
   centerSelected: (axis: 'horizontal' | 'vertical') => void;
   /**
    * Union / subtract / intersect / exclude the selection into one path.
@@ -698,6 +721,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   isPackOpen: false,
   isLivingHingeOpen: false,
   isPerforationOpen: false,
+  ornamentId: null,
   isImageImportOpen: false,
   imageImportFile: null,
   isSettingsOpen: false,
@@ -1204,6 +1228,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   togglePackModal: () => set((state) => ({ isPackOpen: !state.isPackOpen })),
   toggleLivingHingeModal: () => set((state) => ({ isLivingHingeOpen: !state.isLivingHingeOpen })),
   togglePerforationModal: () => set((state) => ({ isPerforationOpen: !state.isPerforationOpen })),
+  openOrnament: (id) => set({ ornamentId: id }),
+  closeOrnament: () => set({ ornamentId: null }),
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
@@ -1332,6 +1358,23 @@ export const useStore = create<EtchStore>((set, get) => ({
     let newElements = document.elements.map((el) =>
       el.id === id ? { ...el, ...updates } : el
     );
+
+    /*
+     * A hinge or a perforation is a rule about spacing, not a shape, so
+     * resizing it re-lays the field instead of stretching it — see
+     * `generatedField.ts` for why that matters on material.
+     *
+     * Here rather than in `computeResize` because the sidebar, the MCP bridge
+     * and a future numeric field all reach the same state through this action,
+     * and a field that re-planned only when dragged would be two behaviours.
+     */
+    if ('w' in updates || 'h' in updates || 'hinge' in updates || 'perforation' in updates) {
+      newElements = newElements.map((el) => {
+        if (el.id !== id) return el;
+        const d = replanField(el);
+        return d === null ? el : { ...el, d };
+      });
+    }
 
     /*
       Attaching text to a path turns that path into a guide, so it moves onto a
@@ -1504,6 +1547,27 @@ export const useStore = create<EtchStore>((set, get) => ({
       return copy.id;
     };
 
+    /*
+     * Objects are remapped the same way, and for the same reason ids are: two
+     * sheets duplicated from one another name the same objects, and pulling a
+     * part across would otherwise attach it to the object of the same id on
+     * this sheet — a bracket from sheet three quietly joining the key tag on
+     * sheet one. Carried rather than dropped because an object is exactly the
+     * thing that says which of these newly-arrived elements go together, and a
+     * packed sheet is where that matters most.
+     */
+    const objects = [...(document.objects ?? [])];
+    const objectRemap = new Map<string, string>();
+    const objectFor = (tabId: string, source: EtchObject): string => {
+      const key = `${tabId}:${source.id}`;
+      const seen = objectRemap.get(key);
+      if (seen) return seen;
+      const id = newObjectId(objects.length);
+      objects.push({ ...source, id });
+      objectRemap.set(key, id);
+      return id;
+    };
+
     /** New id -> where it came from, so the source sheet can give it up. */
     const origin = new Map<string, { tabId: string; sourceId: string }>();
     const pool = new Map<string, EtchElement>();
@@ -1517,11 +1581,16 @@ export const useStore = create<EtchStore>((set, get) => ({
         for (const el of tab.document.elements) {
           const sourceLayer = tab.document.layers.find((l) => l.id === el.layerId);
           if (!sourceLayer || !sourceLayer.visible) continue;
+          const sourceObject = el.objectId
+            ? (tab.document.objects ?? []).find((o) => o.id === el.objectId)
+            : undefined;
           const copy: EtchElement = {
             ...el,
             id: `packed_${Date.now()}_${seq++}`,
             layerId: layerFor(sourceLayer),
           };
+          if (sourceObject) copy.objectId = objectFor(tab.id, sourceObject);
+          else delete copy.objectId;
           origin.set(copy.id, { tabId: tab.id, sourceId: el.id });
           foreign.push(copy);
           pool.set(copy.id, copy);
@@ -1577,7 +1646,10 @@ export const useStore = create<EtchStore>((set, get) => ({
     ];
 
     set({
-      document: { ...document, layers, elements },
+      // Pruned, because a part pulled in from another sheet that then found no
+      // room is left where it was — and its object would otherwise be listed
+      // here with nothing in it.
+      document: pruneObjects({ ...document, layers, elements, objects }),
       selectedIds: foreign.filter((el) => moved.has(el.id)).map((el) => el.id),
     });
     get().commitHistory();
@@ -1643,7 +1715,9 @@ export const useStore = create<EtchStore>((set, get) => ({
     const { document, history, historyIndex } = get();
     const newElements = document.elements.filter((el) => !ids.includes(el.id));
     // Deleting the text is one of the ways an anchor path stops being ridden.
-    const newDoc = releaseUnusedAnchors({ ...document, elements: newElements });
+    // Pruning is what keeps the objects panel from filling with rows for things
+    // that are no longer on the sheet.
+    const newDoc = pruneObjects(releaseUnusedAnchors({ ...document, elements: newElements }));
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
 
@@ -1667,6 +1741,15 @@ export const useStore = create<EtchStore>((set, get) => ({
     const { document, clipboard, history, historyIndex } = get();
     if (!clipboard || clipboard.length === 0) return;
 
+    // Several things pasted at once land in an object together, for the reason
+    // duplicating them does — and on the same terms, so Ctrl+V and Ctrl+D do
+    // not quietly differ. The clipboard crosses sheets, so the name is checked
+    // against the objects of the sheet being pasted into.
+    const objectId = clipboard.length > 1 ? newObjectId() : undefined;
+    const objectName = objectId
+      ? objectNameFor(document, clipboard.map((el) => el.id))
+      : '';
+
     const newIds: string[] = [];
     const updatedClipboard: EtchElement[] = [];
 
@@ -1681,6 +1764,8 @@ export const useStore = create<EtchStore>((set, get) => ({
         x: el.x + 5,
         y: el.y + 5,
       };
+      if (objectId) offsetEl.objectId = objectId;
+      else delete offsetEl.objectId;
 
       // Keep clipboard shifted so subsequent pastes offset progressively
       updatedClipboard.push({
@@ -1695,6 +1780,7 @@ export const useStore = create<EtchStore>((set, get) => ({
     const newDoc = {
       ...document,
       elements: [...document.elements, ...pastedElements],
+      objects: objectId ? [...(document.objects ?? []), { id: objectId, name: objectName }] : document.objects,
     };
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
@@ -1718,20 +1804,42 @@ export const useStore = create<EtchStore>((set, get) => ({
     const selected = document.elements.filter((el) => selectedIds.includes(el.id));
     if (selected.length === 0) return;
 
+    /*
+     * Copies of a multi-selection land in an object of their own.
+     *
+     * Duplicating several things at once is how anyone makes six of something,
+     * and the moment the sixth copy is down nothing on the sheet says which
+     * outline goes with which engraving any more — the copies overlap, and
+     * picking one apart from the pile is a job in itself. Grouping them at the
+     * point of copying is the only moment the app knows the answer for certain.
+     *
+     * A single element is not grouped: one thing is not a set of things, and an
+     * object per copy would be ninety rows in the panel saying nothing.
+     */
+    const objectId = selected.length > 1 ? newObjectId() : undefined;
+    const objectName = objectId ? objectNameFor(document, selectedIds) : '';
+
     const newIds: string[] = [];
     const copies: EtchElement[] = selected.map((el, i) => {
       const newId = `el_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
       newIds.push(newId);
-      return {
+      const copy: EtchElement = {
         ...JSON.parse(JSON.stringify(el)),
         id: newId,
         name: el.name.endsWith('Copy') ? el.name : `${el.name} Copy`,
         x: el.x + 5,
         y: el.y + 5,
       };
+      if (objectId) copy.objectId = objectId;
+      else delete copy.objectId;
+      return copy;
     });
 
-    const newDoc = { ...document, elements: [...document.elements, ...copies] };
+    const newDoc = {
+      ...document,
+      elements: [...document.elements, ...copies],
+      objects: objectId ? [...(document.objects ?? []), { id: objectId, name: objectName }] : document.objects,
+    };
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
 
@@ -1741,6 +1849,34 @@ export const useStore = create<EtchStore>((set, get) => ({
       historyIndex: newHistory.length - 1,
       selectedIds: newIds,
     });
+  },
+
+  groupSelected: () => {
+    const { document, selectedIds } = get();
+    const made = groupElements(document, selectedIds, objectNameFor(document, selectedIds));
+    if (!made) return;
+    set({ document: made.doc });
+    get().commitHistory();
+  },
+
+  ungroupSelected: (objectId) => {
+    const { document } = get();
+    if (!(document.objects ?? []).some((o) => o.id === objectId)) return;
+    set({ document: ungroupObject(document, objectId) });
+    get().commitHistory();
+  },
+
+  renameObject: (objectId, name) => {
+    const { document } = get();
+    const objects = (document.objects ?? []).map((o) => (o.id === objectId ? { ...o, name } : o));
+    // Transient, like every other text field: one undo entry per rename, not
+    // one per keystroke. The panel commits on blur.
+    set({ document: { ...document, objects } });
+  },
+
+  selectObject: (objectId) => {
+    const { document } = get();
+    set({ selectedIds: document.elements.filter((el) => el.objectId === objectId).map((el) => el.id) });
   },
 
   /**
@@ -2028,6 +2164,8 @@ export const useStore = create<EtchStore>((set, get) => ({
   addLivingHinge: (plan) => addGenerated(get, set, plan),
 
   addPerforation: (plan) => addGenerated(get, set, plan),
+
+  addOrnament: (plan) => addGenerated(get, set, plan),
 
   addRegistrationToAll: (build) => {
     const state = get();

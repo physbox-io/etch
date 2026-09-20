@@ -187,6 +187,46 @@ export interface BezierNode {
   handleOut?: { x: number; y: number };
 }
 
+/** How a perforation's holes are arranged. */
+export type PerforationLattice = 'grid' | 'hex';
+
+/** What each hole in a perforation is. */
+export type PerforationShape = 'round' | 'slot';
+
+/**
+ * How the hole size varies across a perforated region.
+ *
+ * A grille that stops at a hard edge looks like it ran out of room. A ramp lets
+ * the field fade into solid material, which is what a moulded grille does and
+ * what makes a cut one look designed rather than truncated.
+ */
+export type PerforationRamp = 'none' | 'linear' | 'radial';
+
+/** The numbers a perforation's holes are laid out from. See `perforation.ts`. */
+export interface PerforationSpec {
+  lattice: PerforationLattice;
+  shape: PerforationShape;
+  /** Hole diameter, or slot width, in mm. */
+  sizeMm: number;
+  /** Slot length in mm. Ignored when the shape is round. */
+  slotLengthMm: number;
+  /** Centre to centre, in mm. */
+  pitchMm: number;
+  ramp: PerforationRamp;
+}
+
+/** The numbers a living hinge's slits are laid out from. See `livingHinge.ts`. */
+export interface LivingHingeSpec {
+  /** The axis the panel folds about. The slits run parallel to it. */
+  axis: 'x' | 'y';
+  /** Length of one slit, along the bend axis. */
+  slitLengthMm: number;
+  /** Uncut material between consecutive slits in a row — the torsion beam. */
+  bridgeMm: number;
+  /** Distance between rows, across the bend. */
+  pitchMm: number;
+}
+
 export interface EtchElement {
   id: string;
   name: string;
@@ -234,6 +274,34 @@ export interface EtchElement {
   innerRadius?: number;
   outerRadius?: number;
   points?: Array<{ x: number; y: number }>;
+  /**
+   * A living hinge's slit spec, when this path is one.
+   *
+   * Carried on the element so the field can be **re-planned** rather than
+   * stretched. A hinge is not a shape, it is a rule about spacing: scaling the
+   * path widens the torsion beams and the pitch along with everything else, so
+   * a hinge dragged to twice the size is no longer the hinge that was asked
+   * for, and it fails the beam-width rule `livingHinge.ts` exists to enforce.
+   * With the spec here, `updateElement` regenerates the slits at the new `w`/
+   * `h` and the beam stays the beam.
+   *
+   * The type stays `path` for the same reason a star stays `star`: every
+   * consumer that samples a path — the planner, the exporter, the eraser,
+   * boolean ops — goes on working on the `d` it already reads.
+   */
+  hinge?: LivingHingeSpec;
+  /** A perforation's hole spec, when this path is one. Re-planned on resize
+   *  exactly as `hinge` is, and for the same reason: the pitch is the point. */
+  perforation?: PerforationSpec;
+  /**
+   * The object this element is part of, if any. See `EtchObject`.
+   *
+   * A plain string on the element rather than a list of children on the object,
+   * because every other thing in this app that owns elements — a layer, a
+   * sheet — is looked up from the element outward, and an element can only be
+   * in one object. The two directions cannot then disagree about who owns what.
+   */
+  objectId?: string;
   // text
   text?: string;
   fontFamily?: string;
@@ -309,6 +377,24 @@ export interface EtchElement {
    */
 }
 
+/**
+ * A named set of elements that belong together — a part, a keychain, a panel.
+ *
+ * Objects are *not* layers. A layer says what the machine does to a line; an
+ * object says which lines make up one thing, and a single object almost always
+ * spans several layers — an outline on the cut layer and the name engraved on
+ * it on the etch layer are the same keychain. That is why membership lives on
+ * the element and not on the layer.
+ *
+ * Nothing in the toolpath, the G-code or the planner reads objects: they are a
+ * way to find and move things in a drawing that has grown to ninety elements,
+ * and a job made of six objects cuts exactly as the same job made of none.
+ */
+export interface EtchObject {
+  id: string;
+  name: string;
+}
+
 export interface EtchDocument {
   id: string;
   name: string;
@@ -372,6 +458,14 @@ export interface EtchDocument {
   origin: 'top-left' | 'center' | 'bottom-left';
   layers: EtchLayer[];
   elements: EtchElement[];
+  /**
+   * The objects in this document, in the order they are listed.
+   *
+   * Absent in every document written before objects existed, and in every
+   * document nobody has grouped anything in — which is why it is optional
+   * rather than an empty array everything has to remember to create.
+   */
+  objects?: EtchObject[];
   selectedIds: string[];
   notecard?: string;
   /**
@@ -480,6 +574,14 @@ export interface MachineStatus {
    * on claiming the spot is lit after any of those.
    */
   guideSpot: boolean;
+  /** The controller reports the probe input closed right now (`Pn:P`). */
+  probePinActive: boolean;
+  /**
+   * The probe input has closed at least once on this connection. Continuity
+   * probes are refused until it has: a probe stops only when that circuit
+   * closes, and an unproved one drives the tool into the stock.
+   */
+  probeCircuitSeen: boolean;
   /**
    * Which machine this is, as stably as the controller can say.
    *

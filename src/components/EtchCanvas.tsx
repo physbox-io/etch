@@ -30,6 +30,7 @@ import { camWorker } from '../utils/camWorkerClient';
 import { fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
 import { BusyToast } from './BusyToast';
 import { computeResize, resizeSeed, clampScale, type ResizeHandle } from '../utils/resizeElement';
+import { isGeneratedField } from '../utils/generatedField';
 import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
 import {
   nodesToPath,
@@ -942,7 +943,13 @@ export const EtchCanvas: React.FC = () => {
             const p1y = anchorY + relY * syRatio;
 
             const updates: Partial<EtchElement> = {};
-            if (el0.type === 'rect') {
+            // A generated field in a group is still sized rather than scaled,
+            // or its spacing grows with the group and it stops being the hinge
+            // or grille that was asked for. The store re-lays it.
+            if (isGeneratedField(el0)) {
+              updates.w = Math.max(1, (el0.w ?? 0) * sxRatio);
+              updates.h = Math.max(1, (el0.h ?? 0) * syRatio);
+            } else if (el0.type === 'rect') {
               updates.w = Math.max(0.5, (el0.w ?? 40) * sxRatio);
               updates.h = Math.max(0.5, (el0.h ?? 25) * syRatio);
             } else if (el0.type === 'circle') {

@@ -3,6 +3,7 @@ import { useStore } from '../store/useStore';
 import { getLocalBBox } from '../utils/geom';
 import { SHAPE_KINDS, defaultsFor, type ShapeKind } from '../utils/parametricShapes';
 import { FontPicker } from './FontPicker';
+import { ObjectsPanel } from './ObjectsPanel';
 import { NumberInput } from '@physbox-io/ui';
 import type { LayerOperation, EtchLayer, MachinedLayer } from '../types/etch';
 import { isMachinedLayer } from '../types/etch';
@@ -1574,6 +1575,10 @@ export const PropertiesSidebar: React.FC = () => {
         </div>
       )}
       </div>
+
+      {/* What each shape is part of, between "what is this shape" above and
+          "what does the machine do to it" below. */}
+      <ObjectsPanel />
 
       {/* Layer Manager */}
       <div className="shrink-0 max-h-[45%] overflow-y-auto border-t border-slate-200 dark:border-slate-800/80 p-4">
