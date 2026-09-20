@@ -38,6 +38,7 @@ import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
 import { NumberInput } from '@physbox-io/ui';
+import { ProbeCircuitStatus } from './ProbeCircuitStatus';
 
 /**
  * Setting the job's origin on a live machine: jog the tool where you want it,
@@ -233,6 +234,7 @@ export const MachineWorkOriginPanel: React.FC<{
 
   const handleProbeBed = async () => {
     if (!bedBounds || !onProbeGrid) return;
+    setProbeMessage(null);
     setGridProgress({ done: 0, total: gridX * gridY });
     try {
       const grid = await webSerialManager.probeGrid(
@@ -255,6 +257,10 @@ export const MachineWorkOriginPanel: React.FC<{
         }
       );
       onProbeGrid(grid);
+    } catch (err) {
+      // A refused probe — circuit unproved, or an alarm mid-grid — is told in
+      // the same place a refused Z zero is.
+      setProbeMessage({ ok: false, text: (err as Error).message });
     } finally {
       // A grid that ends any other way — an alarm, a rejected command — must not
       // leave a prompt on screen whose buttons resolve a promise nobody awaits.
@@ -661,6 +667,7 @@ export const MachineWorkOriginPanel: React.FC<{
                 <span>{isProbingZ ? 'Probing…' : zZeroed ? 'Probe Z Again' : 'Probe Z Zero'}</span>
               </button>
             </div>
+            <ProbeCircuitStatus active={status.probePinActive} seen={status.probeCircuitSeen} />
 
             {/* The paper trick, offered second because it is measured by feel:
                 no probe circuit, so it is the only way to zero on wood, acrylic
@@ -803,6 +810,10 @@ export const MachineWorkOriginPanel: React.FC<{
               </button>
             ))}
           </div>
+
+          {probeMode === 'auto' && (
+            <ProbeCircuitStatus active={status.probePinActive} seen={status.probeCircuitSeen} />
+          )}
 
           {/* The assisted prompt. Jogging stays live underneath it, because
               winding the tool down onto the work *is* the measurement here. */}

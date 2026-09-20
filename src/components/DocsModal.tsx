@@ -865,10 +865,15 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           your glasses: it is a low power, not a safe one.
         </Step>
         <Step title="3️⃣ Zero Z with the touch plate">
-          Clip the probe lead to the tool, sit the plate on the stock's top face, park the tool a few
-          mm above it, enter your plate's real thickness, and press <strong>Probe Z Zero</strong>.
-          The tool descends slowly until the circuit closes, then work Z0 is set at the stock
-          surface. <strong>Remove the plate before cutting.</strong>
+          Clip the probe lead to the tool and sit the plate on the stock's top face. Then{' '}
+          <strong>prove the circuit</strong>: touch the plate to the tool by hand and watch the
+          probe light under the button turn green. Etch refuses to probe until it has seen the
+          circuit close once on this connection, and refuses while it reads closed with nothing
+          touching — a probe only stops when that circuit closes, and with the clip off or the tip
+          glazed the first stab would drive the tool 10 mm into the stock. Park the tool a few mm
+          above the plate, enter your plate's real thickness, and press{' '}
+          <strong>Probe Z Zero</strong>. The tool descends slowly until the circuit closes, then
+          work Z0 is set at the stock surface. <strong>Remove the plate before cutting.</strong>
         </Step>
         <Step title="3️⃣ …or zero Z by hand (the paper trick)">
           No touch plate, or stock that will not conduct? Open{' '}
@@ -887,11 +892,13 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         </Step>
       </Card>
       <Warn title="⚠️ If the probe misses">
-        A probe that runs its full travel without touching — clip off, lead broken, plate not under
-        the tool — <strong>does not set Z zero</strong>, and says so in red. That is deliberate:
-        zeroing on a missed probe would tell the machine the stock surface is wherever the tool ran
-        to, and the next cut would plunge that far past it. Fix the probe and run it again rather
-        than starting the job.
+        A probe that runs its full travel without touching — plate not under the tool, tool parked
+        more than 10 mm above it — <strong>does not set Z zero</strong>, and says so in red. That
+        is deliberate: zeroing on a missed probe would tell the machine the stock surface is
+        wherever the tool ran to, and the next cut would plunge that far past it. Fix the setup
+        and run it again rather than starting the job. The search is short on purpose, and the
+        circuit has to be proved by hand first, so a clip left off is caught before the tool
+        moves rather than 25 mm into the board.
       </Warn>
       <P>
         Requires a Chromium browser (WebSerial) and GRBL-compatible firmware — GRBL 1.1, FluidNC, or
@@ -917,7 +924,8 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           onto the surface), lifting to a 5 mm clearance between points. Nothing is asked of you
           while it runs. Because the tool moves and you do not, the probe circuit has to be live
           everywhere on the job: clip on the tool, other lead on the workpiece. Bare metal or a
-          copper-clad PCB is the case this is for.
+          copper-clad PCB is the case this is for. It refuses to start until the circuit has been
+          proved by hand on this connection — the same light as the touch-plate zero.
         </Step>
         <Step title="Assisted mode — any material">
           The machine parks over each point and waits. Slide a touch plate under the tool and{' '}

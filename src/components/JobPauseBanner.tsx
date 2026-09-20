@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore';
 import { machineKind } from '../utils/tooling';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
+import { ProbeCircuitStatus } from './ProbeCircuitStatus';
 
 /**
  * The one thing a parked job has to do: say so where nobody can miss it.
@@ -71,6 +72,13 @@ export const JobPauseBanner: React.FC = () => {
         <p className="text-[13px] leading-relaxed text-amber-900 dark:text-amber-100">
           {status.pauseMessage ?? 'Waiting for the operator.'}
         </p>
+
+        {/* The re-zero on the new tool is a probe, and a probe on a circuit the
+            new tool has not closed yet is refused — so say so here, before the
+            operator opens the panel and is refused there. */}
+        {!isLaser && (
+          <ProbeCircuitStatus active={status.probePinActive} seen={status.probeCircuitSeen} />
+        )}
 
         <div className="flex items-center gap-2 flex-wrap">
           <button

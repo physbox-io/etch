@@ -14,6 +14,7 @@ import {
   type MachineStatus as SharedMachineStatus,
   type OverrideStep,
   type ParsedJob,
+  type StatusReport,
   type TransportMode,
   type Vec3,
 } from '@physbox-io/machining';
@@ -116,6 +117,14 @@ export interface ProbeGridOptions {
 const TELEMETRY_INTERVAL_MS = 2000;
 
 /**
+ * How far a Z zeroing probe searches for the plate. The tool is parked a few
+ * millimetres above it first, so this only has to cover that gap; it used to
+ * be 25mm, which on a circuit that failed to close was a 25mm drive through
+ * the stock. A tool parked further up fails safely with ALARM:5.
+ */
+export const ZERO_SEARCH_MM = 10;
+
+/**
  * How long the guide spot may stay lit without being asked for again.
  *
  * It is a beam left burning on a stationary head at the operator's discretion,
@@ -174,6 +183,21 @@ export interface EtchMachineState extends SharedMachineState {
   machineName?: string;
   /** What the controller says it can do, from `$$`. Jobs are planned against it. */
   motion: MotionProfile;
+  /** The controller reports the probe input closed right now (`Pn:P`). */
+  probePinActive: boolean;
+  /**
+   * The probe input has been seen to close at least once on this connection.
+   *
+   * Every continuity probe here is a `G38.2`, which the controller stops on
+   * contact — so the one way a probe drives the bit through the stock is a
+   * circuit that never closes: a clip left off, a lead on the wrong side of
+   * the collet, a tip glazed from the last cut. Nothing in the controller can
+   * tell that apart from "not there yet" until the search runs out. Touching
+   * the bit to the plate by hand before the first stab proves the circuit, and
+   * probing is refused until that has happened. The hand-set zero and the
+   * assisted grid's "use current Z" involve no circuit and are not gated.
+   */
+  probeCircuitSeen: boolean;
 }
 
 export type StatusListener = (status: MachineStatus) => void;
@@ -254,7 +278,7 @@ export { describeGrblFault };
  * Everything about the protocol is the base class's. What is added here is
  * Etch's: see the header at the top of this file.
  */
-class WebSerialManager extends GrblMachine<EtchMachineState> {
+export class WebSerialManager extends GrblMachine<EtchMachineState> {
   /**
    * What the running job is cut on, so a T-number can be named at the pause.
    *
@@ -303,6 +327,8 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
       baudRate: 115200,
       guideSpot: false,
       motion: DEFAULT_MOTION_PROFILE,
+      probePinActive: false,
+      probeCircuitSeen: false,
     };
   }
 
@@ -311,7 +337,13 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
   // -------------------------------------------------------------------------
 
   protected async onConnected(): Promise<void> {
-    this.updateState({ baudRate: this.state.baudRate });
+    // A new link may be a different machine, or the same one with the clip
+    // moved. Any circuit this session believed in belonged to the old one.
+    this.updateState({
+      baudRate: this.state.baudRate,
+      probePinActive: false,
+      probeCircuitSeen: false,
+    });
     /*
      * Ask GRBL what it is.
      *
@@ -1100,6 +1132,43 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
   // Probing
   // -------------------------------------------------------------------------
 
+  /** Watches the probe input, so a circuit can be proved before it is relied on. */
+  protected onStatusReport(report: StatusReport): Partial<EtchMachineState> | void {
+    // GRBL lists the asserted pins only while one is asserted, so a report
+    // with no `Pn` field means the probe is open.
+    const probePinActive = /P/.test(report.pins ?? '');
+    const patch: Partial<EtchMachineState> = {};
+    if (probePinActive !== this.state.probePinActive) patch.probePinActive = probePinActive;
+    if (probePinActive && !this.state.probeCircuitSeen) patch.probeCircuitSeen = true;
+    if (Object.keys(patch).length) return patch;
+  }
+
+  /**
+   * Refuses to probe on a circuit nobody has proved. See `probeCircuitSeen`.
+   *
+   * The opposite state is refused too: an input that reads closed with the
+   * tool in the air is a lead shorted to the frame or `$6` set the wrong way,
+   * and the controller would alarm on the first stab (ALARM:4) rather than
+   * measure anything.
+   */
+  private assertProbeCircuit(): void {
+    if (this.state.probePinActive) {
+      throw new Error(
+        'The probe input already reads closed. If the tool is not touching the plate, the ' +
+          'lead is shorted or the probe pin invert ($6) is set the wrong way — either way a ' +
+          'probe cannot tell contact from open air, so it is not started.'
+      );
+    }
+    if (!this.state.probeCircuitSeen) {
+      throw new Error(
+        'The probe circuit has not been proved on this connection. Clip the continuity lead ' +
+          'on, touch the tool to the plate by hand until the probe light comes on, then try ' +
+          'again. A probe stops only when that circuit closes; without it the tool is driven ' +
+          'into the stock.'
+      );
+    }
+  }
+
   /**
    * Runs one probing move and returns the machine Z where the tip touched, or
    * null if it never made contact.
@@ -1132,11 +1201,18 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
    */
   public async zeroZ(
     touchPlateThicknessMm = DEFAULT_PLATE_THICKNESS_MM,
-    searchDepthMm = 25,
+    searchDepthMm = ZERO_SEARCH_MM,
     feedRate = 50
   ): Promise<{ success: boolean; message: string; machineZ?: number }> {
     if (!this.state.connected) {
       return { success: false, message: 'Not connected to a machine.' };
+    }
+    try {
+      this.assertProbeCircuit();
+    } catch (err) {
+      const message = (err as Error).message;
+      this.updateState({ lastError: message });
+      return { success: false, message };
     }
 
     await this.sendCommandAndWait('G21 G90');
@@ -1214,6 +1290,11 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
     // Nothing to assist with when there is no machine to drive: the simulated
     // map would otherwise stop and ask the operator about points it invented.
     const assisted = isLive && opts.mode === 'assisted' && !!opts.onPointReady;
+    // An unattended grid is a G38.2 at every point, so the circuit has to be
+    // proved before the first one. An assisted grid may never probe at all —
+    // the operator can wind the tool down onto wood at every point — so it is
+    // checked only when a point is actually answered with a probe.
+    if (isLive && !assisted) this.assertProbeCircuit();
     // Raw machine Z of each contact, or null where nothing was touched. Kept
     // absolute until the whole grid is in, because which point becomes the
     // reference is not known until then.
@@ -1251,6 +1332,7 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
             // offset.
             return (await this.refreshPosition()).mpos.z;
           }
+          this.assertProbeCircuit();
           return this.probePoint(20, 50);
         },
         onProgress: (done, total) => {
@@ -1381,6 +1463,8 @@ class WebSerialManager extends GrblMachine<EtchMachineState> {
       rapidOverride: s.overrides?.rapid ?? 100,
       spindleOverride: s.overrides?.spindle ?? 100,
       guideSpot: s.guideSpot,
+      probePinActive: s.probePinActive,
+      probeCircuitSeen: s.probeCircuitSeen,
       machineId: s.machineId,
       machineName: s.machineName,
       motion: s.motion,
