@@ -484,17 +484,6 @@ function canBeStroked(el: EtchElement): boolean {
   return true;
 }
 
-/**
- * The machining modes offered for an element, in the order they appear.
- *
- * "filled" is dropped for anything with no interior to hatch — an open path or
- * a line — rather than shown and refused, which is the same rule the panel has
- * always used, just no longer deciding whether the control exists at all.
- */
-function machiningModes(el: EtchElement): Array<'outline' | 'filled' | 'stroked'> {
-  return canBeFilled(el) ? ['outline', 'filled', 'stroked'] : ['outline', 'stroked'];
-}
-
 function canBeFilled(el: EtchElement): boolean {
   // An image is neither outlined nor hatched: it is swept as tone, and its own
   // controls are the sweep's.
@@ -611,6 +600,68 @@ export const PropertiesSidebar: React.FC = () => {
     selectedIds.length > 1
       ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
       : null;
+
+  /*
+    Layer, rotation, line thickness and machining apply to the *whole*
+    selection. They used to go only to the last-clicked element, so moving ten
+    parts onto the etch layer moved one, and the other nine were cut straight
+    through — with the panel showing the one it had moved. Name, position,
+    size and shape stay per element: ten parts given one name or one X is
+    never what anyone meant.
+  */
+  const selectedEls = React.useMemo(() => {
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    return selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+  }, [document.elements, selectedIds]);
+
+  /**
+   * Writes to every element in `targets`, as one undo step.
+   *
+   * `transient` is for number fields, which fire per keystroke: they write
+   * without history and commit on blur, or typing "12.5" into ten elements
+   * would leave forty entries on the undo stack.
+   */
+  const applyTo = (
+    targets: EtchElement[],
+    make: (el: EtchElement) => Partial<EtchElement>,
+    transient = false,
+  ) => {
+    if (targets.length === 0) return;
+    for (const el of targets) updateElement(el.id, make(el), true);
+    if (!transient) commitHistory();
+  };
+
+  /** The value every target shares, or null when they differ — shown as "Mixed". */
+  const sharedValue = <T,>(targets: EtchElement[], read: (el: EtchElement) => T): T | null => {
+    if (targets.length === 0) return null;
+    const first = read(targets[0]);
+    return targets.every((el) => read(el) === first) ? first : null;
+  };
+
+  /*
+    An eraser's stroke width is how much it rubs out, not a line thickness, so
+    the field edits erasers or everything else according to which the
+    last-clicked element is — never both at once.
+  */
+  const strokeTargets = selectedElement
+    ? selectedEls.filter((el) => (el.type === 'erase') === (selectedElement.type === 'erase'))
+    : [];
+  const machiningTargets = selectedEls.filter(canBeStroked);
+  const fillableTargets = machiningTargets.filter(canBeFilled);
+  const filledTargets = machiningTargets.filter((el) => el.machining === 'filled');
+  const sharedLayerId = sharedValue(selectedEls, (el) => el.layerId);
+  const sharedRotation = sharedValue(selectedEls, (el) => el.rotation ?? 0);
+  const sharedStrokeWidth = sharedValue(strokeTargets, (el) => el.strokeWidth);
+  const sharedMachining = sharedValue(machiningTargets, (el) => el.machining ?? 'outline');
+  const sharedHatchAngle = sharedValue(
+    filledTargets,
+    (el) => el.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
+  );
+  const sharedHatchSpacing = sharedValue(
+    filledTargets,
+    (el) => el.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING,
+  );
+  const sharedHatchOutline = sharedValue(filledTargets, (el) => el.hatchOutline !== false);
 
   /**
    * What the selected shape element is, and how big.
@@ -815,7 +866,8 @@ export const PropertiesSidebar: React.FC = () => {
               <span className="font-semibold text-slate-800 dark:text-slate-200">
                 {anchorElement.name}
               </span>
-              .
+              . Layer, rotation, line thickness and machining apply to all{' '}
+              {selectedIds.length}.
             </div>
           )}
 
@@ -1230,10 +1282,15 @@ export const PropertiesSidebar: React.FC = () => {
           <div>
             <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Layer</label>
             <select
-              value={selectedElement.layerId}
-              onChange={(e) => updateElement(selectedElement.id, { layerId: e.target.value })}
+              value={sharedLayerId ?? ''}
+              onChange={(e) => applyTo(selectedEls, () => ({ layerId: e.target.value }))}
               className="w-full mt-1 px-2 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100"
             >
+              {sharedLayerId === null && (
+                <option value="" disabled>
+                  Mixed — pick one to move all {selectedEls.length}
+                </option>
+              )}
               {document.layers.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.name} ({l.operation})
@@ -1247,8 +1304,16 @@ export const PropertiesSidebar: React.FC = () => {
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rotation (deg)</label>
               <NumberInput
-                value={selectedElement.rotation}
-                onChange={(val) => updateElement(selectedElement.id, { rotation: val ?? 0 })}
+                value={sharedRotation}
+                placeholder="Mixed"
+                allowEmpty={sharedRotation === null}
+                onChange={(val) => {
+                  // Empty is "leave them as they are": tabbing through a Mixed
+                  // field must not square every part up to 0.
+                  if (val === undefined && sharedRotation === null) return;
+                  applyTo(selectedEls, () => ({ rotation: val ?? 0 }), true);
+                }}
+                onCommit={commitHistory}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
@@ -1269,9 +1334,15 @@ export const PropertiesSidebar: React.FC = () => {
               <NumberInput
                 step={0.1}
                 min={0.1}
-                fallbackOnBlur={0.1}
-                value={selectedElement.strokeWidth}
-                onChange={(val) => updateElement(selectedElement.id, { strokeWidth: val ?? 0.1 })}
+                fallbackOnBlur={sharedStrokeWidth === null ? undefined : 0.1}
+                value={sharedStrokeWidth}
+                placeholder="Mixed"
+                allowEmpty={sharedStrokeWidth === null}
+                onChange={(val) => {
+                  if (val === undefined && sharedStrokeWidth === null) return;
+                  applyTo(strokeTargets, () => ({ strokeWidth: val ?? 0.1 }), true);
+                }}
+                onCommit={commitHistory}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
@@ -1494,29 +1565,38 @@ export const PropertiesSidebar: React.FC = () => {
 
           {/* Machining mode: trace the edge, engrave the interior, or cut the
               line at the width it was drawn. */}
-          {canBeStroked(selectedElement) && (
+          {machiningTargets.length > 0 && (
             <div className="space-y-2">
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
                 Machining
               </label>
               <div
                 className={`grid ${
-                  canBeFilled(selectedElement) ? 'grid-cols-3' : 'grid-cols-2'
+                  fillableTargets.length > 0 ? 'grid-cols-3' : 'grid-cols-2'
                 } gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700`}
               >
-                {machiningModes(selectedElement).map((mode) => {
-                  const active = (selectedElement.machining ?? 'outline') === mode;
+                {(fillableTargets.length > 0
+                  ? (['outline', 'filled', 'stroked'] as const)
+                  : (['outline', 'stroked'] as const)
+                ).map((mode) => {
+                  const active = sharedMachining === mode;
+                  // "Filled" goes only to the shapes that have an interior to
+                  // hatch; an open line in the selection keeps what it had.
+                  const targets = mode === 'filled' ? fillableTargets : machiningTargets;
                   return (
                     <button
                       key={mode}
                       onClick={() =>
-                        updateElement(selectedElement.id, {
+                        applyTo(targets, (el) => ({
                           machining: mode,
-                          hatchAngle:
-                            selectedElement.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
-                          hatchSpacing:
-                            selectedElement.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING,
-                        })
+                          hatchAngle: el.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
+                          hatchSpacing: el.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING,
+                        }))
+                      }
+                      title={
+                        mode === 'filled' && fillableTargets.length < machiningTargets.length
+                          ? `Fills the ${fillableTargets.length} closed shapes; open lines have no inside to fill`
+                          : undefined
                       }
                       className={`py-1 rounded-md font-semibold capitalize transition-colors cursor-pointer ${
                         active
@@ -1530,15 +1610,15 @@ export const PropertiesSidebar: React.FC = () => {
                 })}
               </div>
 
-              {selectedElement.machining === 'stroked' && (
+              {sharedMachining === 'stroked' && (
                 <p className="pl-2 border-l-2 border-slate-200 dark:border-slate-700 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
-                  Cut as a band {selectedElement.strokeWidth ?? 0} mm wide, in passes laid side by
+                  Cut as a band {sharedStrokeWidth ?? selectedElement.strokeWidth ?? 0} mm wide, in passes laid side by
                   side. Set the width under Stroke, above. This is area work — it takes
                   proportionally longer than scoring the line once.
                 </p>
               )}
 
-              {selectedElement.machining === 'filled' && (
+              {filledTargets.length > 0 && (
                 <div className="space-y-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -1547,12 +1627,14 @@ export const PropertiesSidebar: React.FC = () => {
                       </label>
                       <NumberInput
                         step={5}
-                        value={selectedElement.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE}
-                        onChange={(val) =>
-                          updateElement(selectedElement.id, {
-                            hatchAngle: val ?? 0,
-                          })
-                        }
+                        value={sharedHatchAngle}
+                        placeholder="Mixed"
+                        allowEmpty={sharedHatchAngle === null}
+                        onChange={(val) => {
+                          if (val === undefined && sharedHatchAngle === null) return;
+                          applyTo(filledTargets, () => ({ hatchAngle: val ?? 0 }), true);
+                        }}
+                        onCommit={commitHistory}
                         className={NUM_INPUT}
                       />
                     </div>
@@ -1563,13 +1645,15 @@ export const PropertiesSidebar: React.FC = () => {
                       <NumberInput
                         step={0.05}
                         min={0.02}
-                        fallbackOnBlur={0.02}
-                        value={selectedElement.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING}
-                        onChange={(val) =>
-                          updateElement(selectedElement.id, {
-                            hatchSpacing: val ?? 0.02,
-                          })
-                        }
+                        fallbackOnBlur={sharedHatchSpacing === null ? undefined : 0.02}
+                        value={sharedHatchSpacing}
+                        placeholder="Mixed"
+                        allowEmpty={sharedHatchSpacing === null}
+                        onChange={(val) => {
+                          if (val === undefined && sharedHatchSpacing === null) return;
+                          applyTo(filledTargets, () => ({ hatchSpacing: val ?? 0.02 }), true);
+                        }}
+                        onCommit={commitHistory}
                         className={NUM_INPUT}
                       />
                     </div>
@@ -1577,9 +1661,12 @@ export const PropertiesSidebar: React.FC = () => {
                   <label className="flex items-center gap-2 text-slate-600 dark:text-slate-300 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={selectedElement.hatchOutline !== false}
+                      checked={sharedHatchOutline !== false}
+                      ref={(input) => {
+                        if (input) input.indeterminate = sharedHatchOutline === null;
+                      }}
                       onChange={(e) =>
-                        updateElement(selectedElement.id, { hatchOutline: e.target.checked })
+                        applyTo(filledTargets, () => ({ hatchOutline: e.target.checked }))
                       }
                       className="w-3.5 h-3.5 accent-red-500 rounded cursor-pointer"
                     />
