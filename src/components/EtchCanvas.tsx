@@ -33,6 +33,7 @@ import { BusyToast } from './BusyToast';
 import { computeResize, resizeSeed, clampScale, type ResizeHandle } from '../utils/resizeElement';
 import { isGeneratedField } from '../utils/generatedField';
 import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
+import { wheelIntent, wheelPanDelta, wheelZoomFactor, WHEEL_BURST_MS, type WheelIntent } from '../utils/wheelGesture';
 import {
   nodesToPath,
   elementNodePath,
@@ -312,21 +313,87 @@ export const EtchCanvas: React.FC = () => {
     [toBed, snapEnabled, gridSize]
   );
 
-  // Wheel Zoom, anchored on the pointer rather than the top-left corner.
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    const next = Math.max(0.2, Math.min(zoom * factor, 5.0));
-    const applied = next / zoom;
-    const host = e.currentTarget.parentElement as HTMLElement | null;
-    if (host) {
-      const rect = host.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      setPan({ x: mx - (mx - pan.x) * applied, y: my - (my - pan.y) * applied });
-    }
-    setZoom(next);
-  };
+  /*
+   * Wheel: pan or zoom, decided per gesture by `wheelIntent` — a trackpad's
+   * two-finger scroll pans and a pinch or a mouse wheel zooms about the
+   * pointer. A native listener rather than React's `onWheel`, because React
+   * attaches wheel handlers passively and the `preventDefault` that stops the
+   * page (and the browser's own pinch-zoom) from moving too was being ignored.
+   * The view is read from the store at event time: a trackpad sends dozens of
+   * these per second and a closure over render-time `pan` would drop most.
+   */
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    let latched: WheelIntent | null = null;
+    let lastAt = 0;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.timeStamp - lastAt > WHEEL_BURST_MS) latched = null;
+      lastAt = e.timeStamp;
+      const intent = wheelIntent(e, latched);
+      if (!e.ctrlKey && !e.metaKey) latched = intent;
+
+      const { zoom: z, pan: p, setPan: sp, setZoom: sz } = useStore.getState();
+      if (intent === 'pan') {
+        const { dx, dy } = wheelPanDelta(e);
+        sp({ x: p.x + dx, y: p.y + dy });
+        return;
+      }
+      const next = Math.max(0.2, Math.min(z * wheelZoomFactor(e), 5.0));
+      const applied = next / z;
+      const host = svg.parentElement;
+      if (host) {
+        const rect = host.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        sp({ x: mx - (mx - p.x) * applied, y: my - (my - p.y) * applied });
+      }
+      sz(next);
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, []);
+
+  /*
+   * Space held + left drag pans, as in every other drawing program. Middle-drag
+   * was the only way to move the view with a pointer, and a trackpad or a
+   * Magic Mouse has no middle button.
+   *
+   * Only claimed while the pointer is over the canvas and focus is not in a
+   * text field. The keyup's default is cancelled as well as the keydown's,
+   * because a focused button — which is whatever toolbar button was clicked
+   * last — activates on Space *up*, and panning must not press it again.
+   */
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const pointerOverCanvas = useRef(false);
+  useEffect(() => {
+    const typing = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || typing(e.target) || !pointerOverCanvas.current) return;
+      e.preventDefault();
+      if (!e.repeat) setSpaceHeld(true);
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      setSpaceHeld((held) => {
+        if (held) e.preventDefault();
+        return false;
+      });
+    };
+    const onBlur = () => setSpaceHeld(false);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
 
   const activeLayer =
     document.layers.find((l) => l.id === activeLayerId) || document.layers[0];
@@ -635,6 +702,14 @@ export const EtchCanvas: React.FC = () => {
    */
   const handlePointerDownCapture = (e: React.PointerEvent<SVGSVGElement>) => {
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // Taken here, before the selection handles see it, so that a Space-drag
+    // which happens to start on a resize handle moves the view and not the part.
+    if (pointers.current.size < 2 && (e.button === 1 || (e.button === 0 && spaceHeld))) {
+      setIsPanning(true);
+      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      e.stopPropagation();
+      return;
+    }
     if (pointers.current.size < 2) return;
     if (pointers.current.size === 2) {
       abandonGesture();
@@ -647,12 +722,6 @@ export const EtchCanvas: React.FC = () => {
 
   const handleMouseDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (pinch.current) return;
-
-    if (e.button === 1) {
-      setIsPanning(true);
-      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-      return;
-    }
     if (e.button !== 0) return;
 
     const coords = toBedSnapped(e);
@@ -1425,7 +1494,11 @@ export const EtchCanvas: React.FC = () => {
   );
 
   return (
-    <div className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors">
+    <div
+      className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors"
+      onPointerEnter={() => (pointerOverCanvas.current = true)}
+      onPointerLeave={() => (pointerOverCanvas.current = false)}
+    >
       <BusyToast show={filling} label="Filling region…" />
       {fillNotice && (
         <div className="absolute left-1/2 -translate-x-1/2 top-4 z-30 max-w-md px-3 py-2 rounded-lg bg-slate-900/90 text-slate-100 text-xs shadow-lg pointer-events-none">
@@ -1438,7 +1511,13 @@ export const EtchCanvas: React.FC = () => {
         // there: the bridge is a plain function with no view of this component.
         data-etch-canvas
         className={`w-full h-full touch-none select-none ${
-          activeTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
+          isPanning
+            ? 'cursor-grabbing'
+            : spaceHeld
+              ? 'cursor-grab'
+              : activeTool === 'select'
+                ? 'cursor-default'
+                : 'cursor-crosshair'
         }`}
         viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
         style={{
@@ -1454,7 +1533,6 @@ export const EtchCanvas: React.FC = () => {
           */
           overflow: 'visible',
         }}
-        onWheel={handleWheel}
         onPointerDownCapture={handlePointerDownCapture}
         onPointerDown={handleMouseDown}
         onPointerMove={handleMouseMove}
