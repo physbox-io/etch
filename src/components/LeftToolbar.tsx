@@ -1,5 +1,6 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import type { ToolMode } from '../types/etch';
 import {
   MousePointer,
@@ -31,7 +32,17 @@ export const LeftToolbar: React.FC = () => {
     duplicateSelected,
     deleteElements,
     selectedIds,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      activeTool: s.activeTool,
+      setToolMode: s.setToolMode,
+      toggleClipArtModal: s.toggleClipArtModal,
+      openImageImport: s.openImageImport,
+      duplicateSelected: s.duplicateSelected,
+      deleteElements: s.deleteElements,
+      selectedIds: s.selectedIds,
+    })),
+  );
 
   const tools: Array<{ id: ToolMode; label: string; icon: React.FC<{ className?: string }> }> = [
     { id: 'select', label: 'Select & Move', icon: MousePointer },

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   loadImageElement,
   processImageCanvas,
@@ -38,7 +39,17 @@ export const ImageImportModal: React.FC = () => {
     activeLayerId,
     setDocument,
     cncTools,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      isImageImportOpen: s.isImageImportOpen,
+      imageImportFile: s.imageImportFile,
+      closeImageImport: s.closeImageImport,
+      document: s.document,
+      activeLayerId: s.activeLayerId,
+      setDocument: s.setDocument,
+      cncTools: s.cncTools,
+    })),
+  );
 
   const laserMode = machineKind(doc) === 'laser';
 

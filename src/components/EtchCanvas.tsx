@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { shapeOutlineD, shapePathD, SHAPE_KINDS } from '../utils/parametricShapes';
 
 /** What the shape tool is set to draw; see `shapeSettings` in the store. */
@@ -142,7 +143,27 @@ export const EtchCanvas: React.FC = () => {
     updateElement,
     commitHistory,
     setToolMode,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      document: s.document,
+      activeTool: s.activeTool,
+      activeLayerId: s.activeLayerId,
+      selectedIds: s.selectedIds,
+      zoom: s.zoom,
+      pan: s.pan,
+      mandalaSettings: s.mandalaSettings,
+      shapeSettings: s.shapeSettings,
+      eraserWidth: s.eraserWidth,
+      setSelectedIds: s.setSelectedIds,
+      setPan: s.setPan,
+      setZoom: s.setZoom,
+      setCursor: s.setCursor,
+      addElement: s.addElement,
+      updateElement: s.updateElement,
+      commitHistory: s.commitHistory,
+      setToolMode: s.setToolMode,
+    })),
+  );
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const coarsePointer = useCoarsePointer();

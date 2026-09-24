@@ -946,7 +946,10 @@ export const useStore = create<EtchStore>((set, get) => ({
     set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null, joinNotice: null }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
-  setCursor: (cursor) => set({ cursor }),
+  // Fires on every pointer move. A snapped cursor sits on the same grid point for
+  // many events, and a fresh object each time would wake every subscriber anyway.
+  setCursor: (cursor) =>
+    set((s) => (s.cursor.x === cursor.x && s.cursor.y === cursor.y ? s : { cursor })),
 
   // Grid changes are view settings, not undoable document edits, so they write
   // straight to the document without pushing a history entry.

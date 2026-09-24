@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { TransportMode } from '../utils/webSerialManager';
 import { TeknoBoxPicker } from './TeknoBoxPicker';
@@ -44,8 +45,16 @@ function useJobBounds() {
 const SAFETY_ACK_KEY = 'etchSafetyAck';
 
 export const MachineControlModal: React.FC = () => {
-  const { isMachineModalOpen, toggleMachineModal, openDocs, bedProbeGrid, setBedProbeGrid, document } =
-    useStore();
+  const { isMachineModalOpen, toggleMachineModal, openDocs, bedProbeGrid, setBedProbeGrid, document } = useStore(
+    useShallow((s) => ({
+      isMachineModalOpen: s.isMachineModalOpen,
+      toggleMachineModal: s.toggleMachineModal,
+      openDocs: s.openDocs,
+      bedProbeGrid: s.bedProbeGrid,
+      setBedProbeGrid: s.setBedProbeGrid,
+      document: s.document,
+    })),
+  );
   // Decides what framing and probing mean: a laser holds one height and has no
   // touch plate, a router plunges and does.
   const isLaser = machineKind(document) === 'laser';

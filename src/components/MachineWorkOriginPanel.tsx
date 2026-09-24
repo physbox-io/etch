@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   ArrowUp,
   ArrowDown,
@@ -67,7 +68,12 @@ export const MachineWorkOriginPanel: React.FC<{
   /** Deep-links to the zeroing walkthrough in the Reference Guide. */
   onOpenDocs?: () => void;
 }> = ({ status, showZProbe = true, machine = 'cnc', bedBounds, probeGrid, onProbeGrid, onOpenDocs }) => {
-  const { touchPlateThickness, setTouchPlateThickness } = useStore();
+  const { touchPlateThickness, setTouchPlateThickness } = useStore(
+    useShallow((s) => ({
+      touchPlateThickness: s.touchPlateThickness,
+      setTouchPlateThickness: s.setTouchPlateThickness,
+    })),
+  );
   const words = machineWords(machine);
   const isLaser = machine === 'laser';
   const [step, setStep] = useState(1);

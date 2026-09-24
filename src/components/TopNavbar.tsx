@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useStore, jobDocument } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { ORNAMENTS } from '../utils/ornaments';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
@@ -86,7 +87,38 @@ export const TopNavbar: React.FC = () => {
     openDocs,
     isPropertiesOpen,
     setPropertiesOpen,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      document: s.document,
+      darkMode: s.darkMode,
+      toggleDarkMode: s.toggleDarkMode,
+      loadPreset: s.loadPreset,
+      setDocument: s.setDocument,
+      openJob: s.openJob,
+      toggleAiPanel: s.toggleAiPanel,
+      toggleGCodeModal: s.toggleGCodeModal,
+      toggleMachineModal: s.toggleMachineModal,
+      toggleTestGridModal: s.toggleTestGridModal,
+      toggleRegistrationModal: s.toggleRegistrationModal,
+      togglePackModal: s.togglePackModal,
+      toggleLivingHingeModal: s.toggleLivingHingeModal,
+      togglePerforationModal: s.togglePerforationModal,
+      openOrnament: s.openOrnament,
+      toggleSettings: s.toggleSettings,
+      isSettingsOpen: s.isSettingsOpen,
+      undo: s.undo,
+      redo: s.redo,
+      historyIndex: s.historyIndex,
+      history: s.history,
+      activePreset: s.activePreset,
+      userPresetNames: s.userPresetNames,
+      saveUserPresetByName: s.saveUserPresetByName,
+      deleteUserPreset: s.deleteUserPreset,
+      openDocs: s.openDocs,
+      isPropertiesOpen: s.isPropertiesOpen,
+      setPropertiesOpen: s.setPropertiesOpen,
+    })),
+  );
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [presetNameInput, setPresetNameInput] = useState('');

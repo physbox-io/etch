@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { NumberInput } from '@physbox-io/ui';
 import {
   LASER_SOURCES,
@@ -87,7 +88,25 @@ export const BottomStatusBar: React.FC = () => {
     cncTools,
     openToolConfigModal,
     toggleMachineModal,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      document: s.document,
+      zoom: s.zoom,
+      cursor: s.cursor,
+      setGridSize: s.setGridSize,
+      setDocumentSize: s.setDocumentSize,
+      toggleSnapToGrid: s.toggleSnapToGrid,
+      setMachineTarget: s.setMachineTarget,
+      setMaterial: s.setMaterial,
+      setStockThickness: s.setStockThickness,
+      commitHistory: s.commitHistory,
+      laserSource: s.laserSource,
+      setLaserSource: s.setLaserSource,
+      cncTools: s.cncTools,
+      openToolConfigModal: s.openToolConfigModal,
+      toggleMachineModal: s.toggleMachineModal,
+    })),
+  );
 
   // Seeded from the manager rather than a literal, so a bar that mounts after a
   // connection (or after a status field is added) shows the real state.

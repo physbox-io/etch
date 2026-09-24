@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { useStore } from './store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useMCPBridge } from './hooks/useMCPBridge';
 import { TopNavbar } from './components/TopNavbar';
 import { SheetTabs } from './components/SheetTabs';
@@ -55,7 +56,20 @@ export const App: React.FC = () => {
     isPropertiesOpen,
     setPropertiesOpen,
     mcpActiveCount,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      deleteElements: s.deleteElements,
+      selectedIds: s.selectedIds,
+      undo: s.undo,
+      redo: s.redo,
+      document: s.document,
+      setSelectedIds: s.setSelectedIds,
+      vectorizeText: s.vectorizeText,
+      isPropertiesOpen: s.isPropertiesOpen,
+      setPropertiesOpen: s.setPropertiesOpen,
+      mcpActiveCount: s.mcpActiveCount,
+    })),
+  );
 
   /**
    * Pull the clip-art geometry in while the tab is idle.

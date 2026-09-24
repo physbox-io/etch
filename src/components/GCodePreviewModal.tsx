@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   generateAirCutGCode,
   planAirCutBoundaries,
@@ -71,7 +72,25 @@ export const GCodePreviewModal: React.FC = () => {
     setShallowEtch,
     cncTools,
     selectedIds,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      isGCodeModalOpen: s.isGCodeModalOpen,
+      toggleGCodeModal: s.toggleGCodeModal,
+      document: s.document,
+      vectorizeText: s.vectorizeText,
+      isVectorizing: s.isVectorizing,
+      textVectorizeError: s.textVectorizeError,
+      setHatchDefaults: s.setHatchDefaults,
+      bedProbeGrid: s.bedProbeGrid,
+      setMachineTarget: s.setMachineTarget,
+      toggleMachineModal: s.toggleMachineModal,
+      setDocumentOrigin: s.setDocumentOrigin,
+      setThickTabs: s.setThickTabs,
+      setShallowEtch: s.setShallowEtch,
+      cncTools: s.cncTools,
+      selectedIds: s.selectedIds,
+    })),
+  );
 
   // Lives on the document, not in this modal: the layer inspector needs to know
   // too, so it can stop offering a cut depth on a machine that has no Z.

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Info, X } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { DOCS_TABS, type DocsTabId } from '../docs/docsContent';
 
 /**
@@ -1042,7 +1043,14 @@ THE SOFTWARE, LASER/CNC TOOLPATH CALCULATORS, AND MACHINE CONTROLLERS ARE PROVID
 
 /** The app's Reference Guide. Grouped tabs on the left, one explainer on the right. */
 export const DocsModal: React.FC = () => {
-  const { isDocsOpen, docsTab, setDocsTab, closeDocs } = useStore();
+  const { isDocsOpen, docsTab, setDocsTab, closeDocs } = useStore(
+    useShallow((s) => ({
+      isDocsOpen: s.isDocsOpen,
+      docsTab: s.docsTab,
+      setDocsTab: s.setDocsTab,
+      closeDocs: s.closeDocs,
+    })),
+  );
   if (!isDocsOpen) return null;
 
   return (

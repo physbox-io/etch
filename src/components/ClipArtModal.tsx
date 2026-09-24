@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   CLIP_ART_CATEGORIES,
   CLIP_ART_INDEX,
@@ -23,7 +24,15 @@ import { X, Image } from 'lucide-react';
 const REVEAL_BATCH = 8;
 
 export const ClipArtModal: React.FC = () => {
-  const { isClipArtModalOpen, toggleClipArtModal, addElement, activeLayerId, document } = useStore();
+  const { isClipArtModalOpen, toggleClipArtModal, addElement, activeLayerId, document } = useStore(
+    useShallow((s) => ({
+      isClipArtModalOpen: s.isClipArtModalOpen,
+      toggleClipArtModal: s.toggleClipArtModal,
+      addElement: s.addElement,
+      activeLayerId: s.activeLayerId,
+      document: s.document,
+    })),
+  );
   const [paths, setPaths] = useState<Record<string, string> | null>(null);
   const [revealed, setRevealed] = useState(0);
 

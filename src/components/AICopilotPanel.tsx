@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X, Sparkles, Wand2, RefreshCw, ArrowRight, MessageCircleQuestion, Settings2, AlertTriangle } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { importSVG, fitToBed } from '../utils/svgImporter';
 import { callLLM, extractJson, stripCodeFences, LLMError } from '../utils/llmClient';
 import { buildSystemPrompt } from '../docs/copilotInstructions';
@@ -97,7 +98,22 @@ export const AICopilotPanel: React.FC = () => {
     setSelectedIds,
     commitHistory,
     openDocs,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      isAiPanelOpen: s.isAiPanelOpen,
+      toggleAiPanel: s.toggleAiPanel,
+      isSettingsOpen: s.isSettingsOpen,
+      toggleSettings: s.toggleSettings,
+      document: s.document,
+      selectedIds: s.selectedIds,
+      addElement: s.addElement,
+      updateElement: s.updateElement,
+      deleteElements: s.deleteElements,
+      setSelectedIds: s.setSelectedIds,
+      commitHistory: s.commitHistory,
+      openDocs: s.openDocs,
+    })),
+  );
 
   const [mode, setMode] = useState<Mode>('generate');
   const [prompt, setPrompt] = useState('');

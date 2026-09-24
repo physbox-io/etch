@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import type { LayerOperation } from '../types/etch';
 import {
   COMMON_TOOL_PRESETS,
@@ -24,7 +25,17 @@ export const ToolConfigModal: React.FC = () => {
     resetCncTools,
     cncToolsUnsaved,
     document: doc,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      isToolConfigModalOpen: s.isToolConfigModalOpen,
+      closeToolConfigModal: s.closeToolConfigModal,
+      cncTools: s.cncTools,
+      setCncTools: s.setCncTools,
+      resetCncTools: s.resetCncTools,
+      cncToolsUnsaved: s.cncToolsUnsaved,
+      document: s.document,
+    })),
+  );
 
   const [activeToolId, setActiveToolId] = useState<number>(cncTools[0]?.id ?? 1);
   const [showPresetDropdown, setShowPresetDropdown] = useState(false);

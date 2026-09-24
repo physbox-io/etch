@@ -1,5 +1,6 @@
 import React from 'react';
 import { useStore } from '../store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { getLocalBBox } from '../utils/geom';
 import { SHAPE_KINDS, defaultsFor, type ShapeKind } from '../utils/parametricShapes';
 import { FontPicker } from './FontPicker';
@@ -552,7 +553,41 @@ export const PropertiesSidebar: React.FC = () => {
     openToolConfigModal,
     isPropertiesOpen,
     setPropertiesOpen,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      document: s.document,
+      selectedIds: s.selectedIds,
+      activeLayerId: s.activeLayerId,
+      activeTool: s.activeTool,
+      eraserWidth: s.eraserWidth,
+      setEraserWidth: s.setEraserWidth,
+      mandalaSettings: s.mandalaSettings,
+      shapeSettings: s.shapeSettings,
+      setShapeSettings: s.setShapeSettings,
+      updateElement: s.updateElement,
+      centerSelected: s.centerSelected,
+      combineSelected: s.combineSelected,
+      combineNotice: s.combineNotice,
+      offsetSelected: s.offsetSelected,
+      offsetNotice: s.offsetNotice,
+      beautifySelected: s.beautifySelected,
+      beautifyNotice: s.beautifyNotice,
+      setActiveLayer: s.setActiveLayer,
+      addLayer: s.addLayer,
+      updateLayer: s.updateLayer,
+      deleteLayer: s.deleteLayer,
+      commitHistory: s.commitHistory,
+      applyRadialSymmetryToSelected: s.applyRadialSymmetryToSelected,
+      vectorizeText: s.vectorizeText,
+      isVectorizing: s.isVectorizing,
+      textVectorizeError: s.textVectorizeError,
+      laserSource: s.laserSource,
+      cncTools: s.cncTools,
+      openToolConfigModal: s.openToolConfigModal,
+      isPropertiesOpen: s.isPropertiesOpen,
+      setPropertiesOpen: s.setPropertiesOpen,
+    })),
+  );
 
   /**
    * How far the next offset grows or shrinks by, in mm.
