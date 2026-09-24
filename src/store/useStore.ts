@@ -2517,6 +2517,7 @@ export const useStore = create<EtchStore>((set, get) => ({
         document: history[newIdx],
         historyIndex: newIdx,
         selectedIds: selectionAfterStep(get().document, history[newIdx], get().selectedIds),
+        activeLayerId: activeLayerAfterStep(get().document, history[newIdx], get().activeLayerId),
       });
     }
   },
@@ -2529,6 +2530,7 @@ export const useStore = create<EtchStore>((set, get) => ({
         document: history[newIdx],
         historyIndex: newIdx,
         selectedIds: selectionAfterStep(get().document, history[newIdx], get().selectedIds),
+        activeLayerId: activeLayerAfterStep(get().document, history[newIdx], get().activeLayerId),
       });
     }
   },
@@ -2549,6 +2551,23 @@ function selectionAfterStep(from: EtchDocument, to: EtchDocument, selectedIds: s
   if (changed.length > 0) return changed;
   const present = new Set(to.elements.map((el) => el.id));
   return selectedIds.filter((id) => present.has(id));
+}
+
+/**
+ * The layer new drawing goes onto after an undo or redo. Undoing an added
+ * layer used to leave it active though it was gone, and everything drawn next
+ * landed on a layer the document did not have — on the canvas, but out of the
+ * G-code. A step that brings a layer back makes it active, for the same reason
+ * `selectionAfterStep` selects what came back: deleting a layer is one click
+ * with no confirmation, and undo is what makes that safe, so it should put the
+ * sidebar back the way the click found it.
+ */
+function activeLayerAfterStep(from: EtchDocument, to: EtchDocument, activeLayerId: string): string {
+  const before = new Set(from.layers.map((l) => l.id));
+  const restored = to.layers.filter((l) => !before.has(l.id));
+  if (restored.length === 1) return restored[0].id;
+  if (to.layers.some((l) => l.id === activeLayerId)) return activeLayerId;
+  return to.layers[0]?.id ?? activeLayerId;
 }
 
 // Exposed for the dev MCP bridge and for browser-driven testing.
