@@ -854,8 +854,10 @@ export const useStore = create<EtchStore>((set, get) => ({
     const state = get();
     const from = state.document;
     const id = sheetId();
+    // Emptied before the copy, not after: stringifying the elements only to
+    // throw them away serialised every traced image on the sheet for nothing.
     const doc: EtchDocument = {
-      ...JSON.parse(JSON.stringify(from)),
+      ...JSON.parse(JSON.stringify({ ...from, elements: [], notecard: undefined })),
       id,
       name: nextSheetName(state.tabs, state.document, state.activeTabId),
       elements: [],
