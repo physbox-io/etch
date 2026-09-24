@@ -87,3 +87,49 @@ describe('nudgeSelected', () => {
     expect(useStore.getState().document).toBe(doc);
   });
 });
+
+/**
+ * Undo used to clear the selection, so taking back an accidental nudge left
+ * you re-finding the shape you were working on.
+ */
+describe('selection across undo and redo', () => {
+  beforeEach(() => load([rect('a', 10, 10), rect('b', 50, 50), rect('locked', 90, 90, true)]));
+
+  it('keeps the nudged shapes selected through undo and redo', () => {
+    useStore.setState({ selectedIds: ['a', 'b'] });
+    useStore.getState().nudgeSelected(5, 0);
+    useStore.getState().commitHistory();
+
+    useStore.getState().undo();
+    expect(useStore.getState().selectedIds).toEqual(['a', 'b']);
+    useStore.getState().redo();
+    expect(useStore.getState().selectedIds).toEqual(['a', 'b']);
+  });
+
+  it('selects what the step changed, not what happened to be selected', () => {
+    useStore.setState({ selectedIds: ['a'] });
+    useStore.getState().nudgeSelected(5, 0);
+    useStore.getState().commitHistory();
+    useStore.setState({ selectedIds: ['b'] });
+
+    useStore.getState().undo();
+    expect(useStore.getState().selectedIds).toEqual(['a']);
+  });
+
+  it('selects shapes that undoing a delete brings back', () => {
+    useStore.getState().deleteElements(['b']);
+    expect(useStore.getState().selectedIds).toEqual([]);
+
+    useStore.getState().undo();
+    expect(useStore.getState().selectedIds).toEqual(['b']);
+  });
+
+  it('drops a selected shape the step removes, and keeps the rest', () => {
+    const doc = useStore.getState().document;
+    const withC = { ...doc, elements: [...doc.elements, rect('c', 120, 120)] };
+    useStore.setState({ document: withC, history: [doc, withC], historyIndex: 1, selectedIds: ['a', 'c'] });
+
+    useStore.getState().undo();
+    expect(useStore.getState().selectedIds).toEqual(['a']);
+  });
+});

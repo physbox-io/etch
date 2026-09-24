@@ -891,7 +891,7 @@ export const TopNavbar: React.FC = () => {
             onClick={redo}
             disabled={historyIndex >= history.length - 1}
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
-            title="Redo (Ctrl+Y)"
+            title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>

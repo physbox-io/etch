@@ -119,8 +119,11 @@ export const App: React.FC = () => {
           deleteElements(selectedIds);
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        // Shift+Z is redo on a Mac, and in most apps elsewhere too. Checking
+        // only for Z made Cmd+Shift+Z undo the very thing it meant to put back.
         e.preventDefault();
-        undo();
+        if (e.shiftKey) redo();
+        else undo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         redo();

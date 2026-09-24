@@ -2516,7 +2516,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       set({
         document: history[newIdx],
         historyIndex: newIdx,
-        selectedIds: [],
+        selectedIds: selectionAfterStep(get().document, history[newIdx], get().selectedIds),
       });
     }
   },
@@ -2528,11 +2528,28 @@ export const useStore = create<EtchStore>((set, get) => ({
       set({
         document: history[newIdx],
         historyIndex: newIdx,
-        selectedIds: [],
+        selectedIds: selectionAfterStep(get().document, history[newIdx], get().selectedIds),
       });
     }
   },
 }));
+
+/**
+ * What is selected after an undo or redo. Undo used to clear the selection,
+ * so taking back an accidental nudge left you hunting for the thing you were
+ * working on. Select what the step actually changed — the elements that came
+ * back or moved — so you can see what undo did and carry on from there; a
+ * step that touched no element (a layer, the stock) keeps the selection,
+ * minus anything the step removed. Edits replace an element object and leave
+ * the rest shared, so identity is an exact test for "changed".
+ */
+function selectionAfterStep(from: EtchDocument, to: EtchDocument, selectedIds: string[]): string[] {
+  const before = new Map(from.elements.map((el) => [el.id, el]));
+  const changed = to.elements.filter((el) => before.get(el.id) !== el).map((el) => el.id);
+  if (changed.length > 0) return changed;
+  const present = new Set(to.elements.map((el) => el.id));
+  return selectedIds.filter((id) => present.has(id));
+}
 
 // Exposed for the dev MCP bridge and for browser-driven testing.
 if (typeof window !== 'undefined') {
