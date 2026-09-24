@@ -27,6 +27,7 @@ import { machineSocketUrl, postMachineTelemetry, submitMachineJob,
   type RemoteCommand,
 } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
+import { setJobWakeLock } from './jobWakeLock';
 import {
   DEFAULT_PLATE_THICKNESS_MM,
   DEFAULT_SPINDLE_PWM_MAX,
@@ -1059,6 +1060,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * app overruling a safety choice.
    */
   protected onStateNotified(state: EtchMachineState): void {
+    setJobWakeLock(this.isRunning());
     if (this.isRunning() && this.layerStartLines.size > 0) {
       const crossed = state.currentLine;
       if (crossed > this.layerResetAt && this.layerStartLines.has(crossed)) {
