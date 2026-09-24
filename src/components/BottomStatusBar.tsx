@@ -98,6 +98,14 @@ export const BottomStatusBar: React.FC = () => {
   const gridSize = document.gridSize || 10;
   const machineKind = machineKindOf(document);
   const words = machineWords(machineKind);
+  // The longest reading this stock produces: "300.0", or "-150.0" with the
+  // origin in the middle. Sized per document rather than for the largest
+  // stock, which left a gap wider than the numbers on every ordinary board.
+  // One more for the space after "X:", which the right alignment then supplies.
+  const readoutCh =
+    1 +
+    Math.max(document.width, document.height).toFixed(1).length +
+    (document.origin === 'center' ? 1 : 0);
 
   return (
     /*
@@ -184,15 +192,16 @@ export const BottomStatusBar: React.FC = () => {
         </div>
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
         {/*
-          Fixed-width, right-aligned readouts. The bar is `justify-between`, so
-          a cursor crossing 100 mm gains a digit, widens this group and shoves
-          the whole Grid section sideways — on every mouse move. Wide enough for
-          a signed four-figure reading ("-1000.0"), which is what a centre
-          origin on the largest stock produces.
+          Right-aligned readouts at a minimum width, so a cursor crossing 100 mm
+          does not gain a digit and jiggle everything after it on every mouse
+          move. The width is the longest reading on this stock (the bar is
+          monospaced, so `ch` is exact); off the stock it may grow, and that is
+          the only time it moves. Kept on one line and unshrinkable: a narrow
+          window squeezed it until "Y:" and "mm" wrapped under the X.
         */}
-        <div>
-          X: <span className="inline-block w-12 text-right text-slate-800 dark:text-slate-200">{cursor.x.toFixed(1)}</span>{' '}
-          Y: <span className="inline-block w-12 text-right text-slate-800 dark:text-slate-200">{cursor.y.toFixed(1)}</span> mm
+        <div className="whitespace-nowrap shrink-0">
+          X:<span className="inline-block text-right text-slate-800 dark:text-slate-200" style={{ minWidth: `${readoutCh}ch` }}>{cursor.x.toFixed(1)}</span>{' '}
+          Y:<span className="inline-block text-right text-slate-800 dark:text-slate-200" style={{ minWidth: `${readoutCh}ch` }}>{cursor.y.toFixed(1)}</span> mm
         </div>
       </div>
 

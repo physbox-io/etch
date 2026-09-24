@@ -700,6 +700,24 @@ function addGenerated(
   get().commitHistory();
 }
 
+/**
+ * A second circle is "Circle 2", not another "Circle": with two of them in the
+ * Objects panel there was no telling which row was which. The first keeps the
+ * bare name, and the number goes one past the highest already used, so
+ * deleting "Circle 2" out of three does not hand its name to the next one.
+ */
+export function numberedName(name: string, elements: readonly { name: string }[]): string {
+  if (!name) return name;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^${escaped}(?: (\\d+))?$`);
+  let highest = 0;
+  for (const other of elements) {
+    const m = pattern.exec(other.name);
+    if (m) highest = Math.max(highest, m[1] ? Number(m[1]) : 1);
+  }
+  return highest === 0 ? name : `${name} ${highest + 1}`;
+}
+
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
   tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, DEFAULT_PRESET_ID)],
@@ -1355,6 +1373,7 @@ export const useStore = create<EtchStore>((set, get) => ({
 
   addElement: (el) => {
     const { document, history, historyIndex } = get();
+    el = { ...el, name: numberedName(el.name, document.elements) };
     const newDoc = {
       ...document,
       elements: [...document.elements, el],

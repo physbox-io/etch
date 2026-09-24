@@ -215,7 +215,42 @@ export const EtchCanvas: React.FC = () => {
   const [marqueeAdditive, setMarqueeAdditive] = useState(false);
 
   const gridSize = document.gridSize || 10;
-  const snapEnabled = document.snapToGrid;
+  /*
+   * Holding Alt (Option on a Mac) switches the grid off for as long as it is
+   * held — the usual escape hatch for placing one thing between grid lines
+   * without going to the toolbar twice. Tracked from the keyboard rather than
+   * read off each mouse event, because most of the snapping happens in
+   * callbacks that only see a position; releasing Alt mid-drag lets the next
+   * move land on the grid again.
+   *
+   * On Windows a bare Alt press-and-release hands keyboard focus to the
+   * browser's menu, and the *next* Alt keydown never reaches the page — so
+   * pressing Alt a second time in the same drag left snap on. The keyup's
+   * default is cancelled to stop the menu taking focus, and every pointer move
+   * re-reads `altKey` as well, which is right whatever happened to the keys.
+   */
+  const [altHeld, setAltHeld] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Alt') e.preventDefault();
+      setAltHeld(e.altKey);
+    };
+    const onPointer = (e: PointerEvent) => setAltHeld(e.altKey);
+    const onBlur = () => setAltHeld(false);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKey);
+    window.addEventListener('pointermove', onPointer);
+    window.addEventListener('pointerdown', onPointer);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKey);
+      window.removeEventListener('pointermove', onPointer);
+      window.removeEventListener('pointerdown', onPointer);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+  const snapEnabled = document.snapToGrid && !altHeld;
 
   // Load Google Fonts dynamically
   useEffect(() => {
