@@ -17,8 +17,7 @@ import ClipperLib from 'clipper-lib';
 import type { EtchElement } from '../types/etch';
 import {
   contoursToPathD,
-  regionsOf,
-  resolveElement,
+  resolveElementOf,
   type BooleanFailure,
 } from './booleanOps';
 import { ARC_TOLERANCE, CLIPPER_SCALE, fromClipperPaths } from './contourOffset';
@@ -101,7 +100,7 @@ function unionAll(groups: ClipperLib.Paths[]): ClipperLib.Paths {
  * Partial overlaps contain nothing and so stay solid, which is the other half
  * of the answer.
  */
-function assembleRegion(perElement: ClipperLib.Paths[]): ClipperLib.Paths {
+export function assembleRegion(perElement: ClipperLib.Paths[]): ClipperLib.Paths {
   const depth = perElement.map((mine, i) =>
     perElement.reduce(
       (count, other, j) => (i !== j && isInside(mine, other) ? count + 1 : count),
@@ -168,7 +167,7 @@ export function offsetElements(
   const skipped: OffsetOutcome['skipped'] = [];
   const perElement: ClipperLib.Paths[] = [];
   for (const el of elements) {
-    const resolved = resolveElement(regionsOf(el));
+    const resolved = resolveElementOf(el);
     if (resolved.length === 0) skipped.push({ id: el.id, name: el.name });
     else perElement.push(resolved);
   }

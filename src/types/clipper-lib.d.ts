@@ -61,7 +61,13 @@ declare module 'clipper-lib' {
    * still open — so the PolyTree overload plus `OpenPathsFromPolyTree` is the
    * only way to difference a line against a region.
    */
-  export class PolyTree {
+  export class PolyNode {
+    Childs(): PolyNode[];
+    Contour(): Path;
+    IsHole(): boolean;
+  }
+
+  export class PolyTree extends PolyNode {
     Clear(): void;
   }
 

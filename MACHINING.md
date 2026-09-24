@@ -154,6 +154,20 @@ so they are registered on the same terms as `beautify.ts`'s tolerances.
 | `ROTATION_STICKY_DEG = 4` | `geom.ts` | Almost every rotation is reaching for square — a part squared to the stock, a label turned to read up the side. 89.4° is indistinguishable on screen and wrong on the material, where the part stops lining up with the sheet or with the piece it mates to. Four degrees is wider than a hand's error at any usable zoom and narrow enough that a deliberate 85° is still reachable by aiming; Alt is a hard bypass. | **Judgement** |
 | Resize snaps the *dragged handle* to the grid, not the pointer delta | `snapHandleDelta`, `geom.ts` | Rounding the delta only lands on the grid if the shape already started there, which is the one case where snapping was not needed. Snapping the handle means a box dragged out on a 10 mm grid is a whole number of squares — which is what makes two parts drawn on the same grid fit each other. | **Derived** |
 
+### Join into one piece (`joinPieces.ts`)
+
+Editing values, like Make Pretty's: they change the drawing at the operator's
+request. Registered because what they decide is how much metal holds a letter
+onto a pendant.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| Bridges chosen by minimum spanning tree over closest-point gaps | `spanningBridges` | The fewest bridges (pieces − 1) and the least added material that make everything one piece. A left-to-right chain bridges an i's dot to the next letter; the tree finds its stem because that is nearest. | **Derived** |
+| Bridge width = `0.85 ×` the thinner piece's mean stroke (`2 × area / perimeter`) | `BRIDGE_STROKE_FRACTION` | A bridge as heavy as the lettering reads as part of it. The mean stroke is exact for a strip of constant width and slightly heavy for a thick-and-thin script, hence a little under 1. | **Derived** (the stroke measure), **Judgement** (0.85) |
+| `MIN_BRIDGE_MM = 1` | `joinPieces.ts` | The bridge is all that holds a letter on. Under a millimetre of 1.5 mm aluminium bends when a pendant catches, and a laser kerf takes a tenth or two off each side. | **Judgement** — unverified against material |
+| Fillet radius `0.6 ×` bridge width, applied per junction only | `FILLET_FRACTION`, `filletAt` | Rounds the bar into the stroke so it reads as drawn, not repaired; also leaves no inside corner tighter than the radius for a router to fail to reach. Local, because a closing of the whole word fused neighbouring letters and filled their inside corners. | **Judgement** |
+| New holes under `4 × width²` filled | `joinElements` | A pocket the bar closed off between two near-touching strokes: not a feature anyone drew, and narrower than any cutter that would have to clear it. Holes the drawing had are never filled. | **Judgement** |
+
 ### Packing parts onto stock (`packParts.ts`)
 
 | Value | Where | Basis | Source |

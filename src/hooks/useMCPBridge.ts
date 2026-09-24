@@ -1022,11 +1022,54 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
        * the order *is* the operation: the first id is the base, and for
        * subtract it is the shape being cut into.
        */
-      const op = (msg.op || msg.operation) as BooleanOp;
+      const op = (msg.op || msg.operation) as BooleanOp | 'join' | 'unjoin';
+      if (op === 'join' || op === 'unjoin') {
+        /*
+         * Join rides on combine rather than being a tool of its own because it
+         * is the same question — make these one shape — asked of shapes that
+         * do not overlap. Unlike the booleans it takes one id: a single line
+         * of text is already several pieces.
+         */
+        const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
+        if (!Array.isArray(ids) || ids.length < 1) {
+          return { ok: false, error: 'elementIds must name at least one element' };
+        }
+        const known = new Set(store.document.elements.map((el) => el.id));
+        const missing = ids.filter((id) => !known.has(id));
+        if (missing.length) {
+          return { ok: false, error: `No such element: ${missing.join(', ')}` };
+        }
+
+        const before = store.historyIndex;
+        const beforeIds = new Set(store.document.elements.map((el) => el.id));
+        store.setSelectedIds(ids);
+        if (op === 'join') useStore.getState().joinSelected();
+        else useStore.getState().unjoinSelected();
+
+        let after = useStore.getState();
+        if (after.historyIndex === before) {
+          return { ok: false, error: after.joinNotice || `Nothing was ${op}ed.` };
+        }
+        // Joined or unjoined text is rebuilt from the font; wait for it, so
+        // the next read of the document sees the bridges (or their absence)
+        // rather than a stale outline.
+        await after.vectorizeText();
+        after = useStore.getState();
+        const present = new Set(after.document.elements.map((el) => el.id));
+        const created = after.document.elements.find((el) => !beforeIds.has(el.id));
+        return {
+          ok: true,
+          ...(created ? { addedId: created.id } : {}),
+          consumed: ids.filter((id) => !present.has(id)),
+          // For unjoin: the pieces that came back, now selected.
+          ...(op === 'unjoin' ? { restoredIds: after.selectedIds } : {}),
+          note: after.joinNotice ?? undefined,
+        };
+      }
       if (!BOOLEAN_OP_LABEL[op]) {
         return {
           ok: false,
-          error: `op must be one of ${Object.keys(BOOLEAN_OP_LABEL).join(', ')}`,
+          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'join', 'unjoin'].join(', ')}`,
         };
       }
       const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
@@ -1195,6 +1238,8 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         // handing a thresholder an already-dithered image traces the dots.
         imageDitherModes: Object.keys(DITHER_LABELS),
         booleanOps: Object.keys(BOOLEAN_OP_LABEL),
+        // Bridges the separate pieces of a selection into one part; see etch_combine.
+        joinOps: ['join', 'unjoin'],
         generators: [
           'test-grid', 'registration-holes', 'pack-parts', 'living-hinge', 'perforation',
           ...ORNAMENTS.map((o) => o.id),

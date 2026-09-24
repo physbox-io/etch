@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight, Boxes, Ungroup, Group as GroupIcon, Eye, EyeOff } from 'lucide-react';
+import { ChevronRight, Boxes, Ungroup, Group as GroupIcon, Eye, EyeOff, Link2, Unlink2 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import type { EtchElement } from '../types/etch';
 
@@ -28,6 +28,9 @@ export const ObjectsPanel: React.FC = () => {
   const setObjectVisible = useStore((s) => s.setObjectVisible);
   const updateElement = useStore((s) => s.updateElement);
   const commitHistory = useStore((s) => s.commitHistory);
+  const joinSelected = useStore((s) => s.joinSelected);
+  const unjoinSelected = useStore((s) => s.unjoinSelected);
+  const joinNotice = useStore((s) => s.joinNotice);
 
   const [open, setOpen] = React.useState(false);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
@@ -50,6 +53,11 @@ export const ObjectsPanel: React.FC = () => {
 
   const selected = new Set(selectedIds);
   const canGroup = selectedIds.length > 1;
+  // The button turns into Unjoin when what is selected is already joined, so
+  // the way back is where the way in was.
+  const joinedSelected = document.elements.some(
+    (el) => selected.has(el.id) && (el.joinPieces || el.joinedFrom?.length)
+  );
 
   return (
     <div className="shrink-0 border-t border-slate-200 dark:border-slate-800/80">
@@ -69,19 +77,55 @@ export const ObjectsPanel: React.FC = () => {
             </span>
           )}
         </button>
-        <button
-          onClick={groupSelected}
-          disabled={!canGroup}
-          title={
-            canGroup
-              ? 'Put the selected elements in one object'
-              : 'Select two or more elements to group them'
-          }
-          className="p-1 rounded text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 enabled:hover:bg-slate-200 dark:enabled:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-        >
-          <GroupIcon className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center">
+          <button
+            onClick={groupSelected}
+            disabled={!canGroup}
+            title={
+              canGroup
+                ? 'Put the selected elements in one object'
+                : 'Select two or more elements to group them'
+            }
+            className="p-1 rounded text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 enabled:hover:bg-slate-200 dark:enabled:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+          >
+            <GroupIcon className="w-3.5 h-3.5" />
+          </button>
+          {/*
+            Join sits beside Group because they answer the same question about a
+            selection — is this one thing? — at two depths. Group says so to the
+            editor; Join makes it so in the material, with bridges, so a word
+            whose letters do not touch comes off the machine as one pendant
+            rather than a handful of letters. Offered from one element up: a
+            single line of text is usually several pieces already.
+          */}
+          <button
+            onClick={joinedSelected ? unjoinSelected : joinSelected}
+            disabled={selectedIds.length === 0}
+            title={
+              joinedSelected
+                ? 'Unjoin: take the bridges out. Joined text stays text; joined shapes come back as the pieces they were made from'
+                : selectedIds.length
+                  ? 'Join into one piece: bridge the gaps between letters or shapes that do not touch, so the whole thing cuts out as one part. Text stays editable'
+                  : 'Select text or shapes to join them into one piece'
+            }
+            className={`ml-1 p-1 rounded disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors ${
+              joinedSelected
+                ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-500/20 enabled:hover:bg-violet-200 dark:enabled:hover:bg-violet-500/30'
+                : 'text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 enabled:hover:bg-slate-200 dark:enabled:hover:bg-slate-700'
+            }`}
+          >
+            {joinedSelected ? <Unlink2 className="w-3.5 h-3.5" /> : <Link2 className="w-3.5 h-3.5" />}
+          </button>
+        </div>
       </div>
+
+      {/* Outside the fold: the panel starts closed, and a join done from a
+          closed panel still has to say what it did. */}
+      {joinNotice && (
+        <p className="px-4 pb-2 -mt-1 text-[10px] text-slate-600 dark:text-slate-400 leading-relaxed">
+          {joinNotice}
+        </p>
+      )}
 
       {open && (
         <div className="max-h-52 overflow-y-auto px-4 pb-3 space-y-1">

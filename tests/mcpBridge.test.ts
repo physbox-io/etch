@@ -90,6 +90,31 @@ describe('MCP: etch_combine', () => {
   });
 });
 
+describe('MCP: etch_combine join / unjoin', () => {
+  it('joins shapes that do not touch, and unjoins them back', async () => {
+    load([rect('a', 0, 0, 10, 10), rect('b', 13, 0, 10, 10)]);
+    const r = await handleMCPCommand('etch_combine', { elementIds: ['a', 'b'], op: 'join' });
+    expect(r.ok).toBe(true);
+    expect(r.consumed.sort()).toEqual(['a', 'b']);
+    expect(r.note).toMatch(/2 pieces with 1 bridge/);
+
+    const u = await handleMCPCommand('etch_combine', { elementIds: [r.addedId], op: 'unjoin' });
+    expect(u.ok).toBe(true);
+    expect(u.restoredIds).toEqual(['a', 'b']);
+    expect(useStore.getState().document.elements.map((e) => e.id)).toEqual(['a', 'b']);
+  });
+
+  it('takes a single id, and reports a refusal as an error', async () => {
+    load([rect('a', 0, 0, 10, 10)]);
+    const r = await handleMCPCommand('etch_combine', { elementIds: ['a'], op: 'join' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/already one piece/i);
+    const u = await handleMCPCommand('etch_combine', { elementIds: ['a'], op: 'unjoin' });
+    expect(u.ok).toBe(false);
+    expect(u.error).toMatch(/not.*joined|Nothing selected is joined/);
+  });
+});
+
 describe('MCP: etch_make_test_grid', () => {
   it('replaces the document, keeps the stock, and says what it needs', async () => {
     load([rect('a', 0, 0, 20, 20)], { width: 120, height: 90, material: 'acrylic' });

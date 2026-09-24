@@ -40,6 +40,8 @@ import {
 } from '../utils/booleanOps';
 import { beautifyElements } from '../utils/beautify';
 import { offsetElements, MIN_OFFSET_MM } from '../utils/offsetShape';
+import { joinElements, joinOutlineD } from '../utils/joinPieces';
+import { hasFreshOutline } from '../utils/textVectorizer';
 import { defaultsFor, type ShapeKind } from '../utils/parametricShapes';
 import {
   clusterParts,
@@ -477,6 +479,20 @@ interface EtchStore {
   /** Why the last offset did nothing, or what it had to do. Cleared with the
    *  selection, like the two notices above. */
   offsetNotice: string | null;
+  /**
+   * Bridges the separate pieces of the selection into one part — letters of a
+   * word that do not touch, so the word can be cut out and hung as a pendant.
+   * The inputs are consumed, like a union. See `joinPieces.ts`.
+   */
+  joinSelected: () => void;
+  /**
+   * Undoes a join as an edit, not as an undo: a joined text loses its bridges
+   * and stays where it is, and a joined path is replaced by what it was made
+   * from — moved by however far the path has been moved since.
+   */
+  unjoinSelected: () => void;
+  /** What the last join did, or why it did nothing. Cleared with the selection. */
+  joinNotice: string | null;
   beautifySelected: () => void;
   /**
    * Rearranges the parts on this sheet so they fit in as little of the material
@@ -696,6 +712,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   combineNotice: null,
   beautifyNotice: null,
   offsetNotice: null,
+  joinNotice: null,
   history: [defaultDoc],
   historyIndex: 0,
   zoom: 1.0,
@@ -908,7 +925,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   // *these* shapes would not combine, and once the selection moves on it is
   // talking about something that is no longer on screen.
   setSelectedIds: (ids) =>
-    set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null }),
+    set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null, joinNotice: null }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
   setCursor: (cursor) => set({ cursor }),
@@ -1168,7 +1185,13 @@ export const useStore = create<EtchStore>((set, get) => ({
       try {
         const currentElements = get().document.elements;
         const targetPathEl = el.textPathId ? currentElements.find((e) => e.id === el.textPathId) : undefined;
-        const d = await textToOutlineD(el, targetPathEl);
+        const raw = await textToOutlineD(el, targetPathEl);
+        const d = el.joinPieces
+          ? joinOutlineD(
+              raw,
+              Math.sqrt(Math.abs((el.scaleX || 1) * (el.scaleY || 1)))
+            )
+          : raw;
         const sig = outlineSignature(el, targetPathEl);
         set((state) => ({
           document: {
@@ -2062,6 +2085,168 @@ export const useStore = create<EtchStore>((set, get) => ({
       selectedIds: [offset.id],
       offsetNotice: notes.length ? notes.join(' ') : null,
     });
+  },
+
+  /*
+   * Two ways to join, and both can be taken back.
+   *
+   * One text element on its own is joined *live*: it gets `joinPieces` and
+   * stays text, and the outline builder bridges its letters each time it is
+   * rebuilt — so the name can still be retyped, re-fonted or resized, and the
+   * bridges follow. Converting it to a path was the first version, and it made
+   * a typo in a pendant a start-again.
+   *
+   * Anything else — several elements, shapes, text with a bail drawn beside it
+   * — is combined into one path, consuming the inputs for the reason a union
+   * does (leaving them underneath would cut every edge twice). The path keeps
+   * the originals in `joinedFrom`, so Unjoin gives back the editable pieces.
+   */
+  joinSelected: () => {
+    const { document, selectedIds, history, historyIndex } = get();
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (!selected.length) {
+      set({ joinNotice: 'Select the shapes or text to join into one piece.' });
+      return;
+    }
+
+    const commit = (newDoc: EtchDocument, patch: Partial<EtchStore>) => {
+      const newHistory = history.slice(0, historyIndex + 1);
+      newHistory.push(newDoc);
+      set({ document: newDoc, history: newHistory, historyIndex: newHistory.length - 1, ...patch });
+    };
+
+    if (selected.length === 1 && selected[0].type === 'text') {
+      const el = selected[0];
+      if (el.joinPieces) {
+        set({ joinNotice: 'Already joined — edit the text and the bridges follow.' });
+        return;
+      }
+      // Tried against the current outline first, so a word that is already
+      // one piece says so instead of silently setting a flag that does nothing.
+      if (hasFreshOutline(el)) {
+        const probe = joinElements([el]);
+        if ('error' in probe) {
+          set({ joinNotice: probe.error });
+          return;
+        }
+      }
+      commit(
+        {
+          ...document,
+          elements: document.elements.map((it) => (it.id === el.id ? { ...it, joinPieces: true } : it)),
+        },
+        {
+          joinNotice:
+            'Letters joined. It is still text: retype it or change the font and the bridges are rebuilt.',
+        }
+      );
+      // Rebuilding the outline is what puts the bridges in; do not leave it to
+      // the canvas's debounce, which a test or an agent may not wait for.
+      void get().vectorizeText([el.id]);
+      return;
+    }
+
+    const result = joinElements(selected);
+    if ('error' in result) {
+      set({ joinNotice: result.error });
+      return;
+    }
+
+    const base = selected[0];
+    const skippedIds = new Set(result.skipped.map((s) => s.id));
+    const consumed = selected.filter((e) => !skippedIds.has(e.id));
+    const consumedIds = new Set(consumed.map((e) => e.id));
+    const joined: EtchElement = {
+      // Identity transform: the sampler baked every rotation and scale into
+      // the contours, and inheriting them would apply them a second time.
+      id: `join_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: `${base.type === 'text' && base.text ? base.text : base.name} (joined)`,
+      type: 'path',
+      layerId: base.layerId,
+      objectId: base.objectId,
+      x: result.x,
+      y: result.y,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: base.opacity,
+      strokeWidth: base.strokeWidth,
+      strokeColor: base.strokeColor,
+      strokeDash: base.strokeDash,
+      fillColor: base.fillColor,
+      visible: true,
+      locked: false,
+      d: result.d,
+      machining: base.machining,
+      // In document order, so Unjoin puts them back in the order they were
+      // stacked rather than the order they were clicked.
+      joinedFrom: document.elements.filter((el) => consumedIds.has(el.id)),
+      joinedOrigin: { x: result.x, y: result.y },
+    };
+
+    const baseIndex = document.elements.findIndex((el) => el.id === base.id);
+    const kept = document.elements.filter((el) => !consumedIds.has(el.id));
+    const insertAt = document.elements.slice(0, baseIndex).filter((el) => !consumedIds.has(el.id)).length;
+
+    const notes = [
+      `Joined ${result.pieces} pieces with ${result.bridges} bridge${result.bridges === 1 ? '' : 's'}` +
+        ` — the widest gap was ${result.longestGapMm.toFixed(1)} mm. Unjoin gives the pieces back.`,
+    ];
+    if (result.skipped.length) {
+      notes.push(`Left out ${result.skipped.map((s) => s.name).join(', ')} — no closed outline.`);
+    }
+
+    commit(
+      releaseUnusedAnchors({
+        ...document,
+        elements: [...kept.slice(0, insertAt), joined, ...kept.slice(insertAt)],
+      }),
+      { selectedIds: [joined.id], joinNotice: notes.join(' ') }
+    );
+  },
+
+  unjoinSelected: () => {
+    const { document, selectedIds, history, historyIndex } = get();
+    const targets = document.elements.filter(
+      (el) => selectedIds.includes(el.id) && (el.joinPieces || el.joinedFrom?.length)
+    );
+    if (!targets.length) {
+      set({ joinNotice: 'Nothing selected is joined.' });
+      return;
+    }
+
+    const restoredIds: string[] = [];
+    let turned = false;
+    const elements = document.elements.flatMap((el) => {
+      if (!targets.includes(el)) return [el];
+      if (el.type === 'text') {
+        restoredIds.push(el.id);
+        return [{ ...el, joinPieces: undefined }];
+      }
+      if (el.rotation || (el.scaleX ?? 1) !== 1 || (el.scaleY ?? 1) !== 1) turned = true;
+      const dx = el.x - (el.joinedOrigin?.x ?? el.x);
+      const dy = el.y - (el.joinedOrigin?.y ?? el.y);
+      return el.joinedFrom!.map((orig) => {
+        restoredIds.push(orig.id);
+        return { ...orig, x: orig.x + dx, y: orig.y + dy };
+      });
+    });
+
+    const newDoc = { ...document, elements };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: restoredIds,
+      joinNotice: turned
+        ? 'Unjoined. The joined shape had been rotated or resized since; the pieces are back as they were drawn, moved to where it is.'
+        : 'Unjoined.',
+    });
+    const text = elements.filter((el) => el.type === 'text' && restoredIds.includes(el.id));
+    if (text.length) void get().vectorizeText(text.map((el) => el.id));
   },
 
   beautifySelected: () => {

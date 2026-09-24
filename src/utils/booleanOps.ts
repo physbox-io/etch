@@ -133,8 +133,27 @@ function clip(
  * orientation convention on the way out, which the non-zero pass then reads
  * correctly. Skipping it and simply switching rules loses every counter.
  */
-export function resolveElement(regions: Pt[][]): ClipperLib.Paths {
-  return clip(toClipperPaths(regions), [], ClipperLib.ClipType.ctUnion, ClipperLib.PolyFillType.pftEvenOdd);
+export function resolveElement(
+  regions: Pt[][],
+  rule: ClipperLib.PolyFillType = ClipperLib.PolyFillType.pftEvenOdd
+): ClipperLib.Paths {
+  return clip(toClipperPaths(regions), [], ClipperLib.ClipType.ctUnion, rule);
+}
+
+/**
+ * An element's own region, read with the fill rule its geometry was made for.
+ *
+ * Text is the exception to even-odd. A font's outlines are non-zero — TrueType
+ * says so — and a connected script leans on it: Lobster's joining strokes run
+ * *into* the next letter rather than stopping at its edge, so every join is two
+ * glyphs overlapping. Read even-odd, each overlap is a hole, and a union or an
+ * offset of a word came back with a small wedge punched out of every join.
+ */
+export function resolveElementOf(el: EtchElement): ClipperLib.Paths {
+  return resolveElement(
+    regionsOf(el),
+    el.type === 'text' ? ClipperLib.PolyFillType.pftNonZero : ClipperLib.PolyFillType.pftEvenOdd
+  );
 }
 
 /**
@@ -196,14 +215,14 @@ export function booleanElements(
 ): BooleanOutcome | BooleanFailure {
   const skipped: BooleanOutcome['skipped'] = [];
 
-  const baseRegions = resolveElement(regionsOf(base));
+  const baseRegions = resolveElementOf(base);
   if (baseRegions.length === 0) {
     return { error: `"${base.name}" has no closed outline to combine.` };
   }
 
   const clipRegions: ClipperLib.Paths = [];
   for (const el of others) {
-    const regions = resolveElement(regionsOf(el));
+    const regions = resolveElementOf(el);
     if (regions.length === 0) skipped.push({ id: el.id, name: el.name });
     else clipRegions.push(...regions);
   }

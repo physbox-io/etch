@@ -461,7 +461,11 @@ function warpPoint(
  * collide into the same signature.
  */
 export function outlineSignature(el: EtchElement, targetPathEl?: EtchElement): string {
-  const baseSig = [el.text, el.fontFamily, el.fontWeight, el.fontSize, el.letterSpacing].join(' ');
+  // The join flag is appended only when set, so every outline cached before
+  // joining existed keeps a signature that still matches.
+  const baseSig =
+    [el.text, el.fontFamily, el.fontWeight, el.fontSize, el.letterSpacing].join(' ') +
+    (el.joinPieces ? ' join' : '');
   if (!el.textPathId) return baseSig;
   const targetD = targetPathEl ? getElementPathD(targetPathEl) : '';
   const targetTransform = targetPathEl

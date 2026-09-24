@@ -334,6 +334,21 @@ export interface EtchElement {
    */
   outlineD?: string;
   outlineSig?: string;
+  /**
+   * Text only: bridge the letters that do not touch, so the word cuts out as
+   * one piece (`joinPieces.ts`). A flag rather than a conversion to a path so
+   * the text stays text — the bridges are rebuilt into `outlineD` every time
+   * the wording or the font changes, and clearing the flag unjoins it.
+   */
+  joinPieces?: boolean;
+  /**
+   * A path made by joining several elements: the elements it was made from,
+   * exactly as they were, so Unjoin can put them back. `joinedOrigin` is where
+   * this path's `x`/`y` stood at the time, so a joined part that has since been
+   * moved comes apart where it now is rather than jumping back.
+   */
+  joinedFrom?: EtchElement[];
+  joinedOrigin?: { x: number; y: number };
 
   /**
    * How this element is machined, independent of its layer.

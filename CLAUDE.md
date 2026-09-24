@@ -183,6 +183,28 @@ the picture to rub out a thumbnail. Intensities travel with the geometry, as
 they do everywhere else that rewrites segment points. See
 `tests/eraseMask.test.ts`.
 
+`src/utils/joinPieces.ts` — Join, the link button beside Group in the Objects
+panel. Bridges the separate pieces of a selection into one part: a word whose
+letters do not all touch, cut out to hang as a pendant. Bridges come from a
+minimum spanning tree over closest-point gaps, are as wide as the thinner
+stroke they join, and are filleted **per junction** against only the piece they
+meet — `close(piece ∪ bar) − close(piece)`. A closing of the whole joined shape
+webbed neighbouring letters together and rounded every inside corner in the
+word. Text is read non-zero (`resolveElementOf`), because a script's joining
+strokes overlap the next glyph and even-odd punched a wedge out of every join —
+in union and outset too.
+
+Join is reversible, and the button turns into Unjoin on a joined selection.
+One text element is joined **live**: it keeps `type: 'text'`, gets
+`joinPieces: true` (part of `outlineSignature`), and `vectorizeText` runs
+`joinOutlineD` on every rebuild, so retyping a name re-bridges it. Converting it
+to a path was the first version, and it made a typo a start-again. Anything else
+becomes one path carrying `joinedFrom` (the originals) and `joinedOrigin`, which
+`unjoinSelected` puts back, shifted by however far the path has moved. MCP
+reaches both as `etch_combine` ops `join` / `unjoin` — ops, not a new tool, so
+the tool count the website advertises does not move. See
+`tests/joinPieces.test.ts`.
+
 `src/utils/beautify.ts` — the "Make Pretty" button, next to the boolean ops in
 the sidebar. It regularises a hand-drawn selection in four passes, and the order
 is load-bearing:
