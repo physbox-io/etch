@@ -32,7 +32,14 @@ import { fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/flo
 import { BusyToast } from './BusyToast';
 import { computeResize, resizeSeed, clampScale, type ResizeHandle } from '../utils/resizeElement';
 import { isGeneratedField } from '../utils/generatedField';
-import { pickHit, elementsInMarquee, normalizeRect, toggleSelection } from '../utils/selection';
+import {
+  pickHit,
+  rankHits,
+  elementsInMarquee,
+  marqueeMode,
+  normalizeRect,
+  toggleSelection,
+} from '../utils/selection';
 import { wheelIntent, wheelPanDelta, wheelZoomFactor, WHEEL_BURST_MS, type WheelIntent } from '../utils/wheelGesture';
 import {
   nodesToPath,
@@ -235,6 +242,18 @@ export const EtchCanvas: React.FC = () => {
   // Rubber-band (marquee) selection
   const [marquee, setMarquee] = useState<Marquee | null>(null);
   const [marqueeAdditive, setMarqueeAdditive] = useState(false);
+
+  /*
+   * When a click lands on several overlapping shapes, say so, and say how to
+   * reach the others. Alt-click cycling was there all along, and nobody could
+   * have known: a modifier nobody is told about is a modifier nobody presses.
+   */
+  const [stackHint, setStackHint] = useState<{ index: number; count: number } | null>(null);
+  useEffect(() => {
+    if (!stackHint) return;
+    const t = window.setTimeout(() => setStackHint(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [stackHint]);
 
   const gridSize = document.gridSize || 10;
   /*
@@ -728,7 +747,15 @@ export const EtchCanvas: React.FC = () => {
 
     if (activeTool === 'select') {
       // Overlay handles (rotate/resize) stop propagation before reaching here.
-      const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey);
+      const stack = hitStack(e);
+      const at = toBed(e);
+      const hit = pickHit(stack, document.elements, selectedIds, e.altKey, at);
+      const candidates = hit ? rankHits(stack, document.elements, at) : [];
+      setStackHint(
+        candidates.length > 1
+          ? { index: candidates.indexOf(hit!) + 1, count: candidates.length }
+          : null
+      );
 
       if (!hit) {
         const raw = toBed(e);
@@ -801,7 +828,7 @@ export const EtchCanvas: React.FC = () => {
           return;
         }
       }
-      const pick = pickHit(hitStack(e), document.elements, selectedIds, e.altKey);
+      const pick = pickHit(hitStack(e), document.elements, selectedIds, e.altKey, toBed(e));
       setSelectedIds(pick ? [pick] : []);
       setActiveNode(null);
       return;
@@ -1207,7 +1234,12 @@ export const EtchCanvas: React.FC = () => {
       if (Math.max(rect.maxX - rect.minX, rect.maxY - rect.minY) < 0.5) {
         if (!marqueeAdditive) setSelectedIds([]);
       } else {
-        const hits = elementsInMarquee(document.elements, rect, isPickable);
+        const hits = elementsInMarquee(
+          document.elements,
+          rect,
+          isPickable,
+          marqueeMode(marquee.x0, marquee.x1)
+        );
         setSelectedIds(
           marqueeAdditive
             ? [...selectedIds, ...hits.filter((id) => !selectedIds.includes(id))]
@@ -1550,7 +1582,7 @@ export const EtchCanvas: React.FC = () => {
           // path-backed shapes qualify; text keeps its own double-click, which
           // opens the text prompt.
           if (activeTool === 'select') {
-            const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey);
+            const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey, toBed(e));
             const el = hit ? document.elements.find((it) => it.id === hit) : null;
             if (el && !el.locked && elementNodePath(el)) {
               setSelectedIds([el.id]);
@@ -2201,7 +2233,9 @@ export const EtchCanvas: React.FC = () => {
           </g>
         )}
 
-        {/* Rubber-band marquee */}
+        {/* Rubber-band marquee. Solid for a window (wholly inside), dashed
+            for a crossing (anything touched) — the CAD convention, so the
+            band shows which rule it will apply before it is let go. */}
         {marquee && (
           <rect
             id="selection-marquee"
@@ -2209,10 +2243,18 @@ export const EtchCanvas: React.FC = () => {
             y={Math.min(marquee.y0, marquee.y1)}
             width={Math.abs(marquee.x1 - marquee.x0)}
             height={Math.abs(marquee.y1 - marquee.y0)}
-            fill="rgba(245, 158, 11, 0.10)"
-            stroke="#f59e0b"
+            fill={
+              marqueeMode(marquee.x0, marquee.x1) === 'window'
+                ? 'rgba(59, 130, 246, 0.10)'
+                : 'rgba(34, 197, 94, 0.10)'
+            }
+            stroke={marqueeMode(marquee.x0, marquee.x1) === 'window' ? '#3b82f6' : '#22c55e'}
             strokeWidth={0.5 * hs}
-            strokeDasharray={`${2 * hs},${1.5 * hs}`}
+            strokeDasharray={
+              marqueeMode(marquee.x0, marquee.x1) === 'window'
+                ? undefined
+                : `${2 * hs},${1.5 * hs}`
+            }
             style={{ pointerEvents: 'none' }}
           />
         )}
@@ -2471,6 +2513,23 @@ export const EtchCanvas: React.FC = () => {
           Click to add a node · drag to curve it · click the first node or press{' '}
           <kbd className="font-mono">Enter</kbd> to finish · <kbd className="font-mono">Esc</kbd> to
           cancel
+        </div>
+      )}
+
+      {/* Marquee hint: which rule this band applies, and how to get the other. */}
+      {marquee && Math.abs(marquee.x1 - marquee.x0) + Math.abs(marquee.y1 - marquee.y0) > 0.5 && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+          {marqueeMode(marquee.x0, marquee.x1) === 'window'
+            ? 'Window — selects only what is wholly inside · drag leftward to take anything it touches'
+            : 'Crossing — selects anything the band touches · drag rightward to take only what is inside'}
+        </div>
+      )}
+
+      {/* Overlap hint, after a click on a stack of shapes */}
+      {activeTool === 'select' && stackHint && !isTransforming && !marquee && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
+          {stackHint.index} of {stackHint.count} shapes here ·{' '}
+          <kbd className="font-mono">Alt</kbd>-click to select the next one underneath
         </div>
       )}
 
