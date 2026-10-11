@@ -562,7 +562,7 @@ export const SAFE_Z = 5;
  * checks the origin against a different coordinate system than the cut is
  * worse than none, because it reports success.
  */
-const COORD_SYSTEM_PREAMBLE =
+export const COORD_SYSTEM_PREAMBLE =
   `G90 ; Absolute positioning\n` +
   `G21 ; Millimeter units\n` +
   `G54 ; Work coordinate system 1 — the one zeroing writes with G10 L20 P1\n` +
@@ -3524,7 +3524,7 @@ export function planToolChanges(segments: GCodeSegment[]): ToolChange[] {
  * every job was made by a cutter still spinning up — the one entry already most
  * likely to break it.
  */
-const SPINDLE_SPINUP_SECONDS = 2;
+export const SPINDLE_SPINUP_SECONDS = 2;
 
 export interface ToolpathPlan {
   segments: GCodeSegment[];

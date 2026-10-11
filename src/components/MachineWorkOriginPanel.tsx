@@ -21,6 +21,7 @@ import {
   PauseCircle,
   Play,
   Square,
+  Layers,
 } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
 import { InfoTooltip } from './InfoTooltip';
@@ -40,6 +41,13 @@ import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerial
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
 import { NumberInput } from '@physbox-io/ui';
 import { ProbeCircuitStatus } from './ProbeCircuitStatus';
+import {
+  planResurface,
+  DEFAULT_RESURFACE_DEPTH_MM,
+  MAX_RESURFACE_DEPTH_MM,
+  MIN_RESURFACE_DEPTH_MM,
+} from '../utils/resurface';
+import { readSpindleRange, readMotionProfile } from '../utils/machineSettings';
 
 /**
  * Setting the job's origin on a live machine: jog the tool where you want it,
@@ -68,10 +76,12 @@ export const MachineWorkOriginPanel: React.FC<{
   /** Deep-links to the zeroing walkthrough in the Reference Guide. */
   onOpenDocs?: () => void;
 }> = ({ status, showZProbe = true, machine = 'cnc', bedBounds, probeGrid, onProbeGrid, onOpenDocs }) => {
-  const { touchPlateThickness, setTouchPlateThickness } = useStore(
+  const { touchPlateThickness, setTouchPlateThickness, document, cncTools } = useStore(
     useShallow((s) => ({
       touchPlateThickness: s.touchPlateThickness,
       setTouchPlateThickness: s.setTouchPlateThickness,
+      document: s.document,
+      cncTools: s.cncTools,
     })),
   );
   const words = machineWords(machine);
@@ -120,8 +130,38 @@ export const MachineWorkOriginPanel: React.FC<{
   // switches, machine coordinates are wherever it happened to be switched on,
   // and nothing below can be repeated tomorrow.
   const [homed, setHomed] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [resurfaceDepth, setResurfaceDepth] = useState(DEFAULT_RESURFACE_DEPTH_MM);
+  // Facing the bed is the one thing in this panel that cuts, so it asks once
+  // more before it does — with the tool to fit and the Z it will cut from.
+  const [confirmResurface, setConfirmResurface] = useState(false);
+  const [resurfaceNote, setResurfaceNote] = useState<string | null>(null);
   const [isHoming, setIsHoming] = useState(false);
   const jobPaused = status.jobRunning && status.jobPaused;
+
+  // Planned against the stock, not the drawing: the board is the job here.
+  const resurface = useMemo(
+    () =>
+      showZProbe
+        ? planResurface(document, {
+            depth: resurfaceDepth,
+            tools: cncTools,
+            spindle: readSpindleRange(),
+            motion: readMotionProfile(),
+          })
+        : null,
+    [showZProbe, document, resurfaceDepth, cncTools]
+  );
+
+  const handleResurface = async () => {
+    if (!resurface || 'error' in resurface) return;
+    const result = await webSerialManager.runProgram(resurface.gcode, {
+      machine: 'cnc',
+      job: { name: 'Resurface spoilboard' },
+    });
+    setResurfaceNote(result.message);
+    setConfirmResurface(false);
+  };
 
   /*
    * Keyed on the four numbers rather than on the object.
@@ -889,6 +929,93 @@ export const MachineWorkOriginPanel: React.FC<{
               )}
               {' CNC G-code is warped to follow it.'}
             </p>
+          )}
+        </div>
+      )}
+
+      {/* Facing the spoilboard. Behind a disclosure because it is maintenance,
+          done every few months, not a step of setting up a job. */}
+      {showZProbe && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+          >
+            {showAdvanced ? '▾' : '▸'} Advanced
+          </button>
+          {showAdvanced && resurface && (
+            <div className={`${card} space-y-2.5`}>
+              <span className={stepTitle}>Resurface spoilboard</span>
+              <div className="flex items-end gap-2 flex-wrap">
+                <div className="shrink-0">
+                  <span className={`${fieldLabel} mb-1`}>Depth (mm)</span>
+                  <NumberInput
+                    min={MIN_RESURFACE_DEPTH_MM}
+                    max={MAX_RESURFACE_DEPTH_MM}
+                    step={0.1}
+                    value={resurfaceDepth}
+                    onChange={(v) => {
+                      setResurfaceDepth(v ?? DEFAULT_RESURFACE_DEPTH_MM);
+                      setConfirmResurface(false);
+                    }}
+                    title="How much to take off the top of the board"
+                    className={`w-20 ${numInput}`}
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    setResurfaceNote(null);
+                    setConfirmResurface(true);
+                  }}
+                  disabled={busy || 'error' in resurface || confirmResurface}
+                  className={`${actionBtn} max-w-[14rem]`}
+                >
+                  <Layers className="w-3.5 h-3.5 text-cyan-500" />
+                  <span>Resurface</span>
+                </button>
+              </div>
+              {'error' in resurface ? (
+                <p className="text-[11px] text-red-500 font-semibold">{resurface.error}</p>
+              ) : (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Faces the whole {document.width} × {document.height} mm stock area{' '}
+                  {resurface.depth} mm deep with T{resurface.tool.id} {resurface.tool.name}:{' '}
+                  {resurface.rows} rows, {resurface.passes} pass{resurface.passes > 1 ? 'es' : ''},{' '}
+                  {resurface.feeds.summary.split(' · ').slice(0, 2).join(' · ')}. The bed heightmap is
+                  not applied — the unevenness it measures is what this removes.
+                </p>
+              )}
+              {confirmResurface && !('error' in resurface) && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 space-y-2">
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    Fit <strong>{resurface.tool.name}</strong>. X0 Y0 must be the corner of the area to
+                    face and Z0 the top of the spoilboard
+                    {zZeroed ? '' : ' — Z has not been zeroed in this session'}. Clear the bed of
+                    clamps and stock.
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={handleResurface}
+                      disabled={busy}
+                      className="px-2 py-1 text-[11px] font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white cursor-pointer flex items-center gap-1"
+                    >
+                      <Play className="w-3 h-3" />
+                      Start resurfacing
+                    </button>
+                    <button
+                      onClick={() => setConfirmResurface(false)}
+                      className="px-2 py-1 text-[11px] rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              {resurfaceNote && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">{resurfaceNote}</p>
+              )}
+            </div>
           )}
         </div>
       )}

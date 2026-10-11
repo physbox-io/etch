@@ -79,6 +79,19 @@ to prevent.
 | A ring is treated as a slot unless something it encloses was cut first | `engagementOf` | The engagement claim is only true where the previous ring has opened the way. A pocket with an island in it closes round the island from two sides and each lobe has an innermost ring of its own — assuming only the first ring slots would feed a real slot at a light cut's rate, which is how a cutter is snapped. | **Derived** |
 | Each ring offset from the original boundary, not from the previous ring | `pocketOffset.ts` | Offsetting an offset accumulates arc-approximation error; twenty rings in, the stepover has drifted and the floor shows ridges where passes stopped overlapping. | **Derived** |
 
+## 2a. CNC: spoilboard resurfacing
+
+`src/utils/resurface.ts`
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `DEFAULT_RESURFACE_DEPTH_MM = 0.5` | `resurface.ts` | Enough to clear ordinary scoring from through-cuts in one light pass, little enough that a board survives many resurfacings. | **Judgement** |
+| `MAX_RESURFACE_DEPTH_MM = 3` | `resurface.ts` | A board worn deeper than this is replaced rather than faced; the cap mostly catches "5" typed for "0.5". | **Judgement** |
+| Widest flat-bottomed tool in the library, fed as MDF | `pickSurfacingTool`, `planResurface` | Width is time; flat is the requirement — a ball nose scallops the floor it was meant to flatten. Spoilboards are MDF almost universally. | **Derived** (flat), **Judgement** (MDF) |
+| `RESURFACE_STEPOVER_RATIO = 0.4` of diameter, rows evened out | `planResurface` | Any tram error leaves a ridge at each row boundary; more overlap halves it. Equal rows land the last one on the edge with no sliver. | **Judgement** |
+| Cutter centre held a radius inside the stock | `planResurface` | The faced area is exactly the canvas, and the tool never reaches into clamps or the frame beyond it. | **Derived** |
+| Bed heightmap deliberately not applied | `planResurface` | The heightmap measures the unevenness; warping the facing pass to follow it would preserve exactly what the pass exists to remove. | **Derived** |
+
 ## 3. CNC: drilling
 
 | Value | Where | Basis | Source |
