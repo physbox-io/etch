@@ -73,7 +73,7 @@ export const JobPauseBanner: React.FC = () => {
           {status.pauseMessage ?? 'Waiting for the operator.'}
         </p>
 
-        {/* The re-zero on the new tool is a probe, and a probe on a circuit the
+        {/* The re-zero on the new tool may be a probe, and a probe on a circuit the
             new tool has not closed yet is refused — so say so here, before the
             operator opens the panel and is refused there. */}
         {!isLaser && (

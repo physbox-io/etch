@@ -865,7 +865,11 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           not creep. The spot switches itself off after two minutes, and whenever a job starts. Wear
           your glasses: it is a low power, not a safe one.
         </Step>
-        <Step title="3️⃣ Zero Z with the touch plate">
+        <Step title="3️⃣ Zero Z — with a touch plate or by hand">
+          There are two equally good ways, side by side in the panel. Use whichever you have the
+          kit for: a plate needs a clip and a surface that conducts; paper works on anything.
+        </Step>
+        <Step title="With a touch plate">
           Clip the probe lead to the tool and sit the plate on the stock's top face. Then{' '}
           <strong>prove the circuit</strong>: touch the plate to the tool by hand and watch the
           probe light under the button turn green. Etch refuses to probe until it has seen the
@@ -876,9 +880,8 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           <strong>Probe Z Zero</strong>. The tool descends slowly until the circuit closes, then
           work Z0 is set at the stock surface. <strong>Remove the plate before cutting.</strong>
         </Step>
-        <Step title="3️⃣ …or zero Z by hand (the paper trick)">
-          No touch plate, or stock that will not conduct? Open{' '}
-          <strong>No touch plate? Zero Z by hand</strong>, lay a sheet of paper on the stock, and jog
+        <Step title="By hand, with paper">
+          Lay a sheet of paper on the stock and jog
           Z down in 0.1 mm steps until the paper just drags under the tool. Press{' '}
           <strong>Set Z Zero Here</strong> and the shim thickness (0.1 mm for copier paper) is added
           back, so Z0 lands on the stock rather than on the paper. It is as accurate as your feel for

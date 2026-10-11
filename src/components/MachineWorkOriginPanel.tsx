@@ -8,7 +8,6 @@ import {
   ArrowRight,
   ChevronsUp,
   ChevronsDown,
-  ChevronRight,
   Crosshair,
   Hand,
   Home,
@@ -123,7 +122,6 @@ export const MachineWorkOriginPanel: React.FC<{
     shim?: number;
     pausedLine: number | null;
   } | null>(null);
-  const [showManualZ, setShowManualZ] = useState(false);
   const [shimThickness, setShimThickness] = useState(readShimThickness);
   const [guidePower, setGuidePower] = useState(readGuidePower);
   const [guideJiggle, setGuideJiggle] = useState(readGuideJiggle);
@@ -695,71 +693,68 @@ export const MachineWorkOriginPanel: React.FC<{
           <div className={zZeroed ? cardDone : card}>
             <span className={zZeroed ? stepTitleDone : stepTitle}>
               {zZeroed ? doneMark : <span className={stepNo}>3</span>}
-              {zZeroed ? 'Z is zeroed on the stock' : 'Touch off Z'}
+              {zZeroed ? 'Z is zeroed on the stock' : 'Zero Z on the stock'}
             </span>
-            <div className="flex items-end gap-2 max-w-md">
-              <div className="shrink-0">
-                <span className={`${fieldLabel} mb-1`}>
-                  Plate (mm) <InfoTooltip text="Thickness of touch plate used for Z zero probe. Work Z0 is placed this far below the plate's top face." />
-                </span>
-                <NumberInput
-                  min={0}
-                  max={100}
-                  step={0.1}
-                  value={touchPlateThickness}
-                  onChange={v => setTouchPlateThickness(v ?? 0)
-                  } title="Touch plate thickness — work Z 0 ends up this far below the plate's top face. Remembered between sessions."
-                  className={`w-20 ${numInput}`}
+            {/* Two ways, side by side and on equal footing. The plate is not the
+                better method, only a different one: it needs stock or a clip that
+                conducts, and the paper trick is how most hobby routers are zeroed
+                and the only way on wood, acrylic or painted stock. Hiding it behind
+                "No touch plate?" read as the fallback for people missing a part. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-md">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700/70 bg-white/60 dark:bg-slate-900/30 p-2 space-y-1.5 flex flex-col">
+                <span className={fieldLabel}>With a touch plate</span>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug flex-1">
+                  Clip the lead to the tool, sit the plate on the stock and park the tool a few mm
+                  above it. Remove the plate before cutting.
+                </p>
+                <div className="flex items-end gap-2">
+                  <div className="shrink-0">
+                    <span className={`${fieldLabel} mb-1`}>
+                      Plate (mm) <InfoTooltip text="Thickness of touch plate used for Z zero probe. Work Z0 is placed this far below the plate's top face." />
+                    </span>
+                    <NumberInput
+                      min={0}
+                      max={100}
+                      step={0.1}
+                      value={touchPlateThickness}
+                      onChange={v => setTouchPlateThickness(v ?? 0)
+                      } title="Touch plate thickness — work Z 0 ends up this far below the plate's top face. Remembered between sessions."
+                      className={`w-20 ${numInput}`}
                     />
-              </div>
-              <button onClick={handleZeroZ} disabled={busy} className={actionBtn}>
-                <ChevronsDown className="w-3.5 h-3.5 text-amber-500" />
-                <span>{isProbingZ ? 'Probing…' : zZeroed ? 'Probe Z Again' : 'Probe Z Zero'}</span>
-              </button>
-            </div>
-            <ProbeCircuitStatus active={status.probePinActive} seen={status.probeCircuitSeen} />
-
-            {/* The paper trick, offered second because it is measured by feel:
-                no probe circuit, so it is the only way to zero on wood, acrylic
-                or painted stock — and the fallback when the clip falls off. */}
-            <div className="pt-2 border-t border-slate-200/80 dark:border-slate-700/60 space-y-1.5">
-              <button
-                type="button"
-                onClick={() => setShowManualZ((v) => !v)}
-                className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer transition-colors"
-              >
-                <ChevronRight
-                  className={`w-3 h-3 transition-transform ${showManualZ ? 'rotate-90' : ''}`}
-                />
-                No touch plate? Zero Z by hand
-              </button>
-              {showManualZ && (
-                <div className="space-y-2">
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug max-w-md">
-                    Slide a sheet of paper under the tool and jog Z down in 0.1 mm steps until it
-                    just drags. Then set zero here — the shim thickness is added back, so Z0 lands
-                    on the stock, not on the paper.
-                  </p>
-                  <div className="flex items-end gap-2 max-w-md">
-                    <div className="shrink-0">
-                      <span className={`${fieldLabel} mb-1`}>Shim (mm)</span>
-                      <NumberInput
-                        min={0}
-                        max={MAX_SHIM_THICKNESS_MM}
-                        step={0.01}
-                        value={shimThickness}
-                        onChange={v => setShimThickness(writeShimThickness(v ?? 0))
-                        } title="Thickness of whatever is under the tool — copier paper is about 0.1 mm. Set 0 if the tool touches the work itself."
-                        className={`w-20 ${numInput}`}
-                    />
-                    </div>
-                    <button onClick={handleManualZeroZ} disabled={busy} className={actionBtn}>
-                      <Hand className="w-3.5 h-3.5 text-cyan-500" />
-                      <span>Set Z Zero Here</span>
-                    </button>
                   </div>
+                  <button onClick={handleZeroZ} disabled={busy} className={actionBtn}>
+                    <ChevronsDown className="w-3.5 h-3.5 text-amber-500" />
+                    <span>{isProbingZ ? 'Probing…' : zZeroed && !zZeroed.manual ? 'Probe Again' : 'Probe Z Zero'}</span>
+                  </button>
                 </div>
-              )}
+                <ProbeCircuitStatus active={status.probePinActive} seen={status.probeCircuitSeen} />
+              </div>
+
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700/70 bg-white/60 dark:bg-slate-900/30 p-2 space-y-1.5 flex flex-col">
+                <span className={fieldLabel}>By hand, with paper</span>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug flex-1">
+                  Slide a sheet of paper under the tool and jog Z down in 0.1 mm steps until it just
+                  drags. The shim is added back, so Z0 lands on the stock, not the paper.
+                </p>
+                <div className="flex items-end gap-2">
+                  <div className="shrink-0">
+                    <span className={`${fieldLabel} mb-1`}>Shim (mm)</span>
+                    <NumberInput
+                      min={0}
+                      max={MAX_SHIM_THICKNESS_MM}
+                      step={0.01}
+                      value={shimThickness}
+                      onChange={v => setShimThickness(writeShimThickness(v ?? 0))
+                      } title="Thickness of whatever is under the tool — copier paper is about 0.1 mm. Set 0 if the tool touches the work itself."
+                      className={`w-20 ${numInput}`}
+                    />
+                  </div>
+                  <button onClick={handleManualZeroZ} disabled={busy} className={actionBtn}>
+                    <Hand className="w-3.5 h-3.5 text-amber-500" />
+                    <span>Set Z Zero Here</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             {zZeroed && (
