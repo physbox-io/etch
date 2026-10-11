@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { planResurface, pickSurfacingTool } from '../src/utils/resurface';
-import { DEFAULT_CNC_TOOLS } from '../src/utils/tooling';
+import { DEFAULT_CNC_TOOLS, COMMON_TOOL_PRESETS } from '../src/utils/tooling';
 import type { EtchDocument } from '../src/types/etch';
 
 const doc = (origin: EtchDocument['origin'] = 'top-left') =>
@@ -48,5 +48,25 @@ describe('spoilboard resurface', () => {
 
   it('refuses a depth typed an order of magnitude out', () => {
     expect('error' in planResurface(doc(), { ...opts, depth: 5 })).toBe(true);
+  });
+});
+
+describe('surfacing bit', () => {
+  const bit = COMMON_TOOL_PRESETS.find((p) => /surfacing/i.test(p.name))!;
+  const rack = [...DEFAULT_CNC_TOOLS, { ...bit.profile, id: 7 }];
+
+  it('is flat, so it is picked over the end mills', () => {
+    expect(pickSurfacingTool(rack)?.id).toBe(7);
+  });
+
+  it('can be chosen even when its end shape was never declared', () => {
+    const undeclared = rack.map((t) => (t.id === 7 ? { ...t, tipShape: undefined } : t));
+    const plan = planResurface(doc(), { ...opts, tools: undeclared, toolId: 7 });
+    if ('error' in plan) throw new Error(plan.error);
+    expect(plan.tool.id).toBe(7);
+  });
+
+  it('is never a ball nose', () => {
+    expect('error' in planResurface(doc(), { ...opts, toolId: 5 })).toBe(true);
   });
 });

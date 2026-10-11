@@ -43,6 +43,7 @@ import { NumberInput } from '@physbox-io/ui';
 import { ProbeCircuitStatus } from './ProbeCircuitStatus';
 import {
   planResurface,
+  surfacingCandidates,
   DEFAULT_RESURFACE_DEPTH_MM,
   MAX_RESURFACE_DEPTH_MM,
   MIN_RESURFACE_DEPTH_MM,
@@ -132,6 +133,8 @@ export const MachineWorkOriginPanel: React.FC<{
   const [homed, setHomed] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [resurfaceDepth, setResurfaceDepth] = useState(DEFAULT_RESURFACE_DEPTH_MM);
+  // Unset means the widest flat cutter in the rack; a surfacing bit is usually it.
+  const [resurfaceToolId, setResurfaceToolId] = useState<number | undefined>(undefined);
   // Facing the bed is the one thing in this panel that cuts, so it asks once
   // more before it does — with the tool to fit and the Z it will cut from.
   const [confirmResurface, setConfirmResurface] = useState(false);
@@ -146,11 +149,12 @@ export const MachineWorkOriginPanel: React.FC<{
         ? planResurface(document, {
             depth: resurfaceDepth,
             tools: cncTools,
+            toolId: resurfaceToolId,
             spindle: readSpindleRange(),
             motion: readMotionProfile(),
           })
         : null,
-    [showZProbe, document, resurfaceDepth, cncTools]
+    [showZProbe, document, resurfaceDepth, resurfaceToolId, cncTools]
   );
 
   const handleResurface = async () => {
@@ -962,6 +966,24 @@ export const MachineWorkOriginPanel: React.FC<{
                     title="How much to take off the top of the board"
                     className={`w-20 ${numInput}`}
                   />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className={`${fieldLabel} mb-1`}>Bit</span>
+                  <select
+                    value={'error' in resurface ? (resurfaceToolId ?? '') : resurface.tool.id}
+                    onChange={(e) => {
+                      setResurfaceToolId(Number(e.target.value));
+                      setConfirmResurface(false);
+                    }}
+                    title="The cutter in the collet. Add a surfacing bit under Tools if it is not listed."
+                    className={`w-full ${numInput}`}
+                  >
+                    {surfacingCandidates(cncTools).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        T{t.id} — {t.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <button
                   onClick={() => {

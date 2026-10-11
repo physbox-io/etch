@@ -106,6 +106,7 @@ export const ToolConfigModal: React.FC = () => {
       name: preset.profile.name,
       diameter: preset.profile.diameter,
       tipAngleDeg: preset.profile.tipAngleDeg,
+      tipShape: preset.profile.tipShape,
       bestFor: [...preset.profile.bestFor],
       guidance: preset.profile.guidance,
       minDetailMm: preset.profile.minDetailMm,

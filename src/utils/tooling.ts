@@ -381,6 +381,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '19 mm spoilboard surfacing bit',
       diameter: 19.0,
+      tipShape: 'flat',
       bestFor: ['fill', 'cut'],
       guidance: 'Wide fly-cutter for rapid flattening of wasteboards and stock facing.',
       minDetailMm: 19.0,
@@ -393,6 +394,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '1/16" flat end mill',
       diameter: 1.5875,
+      tipShape: 'flat',
       bestFor: ['cut', 'etch', 'fill'],
       guidance: 'Intermediate detail end mill for narrow mortises and fine cutout shapes.',
       minDetailMm: 1.5875,
@@ -405,6 +407,7 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
     profile: {
       name: '1/32" micro end mill',
       diameter: 0.7938,
+      tipShape: 'flat',
       bestFor: ['etch', 'cut'],
       guidance: 'Precision micro-milling bit for fine PCB or detail work. Handle with high care.',
       minDetailMm: 0.7938,
@@ -467,7 +470,14 @@ function sanitizeStoredTool(raw: unknown): ToolProfile | null {
     name,
     diameter: diameter !== undefined && diameter > 0 ? diameter : undefined,
     tipAngleDeg: clampTipAngle(num(t.tipAngleDeg)),
-    tipShape: t.tipShape === 'flat' || t.tipShape === 'ball' ? t.tipShape : undefined,
+    tipShape:
+      t.tipShape === 'flat' || t.tipShape === 'ball'
+        ? t.tipShape
+        : // Applying a preset in the tool editor used to drop the end shape, so
+          // a rack set up from presets read as all-unknown: fine pitch on every
+          // pocket, and no flat cutter for Resurface to face the board with.
+          // A tool still carrying a preset's exact name gets that preset's shape.
+          COMMON_TOOL_PRESETS.find((p) => p.profile.name === name)?.profile.tipShape,
     bestFor,
     guidance: typeof t.guidance === 'string' ? t.guidance : '',
     minDetailMm,

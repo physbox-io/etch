@@ -2,7 +2,7 @@ import type { EtchDocument } from '../types/etch';
 import { docToMachine } from './machineCoords';
 import { deriveFeeds, planPasses, formatRpm, RAMP_ANGLE_DEG, type FeedRecipe, type SpindleRange } from './feeds';
 import { findMaterial } from './materials';
-import { isFlatBottomed, type ToolProfile } from './tooling';
+import { clampTipAngle, isFlatBottomed, type ToolProfile } from './tooling';
 import { DEFAULT_MOTION_PROFILE, type MotionProfile } from './motionProfile';
 import { COORD_SYSTEM_PREAMBLE, SAFE_Z, SPINDLE_SPINUP_SECONDS } from './gcodeExporter';
 
@@ -40,18 +40,28 @@ export const RESURFACE_STEPOVER_RATIO = 0.4;
 const SPOILBOARD_MATERIAL = 'mdf' as const;
 
 /**
- * The tool to face with: the widest flat-bottomed cutter in the library.
+ * The tools that can face a board at all: fed (a cutting spec) and not shaped
+ * to leave anything but a floor. A ball nose scallops the board it was meant to
+ * flatten and a V-bit cannot face at all. A tool whose end shape was never
+ * declared is offered, because the operator holding it knows what it is.
+ */
+export function surfacingCandidates(tools: ToolProfile[]): ToolProfile[] {
+  return tools.filter(
+    (t) => t.cutting && t.diameter && t.diameter > 0 && t.tipShape !== 'ball' && !clampTipAngle(t.tipAngleDeg)
+  );
+}
+
+/**
+ * The tool to face with when none is chosen: the widest one known to be flat.
  *
- * Width is time — the pass count goes as one over the stepover — and flat is
- * the requirement: a ball nose scallops the board it was meant to flatten, and
- * a V-bit cannot face at all. A tool with no cutting spec cannot be fed, and is
- * not guessed at.
+ * Width is time — the pass count goes as one over the stepover. Unlike the
+ * picker, the default does not assume an undeclared end is flat.
  */
 export function pickSurfacingTool(tools: ToolProfile[]): ToolProfile | null {
   let best: ToolProfile | null = null;
-  for (const t of tools) {
-    if (!t.cutting || !isFlatBottomed(t) || !(t.diameter && t.diameter > 0)) continue;
-    if (!best || t.diameter > best.diameter!) best = t;
+  for (const t of surfacingCandidates(tools)) {
+    if (!isFlatBottomed(t)) continue;
+    if (!best || t.diameter! > best.diameter!) best = t;
   }
   return best;
 }
@@ -71,6 +81,8 @@ export interface ResurfacePlan {
 export interface ResurfaceOptions {
   depth: number;
   tools: ToolProfile[];
+  /** The T-number in the collet; the widest flat tool when omitted. */
+  toolId?: number;
   spindle: SpindleRange;
   motion?: MotionProfile;
 }
@@ -89,7 +101,10 @@ export function planResurface(doc: EtchDocument, opts: ResurfaceOptions): Resurf
       error: `Depth must be between ${MIN_RESURFACE_DEPTH_MM} and ${MAX_RESURFACE_DEPTH_MM} mm.`,
     };
   }
-  const tool = pickSurfacingTool(opts.tools);
+  const tool =
+    opts.toolId !== undefined
+      ? surfacingCandidates(opts.tools).find((t) => t.id === opts.toolId) ?? null
+      : pickSurfacingTool(opts.tools);
   if (!tool) return { error: 'No flat end mill in the tool library to face the board with.' };
   const feeds = deriveFeeds(tool, SPOILBOARD_MATERIAL, opts.spindle, opts.motion ?? DEFAULT_MOTION_PROFILE);
   if (!feeds) return { error: `${tool.name} has no cutting data to feed it with.` };
