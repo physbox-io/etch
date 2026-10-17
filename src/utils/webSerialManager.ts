@@ -836,16 +836,6 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     };
   }
 
-  /** Clears a GRBL alarm, then re-asserts the modal state an alarm discarded. */
-  public async unlockAlarm(): Promise<void> {
-    await super.unlockAlarm();
-    // An alarm refuses G-code, so whatever was in flight when it tripped may
-    // never have been applied — including the `G90` that ends a probing cycle.
-    // Re-asserting the modal state here is what stops the next positioning move
-    // being interpreted as relative and walking the tool off the job.
-    await this.sendCommand('G21 G90');
-  }
-
   /** `homeMachine()` under the name this app's panels have always called it. */
   public async home(): Promise<void> {
     await this.homeMachine();
