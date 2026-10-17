@@ -116,16 +116,21 @@ export const MachineControlModal: React.FC = () => {
   /*
    * Pick the machine back up when the app opens.
    *
-   * Only for a Tekno Box, and only one attempt. A cloud link reconnects with
-   * nobody present — the box is on the far end waiting — whereas USB needs a
-   * port permission prompt that must never be raised unprompted. Silent on
-   * failure: the box may simply be asleep, and an error on every launch for a
-   * machine nobody is about to use teaches people to ignore errors.
+   * Only one attempt. A cloud link reconnects with nobody present — the box is
+   * on the far end waiting. USB reconnects only to the port this origin was
+   * granted last time (`autoConnect`), since a port permission prompt must
+   * never be raised unprompted. Silent on failure: the box may simply be
+   * asleep, and an error on every launch for a machine nobody is about to use
+   * teaches people to ignore errors.
    */
   useEffect(() => {
     const savedMode = localStorage.getItem('etchTransport');
     const savedDevice = localStorage.getItem('etchCloudDeviceId');
-    if (savedMode !== 'wifi' || !savedDevice) return;
+    if (savedMode !== 'wifi') {
+      void webSerialManager.autoConnect(115200).catch(() => {});
+      return;
+    }
+    if (!savedDevice) return;
     if (webSerialManager.getStatus().connected) return;
     webSerialManager.setTransport('wifi', savedDevice);
     void webSerialManager.connect(115200).catch(() => {});
