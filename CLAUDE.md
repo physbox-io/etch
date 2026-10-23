@@ -138,6 +138,28 @@ parked document would bypass history and the canvas both.
 - Sheets live for the session, like the open document always has. There is no
   autosave here; saving is still per document.
 
+## Opening documents
+
+The header's document name opens the **document browser** (`components/files/`,
+also Ctrl+O): Recent, My documents, Templates and Generators, with one search
+over all of them. It replaced a `<select>` that held all three in one list.
+
+- A new template goes in `PRESET_ETCHINGS` as before; its `category` is its
+  shelf, and a new category needs a place in `TEMPLATE_SHELVES`
+  (`utils/documentCatalog.ts`) — `tests/documentCatalog.test.ts` fails without
+  one. A new generator needs an entry in `GENERATORS` and a branch in the
+  browser's `runGenerator`.
+- Thumbnails are **rendered, not stored**: `DocThumb` draws the document's own
+  `exportToSVGString`, lazily and one per idle callback. Mesh stores a viewport
+  capture with each save because it cannot draw a scene offline; Etch can, so a
+  save carries nothing extra and documents from before the browser have
+  pictures too.
+- A save stamps `savedAt` on the *stored* copy. `sanitizeDoc` takes it off on the
+  way in, like `sheets`, so it never reaches the live document or an export.
+- Rename and copy are store actions (`renameUserPreset`, `duplicateUserPreset`)
+  that keep the account and the Recent list in step. Recents are this browser's
+  own (`utils/recentDocuments.ts`), not part of any document.
+
 ## Geometry
 
 `src/utils/geom.ts` is the shared truth about where a shape is. The SVG render
@@ -392,7 +414,7 @@ props — **pass them**; it shipped for a long time with nothing passing
 plate.
 
 `registration.ts` places the pin holes a stack of sheets goes together on
-(preset dropdown → Generators). The positions come from the **stock**, not the
+(document browser → Generators). The positions come from the **stock**, not the
 drawing, which is what makes them repeatable: the same numbers on six documents
 of the same size land on the same millimetre, and Etch has no project to link
 those documents any other way. Three holes in an L, because an L cannot be
@@ -407,7 +429,7 @@ layer per cell carrying an explicit `speedOverride`/`powerOverride` (laser) or
 `feedOverride`/`rpmOverride` (router), so the sweep goes past what `feeds.ts`
 would have chosen — including the parts of the range it would refuse. It keeps
 the stock and material of the document it was generated from, because a test cut
-for the wrong material tests nothing. Reached from the preset dropdown under
+for the wrong material tests nothing. Reached from the document browser under
 Generators.
 
 ## Machine control

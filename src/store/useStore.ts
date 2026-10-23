@@ -51,6 +51,8 @@ import {
   type Part,
 } from '../utils/packParts';
 import { cloudAutosave } from '../utils/cloudDocuments';
+import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
+import { copyName } from '../utils/documentCatalog';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -95,10 +97,12 @@ export function sanitizeDoc(doc: EtchDocument): EtchDocument {
   // The other sheets of a saved job are for `jobSheets` to unpack into tabs,
   // not for the live document to carry: a document that kept them would be
   // saved with a copy of the job inside every sheet of the job.
-  if (doc.sheets !== undefined || doc.sheetIndex !== undefined) {
+  // `savedAt` likewise belongs to the stored copy, not to the drawing.
+  if (doc.sheets !== undefined || doc.sheetIndex !== undefined || doc.savedAt !== undefined) {
     const rest = { ...doc, elements };
     delete rest.sheets;
     delete rest.sheetIndex;
+    delete rest.savedAt;
     return pruneObjects(rest);
   }
   // An element naming an object the file does not contain, or an object with
@@ -141,7 +145,8 @@ export function jobDocument(state: {
  * loads the first sheet".
  */
 export function cloneSavedDoc(doc: EtchDocument): EtchDocument {
-  const open = cloneDoc(doc);
+  // The save date is the stored copy's too, and goes back on for the same reason.
+  const open = typeof doc.savedAt === 'number' ? { ...cloneDoc(doc), savedAt: doc.savedAt } : cloneDoc(doc);
   const sheets = doc.sheets?.map(cloneDoc);
   if (!sheets || sheets.length === 0) return open;
   return { ...open, sheets, sheetIndex: Math.min(Math.max(doc.sheetIndex ?? 0, 0), sheets.length) };
@@ -215,6 +220,9 @@ function releaseUnusedAnchors(doc: EtchDocument): EtchDocument {
  * sheets: every action still reads and writes `document`, and the undo stack is
  * per sheet because the whole stack travels with it.
  */
+/** Where the document browser is looking. */
+export type DocumentBrowserTab = 'recent' | 'mine' | 'templates' | 'generators';
+
 export interface SheetTab {
   id: string;
   document: EtchDocument;
@@ -422,6 +430,14 @@ interface EtchStore {
   /** Opens a saved document — or, if it holds a strip of sheets, the whole job. */
   openJob: (saved: EtchDocument, presetId?: string) => void;
   deleteUserPreset: (name: string) => void;
+  /** Renames a saved document, keeping its save date. Returns null, or the error. */
+  renameUserPreset: (from: string, to: string) => string | null;
+  /** Saves a copy of a saved document under a free name. Returns the new name, or the error. */
+  duplicateUserPreset: (name: string) => { name: string } | { error: string };
+  /** The document browser (Ctrl+O), and the tab it is on; null while closed. */
+  documentBrowser: DocumentBrowserTab | null;
+  openDocumentBrowser: (tab?: DocumentBrowserTab) => void;
+  closeDocumentBrowser: () => void;
   /** Adds presets pulled from the signed-in account. Existing names win. */
   mergeCloudPresets: (incoming: Record<string, EtchDocument>) => number;
 
@@ -738,6 +754,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   cursor: { x: 0, y: 0 },
   activePreset: DEFAULT_PRESET_ID,
   userPresetNames: Object.keys(readUserPresets()).sort(),
+  documentBrowser: null,
   shapeSettings: { kind: 'star' as ShapeKind, pointsCount: 5, innerRatio: 0.4 },
   mandalaSettings: {
     sectorCount: 8,
@@ -1047,13 +1064,14 @@ export const useStore = create<EtchStore>((set, get) => ({
       // sheet is what the tab reads, and renaming sheet three of four to
       // "finalselfie" because that is what the job is called helps nobody.
       const single = state.tabs.length <= 1;
-      const newDoc = single ? { ...job, name: trimmed } : job;
+      const newDoc = { ...(single ? { ...job, name: trimmed } : job), savedAt: Date.now() };
       presets[trimmed] = newDoc;
       writeUserPresets(presets);
       saveCloudPreset(trimmed, newDoc);
       // A deliberate save is also a revision worth keeping by name, so it survives
       // the pruning that automatic checkpoints are subject to.
       void cloudAutosave.saveExplicit(trimmed, newDoc, `Saved as “${trimmed}”`);
+      recordRecent(`user:${trimmed}`);
       set({
         activePreset: `user:${trimmed}`,
         userPresetNames: Object.keys(presets).sort(),
@@ -1170,6 +1188,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       delete presets[name];
       writeUserPresets(presets);
       removeCloudPreset(name);
+      forgetRecent(`user:${name}`);
       set({ userPresetNames: Object.keys(presets).sort() });
       if (get().activePreset === `user:${name}`) {
         get().loadPreset(DEFAULT_PRESET_ID);
@@ -1178,6 +1197,75 @@ export const useStore = create<EtchStore>((set, get) => ({
       console.error('Failed to delete user preset', e);
     }
   },
+
+  /*
+   * A rename is a save under the new name and a delete of the old, in that
+   * order, so a browser that refuses the write leaves the document where it was.
+   * The account gets the same pair. The save date stays: renaming is not editing.
+   */
+  renameUserPreset: (from, to) => {
+    const name = to.trim();
+    if (!name) return 'A document needs a name.';
+    if (name === from) return null;
+    try {
+      const presets = readUserPresets();
+      const saved = presets[from];
+      if (!saved) return `“${from}” is no longer saved in this browser.`;
+      if (presets[name]) return `There is already a document called “${name}”.`;
+      // A one-sheet document is named after its save, as saving makes it.
+      const renamed = saved.sheets?.length ? saved : { ...saved, name };
+      presets[name] = renamed;
+      delete presets[from];
+      writeUserPresets(presets);
+      saveCloudPreset(name, renamed);
+      removeCloudPreset(from);
+      renameRecent(`user:${from}`, `user:${name}`);
+      const state = get();
+      const wasOpen = state.activePreset === `user:${from}`;
+      set({
+        userPresetNames: Object.keys(presets).sort(),
+        ...(wasOpen
+          ? {
+              activePreset: `user:${name}`,
+              tabs: state.tabs.map((t) => (t.activePreset === `user:${from}` ? { ...t, activePreset: `user:${name}` } : t)),
+              ...(state.tabs.length <= 1 && state.document.name === from
+                ? { document: { ...state.document, name } }
+                : {}),
+            }
+          : {}),
+      });
+      return null;
+    } catch (e) {
+      console.error('Failed to rename user preset', e);
+      return `Could not rename “${from}”: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  },
+
+  duplicateUserPreset: (from) => {
+    try {
+      const presets = readUserPresets();
+      const saved = presets[from];
+      if (!saved) return { error: `“${from}” is no longer saved in this browser.` };
+      const name = copyName(from, Object.keys(presets));
+      const copy = { ...(saved.sheets?.length ? saved : { ...saved, name }), savedAt: Date.now() };
+      presets[name] = copy;
+      writeUserPresets(presets);
+      saveCloudPreset(name, copy);
+      set({ userPresetNames: Object.keys(presets).sort() });
+      return { name };
+    } catch (e) {
+      console.error('Failed to copy user preset', e);
+      const quota = e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22);
+      return {
+        error: quota
+          ? `There is no room left in this browser for a copy of “${from}”. Delete a saved document you no longer need.`
+          : `Could not copy “${from}”: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  },
+
+  openDocumentBrowser: (tab) => set({ documentBrowser: tab ?? 'templates' }),
+  closeDocumentBrowser: () => set({ documentBrowser: null }),
 
   textVectorizeError: null,
   isVectorizing: false,

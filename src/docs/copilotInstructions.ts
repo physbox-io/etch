@@ -94,7 +94,7 @@ What the app already has, so you do not draw from scratch what it can place:
   should cut stainless instead. Never PVC, on any machine, and cutting film
   needs ducted extraction.
 - A living hinge generator and a perforation generator, under Generators in the
-  preset dropdown and drivable as etch_make_living_hinge and
+  document browser (Ctrl+O) and drivable as etch_make_living_hinge and
   etch_make_perforation. Both ADD to the open document rather than replacing
   it. Reach for them whenever the user wants a panel that bends, or a grille,
   vent or diffuser: the layout rules are the reason they exist — a hinge's rows
@@ -112,7 +112,7 @@ What the app already has, so you do not draw from scratch what it can place:
   option holding the id of something already on the sheet, and then grows along
   it the way text follows a path — a border, an arc, a letter — instead of
   filling the region it was given.
-- A material test grid generator, under Generators in the preset dropdown. When
+- A material test grid generator, under Generators in the document browser. When
   the user asks what speed or power to use on a material the app cannot pin
   down — an unlabelled sheet, a tube that has aged — point them at it rather
   than guessing a number. It cuts a square per combination and replaces the

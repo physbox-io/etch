@@ -505,6 +505,14 @@ export interface EtchDocument {
   sheets?: EtchDocument[];
   /** Where the saved sheet sat in the strip. */
   sheetIndex?: number;
+  /**
+   * When a saved document was last saved, ms since the epoch, for the document
+   * browser's dates and its newest-first order. Like `sheets`, only ever on the
+   * stored copy: `sanitizeDoc` takes it off on the way in, or it would ride
+   * along into every export, share link and later save of the live document.
+   * Missing on documents saved before it was kept.
+   */
+  savedAt?: number;
 }
 
 export type ToolMode =

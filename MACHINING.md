@@ -23,7 +23,7 @@ difference matters.
 | **Judgement** | Chosen by us as a conservative default. Defensible, uncited, and **unverified against material**. |
 
 Anything marked **Judgement** is a candidate for being wrong. The honest test for
-most of them is the material test grid (preset dropdown → Generators), which is
+most of them is the material test grid (document browser → Generators), which is
 precisely a tool for replacing our estimate with your measurement.
 
 **When adding a machining constant, add a row here.** A magic number that

@@ -779,7 +779,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       <H>🧪 Material Test Grid</H>
       <P>
         A grid of squares, each cut at different settings, on a scrap of the material you are about
-        to use for real. Pick it from the preset dropdown under <strong>Generators</strong>. It is
+        to use for real. Open the document browser (click the document name, or Ctrl+O) and pick it under <strong>Generators</strong>. It is
         the first thing to run on an unfamiliar sheet, and the honest answer to every question that
         starts &ldquo;what power should I use for…&rdquo;.
       </P>

@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useStore, jobDocument } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
-import { ORNAMENTS } from '../utils/ornaments';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed, type SvgImportResult } from '../utils/svgImporter';
@@ -25,6 +24,8 @@ import {
 import { revokeShare, isProRequired } from '../utils/apiClient';
 import { UserProfileButton, SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from './UserProfileButton';
 import { AgentMachineBanner } from './AgentMachineBanner';
+import { DocumentBrowser } from './files/DocumentBrowser';
+import { firstBrowserTab } from '../utils/recentDocuments';
 import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
 import type { EtchDocument } from '../types/etch';
@@ -49,6 +50,8 @@ import {
   Share2,
   Copy,
   Check,
+  FolderOpen,
+  ChevronDown,
 } from 'lucide-react';
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -62,18 +65,11 @@ export const TopNavbar: React.FC = () => {
     document,
     darkMode,
     toggleDarkMode,
-    loadPreset,
     setDocument,
     openJob,
     toggleAiPanel,
     toggleGCodeModal,
     toggleMachineModal,
-    toggleTestGridModal,
-    toggleRegistrationModal,
-    togglePackModal,
-    toggleLivingHingeModal,
-    togglePerforationModal,
-    openOrnament,
     toggleSettings,
     isSettingsOpen,
     undo,
@@ -85,6 +81,7 @@ export const TopNavbar: React.FC = () => {
     saveUserPresetByName,
     deleteUserPreset,
     openDocs,
+    openDocumentBrowser,
     isPropertiesOpen,
     setPropertiesOpen,
   } = useStore(
@@ -92,18 +89,11 @@ export const TopNavbar: React.FC = () => {
       document: s.document,
       darkMode: s.darkMode,
       toggleDarkMode: s.toggleDarkMode,
-      loadPreset: s.loadPreset,
       setDocument: s.setDocument,
       openJob: s.openJob,
       toggleAiPanel: s.toggleAiPanel,
       toggleGCodeModal: s.toggleGCodeModal,
       toggleMachineModal: s.toggleMachineModal,
-      toggleTestGridModal: s.toggleTestGridModal,
-      toggleRegistrationModal: s.toggleRegistrationModal,
-      togglePackModal: s.togglePackModal,
-      toggleLivingHingeModal: s.toggleLivingHingeModal,
-      togglePerforationModal: s.togglePerforationModal,
-      openOrnament: s.openOrnament,
       toggleSettings: s.toggleSettings,
       isSettingsOpen: s.isSettingsOpen,
       undo: s.undo,
@@ -115,12 +105,15 @@ export const TopNavbar: React.FC = () => {
       saveUserPresetByName: s.saveUserPresetByName,
       deleteUserPreset: s.deleteUserPreset,
       openDocs: s.openDocs,
+      openDocumentBrowser: s.openDocumentBrowser,
       isPropertiesOpen: s.isPropertiesOpen,
       setPropertiesOpen: s.setPropertiesOpen,
     })),
   );
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  /** The JSON file picker, which the document browser's "Open file…" also opens. */
+  const jsonInputRef = React.useRef<HTMLInputElement | null>(null);
   const [presetNameInput, setPresetNameInput] = useState('');
   /**
    * What the last import or export did, and what it could not do.
@@ -142,7 +135,7 @@ export const TopNavbar: React.FC = () => {
   const isUserPreset = activePreset.startsWith('user:');
   const userPresetName = isUserPreset ? activePreset.slice('user:'.length) : '';
 
-  // What the (always-unselected) dropdown shows when closed.
+  // The open document's name, on the button that opens the document browser.
   const activePresetLabel = (() => {
     if (isUserPreset) return `💾 ${userPresetName}`;
     const preset = PRESET_ETCHINGS.find((p) => p.id === activePreset);
@@ -338,13 +331,18 @@ export const TopNavbar: React.FC = () => {
     e.target.value = '';
   };
 
-  // Ctrl/Cmd+S saves, Ctrl/Cmd+Shift+S saves as.
+  // Ctrl/Cmd+S saves, Ctrl/Cmd+Shift+S saves as. Ctrl/Cmd+O opens the document
+  // browser, rather than the browser's own "Open file", which would load a file
+  // as a page and leave the app.
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         if (e.shiftKey) handleSaveAs();
         else handleSave();
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        openDocumentBrowser(firstBrowserTab(userPresetNames.length > 0));
       }
     };
     window.addEventListener('keydown', onKey);
@@ -665,7 +663,7 @@ export const TopNavbar: React.FC = () => {
 
   return (
     <header className="h-14 shrink-0 w-full bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between z-30 select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1.5 max-lg:gap-x-2 max-lg:gap-y-1.5">
-      {/* Brand & Logo + Preset Selector */}
+      {/* Brand & Logo + Document Picker */}
       <div className="flex items-center gap-3 min-w-0 max-lg:flex-1">
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-8 h-8 shrink-0 rounded-lg bg-gradient-to-br from-red-500 via-amber-500 to-cyan-500 flex items-center justify-center shadow-md">
@@ -688,66 +686,21 @@ export const TopNavbar: React.FC = () => {
 
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
 
-        {/* Preset Selector Pill */}
+        {/* Document Picker Pill */}
         <div className="flex items-center min-w-0 max-lg:flex-1 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
-          <select
-            value=""
-            onChange={(e) => {
-              // The generator is not a preset — it opens a dialog and builds a
-              // document from the stock and material already loaded. It lives
-              // in this list because that is where someone looks for "start a
-              // new job from a template", which is what it is.
-              if (e.target.value === 'generator:test-grid') toggleTestGridModal();
-              // The odd one in this list: it adds to the open document instead
-              // of replacing it. It is here because this is where someone looks
-              // for "make me the thing I do not want to draw by hand", and the
-              // dialog says plainly that nothing on the canvas is touched.
-              else if (e.target.value === 'generator:registration') toggleRegistrationModal();
-              // Also an action on the open document rather than a preset, and
-              // here for the same reason: this is where people look for "sort
-              // my sheet out for me".
-              else if (e.target.value === 'generator:pack') togglePackModal();
-              // Also additive, and the one in this list that is a mechanism
-              // rather than a mark: four hundred slits nobody would draw.
-              else if (e.target.value === 'generator:living-hinge') toggleLivingHingeModal();
-              else if (e.target.value === 'generator:perforation') togglePerforationModal();
-              // The ornaments share one dialog; the value after the colon says
-              // which of them it opens on.
-              else if (e.target.value.startsWith('ornament:')) openOrnament(e.target.value.slice('ornament:'.length));
-              else if (e.target.value) loadPreset(e.target.value);
-            }}
-            className="bg-transparent text-slate-700 dark:text-slate-100 text-xs rounded-md px-2 py-1 outline-none font-medium cursor-pointer border-none max-w-[16rem] max-lg:flex-1 max-lg:min-w-0 max-lg:max-w-none"
+          {/* The open document's name, and the way to every other one. A button
+              rather than the <select> it replaced: the select held templates,
+              generators and saved documents in one list, and could not search. */}
+          <button
+            onClick={() => openDocumentBrowser(firstBrowserTab(userPresetNames.length > 0))}
+            className="flex items-center gap-1.5 min-w-0 max-w-[16rem] max-lg:flex-1 max-lg:max-w-none px-2 py-1 rounded-md text-xs font-medium text-slate-700 dark:text-slate-100 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+            title="Open a document, a template or a generator (Ctrl+O)"
+            aria-label="Open document"
           >
-            <option value="" disabled hidden>
-              {activePresetLabel}
-            </option>
-            <optgroup label="⬜ Built-in Templates" className="bg-white dark:bg-slate-900">
-              {PRESET_ETCHINGS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.category})
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label="🔧 Generators" className="bg-white dark:bg-slate-900">
-              <option value="generator:test-grid">Material Test Grid…</option>
-              <option value="generator:registration">Registration Holes…</option>
-              <option value="generator:pack">Pack Parts onto Stock…</option>
-              <option value="generator:living-hinge">Living Hinge…</option>
-              <option value="generator:perforation">Perforation…</option>
-              {ORNAMENTS.map((o) => (
-                <option key={o.id} value={`ornament:${o.id}`}>{o.label}…</option>
-              ))}
-            </optgroup>
-            {userPresetNames.length > 0 && (
-              <optgroup label="📁 Saved Documents" className="bg-white dark:bg-slate-900">
-                {userPresetNames.map((k) => (
-                  <option key={`user:${k}`} value={`user:${k}`}>
-                    💾 {k}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
+            <FolderOpen className="w-3.5 h-3.5 shrink-0 text-slate-500 dark:text-slate-400" />
+            <span className="truncate flex-1 text-left">{activePresetLabel}</span>
+            <ChevronDown className="w-3 h-3 shrink-0 text-slate-400" />
+          </button>
 
           {isUserPreset && (
             <>
@@ -814,7 +767,7 @@ export const TopNavbar: React.FC = () => {
 
         {/* Files & Actions Segmented Group */}
         <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
-          {/* Always Save As: the preset dropdown's disk icon above is the one
+          {/* Always Save As: the disk icon beside the document name above is the one
               that overwrites the selected document in place with no prompt. */}
           <button
             onClick={handleSaveAs}
@@ -837,7 +790,7 @@ export const TopNavbar: React.FC = () => {
             title="Open Etch document (.json)"
           >
             <FolderInput className="w-3.5 h-3.5" />
-            <input type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
+            <input ref={jsonInputRef} type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
           </label>
 
           <button
@@ -1144,6 +1097,8 @@ export const TopNavbar: React.FC = () => {
         above the top of the window, out of reach. Nothing about the dialog's
         own classes was wrong — the ancestor was.
       */}
+      <DocumentBrowser onOpenFile={() => jsonInputRef.current?.click()} />
+
       {isSaveModalOpen &&
         ReactDOM.createPortal(
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
