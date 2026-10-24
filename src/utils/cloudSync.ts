@@ -14,7 +14,15 @@
  */
 
 import type { EtchDocument } from '../types/etch';
-import { fetchCloudParameters, fetchCloudPresets, syncCloudPreset, deleteCloudPreset } from './apiClient';
+import {
+  fetchCloudParameters,
+  fetchCloudPresets,
+  syncCloudPreset,
+  deleteCloudPreset,
+  syncCloudParameters,
+  type JsonValue,
+} from './apiClient';
+import { CNC_TOOLS_KEY, parseCncLibrary, readStoredCncLibrary, type ToolProfile } from './tooling';
 import { SYNCED_MACHINE_PARAMETER_KEYS } from './machineSettings';
 import { SYNCED_LLM_PARAMETER_KEYS } from './llmSettings';
 
@@ -96,6 +104,26 @@ export interface CloudPullResult {
   parameters: number;
   /** Presets found in the account that were not already saved locally. */
   presets: Record<string, EtchDocument>;
+  /** The account's tool rack, when it was newer than this browser's and replaced it. */
+  cncTools: ToolProfile[] | null;
+}
+
+/**
+ * Settles this browser's rack against the account's: the newer one wins, in
+ * either direction. A rack saved here before sync existed has no timestamp and
+ * loses to any synced copy — but when the account has none yet, it is the one
+ * uploaded, so the first machine signed in seeds the rest.
+ */
+function settleCncTools(cloudValue: unknown): ToolProfile[] | null {
+  const cloud = parseCncLibrary(cloudValue);
+  const local = readStoredCncLibrary();
+  if (cloud && (!local || (cloud.savedAt ?? 0) > (local.savedAt ?? 0))) {
+    return applyParameter(CNC_TOOLS_KEY, cloud) ? cloud.tools : null;
+  }
+  if (local && (!cloud || (local.savedAt ?? 0) > (cloud.savedAt ?? 0))) {
+    void syncCloudParameters('etch', { [CNC_TOOLS_KEY]: local as unknown as JsonValue });
+  }
+  return null;
 }
 
 /**
@@ -109,7 +137,7 @@ export interface CloudPullResult {
  * the cloud copy too.
  */
 export async function pullCloudState(localPresetNames: string[]): Promise<CloudPullResult> {
-  const result: CloudPullResult = { parameters: 0, presets: {} };
+  const result: CloudPullResult = { parameters: 0, presets: {}, cncTools: null };
 
   const [etchParams, globalParams, presets] = await Promise.all([
     fetchCloudParameters('etch'),
@@ -125,6 +153,9 @@ export async function pullCloudState(localPresetNames: string[]): Promise<CloudP
     const value = key in globalParams ? globalParams[key] : etchParams[key];
     if (value !== undefined && applyParameter(key, value)) result.parameters += 1;
   }
+
+  result.cncTools = settleCncTools(etchParams[CNC_TOOLS_KEY]);
+  if (result.cncTools) result.parameters += 1;
 
   const known = new Set(localPresetNames);
   for (const preset of presets) {

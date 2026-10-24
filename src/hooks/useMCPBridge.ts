@@ -14,7 +14,7 @@ import {
   type ImageProcessOptions,
 } from '../utils/imageProcessor';
 import { planImageImport } from '../utils/imageImport';
-import { machineKind, toolCatalog } from '../utils/tooling';
+import { jobTools, machineKind, toolCatalog } from '../utils/tooling';
 import { materialCatalog } from '../utils/materials';
 import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
 import { DEFAULT_TEST_GRID, buildTestGrid, type TestGridOptions } from '../utils/testGrid';
@@ -91,7 +91,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
 
   // The machine handlers outlive any one call, so they are pointed at the
   // document this one is answering about rather than closing over a stale one.
-  setCurrentDocument(store.document, store.cncTools);
+  setCurrentDocument(store.document, jobTools(store.document, store.cncTools));
 
   const machineHandler = machineHandlers[cmd];
   if (machineHandler) {
@@ -492,7 +492,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       // Same rack the UI is showing: an MCP-driven export must not quietly
       // fall back to the stock tools the operator edited away from.
       const gcode = generateGCode(store.document, {
-        customCncTools: store.cncTools,
+        customCncTools: jobTools(store.document, store.cncTools),
         ...(msg.options || {}),
       });
       return { ok: true, gcode };
@@ -582,7 +582,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         imageData,
         options,
         layerId,
-        store.cncTools
+        jobTools(store.document, store.cncTools)
       );
       if (!element && !outline) {
         return {
@@ -809,7 +809,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
        * exactly what hand-placed circles get wrong.
        */
       const doc = store.document;
-      const derived = defaultRegistration(doc, store.cncTools);
+      const derived = defaultRegistration(doc, jobTools(store.document, store.cncTools));
       const count = msg.count === 2 ? 2 : msg.count === 3 || msg.count === undefined ? 3 : null;
       if (count === null) return { ok: false, error: 'count must be 2 or 3' };
       const diameterMm = Number(msg.diameterMm ?? derived.diameterMm);
@@ -817,7 +817,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       if (!Number.isFinite(diameterMm) || !Number.isFinite(insetMm)) {
         return { ok: false, error: 'diameterMm and insetMm must be numbers, in mm' };
       }
-      const plan = planRegistration(doc, { count, diameterMm, insetMm }, store.cncTools);
+      const plan = planRegistration(doc, { count, diameterMm, insetMm }, jobTools(store.document, store.cncTools));
       if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
       store.addRegistrationHoles(plan);
       return {
@@ -890,7 +890,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           opts[k] = n;
         }
       }
-      const plan = planOrnament(doc, spec, region, opts, store.cncTools);
+      const plan = planOrnament(doc, spec, region, opts, jobTools(store.document, store.cncTools));
       if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
       store.addOrnament(plan);
       return {
@@ -929,7 +929,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           return { ok: false, error: `${k} must be a number, in mm` };
         }
       }
-      const plan = planLivingHinge(doc, opts, store.cncTools);
+      const plan = planLivingHinge(doc, opts, jobTools(store.document, store.cncTools));
       if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
       store.addLivingHinge(plan);
       return {
@@ -967,7 +967,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           return { ok: false, error: `${k} must be a number, in mm` };
         }
       }
-      const plan = planPerforation(doc, opts, store.cncTools);
+      const plan = planPerforation(doc, opts, jobTools(store.document, store.cncTools));
       if (!plan.fits) return { ok: false, error: plan.notes.join(' ') };
       store.addPerforation(plan);
       return {
@@ -1110,7 +1110,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
        * otherwise report the drawing as lost.
        */
       const opts: TestGridOptions = { ...DEFAULT_TEST_GRID, ...(msg.options || {}) };
-      const plan = buildTestGrid(store.document, opts, store.cncTools);
+      const plan = buildTestGrid(store.document, opts, jobTools(store.document, store.cncTools));
       store.setDocument(plan.document);
       // Labels are the point of the grid, and an un-vectorized text element
       // is skipped by the planner — a grid sent straight to the machine
@@ -1225,7 +1225,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         machine,
         // A laser's catalogue is deliberately empty — that is how "this
         // machine has no tools to change" is expressed, not an error.
-        tools: toolCatalog(machine, store.cncTools).map((t) => ({
+        tools: toolCatalog(machine, jobTools(store.document, store.cncTools)).map((t) => ({
           id: t.id,
           name: t.name,
           diameter: t.diameter,

@@ -7,7 +7,7 @@ import {
   planRegistration,
   type RegistrationOptions,
 } from '../utils/registration';
-import { machineKind } from '../utils/tooling';
+import { jobTools, machineKind } from '../utils/tooling';
 
 /**
  * The dialog in front of `utils/registration.ts`.
@@ -26,7 +26,7 @@ export const RegistrationModal: React.FC = () => {
   const isOpen = useStore((s) => s.isRegistrationOpen);
   const toggle = useStore((s) => s.toggleRegistrationModal);
   const document = useStore((s) => s.document);
-  const cncTools = useStore((s) => s.cncTools);
+  const cncTools = useStore((s) => jobTools(s.document, s.cncTools));
   const addRegistrationHoles = useStore((s) => s.addRegistrationHoles);
   const addRegistrationToAll = useStore((s) => s.addRegistrationToAll);
   const tabs = useStore((s) => s.tabs);

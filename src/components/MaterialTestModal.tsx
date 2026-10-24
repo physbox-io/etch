@@ -4,7 +4,7 @@ import { useStore } from '../store/useStore';
 import { NumberInput } from '@physbox-io/ui';
 import { DocsInfoButton } from './DocsModal';
 import { buildTestGrid, DEFAULT_TEST_GRID, type TestGridOptions } from '../utils/testGrid';
-import { machineKind, machineWords } from '../utils/tooling';
+import { jobTools, machineKind, machineWords } from '../utils/tooling';
 import { findMaterial } from '../utils/materials';
 
 /**
@@ -21,7 +21,7 @@ export const MaterialTestModal: React.FC = () => {
   const document = useStore((s) => s.document);
   const setDocument = useStore((s) => s.setDocument);
   const vectorizeText = useStore((s) => s.vectorizeText);
-  const cncTools = useStore((s) => s.cncTools);
+  const cncTools = useStore((s) => jobTools(s.document, s.cncTools));
 
   const [opts, setOpts] = useState<TestGridOptions>(DEFAULT_TEST_GRID);
 

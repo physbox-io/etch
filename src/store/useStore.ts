@@ -20,7 +20,16 @@ import {
   writeShimThickness,
   type LaserSource,
 } from '../utils/machineSettings';
-import { readCncTools, writeCncTools, resetCncTools as resetCncToolsUtil, type ToolProfile } from '../utils/tooling';
+import {
+  readCncTools,
+  writeCncTools,
+  resetCncTools as resetCncToolsUtil,
+  editedToolIds,
+  sanitizeStoredTool,
+  snapshotDocumentTools,
+  jobTools,
+  type ToolProfile,
+} from '../utils/tooling';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 import { replanField } from '../utils/generatedField';
@@ -85,6 +94,15 @@ function cloneDoc(doc: EtchDocument): EtchDocument {
  * document is enough to clean it.
  */
 export function sanitizeDoc(doc: EtchDocument): EtchDocument {
+  // Carried tools arrive from files, the account and agents like any other
+  // field, and decide the cutter compensation, so each is checked the way a
+  // stored rack is. One that fails is dropped and re-taken from the rack.
+  if (doc.tools !== undefined) {
+    const tools = Array.isArray(doc.tools)
+      ? doc.tools.map(sanitizeStoredTool).filter((t): t is ToolProfile => t !== null)
+      : [];
+    doc = { ...doc, tools };
+  }
   let touched = false;
   const elements = doc.elements.map((el) => {
     if (el.type !== 'text' || (el.w === undefined && el.h === undefined)) return el;
@@ -387,8 +405,14 @@ interface EtchStore {
   toggleToolConfigModal: () => void;
   openToolConfigModal: () => void;
   closeToolConfigModal: () => void;
+  /** An edit to this machine's rack. Documents carrying an edited tool follow it. */
   setCncTools: (tools: ToolProfile[]) => void;
   resetCncTools: () => void;
+  /**
+   * A rack arriving from the account. Replaces what this browser lists, but is
+   * not an edit: a document's tools are what it was planned with, and stay.
+   */
+  adoptCncTools: (tools: ToolProfile[]) => void;
   openDocs: (tab?: DocsTabId) => void;
   closeDocs: () => void;
   setDocsTab: (tab: DocsTabId) => void;
@@ -791,13 +815,27 @@ export const useStore = create<EtchStore>((set, get) => ({
   closeToolConfigModal: () => set({ isToolConfigModalOpen: false }),
 
   setCncTools: (tools) => {
-    set({ cncTools: tools, cncToolsUnsaved: !writeCncTools(tools) });
+    const { cncTools: before, document } = get();
+    const docTools = snapshotDocumentTools(document, tools, editedToolIds(before, tools));
+    set({
+      cncTools: tools,
+      cncToolsUnsaved: !writeCncTools(tools),
+      ...(docTools !== document.tools ? { document: { ...document, tools: docTools } } : {}),
+    });
   },
 
   resetCncTools: () => {
+    const { cncTools: before, document } = get();
     const defaults = resetCncToolsUtil();
-    set({ cncTools: defaults, cncToolsUnsaved: false });
+    const docTools = snapshotDocumentTools(document, defaults, editedToolIds(before, defaults));
+    set({
+      cncTools: defaults,
+      cncToolsUnsaved: false,
+      ...(docTools !== document.tools ? { document: { ...document, tools: docTools } } : {}),
+    });
   },
+
+  adoptCncTools: (tools) => set({ cncTools: tools }),
 
   toggleDarkMode: () =>
     set((state) => {
@@ -1661,7 +1699,7 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   packOntoStock: (opts = {}) => {
     const { document, tabs, activeTabId, cncTools } = get();
-    const gapMm = partGapMm(document, cncTools);
+    const gapMm = partGapMm(document, jobTools(document, cncTools));
 
     /*
      * Parts from the other sheets arrive as copies with fresh ids and their
@@ -2680,7 +2718,22 @@ if (typeof window !== 'undefined') {
  * the account is signed in and has Pro, every existing local save path is
  * untouched, and a failed write leaves the work exactly where it already was.
  */
+/**
+ * Keeps the open document carrying the tools its layers call for: a layer that
+ * takes up a tool the document does not carry yet takes this rack's profile of
+ * it, and one no layer uses any more is dropped. Registered before autosave, so
+ * the copy saved is the one with its tools in it.
+ */
 useStore.subscribe((state, previous) => {
   if (state.document === previous.document) return;
-  cloudAutosave.schedule(state.document.name || 'Untitled', state.document);
+  const tools = snapshotDocumentTools(state.document, state.cncTools);
+  if (tools !== state.document.tools) useStore.setState({ document: { ...state.document, tools } });
+});
+
+useStore.subscribe((state, previous) => {
+  if (state.document === previous.document) return;
+  // The current document, not this notification's: the tools snapshot above
+  // sets a newer one from inside the same change, and that is the one to save.
+  const { document } = useStore.getState();
+  cloudAutosave.schedule(document.name || 'Untitled', document);
 });

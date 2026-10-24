@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { X, LayoutGrid, AlertTriangle } from 'lucide-react';
 import { useStore, type PackReport } from '../store/useStore';
 import { clusterParts, partGapMm } from '../utils/packParts';
-import { machineWords, machineKind } from '../utils/tooling';
+import { jobTools, machineWords, machineKind } from '../utils/tooling';
 
 /**
  * The dialog in front of `utils/packParts.ts`.
@@ -23,7 +23,7 @@ export const PackPartsModal: React.FC = () => {
   const document = useStore((s) => s.document);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
-  const cncTools = useStore((s) => s.cncTools);
+  const cncTools = useStore((s) => jobTools(s.document, s.cncTools));
   const packOntoStock = useStore((s) => s.packOntoStock);
 
   const [includeOtherSheets, setIncludeOtherSheets] = useState(false);

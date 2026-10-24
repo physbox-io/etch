@@ -6,6 +6,7 @@ import {
   ornamentById, planOrnament, defaultOrnamentRegion, ornamentPathOptions,
   type OrnamentOptions, type OrnamentRegion,
 } from '../utils/ornaments';
+import { jobTools } from '../utils/tooling';
 
 /**
  * One dialog for all four ornaments.
@@ -18,7 +19,7 @@ export const OrnamentModal: React.FC = () => {
   const id = useStore((s) => s.ornamentId);
   const close = useStore((s) => s.closeOrnament);
   const document = useStore((s) => s.document);
-  const cncTools = useStore((s) => s.cncTools);
+  const cncTools = useStore((s) => jobTools(s.document, s.cncTools));
   const addOrnament = useStore((s) => s.addOrnament);
 
   const spec = id ? ornamentById(id) : undefined;

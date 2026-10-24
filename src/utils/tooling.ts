@@ -1,4 +1,5 @@
-import type { LayerOperation } from '../types/etch';
+import type { EtchDocument, LayerOperation } from '../types/etch';
+import { syncCloudParameters, type JsonValue } from './apiClient';
 
 /**
  * The tools a job can call for, and what each is actually good at.
@@ -427,9 +428,16 @@ export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
  */
 export const CNC_TOOLS_VERSION = 1;
 
-interface StoredToolLibrary {
+export interface StoredToolLibrary {
   version: number;
   tools: ToolProfile[];
+  /**
+   * When this rack was last saved, in ms. A signed-in account keeps one rack
+   * for every machine, and this is how a pull decides which copy is newer.
+   * Absent on racks saved before sync existed, which therefore lose to any
+   * synced copy.
+   */
+  savedAt?: number;
 }
 
 const OPERATIONS: LayerOperation[] = ['cut', 'etch', 'fill'];
@@ -443,7 +451,7 @@ const OPERATIONS: LayerOperation[] = ['cut', 'etch', 'fill'];
  * feeds, and the operator finds out at the material. Anything unrecoverable
  * drops the whole library back to the defaults, which are at least coherent.
  */
-function sanitizeStoredTool(raw: unknown): ToolProfile | null {
+export function sanitizeStoredTool(raw: unknown): ToolProfile | null {
   if (!raw || typeof raw !== 'object') return null;
   const t = raw as Record<string, unknown>;
 
@@ -550,8 +558,9 @@ export function readCncTools(): ToolProfile[] {
  * whatever the defaults say, which is a wrong part with no warning attached.
  */
 export function writeCncTools(tools: ToolProfile[]): boolean {
+  const payload: StoredToolLibrary = { version: CNC_TOOLS_VERSION, tools, savedAt: Date.now() };
+  void syncCloudParameters('etch', { [CNC_TOOLS_KEY]: payload as unknown as JsonValue });
   try {
-    const payload: StoredToolLibrary = { version: CNC_TOOLS_VERSION, tools };
     localStorage.setItem(CNC_TOOLS_KEY, JSON.stringify(payload));
     return true;
   } catch {
@@ -559,13 +568,35 @@ export function writeCncTools(tools: ToolProfile[]): boolean {
   }
 }
 
+/** Back to the shop defaults — saved as a rack like any other, so it syncs. */
 export function resetCncTools(): ToolProfile[] {
-  try {
-    localStorage.removeItem(CNC_TOOLS_KEY);
-  } catch {
-    // Non-fatal
-  }
+  writeCncTools(DEFAULT_CNC_TOOLS);
   return DEFAULT_CNC_TOOLS;
+}
+
+/** The rack as stored in this browser, with its timestamp, or null. */
+export function readStoredCncLibrary(): StoredToolLibrary | null {
+  try {
+    const raw = localStorage.getItem(CNC_TOOLS_KEY);
+    return raw ? parseCncLibrary(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A stored or synced rack, or null when it is not one this version can use. */
+export function parseCncLibrary(value: unknown): StoredToolLibrary | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Partial<StoredToolLibrary>;
+  if (v.version !== CNC_TOOLS_VERSION || !Array.isArray(v.tools) || v.tools.length === 0) return null;
+  const tools: ToolProfile[] = [];
+  for (const entry of v.tools) {
+    const tool = sanitizeStoredTool(entry);
+    if (!tool) return null;
+    tools.push(tool);
+  }
+  const savedAt = typeof v.savedAt === 'number' && Number.isFinite(v.savedAt) ? v.savedAt : undefined;
+  return { version: CNC_TOOLS_VERSION, tools, savedAt };
 }
 
 /**
@@ -582,6 +613,112 @@ export function toolCatalog(machine: MachineKind, customCncTools?: ToolProfile[]
 
 export function findTool(machine: MachineKind, tool: number, customCncTools?: ToolProfile[]): ToolProfile | undefined {
   return toolCatalog(machine, customCncTools).find((t) => t.id === tool);
+}
+
+// ---------------------------------------------------------------------------
+// The tools a document was planned with
+// ---------------------------------------------------------------------------
+
+/**
+ * Every T-number the document's layers call for, finishing and roughing.
+ *
+ * The rack is per browser, and a layer stores only the number. Carried alone,
+ * T2 on another machine is whatever that machine calls T2 — or nothing, and a
+ * cut with no diameter to compensate for.
+ */
+export function toolIdsInUse(doc: EtchDocument): Set<number> {
+  const ids = new Set<number>();
+  for (const layer of doc.layers) {
+    ids.add(layer.tool ?? DEFAULT_TOOL);
+    if (layer.roughTool != null) ids.add(layer.roughTool);
+  }
+  return ids;
+}
+
+function sameTool(a: ToolProfile, b: ToolProfile): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * The profiles the document should carry, or the array it already has when
+ * nothing changed — so the caller can tell a no-op by identity.
+ *
+ * A tool the document already carries keeps its profile: it is what the job was
+ * planned with, and a different machine's same-numbered tool is not a reason to
+ * change it. The exception is `editedIds` — tools the operator has just edited
+ * in this rack — which the document follows. A tool it calls for and does not
+ * carry is taken from the rack; one it no longer calls for is dropped.
+ */
+export function snapshotDocumentTools(
+  doc: EtchDocument,
+  rack: ToolProfile[],
+  editedIds: ReadonlySet<number> = new Set()
+): ToolProfile[] | undefined {
+  if (machineKind(doc) !== 'cnc') return doc.tools;
+  const carried = new Map((doc.tools ?? []).map((t) => [t.id, t]));
+  const next: ToolProfile[] = [];
+  for (const id of [...toolIdsInUse(doc)].sort((a, b) => a - b)) {
+    const fromRack = rack.find((t) => t.id === id);
+    const kept = carried.get(id);
+    const profile = kept && !(fromRack && editedIds.has(id)) ? kept : fromRack;
+    if (profile) next.push(profile);
+  }
+  const prev = doc.tools ?? [];
+  if (next.length === prev.length && next.every((t, i) => sameTool(t, prev[i]))) return doc.tools;
+  return next;
+}
+
+/** Ids whose profile differs between two racks, including added and removed ones. */
+export function editedToolIds(before: ToolProfile[], after: ToolProfile[]): Set<number> {
+  const ids = new Set<number>();
+  const old = new Map(before.map((t) => [t.id, t]));
+  for (const t of after) {
+    const o = old.get(t.id);
+    if (!o || !sameTool(o, t)) ids.add(t.id);
+    old.delete(t.id);
+  }
+  for (const id of old.keys()) ids.add(id);
+  return ids;
+}
+
+const jobToolsCache = new WeakMap<ToolProfile[], WeakMap<ToolProfile[], ToolProfile[]>>();
+
+/**
+ * The catalogue a job is planned and cut against: this rack, with the
+ * document's own profile standing in for any tool it carries.
+ *
+ * Memoised on both arrays, so a selector returning it is stable between
+ * renders.
+ */
+export function jobTools(doc: EtchDocument, rack: ToolProfile[]): ToolProfile[] {
+  const carried = doc.tools;
+  if (!carried || carried.length === 0) return rack;
+  let byRack = jobToolsCache.get(carried);
+  if (!byRack) jobToolsCache.set(carried, (byRack = new WeakMap()));
+  const hit = byRack.get(rack);
+  if (hit) return hit;
+  const own = new Map(carried.map((t) => [t.id, t]));
+  const merged = rack.map((t) => own.get(t.id) ?? t);
+  for (const t of carried) if (!rack.some((r) => r.id === t.id)) merged.push(t);
+  merged.sort((a, b) => a.id - b.id);
+  byRack.set(rack, merged);
+  return merged;
+}
+
+/**
+ * How the document's tool `id` stands against this rack: absent from it,
+ * loaded here as something else, or null when the two agree.
+ */
+export function rackMismatch(
+  doc: EtchDocument,
+  rack: ToolProfile[],
+  id: number
+): { kind: 'missing' } | { kind: 'different'; rackTool: ToolProfile } | null {
+  const carried = doc.tools?.find((t) => t.id === id);
+  if (!carried) return null;
+  const rackTool = rack.find((t) => t.id === id);
+  if (!rackTool) return { kind: 'missing' };
+  return sameTool(carried, rackTool) ? null : { kind: 'different', rackTool };
 }
 
 /**

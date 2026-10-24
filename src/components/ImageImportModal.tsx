@@ -16,7 +16,7 @@ import { ZoomControls } from './ZoomControls';
 import { BusyToast } from './BusyToast';
 import { DocsInfoButton } from './DocsModal';
 import { planImageImport, resolveCutLayer } from '../utils/imageImport';
-import { machineKind } from '../utils/tooling';
+import { jobTools, machineKind } from '../utils/tooling';
 import {
   X,
   Upload,
@@ -47,7 +47,7 @@ export const ImageImportModal: React.FC = () => {
       document: s.document,
       activeLayerId: s.activeLayerId,
       setDocument: s.setDocument,
-      cncTools: s.cncTools,
+      cncTools: jobTools(s.document, s.cncTools),
     })),
   );
 

@@ -8,15 +8,18 @@ const fetchCloudParameters = vi.fn();
 const fetchCloudPresets = vi.fn();
 const syncCloudPreset = vi.fn();
 const deleteCloudPreset = vi.fn();
+const syncCloudParameters = vi.fn();
 
 vi.mock('../src/utils/apiClient', () => ({
   fetchCloudParameters: (...args: unknown[]) => fetchCloudParameters(...args),
   fetchCloudPresets: (...args: unknown[]) => fetchCloudPresets(...args),
   syncCloudPreset: (...args: unknown[]) => syncCloudPreset(...args),
   deleteCloudPreset: (...args: unknown[]) => deleteCloudPreset(...args),
+  syncCloudParameters: (...args: unknown[]) => syncCloudParameters(...args),
 }));
 
 const { pullCloudState, saveCloudPreset, removeCloudPreset } = await import('../src/utils/cloudSync');
+const { CNC_TOOLS_KEY, CNC_TOOLS_VERSION, DEFAULT_CNC_TOOLS, readCncTools } = await import('../src/utils/tooling');
 
 const doc = { name: 'Brass Badge', width: 100, height: 60, elements: [] } as never;
 
@@ -133,5 +136,48 @@ describe('pulling account state', () => {
     const result = await pullCloudState([]);
 
     expect(result.presets).toEqual({});
+  });
+});
+
+describe('the tool rack', () => {
+  const laptop = [DEFAULT_CNC_TOOLS[0], { ...DEFAULT_CNC_TOOLS[5], id: 2 }];
+  const store = (tools: unknown, savedAt?: number) =>
+    localStorage.setItem(CNC_TOOLS_KEY, JSON.stringify({ version: CNC_TOOLS_VERSION, tools, savedAt }));
+
+  it('takes the account’s rack when it is newer than this browser’s', async () => {
+    store(laptop, 1000);
+    fetchCloudParameters.mockResolvedValue({
+      [CNC_TOOLS_KEY]: { version: CNC_TOOLS_VERSION, tools: DEFAULT_CNC_TOOLS, savedAt: 2000 },
+    });
+    const result = await pullCloudState([]);
+    expect(result.cncTools?.map((t) => t.id)).toEqual(DEFAULT_CNC_TOOLS.map((t) => t.id));
+    expect(readCncTools().find((t) => t.id === 2)?.name).toBe('1.5 mm flat end mill');
+  });
+
+  it('uploads this browser’s rack when the account has none, even one saved before sync', async () => {
+    store(laptop);
+    const result = await pullCloudState([]);
+    expect(result.cncTools).toBeNull();
+    expect(syncCloudParameters).toHaveBeenCalledWith('etch', {
+      [CNC_TOOLS_KEY]: expect.objectContaining({ tools: laptop }),
+    });
+  });
+
+  it('keeps and re-uploads this browser’s rack when it is the newer one', async () => {
+    store(laptop, 3000);
+    fetchCloudParameters.mockResolvedValue({
+      [CNC_TOOLS_KEY]: { version: CNC_TOOLS_VERSION, tools: DEFAULT_CNC_TOOLS, savedAt: 2000 },
+    });
+    const result = await pullCloudState([]);
+    expect(result.cncTools).toBeNull();
+    expect(readCncTools()).toEqual(laptop);
+    expect(syncCloudParameters).toHaveBeenCalled();
+  });
+
+  it('ignores an account rack it cannot read', async () => {
+    store(laptop, 1000);
+    fetchCloudParameters.mockResolvedValue({ [CNC_TOOLS_KEY]: { version: 99, tools: [], savedAt: 5000 } });
+    expect((await pullCloudState([])).cncTools).toBeNull();
+    expect(readCncTools()).toEqual(laptop);
   });
 });

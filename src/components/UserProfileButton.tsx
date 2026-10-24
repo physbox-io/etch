@@ -81,7 +81,8 @@ export const UserProfileButton: React.FC = () => {
     if (!getStoredAuthToken()) return;
     try {
       const localNames = useStore.getState().userPresetNames;
-      const { parameters, presets } = await pullCloudState(localNames);
+      const { parameters, presets, cncTools } = await pullCloudState(localNames);
+      if (cncTools) useStore.getState().adoptCncTools(cncTools);
       const added = mergeCloudPresets(presets);
       setSyncSummary(
         parameters === 0 && added === 0

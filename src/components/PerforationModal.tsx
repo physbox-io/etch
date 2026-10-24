@@ -10,6 +10,7 @@ import {
   type PerforationShape,
   type PerforationRamp,
 } from '../utils/perforation';
+import { jobTools } from '../utils/tooling';
 
 /**
  * The dialog in front of `utils/perforation.ts`.
@@ -23,7 +24,7 @@ export const PerforationModal: React.FC = () => {
   const isOpen = useStore((s) => s.isPerforationOpen);
   const toggle = useStore((s) => s.togglePerforationModal);
   const document = useStore((s) => s.document);
-  const cncTools = useStore((s) => s.cncTools);
+  const cncTools = useStore((s) => jobTools(s.document, s.cncTools));
   const addPerforation = useStore((s) => s.addPerforation);
 
   const derived = useMemo(() => defaultPerforation(document), [document]);

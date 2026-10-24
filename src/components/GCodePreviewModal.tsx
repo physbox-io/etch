@@ -11,7 +11,7 @@ import {
 } from '../utils/gcodeExporter';
 import { camWorker, type ProgramResult } from '../utils/camWorkerClient';
 import { machineToDoc } from '../utils/machineCoords';
-import { describeTool, machineKind, machineWords } from '../utils/tooling';
+import { jobTools, describeTool, machineKind, machineWords } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
 import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind, Loader2 } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
@@ -87,7 +87,7 @@ export const GCodePreviewModal: React.FC = () => {
       setDocumentOrigin: s.setDocumentOrigin,
       setThickTabs: s.setThickTabs,
       setShallowEtch: s.setShallowEtch,
-      cncTools: s.cncTools,
+      cncTools: jobTools(s.document, s.cncTools),
       selectedIds: s.selectedIds,
     })),
   );

@@ -1,6 +1,7 @@
 import type { MaterialId } from '../utils/materials';
 import type { MotionProfile } from '../utils/motionProfile';
 import type { ShapeKind } from '../utils/parametricShapes';
+import type { ToolProfile } from '../utils/tooling';
 
 /**
  * What a layer does to the material.
@@ -483,6 +484,14 @@ export interface EtchDocument {
   objects?: EtchObject[];
   selectedIds: string[];
   notecard?: string;
+  /**
+   * The profile of every CNC tool the layers call for, as it was when the job
+   * was planned. A layer stores only a T-number and the rack lives in each
+   * browser, so without this a document opened on another machine is cut
+   * against whatever that machine calls the same number. Kept current by the
+   * store — see `snapshotDocumentTools`.
+   */
+  tools?: ToolProfile[];
   /**
    * The rest of the job, when this document was saved from a strip of sheets.
    *

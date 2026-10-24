@@ -7,6 +7,7 @@ import {
   planLivingHinge,
   type LivingHingeOptions,
 } from '../utils/livingHinge';
+import { jobTools } from '../utils/tooling';
 
 /**
  * The dialog in front of `utils/livingHinge.ts`.
@@ -24,7 +25,7 @@ export const LivingHingeModal: React.FC = () => {
   const isOpen = useStore((s) => s.isLivingHingeOpen);
   const toggle = useStore((s) => s.toggleLivingHingeModal);
   const document = useStore((s) => s.document);
-  const cncTools = useStore((s) => s.cncTools);
+  const cncTools = useStore((s) => jobTools(s.document, s.cncTools));
   const addLivingHinge = useStore((s) => s.addLivingHinge);
 
   const derived = useMemo(() => defaultLivingHinge(document), [document]);

@@ -31,10 +31,11 @@ import {
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
 import { DocsInfoButton } from './DocsModal';
-import {
+import { jobTools,
   DEFAULT_TOOL,
   toolCatalog,
   findTool,
+  rackMismatch,
   toolWarning,
   suggestTool,
   hasToolCatalog,
@@ -539,6 +540,8 @@ export const PropertiesSidebar: React.FC = () => {
     textVectorizeError,
     laserSource,
     cncTools,
+    rack,
+    setCncTools,
     openToolConfigModal,
     isPropertiesOpen,
     setPropertiesOpen,
@@ -571,7 +574,9 @@ export const PropertiesSidebar: React.FC = () => {
       isVectorizing: s.isVectorizing,
       textVectorizeError: s.textVectorizeError,
       laserSource: s.laserSource,
-      cncTools: s.cncTools,
+      cncTools: jobTools(s.document, s.cncTools),
+      rack: s.cncTools,
+      setCncTools: s.setCncTools,
       openToolConfigModal: s.openToolConfigModal,
       isPropertiesOpen: s.isPropertiesOpen,
       setPropertiesOpen: s.setPropertiesOpen,
@@ -1893,6 +1898,30 @@ export const PropertiesSidebar: React.FC = () => {
                         ? profile.guidance
                         : 'Not in the catalogue. The job will still pause for it, but Etch cannot advise on it.'}
                     </p>
+                    {/* The document carries the tool it was planned with, and
+                        that is what it cuts with. Say so when this machine's
+                        rack has no such number, or a different tool under it. */}
+                    {(() => {
+                      const mismatch = rackMismatch(document, rack, tool);
+                      if (!mismatch || !profile) return null;
+                      return (
+                        <div className="mt-1 text-[10px] leading-snug text-amber-700 dark:text-amber-400">
+                          {mismatch.kind === 'missing'
+                            ? `T${tool} is not in this machine's rack. The job is cut for the ${profile.name} it was planned with.`
+                            : `This machine's T${tool} is the ${mismatch.rackTool.name}. The job is cut for the ${profile.name} it was planned with — fit that.`}{' '}
+                          <button
+                            onClick={() =>
+                              setCncTools(
+                                [...rack.filter((t) => t.id !== tool), profile].sort((a, b) => a.id - b.id)
+                              )
+                            }
+                            className="font-semibold underline cursor-pointer"
+                          >
+                            {mismatch.kind === 'missing' ? 'Add to rack' : `Load as T${tool}`}
+                          </button>
+                        </div>
+                      );
+                    })()}
 
                     {/* Roughing, offered only where it pays: a relief is the one
                         operation whose finishing tool is a bad clearing tool. A
