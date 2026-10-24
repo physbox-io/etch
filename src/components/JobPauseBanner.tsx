@@ -27,6 +27,14 @@ export const JobPauseBanner: React.FC = () => {
   useEffect(() => webSerialManager.subscribe(setStatus), []);
 
   const paused = status.jobRunning && status.jobPaused;
+  // Re-zeroing is the next step, so it takes the green and Resume steps back.
+  const blocked = status.resumeBlocked;
+  const primary =
+    'bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 cursor-pointer';
+  const secondary =
+    'bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-slate-800 text-amber-900 dark:text-amber-200 cursor-pointer';
+  const disabled =
+    'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed';
 
   /**
    * Dismissal is per-stop, keyed on the line the job parked at: a job with four
@@ -72,6 +80,11 @@ export const JobPauseBanner: React.FC = () => {
         <p className="text-[13px] leading-relaxed text-amber-900 dark:text-amber-100">
           {status.pauseMessage ?? 'Waiting for the operator.'}
         </p>
+        {blocked && (
+          <p className="text-[13px] font-semibold leading-relaxed text-amber-900 dark:text-amber-100">
+            {blocked}
+          </p>
+        )}
 
         {/* The re-zero on the new tool may be a probe, and a probe on a circuit the
             new tool has not closed yet is refused — so say so here, before the
@@ -88,17 +101,19 @@ export const JobPauseBanner: React.FC = () => {
                 ? 'Open the machine controls to jog and re-focus'
                 : 'Open the work origin panel to touch off Z on the new tool'
             }
-            className="flex-1 min-w-[9rem] py-2 px-3 bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-slate-800 text-amber-900 dark:text-amber-200 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            className={`flex-1 min-w-[9rem] py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors ${blocked ? primary : secondary}`}
           >
-            <Crosshair className="w-3.5 h-3.5 text-emerald-500" />
+            <Crosshair className={`w-3.5 h-3.5 ${blocked ? 'text-white' : 'text-emerald-500'}`} />
             <span>{isLaser ? 'Machine Controls' : 'Re-zero Z'}</span>
           </button>
           <button
+            disabled={!!blocked}
+            title={blocked ?? 'Resume the job'}
             onClick={() => {
-              webSerialManager.resumeJob();
+              webSerialManager.resumeJob().catch(() => {});
               useStore.setState({ isMachineModalOpen: false, isGCodeModalOpen: true });
             }}
-            className="flex-1 min-w-[9rem] py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/20 transition-colors"
+            className={`flex-1 min-w-[9rem] py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors ${blocked ? disabled : primary}`}
           >
             <Play className="w-3.5 h-3.5" />
             <span>Resume Job</span>

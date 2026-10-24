@@ -959,7 +959,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       message:
         this.jobMachine === 'laser'
           ? `Tool change: fit ${what}, re-focus, then resume.`
-          : `Tool change: fit ${what}${rpmText}, re-zero Z on the new tool, then resume.`,
+          : `Tool change: fit ${what}${rpmText}, then resume.`,
     };
   }
 
@@ -1534,6 +1534,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       guideSpot: s.guideSpot,
       probePinActive: s.probePinActive,
       probeCircuitSeen: s.probeCircuitSeen,
+      resumeBlocked: this.resumeBlockedReason(),
       machineId: s.machineId,
       machineName: s.machineName,
       motion: s.motion,

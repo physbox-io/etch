@@ -412,11 +412,16 @@ export const BottomStatusBar: React.FC = () => {
               </span>
             )}
             <button
+              disabled={machineStatus.jobPaused && !!machineStatus.resumeBlocked}
               onClick={() =>
-                machineStatus.jobPaused ? webSerialManager.resumeJob() : webSerialManager.pauseJob()
+                machineStatus.jobPaused
+                  ? webSerialManager.resumeJob().catch(() => {})
+                  : webSerialManager.pauseJob()
               }
-              title={machineStatus.jobPaused ? 'Resume job' : 'Pause job'}
-              className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              title={
+                machineStatus.jobPaused ? (machineStatus.resumeBlocked ?? 'Resume job') : 'Pause job'
+              }
+              className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {machineStatus.jobPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
             </button>

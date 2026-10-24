@@ -600,6 +600,12 @@ export interface MachineStatus {
   /** The controller reports the probe input closed right now (`Pn:P`). */
   probePinActive: boolean;
   /**
+   * Why Resume would be refused right now — a bit change nobody has re-zeroed
+   * — or null. Read by every Resume button, so one that cannot resume says so
+   * instead of looking ready and doing nothing.
+   */
+  resumeBlocked: string | null;
+  /**
    * The probe input has closed at least once on this connection. Continuity
    * probes are refused until it has: a probe stops only when that circuit
    * closes, and an unproved one drives the tool into the stock.

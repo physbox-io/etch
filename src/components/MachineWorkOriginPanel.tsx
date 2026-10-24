@@ -384,19 +384,28 @@ export const MachineWorkOriginPanel: React.FC<{
                 Z re-zeroed since the pause — machine Z:{zZeroed!.z.toFixed(2)}
               </p>
             ) : (
+              // Only when it is owed: the setup tool's pause keeps its datum.
+              status.resumeBlocked && (
               <p className="text-[10px] leading-snug text-amber-700 dark:text-amber-400">
                 Z has not been re-zeroed since the job stopped. A new tool is a new length: touch off
                 below before resuming, or the cut depth moves with it.
               </p>
+              )
             ))}
 
           <div className="flex items-center gap-2">
             <button
+              disabled={!!status.resumeBlocked}
+              title={status.resumeBlocked ?? 'Resume the job'}
               onClick={() => {
-                webSerialManager.resumeJob();
+                webSerialManager.resumeJob().catch(() => {});
                 useStore.setState({ isMachineModalOpen: false, isGCodeModalOpen: true });
               }}
-              className="flex-1 py-2 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-600/20 transition-colors"
+              className={`flex-1 py-2 px-2.5 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                status.resumeBlocked
+                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-md shadow-emerald-600/20'
+              }`}
             >
               <Play className="w-3.5 h-3.5" />
               <span>Resume Job</span>

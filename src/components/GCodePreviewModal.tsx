@@ -943,10 +943,14 @@ export const GCodePreviewModal: React.FC = () => {
                   <JobOverridePanel status={machine} machine={machineKind(document)} />
                   <div className="flex gap-2">
                     <button
+                      disabled={machine.jobPaused && !!machine.resumeBlocked}
+                      title={machine.jobPaused ? (machine.resumeBlocked ?? 'Resume job') : 'Pause job'}
                       onClick={() =>
-                        machine.jobPaused ? webSerialManager.resumeJob() : webSerialManager.pauseJob()
+                        machine.jobPaused
+                          ? webSerialManager.resumeJob().catch(() => {})
+                          : webSerialManager.pauseJob()
                       }
-                      className="flex-1 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="disabled:opacity-40 disabled:cursor-not-allowed flex-1 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       {machine.jobPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
                       <span>{machine.jobPaused ? 'Resume' : 'Pause'}</span>
