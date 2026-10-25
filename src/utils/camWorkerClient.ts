@@ -3,7 +3,13 @@ import type {
   WorkerCamResponse,
   TraceImagePayload,
 } from '../workers/cam.worker';
-import { readMotionProfile } from './machineSettings';
+import {
+  readLaserKerf,
+  readLaserSource,
+  readMotionProfile,
+  readSpindleRange,
+} from './machineSettings';
+import { readCncTools } from './tooling';
 import {
   traceMarchingSquares,
   generateHalftoneCompoundPath,
@@ -65,6 +71,18 @@ export interface ProgramResult {
   plan: ReturnType<typeof planToolpath>;
   gcode: string;
   timeline: Timeline;
+}
+
+/**
+ * Options without the keys a caller set to `undefined`.
+ *
+ * `{ customCncTools: undefined }` is how a component says "I have no rack to
+ * hand you", and spread over the stamped defaults it would erase the real one
+ * and put the worker back on its own defaults — the bug the stamping exists for.
+ */
+function stripUndefined<T extends object>(opts: T | undefined): Partial<T> {
+  if (!opts) return {};
+  return Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 class CamWorkerClient {
@@ -268,18 +286,35 @@ class CamWorkerClient {
   }
 
   /**
-   * The caller's options with the machine's own dynamics stamped in.
+   * The caller's options with every shop setting stamped in.
    *
-   * A worker has no `localStorage`, so the exporter's usual way of finding the
-   * profile — `readMotionProfile()` inside `resolveOptions` — comes back with
-   * the assumed gantry on that side of the boundary and the real machine on
-   * this one. That is the one disagreement this class exists to prevent: the
-   * file would be written against one acceleration and the preview drawn
-   * against another, and a laser fill's run-up is sized from exactly that
-   * number. Read here, where the storage is, and sent with the request.
+   * A worker has no `localStorage`, so each of the exporter's storage reads in
+   * `resolveOptions` comes back with its default on that side of the boundary
+   * and the real figure on this one. The motion profile was stamped first —
+   * a file written against one acceleration and previewed against another —
+   * but it was not the only one: the spindle range, the laser source and the
+   * kerf were all defaulted too, and the preview modal sends the worker's
+   * program to the machine on Run. So a router with a VFD reaching 6,000 RPM
+   * was cut at the trim-router 10,000 floor, a 40 W tube at a 10 W diode's
+   * speeds, and every laser part offset by the default kerf instead of the
+   * measured one. Read here, where the storage is, and sent with the request;
+   * anything the caller passed still wins.
+   *
+   * The motion profile carries the controller's `$30` too, which is both the
+   * laser's power full scale and the router's RPM ceiling — so it is the one
+   * field that must never be left to the worker.
    */
   private withMotion(opts?: Partial<GCodeOptions>): Partial<GCodeOptions> {
-    return { motion: readMotionProfile(), ...opts };
+    return {
+      motion: readMotionProfile(),
+      spindle: readSpindleRange(),
+      laser: readLaserSource(),
+      laserKerfMm: readLaserKerf(),
+      // An empty rack means "use the stored one", which in a worker is the
+      // default rack — not the cutters this operator actually owns.
+      customCncTools: opts?.customCncTools?.length ? opts.customCncTools : readCncTools(),
+      ...stripUndefined(opts),
+    };
   }
 
   public planToolpath(

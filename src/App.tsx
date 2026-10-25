@@ -19,6 +19,7 @@ import { OrnamentModal } from './components/OrnamentModal';
 import { GCodePreviewModal } from './components/GCodePreviewModal';
 import { MachineControlModal } from './components/MachineControlModal';
 import { JobPauseBanner } from './components/JobPauseBanner';
+import { JobCompleteNotice, ToolChangeNotice } from './components/MachineDialogs';
 import { AICopilotPanel } from './components/AICopilotPanel';
 import { DocsModal } from './components/DocsModal';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -260,6 +261,8 @@ export const App: React.FC = () => {
       {/* A parked job asks the operator for something, and has to say so with
           every panel closed — same reason the status bar keeps the controls. */}
       <JobPauseBanner />
+      <ToolChangeNotice />
+      <JobCompleteNotice />
 
       {/* Modals */}
       <ClipArtModal />

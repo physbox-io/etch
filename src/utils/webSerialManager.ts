@@ -38,6 +38,7 @@ import {
   readGuideJiggle,
   readGuidePower,
   writeActiveMachineId,
+  readLaserModeBorrowed,
   writeLaserModeBorrowed,
   writeMotionProfile,
 } from './machineSettings';
@@ -203,6 +204,23 @@ export interface EtchMachineState extends SharedMachineState {
    * assisted grid's "use current Z" involve no circuit and are not gated.
    */
   probeCircuitSeen: boolean;
+  /**
+   * The last job that ran to its final line, for the "Job complete" notice.
+   *
+   * Set only by `onJobFinished`, which the base calls at the final acknowledged
+   * line — an E-stop, an alarm or a dropped link never get there. Cleared when
+   * the next job starts; `finishedAt` tells one finish from the next, so a
+   * notice dismissed for one job does not hide the next.
+   */
+  lastCompletedJob: CompletedJob | null;
+}
+
+/** What a job that ran to the end took. */
+export interface CompletedJob {
+  finishedAt: number;
+  elapsedSeconds: number;
+  totalLines: number;
+  jobName?: string;
 }
 
 export type StatusListener = (status: MachineStatus) => void;
@@ -323,6 +341,15 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
   });
 
   private jobContext: JobContext = {};
+  /**
+   * Whether telemetry has reported a job that has not yet been reported over.
+   * See `publishTelemetry`.
+   */
+  private telemetryJobOpen = false;
+  /** What the last job run was called, for naming it on a "run from" offer after it ended. */
+  private lastJobName: string | undefined;
+  /** When the job on the wire started streaming, for the run time it finishes with. */
+  private jobStartedAt: number | null = null;
 
   constructor() {
     super({ endpoints: { machineSocketUrl, submitMachineJob } });
@@ -336,6 +363,26 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       motion: DEFAULT_MOTION_PROFILE,
       probePinActive: false,
       probeCircuitSeen: false,
+      lastCompletedJob: null,
+    };
+  }
+
+  protected onJobStarted(): void {
+    this.jobStartedAt = Date.now();
+    this.updateState({ lastCompletedJob: null });
+  }
+
+  protected onJobFinished(): Partial<EtchMachineState> {
+    const now = Date.now();
+    const started = this.jobStartedAt;
+    this.jobStartedAt = null;
+    return {
+      lastCompletedJob: {
+        finishedAt: now,
+        elapsedSeconds: started === null ? 0 : (now - started) / 1000,
+        totalLines: this.state.totalLines,
+        jobName: this.jobContext.name,
+      },
     };
   }
 
@@ -373,7 +420,39 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
      * Not awaited: a machine that never answers must not stop the connection
      * from completing, because everything else here works without it.
      */
-    void this.readMachineSettings();
+    // Taken now and cleared: whatever this link turns out to be, the in-session
+    // flag described the last one, and `runProgram` acts on it unconditionally.
+    const laserModeOwed = this.guideSpotRestoreLaserMode || readLaserModeBorrowed();
+    this.guideSpotRestoreLaserMode = false;
+    void this.readMachineSettings().then(() => this.repayBorrowedLaserMode(laserModeOwed));
+  }
+
+  /**
+   * Puts `$32` back on a laser that was left with it off.
+   *
+   * The guide spot borrows laser mode and writes a breadcrumb first, because a
+   * tab closed with the spot lit — or a cable pulled — cannot send anything on
+   * the way out, and `$32` lives in EEPROM. Nothing ever read the breadcrumb,
+   * so the next session's first job streamed with laser mode off and burnt a
+   * line along every rapid between contours.
+   *
+   * Only on a machine that is a laser and reports `$32=0` now. The breadcrumb is
+   * not keyed to a machine, and switching laser mode on for a router changes
+   * how it runs its spindle — so with a router on the cable the breadcrumb is
+   * left for the laser it belongs to. A laser that already reads `$32=1` was put
+   * right by something else, and the breadcrumb is simply cleared.
+   */
+  private repayBorrowedLaserMode(owed: boolean): void {
+    if (!owed || !this.state.connected || this.jobMachine !== 'laser') return;
+    const mode = this.getGrblSetting(32);
+    // No `$$` answer, or a build with no laser mode: nothing to put back yet.
+    if (mode === undefined) return;
+    if (mode === 0) {
+      this.guideSpotRestoreLaserMode = true;
+      this.restoreLaserMode();
+    } else {
+      writeLaserModeBorrowed(false);
+    }
   }
 
   /**
@@ -509,7 +588,9 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     this.grblOptions = '';
     this.grblBuildName = '';
     writeActiveMachineId(null);
-    this.guideSpotRestoreLaserMode = false;
+    // `guideSpotRestoreLaserMode` deliberately survives: if the link was already
+    // gone, the `guideSpotOff` above could not put `$32` back, and the flag (with
+    // its breadcrumb) is what the next connection repays it from.
     this.updateState({ guideSpot: false, machineId: undefined, machineName: undefined });
   }
 
@@ -683,9 +764,10 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     this.clearGuideSpotTimeout();
     if (!this.state.connected) {
       // Nothing to send to, but the flag must not survive: the beam is out
-      // because the machine is gone.
+      // because the machine is gone. The laser-mode debt *does* survive — `$32`
+      // is still off in the controller's EEPROM, and clearing the flag here was
+      // forgetting that just because the link was down. `onConnected` repays it.
       if (this.state.guideSpot) this.updateState({ guideSpot: false });
-      this.guideSpotRestoreLaserMode = false;
       return;
     }
     // The flag goes down *first*, and is what the jiggle loop watches. Sending
@@ -1011,6 +1093,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     // Recorded before the first line goes out, so the very first telemetry frame
     // already says what this run is — that frame is what opens the archived run.
     this.jobContext = opts.job ?? {};
+    this.lastJobName = this.jobContext.name;
 
     // A guide spot left lit would be a beam already firing as the program's
     // first rapid runs, dragging a burn across the stock on the way to the
@@ -1027,11 +1110,13 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     if (lines.length === 0) {
       return { started: false, message: 'That program has no machine commands in it.' };
     }
-    // Asked here so the Run button can say why; `startJob` refuses it anyway.
-    const offTheBed = this.travelBlockedReason(lines);
-    if (offTheBed) {
-      this.updateState({ lastError: offTheBed });
-      return { started: false, message: offTheBed };
+    // Every refusal the start would make, asked here so the Run button can say
+    // why — `startJob` refuses all of them anyway, but out of sight, after this
+    // has already reported the job running.
+    const refused = this.startBlockedReason(lines);
+    if (refused) {
+      this.updateState({ lastError: refused });
+      return { started: false, message: refused };
     }
 
     // The job runs for as long as the program does, so this is not awaited —
@@ -1042,6 +1127,38 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       });
     });
     return { started: true, message: `Running ${lines.length} lines.` };
+  }
+
+  /**
+   * Starts the job that stopped short again from a line. See `runFromLine`.
+   *
+   * Refusals come back as a result for the same reason `runProgram`'s do: a
+   * button that does nothing has to say why.
+   */
+  public async runFrom(line: number): Promise<{ started: boolean; message: string }> {
+    const refused = this.startBlockedReason([]);
+    if (refused) {
+      this.updateState({ lastError: refused });
+      return { started: false, message: refused };
+    }
+    const running = this.runFromLine(line, { isLaser: this.jobMachine === 'laser' });
+    // The stream's own checks — the travel of what is left, above all — refuse
+    // before its first wait, so a refusal has landed by the next tick.
+    const early = await Promise.race([
+      running.then(
+        () => null,
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 0)),
+    ]);
+    if (early) {
+      this.updateState({ lastError: early });
+      return { started: false, message: early };
+    }
+    running.catch((err) => {
+      this.updateState({ lastError: err instanceof Error ? err.message : String(err) });
+    });
+    return { started: true, message: `Running from line ${line}.` };
   }
 
   /**
@@ -1098,16 +1215,35 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
         status: 'error',
         lastError: `Lost the connection to the controller at line ${last.currentLine}${reason}.`,
       }));
+      // The run is closed (or there was none); nothing after this belongs to it.
+      this.endTelemetryJob();
       return;
     }
+
+    /*
+     * Job fields only while a job is on the wire — plus the one frame that
+     * reports it ending, which is the frame the archive closes the run on and
+     * so must still say how far it got: zeroed, a finished job whose last
+     * in-job frame was throttled at 95% would be filed as cancelled.
+     *
+     * After that they go. The server opens a run whenever a frame is active and
+     * carries a line count, and the state keeps the last job's `totalLines` and
+     * `currentLine` long after it is over — so homing or jogging an hour later
+     * reported `Run` with a line count, and the archive filled with phantom runs
+     * named after a job that had already finished.
+     */
+    const onWire = this.isJobRunning;
+    const closing = !onWire && this.telemetryJobOpen;
+    const withJob = onWire || closing;
+    if (onWire) this.telemetryJobOpen = true;
 
     this.telemetry.offer(
       {
         status: state.grblState ?? state.status,
-        jobName: this.jobContext.name,
-        progressPercent: state.progressPercent,
-        currentLine: state.currentLine,
-        totalLines: state.totalLines,
+        jobName: withJob ? this.jobContext.name : undefined,
+        progressPercent: withJob ? state.progressPercent : 0,
+        currentLine: withJob ? state.currentLine : 0,
+        totalLines: withJob ? state.totalLines : 0,
         xyz: { x: state.mpos.x, y: state.mpos.y, z: state.mpos.z },
         spindleSpeed: state.spindleSpeed ?? 0,
         // What that S word means, and what its full scale is. The dashboard has
@@ -1117,13 +1253,23 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
         spindleMax: this.spindlePwmMax(),
         feedRate: state.feedRate ?? 0,
         lastError: state.lastError,
-        documentId: this.jobContext.documentId ?? null,
-        documentRevision: this.jobContext.documentRevision ?? null,
-        settings: this.jobContext.settings ?? null,
+        documentId: withJob ? this.jobContext.documentId ?? null : null,
+        documentRevision: withJob ? this.jobContext.documentRevision ?? null : null,
+        settings: withJob ? this.jobContext.settings ?? null : null,
       },
       state.status,
       this.isJobRunning
     );
+    if (closing) this.endTelemetryJob();
+  }
+
+  /** The job is over as far as anything reported from here is concerned. */
+  private endTelemetryJob(): void {
+    this.telemetryJobOpen = false;
+    // Not while a job is still on the wire: a dropped link is followed by the
+    // base clearing `isJobRunning`, and a frame from a job still running would
+    // lose its name.
+    if (!this.isJobRunning) this.jobContext = {};
   }
 
   /**
@@ -1537,6 +1683,11 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       probePinActive: s.probePinActive,
       probeCircuitSeen: s.probeCircuitSeen,
       resumeBlocked: this.resumeBlockedReason(),
+      toolChange: s.status === 'PAUSED_TOOL',
+      zDatumTrusted: s.zDatumTrusted === true,
+      lastCompletedJob: s.lastCompletedJob,
+      interruption: s.interruption ?? null,
+      lastJobName: this.lastJobName,
       machineId: s.machineId,
       machineName: s.machineName,
       motion: s.motion,

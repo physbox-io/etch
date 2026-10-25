@@ -10,6 +10,9 @@ import { webSerialManager } from './webSerialManager';
 import { fetchMachineDevices } from './apiClient';
 import { generateGCode } from './gcodeExporter';
 import { readGuidePower } from './machineSettings';
+import { boundsToMachine } from './machineCoords';
+import { hasJobZAxis, machineKind } from './tooling';
+import { jobContextFor } from './jobContext';
 import type { EtchDocument } from '../types/etch';
 
 // ---------------------------------------------------------------------------
@@ -64,11 +67,19 @@ export function setCurrentDocument(document: EtchDocument, cncTools: unknown): v
   current = { document, cncTools };
 }
 
-/** The stock outline, which is what a framing lap traces. */
+/**
+ * The stock outline in **machine** coordinates, which is what a framing lap
+ * traces and a probe grid covers.
+ *
+ * Through `boundsToMachine` like every other thing the machine is told. This
+ * used to hand back the document rectangle as it stood, which is only the same
+ * numbers when the origin is a corner: on a `center` origin the job runs from
+ * −w/2 to +w/2, and the lap went round a rectangle a quarter of the way off it.
+ */
 function jobBounds(): { minX: number; minY: number; maxX: number; maxY: number } | null {
   const doc = current.document;
   if (!doc) return null;
-  return { minX: 0, minY: 0, maxX: doc.width, maxY: doc.height };
+  return boundsToMachine(doc, { minX: 0, minY: 0, maxX: doc.width, maxY: doc.height });
 }
 
 /**
@@ -94,7 +105,17 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
     );
   }
 
-  const started = await webSerialManager.runProgram(gcode);
+  /*
+   * The machine kind decides which safety checks the stream applies — a router
+   * refuses to start without a trusted Z datum, a laser has none to check — and
+   * it defaults to laser. Left out, an agent's router job streamed straight past
+   * the Z check the Run button would have stopped it at. The job context is what
+   * the archive files the run under, as it is for the button.
+   */
+  const started = await webSerialManager.runProgram(gcode, {
+    machine: machineKind(doc),
+    job: jobContextFor(doc),
+  });
   if (!started.started) throw new Error(started.message);
 
   const lines = gcode.split('\n').filter(l => l.trim()).length;
@@ -140,15 +161,27 @@ export function createEtchMachineHandlers(): Record<
       runJob: runCurrentDocument,
       jobBounds,
       /*
-       * The guide beam is lit for the lap, which is the point of it on a laser:
+       * On a laser the guide beam is lit for the lap, which is the point of it:
        * the operator is watching where the outline falls on the material, and a
        * frame they cannot see answers nothing.
+       *
+       * On a router the same lap is the *spindle* turning at the guide power's
+       * S word, wherever Z happens to be — and `laserMode` defaults to on, so
+       * that is what an agent framing a router job got. A router frames lifted
+       * to safe Z with the spindle off, which is the shared path.
        */
-      frameJob: async (bounds, args) =>
-        webSerialManager.frameJob(bounds, {
+      frameJob: async (bounds, args) => {
+        const doc = current.document;
+        // With no document to say which machine this is, the beam stays off: an
+        // unlit lap on a laser is a lap nobody can see, but a lit one on a
+        // router is a spinning cutter.
+        const laser = !!doc && !hasJobZAxis(machineKind(doc));
+        return webSerialManager.frameJob(bounds, {
+          laserMode: laser,
           guidePower: num(args, 'guidePower', readGuidePower()),
           safeZ: num(args, 'safeZMm', 5),
-        }),
+        });
+      },
       listDevices: async () => {
         const devices = await fetchMachineDevices();
         return devices.map(d => ({ id: d.deviceId, name: d.name, online: d.online }));
@@ -209,6 +242,19 @@ export function createEtchMachineHandlers(): Record<
     MACHINE_GUIDE_SPOT: async (args: McpArgs) => {
       machineArming.requireArmed('guide_spot');
       const on = args.on !== false;
+      /*
+       * The guide spot is `M3` at a low S word. On a laser that is a dot of
+       * light; on a router it is the spindle starting, at whatever speed that S
+       * word maps to, with the cutter wherever it was left — possibly sitting
+       * on the stock. Off is always allowed: it is `M5`, and stopping a spindle
+       * is never the wrong thing to have done.
+       */
+      if (on && current.document && hasJobZAxis(machineKind(current.document))) {
+        throw new Error(
+          'The guide spot is for a laser: on this router it would start the spindle. To see where ' +
+            'the tool is, jog it and read the position, or frame the job with the spindle off.'
+        );
+      }
       machineArming.noteAgentCommand('guide_spot', on ? 'on' : 'off');
       if (on) await webSerialManager.guideSpotOn(num(args, 'power', readGuidePower()));
       else await webSerialManager.guideSpotOff();

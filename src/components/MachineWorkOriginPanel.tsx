@@ -2,17 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import {
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  ChevronsUp,
   ChevronsDown,
   Crosshair,
   Hand,
   Home,
   Navigation,
-  Octagon,
   Info,
   Check,
   Lightbulb,
@@ -38,7 +32,7 @@ import {
 import { machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
-import { NumberInput } from '@physbox-io/ui';
+import { JogPad, NumberInput } from '@physbox-io/ui';
 import { ProbeCircuitStatus } from './ProbeCircuitStatus';
 import {
   planResurface,
@@ -48,6 +42,7 @@ import {
   MIN_RESURFACE_DEPTH_MM,
 } from '../utils/resurface';
 import { readSpindleRange, readMotionProfile } from '../utils/machineSettings';
+import { spindleRangeForMachine } from '../utils/feeds';
 
 /**
  * Setting the job's origin on a live machine: jog the tool where you want it,
@@ -86,8 +81,6 @@ export const MachineWorkOriginPanel: React.FC<{
   );
   const words = machineWords(machine);
   const isLaser = machine === 'laser';
-  const [step, setStep] = useState(1);
-  const [feedRate, setFeedRate] = useState(1000);
   const [isProbingZ, setIsProbingZ] = useState(false);
   const [probeMessage, setProbeMessage] = useState<{ ok: boolean; text: string } | null>(null);
   // Point counts follow the stock's aspect ratio until the user says otherwise:
@@ -148,7 +141,10 @@ export const MachineWorkOriginPanel: React.FC<{
             depth: resurfaceDepth,
             tools: cncTools,
             toolId: resurfaceToolId,
-            spindle: readSpindleRange(),
+            // Cut to the controller's `$30`, as a job is: this program is run
+            // straight from here, and a speed above `$30` is run at `$30` with
+            // the feed still derived for the faster one.
+            spindle: spindleRangeForMachine(readSpindleRange(), readMotionProfile()).range,
             motion: readMotionProfile(),
           })
         : null,
@@ -197,12 +193,6 @@ export const MachineWorkOriginPanel: React.FC<{
   // while a point is pending, even though a grid is technically in progress.
   const jogDisabled = busy && !pendingPoint;
 
-  // Jogging moves the tool, not the origin: the controller's work offset stays
-  // exactly where it was set, so the confirmations below stay true and stay on
-  // screen. They report where zero *is* in machine coordinates, which is a fact
-  // about the offset, not about where the tool happens to be parked.
-  const jog = (x: number, y: number, z: number) =>
-    webSerialManager.jog({ x: x * step, y: y * step, z: z * step }, feedRate);
 
   // Closing the panel is the operator walking away from it, and the beam does
   // not close with the modal. The manager's own timeout would catch this
@@ -317,8 +307,6 @@ export const MachineWorkOriginPanel: React.FC<{
     }
   };
 
-  const jogBtn =
-    'flex items-center justify-center h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer';
   const actionBtn =
     'flex-1 py-2 px-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 dark:text-slate-200 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors';
   const numInput =
@@ -490,97 +478,13 @@ export const MachineWorkOriginPanel: React.FC<{
             {xyZeroed ? doneMark : <span className={stepNo}>2</span>}
             {xyZeroed ? 'X and Y are zeroed' : 'Jog to your origin, then zero X and Y'}
           </span>
-          <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
-            <div className="flex items-start gap-3">
-              <div className="grid grid-cols-3 gap-1.5 w-[144px]">
-                <span />
-                <button disabled={jogDisabled} onClick={() => jog(0, 1, 0)} title={`Y +${step} mm`} className={jogBtn}>
-                  <ArrowUp className="w-3.5 h-3.5" />
-                </button>
-                <span />
-                <button disabled={jogDisabled} onClick={() => jog(-1, 0, 0)} title={`X -${step} mm`} className={jogBtn}>
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  disabled={!status.connected}
-                  onClick={() => webSerialManager.jogCancel()}
-                  title="Stop the current jog"
-                  className={`${jogBtn} text-red-500`}
-                >
-                  <Octagon className="w-3.5 h-3.5" />
-                </button>
-                <button disabled={jogDisabled} onClick={() => jog(1, 0, 0)} title={`X +${step} mm`} className={jogBtn}>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-                <span />
-                <button disabled={jogDisabled} onClick={() => jog(0, -1, 0)} title={`Y -${step} mm`} className={jogBtn}>
-                  <ArrowDown className="w-3.5 h-3.5" />
-                </button>
-                <span />
-              </div>
-
-              {/* Z stays on a laser — a diode head still focuses by height —
-                  but it is labelled for what it does there, which is set focus
-                  once, not plunge into the work. */}
-              <div className="grid grid-cols-1 gap-1.5 w-11">
-                <button
-                  disabled={jogDisabled}
-                  onClick={() => jog(0, 0, 1)}
-                  title={isLaser ? `Raise head ${step} mm` : `Z +${step} mm`}
-                  className={jogBtn}
-                >
-                  <ChevronsUp className="w-3.5 h-3.5" />
-                </button>
-                <span className="text-[9px] text-center text-slate-400 dark:text-slate-500 font-bold leading-9">
-                  {isLaser ? 'FOC' : 'Z'}
-                </span>
-                <button
-                  disabled={jogDisabled}
-                  onClick={() => jog(0, 0, -1)}
-                  title={isLaser ? `Lower head ${step} mm` : `Z -${step} mm`}
-                  className={jogBtn}
-                >
-                  <ChevronsDown className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Step / feed live with the pad, since they only change what it does */}
-            <div className="space-y-2 pt-0.5 flex-1 min-w-[12rem] max-w-xs">
-              <div>
-                <span className={`${fieldLabel} mb-1`}>Jog Step (mm)</span>
-                <div className="flex gap-1.5">
-                  {[0.1, 1, 10].map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setStep(s)}
-                      className={`flex-1 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
-                        step === s
-                          ? 'bg-amber-500 border-amber-500 text-white'
-                          : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <span className={`${fieldLabel} mb-1`}>Feed Rate</span>
-                <div className="flex items-center gap-2">
-                  <NumberInput
-                    min={10}
-                    max={5000}
-                    step={50}
-                    value={feedRate}
-                    onChange={v => setFeedRate(v ?? 1000)}
-                      className={`flex-1 min-w-0 ${numInput}`}
-                    />
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">mm/min</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <JogPad
+            onJog={(delta, feed) => webSerialManager.jog(delta, feed)}
+            onStop={() => webSerialManager.jogCancel()}
+            disabled={jogDisabled}
+            connected={status.connected}
+            isLaser={isLaser}
+          />
 
           {/* Fix the origin where the jogging left the tool */}
           <div className="flex items-center gap-2 pt-0.5 max-w-md">

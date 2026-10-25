@@ -34,6 +34,8 @@ import { DocsInfoButton } from './DocsModal';
 import { jobTools,
   DEFAULT_TOOL,
   toolCatalog,
+  offeredTools,
+  retiredSuffix,
   findTool,
   rackMismatch,
   toolWarning,
@@ -42,7 +44,7 @@ import { jobTools,
   machineKind as machineKindOf,
   type ToolProfile,
 } from '../utils/tooling';
-import { deriveFeeds, deriveLaserFeeds, feedsOperation, laserRefusal, planPasses, formatRpm } from '../utils/feeds';
+import { deriveFeeds, deriveLaserFeeds, feedsOperation, laserRefusal, planPasses, formatRpm, spindleRangeForMachine } from '../utils/feeds';
 import {
   findMaterial,
   DEFAULT_STOCK_THICKNESS_MM,
@@ -251,7 +253,12 @@ const CncLayerCutting: React.FC<{
 
   // The spindle is a property of the bench, so it is read here rather than
   // being threaded through the document.
-  const spindle = React.useMemo(() => readSpindleRange(), []);
+  // Cut to the controller's `$30` the way the planner cuts it, or this panel
+  // quotes an RPM the job will not be run at.
+  const spindle = React.useMemo(
+    () => spindleRangeForMachine(readSpindleRange(), readMotionProfile()).range,
+    []
+  );
   const recipe = React.useMemo(
     () => (profile ? deriveFeeds(profile, material, spindle, readMotionProfile()) : null),
     [profile, material, spindle]
@@ -265,7 +272,7 @@ const CncLayerCutting: React.FC<{
 
   /** The depth that just clears the stock, grazing the spoilboard. */
   const throughDepth = round1(stockThickness + THROUGH_CUT_OVERCUT_MM);
-  const isThrough = Math.abs(depth - throughDepth) < 0.05;
+  const isThrough = depth > throughDepth - 0.05;
 
   return (
     <div
@@ -279,19 +286,30 @@ const CncLayerCutting: React.FC<{
           </label>
           {/* "Through" is the depth people actually want and the one they get
               wrong: it is the stock thickness plus enough to not leave a fringe
-              of uncut fuzz holding the part in. */}
-          {layer.operation === 'cut' && !isThrough && (
-            <button
-              onClick={() => {
-                update({ zDepth: throughDepth });
-                commit();
-              }}
-              className="text-[9px] px-1 py-px rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer"
-              title={`Cut through ${stockThickness} mm of stock, plus ${THROUGH_CUT_OVERCUT_MM} mm into the spoilboard`}
-            >
-              through stock
-            </button>
-          )}
+              of uncut fuzz holding the part in. A depth that gets there says so;
+              one that falls short offers the depth that would. The offer used to
+              be the only state shown, so it read as a label — present on 3.4 mm
+              in 3 mm stock, which cuts through, and gone on 3.3, which also does. */}
+          {layer.operation === 'cut' &&
+            (isThrough ? (
+              <span
+                className="text-[9px] px-1 py-px rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+                title={`Goes ${round1(depth - stockThickness)} mm past the ${stockThickness} mm stock, into the spoilboard`}
+              >
+                cuts through
+              </span>
+            ) : (
+              <button
+                onClick={() => {
+                  update({ zDepth: throughDepth });
+                  commit();
+                }}
+                className="text-[9px] px-1 py-px rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer"
+                title={`Cut through ${stockThickness} mm of stock, plus ${THROUGH_CUT_OVERCUT_MM} mm into the spoilboard`}
+              >
+                set through ({throughDepth} mm)
+              </button>
+            ))}
         </div>
         <NumberInput
           step={0.1}
@@ -1883,9 +1901,10 @@ export const PropertiesSidebar: React.FC = () => {
                       onChange={(e) => updateLayer(layer.id, { tool: parseInt(e.target.value, 10) })}
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"
                     >
-                      {tools.map((t) => (
+                      {offeredTools(tools, [tool]).map((t) => (
                         <option key={t.id} value={t.id}>
                           T{t.id} — {t.name}
+                          {retiredSuffix(t)}
                         </option>
                       ))}
                       {/* A document cut on another machine can carry a T-number
@@ -1943,11 +1962,12 @@ export const PropertiesSidebar: React.FC = () => {
                           className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"
                         >
                           <option value="">No roughing pass — one tool</option>
-                          {tools
+                          {offeredTools(tools, layer.roughTool != null ? [layer.roughTool] : [])
                             .filter((t) => t.id !== tool)
                             .map((t) => (
                               <option key={t.id} value={t.id}>
                                 T{t.id} — {t.name}
+                                {retiredSuffix(t)}
                               </option>
                             ))}
                         </select>

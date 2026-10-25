@@ -20,7 +20,14 @@ import {
   DEFAULT_STOCK_THICKNESS_MM,
   type MaterialId,
 } from '../utils/materials';
-import { toolRackLabel, machineKind as machineKindOf, machineWords } from '../utils/tooling';
+import {
+  toolRackLabel,
+  machineKind as machineKindOf,
+  machineWords,
+  offeredTools,
+  retiredSuffix,
+  toolIdsInUse,
+} from '../utils/tooling';
 
 /**
  * The kerf field, beside the laser it belongs to.
@@ -341,9 +348,10 @@ export const BottomStatusBar: React.FC = () => {
                   {toolRackLabel(cncTools)} ({cncTools.length} cutter{cncTools.length === 1 ? '' : 's'})
                 </option>
                 <optgroup label="🛠️ Configured Tool Rack" className="bg-white dark:bg-slate-900">
-                  {cncTools.map((t) => (
+                  {offeredTools(cncTools, toolIdsInUse(document)).map((t) => (
                     <option key={t.id} value={t.id} disabled>
                       T{t.id} — {t.name}
+                      {retiredSuffix(t)}
                     </option>
                   ))}
                 </optgroup>

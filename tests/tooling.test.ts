@@ -169,6 +169,21 @@ describe('tool change G-code', () => {
     expect(after).toMatch(/M3 S/); // spindle back on
   });
 
+  it('lifts the new bit clear before starting the spindle after a change', () => {
+    // Re-zeroed on paper, the bit is standing on the stock at Z0 when the job
+    // resumes. Spinning it up there, then lifting, scored a ring into the work.
+    const lines = generateGCode(multi()).split('\n');
+    const changes = lines.flatMap((l, i) => (/^M6 T/.test(l) ? [i] : []));
+    for (const at of changes) {
+      const spin = lines.findIndex((l, i) => i > at && /^M3\b/.test(l));
+      const lift = lines.findIndex((l, i) => i > at && /^G0 Z5\b/.test(l));
+      expect(lift).toBeGreaterThan(at);
+      expect(lift).toBeLessThan(spin);
+      // Nothing that moves happens between the pause and the lift.
+      expect(lines.slice(at + 1, lift).filter((l) => /^G[0-3]\b/.test(l))).toEqual([]);
+    }
+  });
+
   it('does not spin up the outgoing bit at the next tool’s speed on the way to the change', () => {
     // The park before a change belongs to the next segment, whose header used
     // to set that segment's speed — on the bit about to come out.

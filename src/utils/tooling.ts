@@ -1,5 +1,21 @@
 import type { EtchDocument, LayerOperation } from '../types/etch';
 import { syncCloudParameters, type JsonValue } from './apiClient';
+import {
+  MAX_TIP_ANGLE_DEG,
+  NOMINAL_VBIT_DEPTH_MM,
+  RACK_PRESETS,
+  TOOL_RACK_PARAMETER,
+  TOOL_RACK_STORAGE_KEY,
+  ToolRackStore,
+  clampTipAngle,
+  cuttingDefaults,
+  defaultToolRack,
+  toolCutWidthAtDepth,
+  toolFeedDiameter,
+  type RackTool,
+  type ToolRack,
+  type ToolShape,
+} from '@physbox-io/machining';
 
 /**
  * The tools a job can call for, and what each is actually good at.
@@ -59,6 +75,11 @@ export interface ToolProfile {
    * than the feature, and the detail is simply removed from the part.
    */
   minDetailMm: number;
+
+  /** In the drawer. A retired tool still resolves for old documents but is not offered. */
+  available?: boolean;
+  /** The shared rack entry this was read from. */
+  rackUid?: string;
 
   /**
    * The physics needed to derive feeds and depths for this tool.
@@ -239,183 +260,53 @@ export const DEFAULT_CNC_TOOLS: ToolProfile[] = [
   },
 ];
 
+/** The layer operations a tool can be best for, in the order the editor lists them. */
+export const TOOL_OPERATIONS: LayerOperation[] = ['cut', 'etch', 'fill'];
+
+/**
+ * The entries of a shared rack tool's `bestFor` that are Etch operations, or
+ * undefined when none are. The rack is shared, so it may hold words another
+ * app uses; those are not Etch's to drop, and not Etch's to act on either.
+ */
+function etchUses(bestFor: readonly string[] | undefined): LayerOperation[] | undefined {
+  const ours = (bestFor ?? []).filter((u): u is LayerOperation => TOOL_OPERATIONS.includes(u as LayerOperation));
+  return ours.length ? ours : undefined;
+}
+
 export interface ToolPresetOption {
   name: string;
   category: string;
   profile: Omit<ToolProfile, 'id'>;
 }
 
-export const COMMON_TOOL_PRESETS: ToolPresetOption[] = [
-  {
-    name: '3.175 mm (1/8") Flat End Mill (2-Flute)',
-    category: 'End Mills',
-    profile: {
-      name: '3.175 mm (1/8") flat end mill',
-      diameter: 3.175,
-      tipShape: 'flat',
-      bestFor: ['cut', 'fill'],
-      guidance: 'The general-purpose cutter. Through-cuts and pocket clearing in wood, ply and acrylic.',
-      minDetailMm: 3.175,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 1.0, maxStepoverRatio: 0.45, maxPlungeRate: 400 },
+/**
+ * The preset menu in the tool editor. The list itself lives in
+ * `@physbox-io/machining` (`RACK_PRESETS`) since the rack became shared, so
+ * Volt and Mesh offer the same bits; this is that list in Etch's own shape,
+ * for the code that reads a preset's planner-facing fields.
+ */
+export const COMMON_TOOL_PRESETS: ToolPresetOption[] = RACK_PRESETS.map((p) => ({
+  name: p.label,
+  category: p.category,
+  profile: {
+    name: p.tool.name,
+    diameter: p.tool.diameterMm,
+    tipAngleDeg: p.tool.tipAngleDeg,
+    tipShape: p.tool.shape === 'flat' || p.tool.shape === 'ball' ? p.tool.shape : undefined,
+    bestFor: etchUses(p.tool.bestFor) ?? ['cut'],
+    guidance: p.tool.guidance ?? '',
+    minDetailMm: p.tool.minDetailMm ?? p.tool.diameterMm,
+    cutting: {
+      flutes: p.tool.flutes ?? 2,
+      centerCutting: p.tool.centerCutting ?? true,
+      feedDiameter: p.tool.feedDiameterMm,
+      maxStepdownRatio: p.tool.maxStepdownRatio ?? 1,
+      maxStepdownMm: p.tool.maxStepdownMm,
+      maxStepoverRatio: p.tool.maxStepoverRatio ?? 0.45,
+      maxPlungeRate: p.tool.maxPlungeRate ?? 400,
     },
   },
-  {
-    name: '1.5 mm Flat End Mill (2-Flute)',
-    category: 'End Mills',
-    profile: {
-      name: '1.5 mm flat end mill',
-      diameter: 1.5,
-      tipShape: 'flat',
-      bestFor: ['cut', 'etch', 'fill'],
-      guidance: 'Small inside corners and narrow slots. Feed it gently — it snaps in a full-depth pass.',
-      minDetailMm: 1.5,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 0.5, maxStepoverRatio: 0.35, maxPlungeRate: 150 },
-    },
-  },
-  {
-    name: '6.35 mm (1/4") Flat End Mill (2-Flute)',
-    category: 'End Mills',
-    profile: {
-      name: '6 mm (1/4") flat end mill',
-      diameter: 6.35,
-      tipShape: 'flat',
-      bestFor: ['cut'],
-      guidance: 'Thick stock, fast. Rigid enough for deep passes, too coarse for anything under about 8 mm across.',
-      minDetailMm: 6.35,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 1.0, maxStepoverRatio: 0.45, maxPlungeRate: 500 },
-    },
-  },
-  {
-    name: '60° V-Bit (Detail Lettering)',
-    category: 'V-Bits & Tapered',
-    profile: {
-      name: '60° V-bit',
-      diameter: 0.2,
-      tipAngleDeg: 60,
-      bestFor: ['etch', 'fill'],
-      guidance: 'Lettering and line work. Line width comes from depth, so it holds sharp corners a round cutter rounds off.',
-      minDetailMm: 0.2,
-      cutting: { flutes: 2, centerCutting: true, feedDiameter: 2.0, maxStepdownRatio: 0.6, maxStepdownMm: 1.5, maxStepoverRatio: 0.5, maxPlungeRate: 200 },
-    },
-  },
-  {
-    name: '30° Engraving V-Bit (Ultra Fine)',
-    category: 'V-Bits & Tapered',
-    profile: {
-      name: '30° engraving V-bit',
-      diameter: 0.1,
-      tipAngleDeg: 30,
-      bestFor: ['etch'],
-      guidance: 'The finest detail on the rack. Shallow decorative scoring only — it has no room to clear chips at depth.',
-      minDetailMm: 0.1,
-      cutting: { flutes: 1, centerCutting: true, feedDiameter: 0.8, maxStepdownRatio: 0.5, maxStepdownMm: 0.5, maxStepoverRatio: 0.5, maxPlungeRate: 100 },
-    },
-  },
-  {
-    name: '20° V-Bit (Ultra Fine Tracing & PCB)',
-    category: 'V-Bits & Tapered',
-    profile: {
-      name: '20° V-bit',
-      diameter: 0.1,
-      tipAngleDeg: 20,
-      bestFor: ['etch'],
-      guidance: 'Ultra-fine 20° tapered bit for PCB trace routing, micro-lettering, and delicate line engraving.',
-      minDetailMm: 0.1,
-      cutting: { flutes: 1, centerCutting: true, feedDiameter: 0.6, maxStepdownRatio: 0.5, maxStepdownMm: 0.5, maxStepoverRatio: 0.5, maxPlungeRate: 100 },
-    },
-  },
-  {
-    name: '90° V-Bit (Chamfering & Wide V-Carve)',
-    category: 'V-Bits & Tapered',
-    profile: {
-      name: '90° V-bit',
-      diameter: 0.2,
-      tipAngleDeg: 90,
-      bestFor: ['etch', 'fill'],
-      guidance: 'Bevelled edges, wide lettering and chamfers. Creates wide grooves at moderate depths.',
-      minDetailMm: 0.2,
-      cutting: { flutes: 2, centerCutting: true, feedDiameter: 3.0, maxStepdownRatio: 0.5, maxStepdownMm: 2.0, maxStepoverRatio: 0.5, maxPlungeRate: 250 },
-    },
-  },
-  {
-    name: '3.175 mm (1/8") Ball Nose',
-    category: 'Ball Nose',
-    profile: {
-      name: '3.175 mm ball nose',
-      diameter: 3.175,
-      tipShape: 'ball',
-      bestFor: ['fill'],
-      guidance: 'Smooth engraved floors and contoured relief. A poor through-cutter: it leaves a rounded, ragged edge.',
-      minDetailMm: 3.175,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 0.5, maxStepoverRatio: 0.3, maxPlungeRate: 250 },
-    },
-  },
-  {
-    name: '6.35 mm (1/4") Ball Nose',
-    category: 'Ball Nose',
-    profile: {
-      name: '6.35 mm ball nose',
-      diameter: 6.35,
-      tipShape: 'ball',
-      bestFor: ['fill'],
-      guidance: 'Large smooth pockets, 3D relief finishing and dish carving.',
-      minDetailMm: 6.35,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 0.5, maxStepoverRatio: 0.3, maxPlungeRate: 350 },
-    },
-  },
-  {
-    name: '3.175 mm Single Flute O-Flute (Acrylic & Soft Plastics)',
-    category: 'Specialized',
-    profile: {
-      name: '3.175 mm single flute O-flute',
-      diameter: 3.175,
-      tipShape: 'flat',
-      bestFor: ['cut', 'fill'],
-      guidance: 'Single O-flute bit for clean chip evacuation in plastics, acrylic, and aluminum without melting.',
-      minDetailMm: 3.175,
-      cutting: { flutes: 1, centerCutting: true, maxStepdownRatio: 0.8, maxStepoverRatio: 0.4, maxPlungeRate: 300 },
-    },
-  },
-  {
-    name: '19 mm (3/4") Spoilboard Surfacing Bit',
-    category: 'Specialized',
-    profile: {
-      name: '19 mm spoilboard surfacing bit',
-      diameter: 19.0,
-      tipShape: 'flat',
-      bestFor: ['fill', 'cut'],
-      guidance: 'Wide fly-cutter for rapid flattening of wasteboards and stock facing.',
-      minDetailMm: 19.0,
-      cutting: { flutes: 3, centerCutting: false, maxStepdownRatio: 0.1, maxStepdownMm: 1.0, maxStepoverRatio: 0.7, maxPlungeRate: 150 },
-    },
-  },
-  {
-    name: '1.5875 mm (1/16") Flat End Mill',
-    category: 'End Mills',
-    profile: {
-      name: '1/16" flat end mill',
-      diameter: 1.5875,
-      tipShape: 'flat',
-      bestFor: ['cut', 'etch', 'fill'],
-      guidance: 'Intermediate detail end mill for narrow mortises and fine cutout shapes.',
-      minDetailMm: 1.5875,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 0.5, maxStepoverRatio: 0.35, maxPlungeRate: 180 },
-    },
-  },
-  {
-    name: '0.7938 mm (1/32") Micro End Mill',
-    category: 'Micro End Mills',
-    profile: {
-      name: '1/32" micro end mill',
-      diameter: 0.7938,
-      tipShape: 'flat',
-      bestFor: ['etch', 'cut'],
-      guidance: 'Precision micro-milling bit for fine PCB or detail work. Handle with high care.',
-      minDetailMm: 0.7938,
-      cutting: { flutes: 2, centerCutting: true, maxStepdownRatio: 0.3, maxStepoverRatio: 0.25, maxPlungeRate: 80 },
-    },
-  },
-];
+}));
 
 /**
  * Storage format version for the saved tool library.
@@ -440,8 +331,6 @@ export interface StoredToolLibrary {
   savedAt?: number;
 }
 
-const OPERATIONS: LayerOperation[] = ['cut', 'etch', 'fill'];
-
 /**
  * A stored profile made safe to machine with, or null if it cannot be.
  *
@@ -460,7 +349,7 @@ export function sanitizeStoredTool(raw: unknown): ToolProfile | null {
 
   const name = typeof t.name === 'string' && t.name.trim() ? t.name : `Tool T${id}`;
   const bestFor = Array.isArray(t.bestFor)
-    ? (t.bestFor.filter((op) => OPERATIONS.includes(op as LayerOperation)) as LayerOperation[])
+    ? (t.bestFor.filter((op) => TOOL_OPERATIONS.includes(op as LayerOperation)) as LayerOperation[])
     : [];
   if (bestFor.length === 0) return null;
 
@@ -525,28 +414,150 @@ export function sanitizeStoredTool(raw: unknown): ToolProfile | null {
   return profile;
 }
 
-export function readCncTools(): ToolProfile[] {
-  try {
-    const raw = localStorage.getItem(CNC_TOOLS_KEY);
-    if (!raw) return DEFAULT_CNC_TOOLS;
-    const parsed = JSON.parse(raw) as StoredToolLibrary | ToolProfile[];
-    // Libraries written before versioning was added are bare arrays.
-    const stored = Array.isArray(parsed) ? parsed : parsed?.tools;
-    const version = Array.isArray(parsed) ? 0 : parsed?.version;
-    if (version !== CNC_TOOLS_VERSION) return DEFAULT_CNC_TOOLS;
-    if (!Array.isArray(stored) || stored.length === 0) return DEFAULT_CNC_TOOLS;
+/**
+ * The legacy Etch-only library, as a shared rack, for the one-time move.
+ *
+ * Its timestamp comes with it, so an owner who edited their Etch rack keeps
+ * those edits: the converted copy is newer than the starting rack and is the
+ * one pushed to the account for Volt and Mesh to pick up.
+ */
+function legacyEtchRack(): ToolRack | null {
+  const legacy = readStoredCncLibrary();
+  if (!legacy) return null;
+  return { tools: legacy.tools.map((t) => rackToolFromProfile(t)), savedAt: legacy.savedAt ?? 1 };
+}
 
-    const tools: ToolProfile[] = [];
-    for (const entry of stored) {
-      const tool = sanitizeStoredTool(entry);
-      if (!tool) return DEFAULT_CNC_TOOLS;
-      tools.push(tool);
-    }
-    return tools;
-  } catch {
-    // fallback to defaults on error or sandboxed environment
+/**
+ * The cutters in the drawer, shared with Volt and Mesh through the account.
+ *
+ * Etch used to keep its own rack under `etch_cnc_tool_library`, so the 1.5 mm
+ * end mill that was T2 here was a different entry in Volt and a bare diameter
+ * in Mesh, and a bit retired in one app was still offered by the others.
+ */
+export const toolRackStore = new ToolRackStore(
+  {
+    load: () => {
+      try {
+        return localStorage.getItem(TOOL_RACK_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    },
+    save: (text) => {
+      try {
+        localStorage.setItem(TOOL_RACK_STORAGE_KEY, text);
+        return true;
+      } catch {
+        // Private mode or full storage: the rack holds for this session only,
+        // and the caller is told so.
+        return false;
+      }
+    },
+    push: (rack) => void syncCloudParameters('global', { [TOOL_RACK_PARAMETER]: rack as unknown as JsonValue }),
+  },
+  () => legacyEtchRack() ?? defaultToolRack()
+);
+
+/** Shapes Etch's planner understands as a round end. */
+function tipShapeOf(shape: ToolShape): ToolProfile['tipShape'] {
+  return shape === 'flat' || shape === 'ball' ? shape : undefined;
+}
+
+/** What a tool of this shape and size is good for, when the rack does not say. */
+function bestForOf(tool: RackTool): LayerOperation[] {
+  switch (tool.shape) {
+    case 'vbit':
+      return ['etch', 'fill'];
+    case 'ball':
+      return ['fill'];
+    case 'drill':
+      return ['cut'];
+    default:
+      return tool.diameterMm < 3 ? ['cut', 'etch', 'fill'] : ['cut', 'fill'];
   }
-  return DEFAULT_CNC_TOOLS;
+}
+
+function guidanceOf(tool: RackTool): string {
+  switch (tool.shape) {
+    case 'vbit':
+      return 'Lettering and line work. Line width comes from depth.';
+    case 'ball':
+      return 'Smooth engraved floors and contoured relief.';
+    case 'drill':
+      return 'Round holes its own size, plunged straight down.';
+    default:
+      return tool.diameterMm < 3
+        ? 'Small inside corners and narrow slots. Feed it gently.'
+        : 'Through-cuts and pocket clearing.';
+  }
+}
+
+/**
+ * A rack tool as Etch's planner reads it. Etch's own six keep the guidance
+ * they were written with, so long as they are still the tool they were.
+ */
+export function profileFromRackTool(tool: RackTool): ToolProfile {
+  const shipped = DEFAULT_CNC_TOOLS.find((t) => t.id === tool.toolNumber);
+  const sameTool =
+    shipped !== undefined &&
+    Math.abs((shipped.diameter ?? 0) - tool.diameterMm) < 1e-6 &&
+    (shipped.tipAngleDeg ?? null) === (tool.tipAngleDeg ?? null);
+  const defaults = cuttingDefaults(tool);
+  return {
+    id: tool.toolNumber,
+    name: tool.name,
+    diameter: tool.diameterMm,
+    tipAngleDeg: tool.shape === 'vbit' ? clampTipAngle(tool.tipAngleDeg ?? 60) : undefined,
+    tipShape: tipShapeOf(tool.shape),
+    bestFor: etchUses(tool.bestFor) ?? (sameTool ? shipped.bestFor : bestForOf(tool)),
+    guidance: tool.guidance ?? (sameTool ? shipped.guidance : guidanceOf(tool)),
+    minDetailMm: tool.minDetailMm ?? (sameTool ? shipped.minDetailMm : tool.diameterMm),
+    available: tool.available,
+    rackUid: tool.uid,
+    cutting: {
+      flutes: tool.flutes ?? defaults.flutes,
+      centerCutting: tool.centerCutting ?? defaults.centerCutting,
+      feedDiameter: tool.feedDiameterMm,
+      maxStepdownRatio: tool.maxStepdownRatio ?? defaults.maxStepdownRatio,
+      maxStepdownMm: tool.maxStepdownMm,
+      maxStepoverRatio: tool.maxStepoverRatio ?? defaults.maxStepoverRatio,
+      maxPlungeRate: tool.maxPlungeRate ?? defaults.maxPlungeRate,
+    },
+  };
+}
+
+/** An Etch tool as a rack entry, keeping the uid of the entry it was edited from. */
+export function rackToolFromProfile(tool: ToolProfile, previous?: RackTool): RackTool {
+  const shape: ToolShape =
+    tool.tipAngleDeg !== undefined ? 'vbit' : tool.tipShape === 'ball' ? 'ball' : previous?.shape === 'drill' ? 'drill' : 'flat';
+  return {
+    ...(previous ?? {}),
+    uid: tool.rackUid ?? previous?.uid ?? `etch-${tool.id}-${Date.now().toString(36)}`,
+    toolNumber: tool.id,
+    name: tool.name,
+    shape,
+    diameterMm: tool.diameter ?? previous?.diameterMm ?? 3.175,
+    tipAngleDeg: tool.tipAngleDeg,
+    flutes: tool.cutting?.flutes,
+    centerCutting: tool.cutting?.centerCutting,
+    feedDiameterMm: tool.cutting?.feedDiameter,
+    maxStepdownRatio: tool.cutting?.maxStepdownRatio,
+    maxStepdownMm: tool.cutting?.maxStepdownMm,
+    maxStepoverRatio: tool.cutting?.maxStepoverRatio,
+    maxPlungeRate: tool.cutting?.maxPlungeRate,
+    available: tool.available !== false,
+    // Another app's uses ride along: Etch can only edit the ones it knows.
+    bestFor: [...tool.bestFor, ...(previous?.bestFor ?? []).filter((u) => !TOOL_OPERATIONS.includes(u as LayerOperation))],
+    guidance: tool.guidance,
+    minDetailMm: tool.minDetailMm,
+  };
+}
+
+export function readCncTools(): ToolProfile[] {
+  // Re-read rather than cached, as storage always was: another tab, or the
+  // account sync, may have written it since.
+  const tools = toolRackStore.reload().tools.map(profileFromRackTool).sort((a, b) => a.id - b.id);
+  return tools.length ? tools : DEFAULT_CNC_TOOLS;
 }
 
 /**
@@ -557,21 +568,19 @@ export function readCncTools(): ToolProfile[] {
  * means the modal shows a 6 mm cutter while the G-code is compensated for
  * whatever the defaults say, which is a wrong part with no warning attached.
  */
-export function writeCncTools(tools: ToolProfile[]): boolean {
-  const payload: StoredToolLibrary = { version: CNC_TOOLS_VERSION, tools, savedAt: Date.now() };
-  void syncCloudParameters('etch', { [CNC_TOOLS_KEY]: payload as unknown as JsonValue });
-  try {
-    localStorage.setItem(CNC_TOOLS_KEY, JSON.stringify(payload));
-    return true;
-  } catch {
-    return false;
-  }
+export function writeCncTools(tools: ToolProfile[], rackEntries?: RackTool[]): boolean {
+  const before = new Map([...toolRackStore.get().tools, ...(rackEntries ?? [])].map((t) => [t.uid, t]));
+  const byNumber = new Map(toolRackStore.get().tools.map((t) => [t.toolNumber, t]));
+  toolRackStore.set(
+    tools.map((t) => rackToolFromProfile(t, (t.rackUid && before.get(t.rackUid)) || byNumber.get(t.id)))
+  );
+  return toolRackStore.lastSaveSucceeded();
 }
 
 /** Back to the shop defaults — saved as a rack like any other, so it syncs. */
 export function resetCncTools(): ToolProfile[] {
-  writeCncTools(DEFAULT_CNC_TOOLS);
-  return DEFAULT_CNC_TOOLS;
+  toolRackStore.set(defaultToolRack().tools);
+  return readCncTools();
 }
 
 /** The rack as stored in this browser, with its timestamp, or null. */
@@ -706,6 +715,25 @@ export function jobTools(doc: EtchDocument, rack: ToolProfile[]): ToolProfile[] 
 }
 
 /**
+ * The tools a picker should list: those in the drawer, plus any retired one
+ * the document still names.
+ *
+ * A retired bit is not offered for new work — that is what retiring it means —
+ * but hiding it from a layer already cut with it would make the select show
+ * some other tool as chosen, and the next change of anything on the layer
+ * would quietly repoint it there.
+ */
+export function offeredTools(tools: ToolProfile[], keep: Iterable<number> = []): ToolProfile[] {
+  const kept = new Set(keep);
+  return tools.filter((t) => t.available !== false || kept.has(t.id));
+}
+
+/** " (retired)" for a tool no longer in the drawer, for a picker's label. */
+export function retiredSuffix(tool: ToolProfile): string {
+  return tool.available === false ? ' (retired)' : '';
+}
+
+/**
  * How the document's tool `id` stands against this rack: absent from it,
  * loaded here as something else, or null when the two agree.
  */
@@ -721,22 +749,9 @@ export function rackMismatch(
   return sameTool(carried, rackTool) ? null : { kind: 'different', rackTool };
 }
 
-/**
- * Widest included angle a tapered tool may be given.
- *
- * At 180° the flanks are flat and `tan(90°)` is infinite: the groove is
- * infinitely wide, which propagates as an Infinity radius into kerf
- * compensation. Past 180° the tangent goes negative and the tool starts
- * "cutting" narrower the deeper it goes. Neither is a tool; both are what a
- * number field lets someone type.
- */
-export const MAX_TIP_ANGLE_DEG = 179;
-
-/** A tip angle that can be machined with, or undefined for a parallel tool. */
-export function clampTipAngle(angle: number | undefined): number | undefined {
-  if (angle === undefined || !Number.isFinite(angle) || angle <= 0) return undefined;
-  return Math.min(angle, MAX_TIP_ANGLE_DEG);
-}
+// The tip-angle limit and its clamp live with the shared rack, where every
+// app that reads a V-bit's taper can reach them; see `@physbox-io/machining`.
+export { MAX_TIP_ANGLE_DEG, clampTipAngle, NOMINAL_VBIT_DEPTH_MM };
 
 /**
  * Whether this tool leaves a flat floor behind it.
@@ -757,23 +772,8 @@ export function isFlatBottomed(profile: ToolProfile | undefined): boolean {
  */
 export function cutWidthAtDepth(profile: ToolProfile | undefined, depthMm: number): number {
   if (!profile) return 0;
-  const tip = profile.diameter ?? 0;
-  const angle = clampTipAngle(profile.tipAngleDeg);
-  if (!angle) return tip;
-  const depth = Math.max(0, depthMm);
-  return tip + 2 * depth * Math.tan((angle * Math.PI) / 360);
+  return toolCutWidthAtDepth({ diameterMm: profile.diameter ?? 0, tipAngleDeg: profile.tipAngleDeg }, depthMm);
 }
-
-/**
- * The depth a tapered tool is assumed to be buried to when working out how fast
- * to feed it.
- *
- * Feeds need one number for "how much cutter is in the work", and a V-bit does
- * not have one — it has a different width at every depth. This is a typical
- * lettering depth, chosen because it reproduces the engaged widths the stock
- * V-bit profiles were hand-written with.
- */
-export const NOMINAL_VBIT_DEPTH_MM = 1.5;
 
 /**
  * The width to feed this tool as if it had, when nothing says otherwise.
@@ -785,7 +785,7 @@ export const NOMINAL_VBIT_DEPTH_MM = 1.5;
  */
 export function defaultFeedDiameter(profile: ToolProfile): number | undefined {
   if (!clampTipAngle(profile.tipAngleDeg)) return profile.diameter;
-  return Math.max(profile.diameter ?? 0, cutWidthAtDepth(profile, NOMINAL_VBIT_DEPTH_MM));
+  return toolFeedDiameter({ diameterMm: profile.diameter ?? 0, tipAngleDeg: profile.tipAngleDeg });
 }
 
 /**

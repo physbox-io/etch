@@ -20,6 +20,7 @@ vi.mock('../src/utils/apiClient', () => ({
 
 const { pullCloudState, saveCloudPreset, removeCloudPreset } = await import('../src/utils/cloudSync');
 const { CNC_TOOLS_KEY, CNC_TOOLS_VERSION, DEFAULT_CNC_TOOLS, readCncTools } = await import('../src/utils/tooling');
+const { DEFAULT_TOOL_RACK, TOOL_RACK_PARAMETER, TOOL_RACK_STORAGE_KEY } = await import('@physbox-io/machining');
 
 const doc = { name: 'Brass Badge', width: 100, height: 60, elements: [] } as never;
 
@@ -140,44 +141,43 @@ describe('pulling account state', () => {
 });
 
 describe('the tool rack', () => {
-  const laptop = [DEFAULT_CNC_TOOLS[0], { ...DEFAULT_CNC_TOOLS[5], id: 2 }];
-  const store = (tools: unknown, savedAt?: number) =>
-    localStorage.setItem(CNC_TOOLS_KEY, JSON.stringify({ version: CNC_TOOLS_VERSION, tools, savedAt }));
+  // The rack is shared with Volt and Mesh under the account's `global` scope.
+  const laptop = { savedAt: 1000, tools: [DEFAULT_TOOL_RACK[0], { ...DEFAULT_TOOL_RACK[5], toolNumber: 2 }] };
+  const store = (rack: object) => localStorage.setItem(TOOL_RACK_STORAGE_KEY, JSON.stringify(rack));
 
   it('takes the account’s rack when it is newer than this browser’s', async () => {
-    store(laptop, 1000);
+    store(laptop);
     fetchCloudParameters.mockResolvedValue({
-      [CNC_TOOLS_KEY]: { version: CNC_TOOLS_VERSION, tools: DEFAULT_CNC_TOOLS, savedAt: 2000 },
+      [TOOL_RACK_PARAMETER]: { savedAt: 2000, tools: DEFAULT_TOOL_RACK },
     });
     const result = await pullCloudState([]);
-    expect(result.cncTools?.map((t) => t.id)).toEqual(DEFAULT_CNC_TOOLS.map((t) => t.id));
+    expect(result.cncTools?.find((t) => t.id === 2)?.name).toBe('1.5 mm flat end mill');
     expect(readCncTools().find((t) => t.id === 2)?.name).toBe('1.5 mm flat end mill');
   });
 
-  it('uploads this browser’s rack when the account has none, even one saved before sync', async () => {
+  it('uploads this browser’s rack, shared, when the account has none', async () => {
     store(laptop);
     const result = await pullCloudState([]);
     expect(result.cncTools).toBeNull();
-    expect(syncCloudParameters).toHaveBeenCalledWith('etch', {
-      [CNC_TOOLS_KEY]: expect.objectContaining({ tools: laptop }),
+    expect(syncCloudParameters).toHaveBeenCalledWith('global', {
+      [TOOL_RACK_PARAMETER]: expect.objectContaining({ savedAt: 1000 }),
     });
   });
 
   it('keeps and re-uploads this browser’s rack when it is the newer one', async () => {
-    store(laptop, 3000);
-    fetchCloudParameters.mockResolvedValue({
-      [CNC_TOOLS_KEY]: { version: CNC_TOOLS_VERSION, tools: DEFAULT_CNC_TOOLS, savedAt: 2000 },
-    });
+    store({ ...laptop, savedAt: 3000 });
+    fetchCloudParameters.mockResolvedValue({ [TOOL_RACK_PARAMETER]: { savedAt: 2000, tools: DEFAULT_TOOL_RACK } });
     const result = await pullCloudState([]);
     expect(result.cncTools).toBeNull();
-    expect(readCncTools()).toEqual(laptop);
+    expect(readCncTools().map((t) => t.id)).toEqual([1, 2]);
     expect(syncCloudParameters).toHaveBeenCalled();
   });
 
-  it('ignores an account rack it cannot read', async () => {
-    store(laptop, 1000);
-    fetchCloudParameters.mockResolvedValue({ [CNC_TOOLS_KEY]: { version: 99, tools: [], savedAt: 5000 } });
-    expect((await pullCloudState([])).cncTools).toBeNull();
-    expect(readCncTools()).toEqual(laptop);
+  it('adopts the account’s old Etch-only rack when it has no shared one yet', async () => {
+    fetchCloudParameters.mockResolvedValue({
+      [CNC_TOOLS_KEY]: { version: CNC_TOOLS_VERSION, tools: [{ ...DEFAULT_CNC_TOOLS[0], name: 'Mine' }], savedAt: 4000 },
+    });
+    const result = await pullCloudState([]);
+    expect(result.cncTools?.map((t) => t.name)).toEqual(['Mine']);
   });
 });

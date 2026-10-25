@@ -26,7 +26,8 @@ export const JobPauseBanner: React.FC = () => {
   const [status, setStatus] = useState<MachineStatus>(() => webSerialManager.getStatus());
   useEffect(() => webSerialManager.subscribe(setStatus), []);
 
-  const paused = status.jobRunning && status.jobPaused;
+  // A tool change has its own dialog, with the pad and the Z touch-off in it.
+  const paused = status.jobRunning && status.jobPaused && !status.toolChange;
   // Re-zeroing is the next step, so it takes the green and Resume steps back.
   const blocked = status.resumeBlocked;
   const primary =

@@ -129,3 +129,96 @@ describe('a job that would run off the end of an axis', () => {
     expect(fake.written.filter((l) => /^G[0-3]\b/.test(l))).toEqual([]);
   });
 });
+
+describe('what the dialogs read', () => {
+  it('records a job that ran to its last line, and nothing for one that did not', async () => {
+    expect(machine.getStatus().lastCompletedJob).toBeNull();
+    await machine.runProgram(job, { machine: 'cnc', job: { name: 'hub' } });
+    await vi.waitFor(() => expect(machine.getStatus().lastCompletedJob).not.toBeNull());
+    const done = machine.getStatus().lastCompletedJob!;
+    expect(done.jobName).toBe('hub');
+    expect(done.totalLines).toBeGreaterThan(0);
+
+    // The next job clears it, and a job stopped short never sets it.
+    fake.silent = true;
+    await machine.runProgram(job, { machine: 'cnc', job: { name: 'second' } });
+    await vi.waitFor(() => expect(machine.getStatus().lastCompletedJob).toBeNull());
+    await machine.cancelJob();
+    expect(machine.getStatus().lastCompletedJob).toBeNull();
+  });
+
+  it('tells a tool change from any other stop', async () => {
+    await machine.runProgram(['G90 G21', 'G0 Z5', 'G1 X1 F300', 'M5', 'M6 T2', 'G1 X2'].join('\n'), {
+      machine: 'cnc',
+    });
+    await vi.waitFor(() => expect(machine.getStatus().toolChange).toBe(true));
+    expect(machine.getStatus().jobPaused).toBe(true);
+    // A bit came out after cutting, so Resume waits on a re-zero.
+    expect(machine.getStatus().resumeBlocked).toMatch(/re-zero/i);
+  });
+});
+
+describe('telemetry after a job is over', () => {
+  /*
+   * The server opens a run whenever a frame is active and carries a line count,
+   * and the state keeps the last job's line count long after it ends — so a
+   * jog an hour later opened a phantom run named after the finished job.
+   */
+  it('closes the run with the job’s numbers, then stops sending them', async () => {
+    await machine.runProgram(job, { machine: 'cnc', job: { name: 'hub' } });
+    await vi.waitFor(() => expect(machine.getStatus().lastCompletedJob).not.toBeNull());
+    await vi.waitFor(() => {
+      const closing = posted.mock.calls.find(([, f]) => f.jobName === 'hub' && f.progressPercent === 100);
+      expect(closing).toBeDefined();
+    });
+
+    // Long enough later that the throttle lets a plain position update through.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 60_000);
+      posted.mockClear();
+      fake.say('<Jog|MPos:3,0,0|WCO:0,0,0>\n');
+      await vi.waitFor(() => expect(posted).toHaveBeenCalled());
+      const frame = posted.mock.calls.at(-1)![1];
+      expect(frame.jobName).toBeUndefined();
+      expect(frame.totalLines).toBe(0);
+      expect(frame.currentLine).toBe(0);
+      expect(frame.progressPercent).toBe(0);
+      expect(frame.settings).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('running a stopped job from a line', () => {
+  it('records where a stopped job got to, and runs it again from the line given', async () => {
+    fake.silent = true;
+    await machine.runProgram(job, { machine: 'cnc', job: { name: 'hub' } });
+    await vi.waitFor(() => expect(fake.written.length).toBeGreaterThan(0));
+    await machine.cancelJob();
+    const stop = machine.getStatus().interruption!;
+    expect(stop.reason).toMatch(/Stopped/);
+    expect(machine.getStatus().lastJobName).toBe('hub');
+
+    fake.silent = false;
+    fake.written = [];
+    const result = await machine.runFrom(4);
+    expect(result.started).toBe(true);
+    await vi.waitFor(() => expect(fake.written).toContain('G1 X50'));
+    expect(fake.written).not.toContain('G0 X10 Y10');
+    expect(machine.getStatus().interruption).toBeNull();
+  });
+
+  it('refuses with the reason when the machine has lost its place', async () => {
+    fake.silent = true;
+    await machine.runProgram(job, { machine: 'cnc' });
+    await vi.waitFor(() => expect(fake.written.length).toBeGreaterThan(0));
+    fake.say('ALARM:1\n');
+    await tick();
+    expect(machine.getStatus().interruption).not.toBeNull();
+    const result = await machine.runFrom(machine.getStatus().interruption!.suggestedLine);
+    expect(result.started).toBe(false);
+    expect(result.message).toMatch(/Unlock|lost its position|alarm/i);
+  });
+});

@@ -614,6 +614,26 @@ export interface MachineStatus {
    * instead of looking ready and doing nothing.
    */
   resumeBlocked: string | null;
+  /** The job is parked at a tool change (`M6`), as opposed to any other stop. */
+  toolChange: boolean;
+  /** Work Z0 was set on this connection and describes the bit now fitted. */
+  zDatumTrusted: boolean;
+  /** The last job that stopped short, and where to run it from again; null otherwise. */
+  interruption: {
+    stoppedAtLine: number;
+    suggestedLine: number;
+    reason: string;
+    at: number;
+  } | null;
+  /** What the last job run was called, if anything. */
+  lastJobName?: string;
+  /** The last job that ran to its final line, or null. */
+  lastCompletedJob: {
+    finishedAt: number;
+    elapsedSeconds: number;
+    totalLines: number;
+    jobName?: string;
+  } | null;
   /**
    * The probe input has closed at least once on this connection. Continuity
    * probes are refused until it has: a probe stops only when that circuit

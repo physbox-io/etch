@@ -17,17 +17,19 @@ import {
   type ToolProfile,
 } from '../src/utils/tooling';
 import { deriveFeeds } from '../src/utils/feeds';
+import { DEFAULT_TOOL_RACK, TOOL_RACK_STORAGE_KEY } from '@physbox-io/machining';
 
 describe('Custom CNC Tool Library', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it('defaults to shop pre-populated T1–T6 tools when no storage exists', () => {
+  it('defaults to the shared starting rack, whose T1–T6 are Etch’s shop tools', () => {
     const tools = readCncTools();
-    expect(tools).toHaveLength(6);
-    expect(tools[0].id).toBe(1);
-    expect(tools[0].name).toContain('3.175 mm');
+    expect(tools).toHaveLength(DEFAULT_TOOL_RACK.length);
+    expect(tools.slice(0, 6).map((t) => [t.id, t.name, t.diameter])).toEqual(
+      DEFAULT_CNC_TOOLS.map((t) => [t.id, t.name, t.diameter])
+    );
   });
 
   it('persists customized tool profiles to storage and reads them back', () => {
@@ -72,8 +74,8 @@ describe('Custom CNC Tool Library', () => {
     expect(readCncTools()).toHaveLength(1);
 
     const resetResult = resetCncTools();
-    expect(resetResult).toHaveLength(6);
-    expect(readCncTools()).toHaveLength(6);
+    expect(resetResult).toHaveLength(DEFAULT_TOOL_RACK.length);
+    expect(readCncTools()).toHaveLength(DEFAULT_TOOL_RACK.length);
     expect(readCncTools()[0].id).toBe(1);
   });
 
@@ -211,43 +213,33 @@ describe('Custom CNC Tool Library', () => {
     }
   });
 
-  it('falls back to defaults rather than machining with a malformed library', () => {
-    localStorage.setItem(CNC_TOOLS_KEY, 'not json at all');
-    expect(readCncTools()).toEqual(DEFAULT_CNC_TOOLS);
+  it('falls back to the starting rack rather than machining with a malformed one', () => {
+    const shopIds = () => readCncTools().map((t) => t.id);
+    localStorage.setItem(TOOL_RACK_STORAGE_KEY, 'not json at all');
+    expect(shopIds()).toEqual(DEFAULT_TOOL_RACK.map((t) => t.toolNumber).sort((x, y) => x - y));
 
-    // An unversioned library from an older build.
+    // An unversioned Etch library from an older build is not one to move over.
+    localStorage.removeItem(TOOL_RACK_STORAGE_KEY);
     localStorage.setItem(CNC_TOOLS_KEY, JSON.stringify([{ id: 1, name: 'Old', bestFor: ['cut'], minDetailMm: 3 }]));
-    expect(readCncTools()).toEqual(DEFAULT_CNC_TOOLS);
+    expect(readCncTools()).toHaveLength(DEFAULT_TOOL_RACK.length);
+  });
 
-    // Right shape, unusable numbers: a cutting spec present but incoherent.
+  it('moves a saved Etch-only library onto the shared rack', () => {
     localStorage.setItem(
       CNC_TOOLS_KEY,
-      JSON.stringify({
-        version: CNC_TOOLS_VERSION,
-        tools: [
-          {
-            id: 1,
-            name: 'Broken',
-            diameter: 3,
-            bestFor: ['cut'],
-            guidance: '',
-            minDetailMm: 3,
-            cutting: { flutes: 'two', centerCutting: true, maxStepdownRatio: 1, maxStepoverRatio: 0.4, maxPlungeRate: 300 },
-          },
-        ],
-      })
+      JSON.stringify({ version: CNC_TOOLS_VERSION, tools: [{ ...DEFAULT_CNC_TOOLS[1], name: 'My 1.5' }], savedAt: 500 })
     );
-    expect(readCncTools()).toEqual(DEFAULT_CNC_TOOLS);
+    const tools = readCncTools();
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe('My 1.5');
   });
 
   it('clamps a stored tip angle that would make the groove infinitely wide', () => {
     localStorage.setItem(
-      CNC_TOOLS_KEY,
+      TOOL_RACK_STORAGE_KEY,
       JSON.stringify({
-        version: CNC_TOOLS_VERSION,
-        tools: [
-          { id: 1, name: 'Impossible V', diameter: 0.2, tipAngleDeg: 200, bestFor: ['etch'], guidance: '', minDetailMm: 0.2 },
-        ],
+        savedAt: 1,
+        tools: [{ uid: 'v', toolNumber: 1, name: 'Impossible V', shape: 'vbit', diameterMm: 0.2, tipAngleDeg: 200, available: true }],
       })
     );
 

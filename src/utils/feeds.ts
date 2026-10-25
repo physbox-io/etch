@@ -626,3 +626,56 @@ function round2(v: number): number {
 function round3(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
+
+/**
+ * The lowest `$30` read as a spindle's top speed in RPM rather than as a PWM
+ * scale.
+ *
+ * GRBL scales `S` linearly between `$31` and `$30`, so on a router whose `$30`
+ * is set to its real top speed, `S` *is* RPM and nothing above `$30` exists. But
+ * a controller left at the factory 1000 — or set to 255 or 100 because it was
+ * built for a diode — is saying "full PWM is S1000", not "this spindle turns at
+ * 1000 RPM". Clamping a router to that would derive feeds for a spindle barely
+ * turning. No router spindle tops out below a few thousand RPM, and no PWM scale
+ * anyone ships is that high, so the line between the two readings sits here.
+ * Registered in MACHINING.md.
+ */
+export const MIN_RPM_CEILING_FROM_30 = 3000;
+
+/**
+ * The spindle range the feeds model may actually use: the stored range, cut to
+ * what the controller's `$31`/`$30` say it will turn.
+ *
+ * The stored range is what the owner typed (or the trim-router default,
+ * 10,000–30,000); `$30` is what the controller will do with an `S` word, and
+ * anything above it is silently run *at* it. Deriving against the stored range
+ * alone is how a 1.5 mm end mill was sent S20368 on a machine with `$30=10000`:
+ * GRBL ran it at 10,000 while the feed had been derived for 20,368 — twice the
+ * chip load the recipe chose, on the smallest cutter there is. Clamped first,
+ * `deriveFeeds` sees the speed the spindle will really hold, and the feed
+ * follows it.
+ *
+ * When the two ranges do not overlap the machine wins: it is the one that will
+ * enforce its limit whatever the file says.
+ */
+export function spindleRangeForMachine(
+  stored: SpindleRange,
+  motion: MotionProfile | undefined
+): { range: SpindleRange; note: string | null } {
+  const reported = motion?.spindle;
+  if (!reported || !(reported.max >= MIN_RPM_CEILING_FROM_30)) {
+    return { range: stored, note: null };
+  }
+  const max = Math.min(stored.max, reported.max);
+  const min = Math.min(Math.max(stored.min, reported.min), max);
+  if (max === stored.max && min === stored.min) return { range: stored, note: null };
+  return {
+    range: { min, max },
+    note:
+      `The spindle range in machine settings is ${formatRpm(stored.min)}–${formatRpm(stored.max)} RPM, ` +
+      `but this controller reports $31=${formatRpm(reported.min)} and $30=${formatRpm(reported.max)}, ` +
+      `and runs any faster S word at $30. Speeds and feeds are derived for ` +
+      `${formatRpm(min)}–${formatRpm(max)} RPM so the feed matches the speed the spindle actually ` +
+      `turns. Correct whichever of the two is wrong.`,
+  };
+}

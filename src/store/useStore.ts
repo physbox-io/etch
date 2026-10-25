@@ -30,6 +30,7 @@ import {
   jobTools,
   type ToolProfile,
 } from '../utils/tooling';
+import type { RackTool } from '@physbox-io/machining';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
 import { createRadialArray } from '../utils/mandalaGenerator';
 import { replanField } from '../utils/generatedField';
@@ -406,7 +407,13 @@ interface EtchStore {
   openToolConfigModal: () => void;
   closeToolConfigModal: () => void;
   /** An edit to this machine's rack. Documents carrying an edited tool follow it. */
-  setCncTools: (tools: ToolProfile[]) => void;
+  /**
+   * `rackEntries` are the shared-rack entries the profiles were made from, when
+   * the edit was made on the rack itself (the tool library dialog): what a
+   * profile cannot say — that a tool is a drill, an RPM set in Volt — is kept
+   * from them rather than from the rack as it stood before the edit.
+   */
+  setCncTools: (tools: ToolProfile[], rackEntries?: RackTool[]) => void;
   resetCncTools: () => void;
   /**
    * A rack arriving from the account. Replaces what this browser lists, but is
@@ -814,12 +821,12 @@ export const useStore = create<EtchStore>((set, get) => ({
   openToolConfigModal: () => set({ isToolConfigModalOpen: true }),
   closeToolConfigModal: () => set({ isToolConfigModalOpen: false }),
 
-  setCncTools: (tools) => {
+  setCncTools: (tools, rackEntries) => {
     const { cncTools: before, document } = get();
     const docTools = snapshotDocumentTools(document, tools, editedToolIds(before, tools));
     set({
       cncTools: tools,
-      cncToolsUnsaved: !writeCncTools(tools),
+      cncToolsUnsaved: !writeCncTools(tools, rackEntries),
       ...(docTools !== document.tools ? { document: { ...document, tools: docTools } } : {}),
     });
   },

@@ -15,7 +15,7 @@ import { jobTools, describeTool, machineKind, machineWords } from '../utils/tool
 import { ToolpathPreview } from './ToolpathPreview';
 import { X, FileCode, Settings, AlertTriangle, Play, Pause, Square, Usb, Wind, Loader2 } from 'lucide-react';
 import { webSerialManager } from '../utils/webSerialManager';
-import { cloudAutosave } from '../utils/cloudDocuments';
+import { jobContextFor } from '../utils/jobContext';
 import type { MachineStatus } from '../types/etch';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
@@ -25,6 +25,7 @@ import { BusyToast } from './BusyToast';
 import { JobOverridePanel } from './JobOverridePanel';
 import { DocsInfoButton } from './DocsModal';
 import { InfoTooltip } from './InfoTooltip';
+import { RunFromPanel } from './MachineDialogs';
 import { NumberInput } from '@physbox-io/ui';
 
 /**
@@ -96,44 +97,8 @@ export const GCodePreviewModal: React.FC = () => {
   // too, so it can stop offering a cut depth on a machine that has no Z.
   const laserMode = machineKind(document) === 'laser';
 
-  /**
-   * What this run should be remembered as.
-   *
-   * The machine layer is handed a string of G-code and cannot reconstruct any of
-   * this, so it is gathered here, where the document and its layers are in scope,
-   * and travels with the job. It is what turns "a job ran for 40 minutes" in the
-   * archive into "that tray was cut from 6 mm walnut at 82%, three passes" — which
-   * is the entire question people come back to their history with.
-   *
-   * Only the layers that actually machine something are recorded. A hidden layer,
-   * or a `ghost` one, is not part of what was cut.
-   */
-  const jobContext = (kind?: string) => {
-    const cloud = cloudAutosave.getStatus();
-    return {
-      name: kind ? `${document.name} (${kind})` : document.name,
-      documentId: cloud.documentId,
-      documentRevision: cloud.revision,
-      settings: {
-        material: document.material ?? null,
-        stockThickness: document.stockThickness ?? null,
-        machine: machineKind(document),
-        widthMm: document.width,
-        heightMm: document.height,
-        layers: document.layers
-          .filter((layer) => layer.visible && layer.operation !== 'ghost')
-          .map((layer) => ({
-            name: layer.name,
-            operation: layer.operation,
-            speed: layer.speedOverride ?? layer.speed,
-            power: layer.powerOverride ?? layer.power,
-            passes: layer.passes,
-            zDepth: layer.zDepth,
-            tool: layer.tool ?? null,
-          })),
-      } as Record<string, unknown>,
-    };
-  };
+  /** What this run should be remembered as — see `jobContextFor`. */
+  const jobContext = (kind?: string) => jobContextFor(document, kind);
   const words = machineWords(machineKind(document));
   const [innerContourFirst, setInnerContourFirst] = useState(true);
   /**
@@ -1091,6 +1056,13 @@ export const GCodePreviewModal: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-1.5">
+                  <RunFromPanel
+                    status={machine}
+                    onStarted={(message) => {
+                      setRunKind('job');
+                      setRunNote(message);
+                    }}
+                  />
                   <div className="flex gap-2">
                     <button
                       onClick={() => {

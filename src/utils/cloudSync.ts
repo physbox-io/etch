@@ -19,10 +19,16 @@ import {
   fetchCloudPresets,
   syncCloudPreset,
   deleteCloudPreset,
-  syncCloudParameters,
-  type JsonValue,
 } from './apiClient';
-import { CNC_TOOLS_KEY, parseCncLibrary, readStoredCncLibrary, type ToolProfile } from './tooling';
+import { TOOL_RACK_PARAMETER } from '@physbox-io/machining';
+import {
+  CNC_TOOLS_KEY,
+  parseCncLibrary,
+  rackToolFromProfile,
+  readCncTools,
+  toolRackStore,
+  type ToolProfile,
+} from './tooling';
 import { SYNCED_MACHINE_PARAMETER_KEYS } from './machineSettings';
 import { SYNCED_LLM_PARAMETER_KEYS } from './llmSettings';
 
@@ -114,16 +120,15 @@ export interface CloudPullResult {
  * loses to any synced copy — but when the account has none yet, it is the one
  * uploaded, so the first machine signed in seeds the rest.
  */
-function settleCncTools(cloudValue: unknown): ToolProfile[] | null {
-  const cloud = parseCncLibrary(cloudValue);
-  const local = readStoredCncLibrary();
-  if (cloud && (!local || (cloud.savedAt ?? 0) > (local.savedAt ?? 0))) {
-    return applyParameter(CNC_TOOLS_KEY, cloud) ? cloud.tools : null;
-  }
-  if (local && (!cloud || (local.savedAt ?? 0) > (cloud.savedAt ?? 0))) {
-    void syncCloudParameters('etch', { [CNC_TOOLS_KEY]: local as unknown as JsonValue });
-  }
-  return null;
+function settleCncTools(globalValue: unknown, legacyValue: unknown): ToolProfile[] | null {
+  // An account that has never held the shared rack may still hold the old
+  // Etch-only one: that is the owner's rack, and the starting rack is not.
+  const legacy = globalValue === undefined ? parseCncLibrary(legacyValue) : null;
+  const remote = legacy
+    ? { tools: legacy.tools.map((t) => rackToolFromProfile(t)), savedAt: legacy.savedAt ?? 1 }
+    : globalValue;
+  toolRackStore.reload();
+  return toolRackStore.adoptRemote(remote) ? readCncTools() : null;
 }
 
 /**
@@ -154,7 +159,10 @@ export async function pullCloudState(localPresetNames: string[]): Promise<CloudP
     if (value !== undefined && applyParameter(key, value)) result.parameters += 1;
   }
 
-  result.cncTools = settleCncTools(etchParams[CNC_TOOLS_KEY]);
+  result.cncTools = settleCncTools(
+    globalParams[TOOL_RACK_PARAMETER] ?? etchParams[TOOL_RACK_PARAMETER],
+    etchParams[CNC_TOOLS_KEY]
+  );
   if (result.cncTools) result.parameters += 1;
 
   const known = new Set(localPresetNames);

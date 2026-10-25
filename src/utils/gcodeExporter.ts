@@ -44,6 +44,7 @@ import {
   feedForEngagement,
   stepdownForEngagement,
   formatRpm,
+  spindleRangeForMachine,
   RAMP_ANGLE_DEG,
   type SpindleRange,
 } from './feeds';
@@ -654,6 +655,13 @@ export function planToolpath(
   const segments: GCodeSegment[] = [];
   const skipped: string[] = [];
   const notes: string[] = [];
+  // Before any layer is derived, so every RPM and the feed that follows from it
+  // is within what the controller will actually turn. See the function.
+  if (!options.laserMode) {
+    const fit = spindleRangeForMachine(options.spindle, options.motion);
+    options.spindle = fit.range;
+    if (fit.note) notes.push(fit.note);
+  }
   if (options.selectionOnly) {
     const n = selectedMachinedCount(fullDoc, options.selectionOnly);
     notes.push(
@@ -1770,11 +1778,21 @@ function finishAllowanceFor(cut: LayerCutting, options: GCodeOptions): number {
 }
 
 function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOptions {
+  const motion = opts.motion ?? readMotionProfile();
   return {
     // Defaults to the document's own target, so an export driven from the MCP
     // bridge or a script matches what the UI shows rather than assuming laser.
     laserMode: (doc.machine ?? 'laser') === 'laser',
-    spindleSpeedMax: 1000,
+    /*
+     * Laser power's full scale is the controller's `$30`, not a constant. It is
+     * 1000 on stock GRBL and 255 or 100 on plenty of diode boards, and a file
+     * scaled to 1000 on a `$30=255` machine asks for S765 at 30% — clamped to
+     * S255, which is full power: every engraving layer burnt through. Read off
+     * the machine and kept with its motion profile, so an export planned with
+     * nothing plugged in uses the last figure this machine reported. 1000 only
+     * when no machine has ever answered.
+     */
+    spindleSpeedMax: motion.spindle?.max && motion.spindle.max > 0 ? motion.spindle.max : 1000,
     travelSpeed: 3000,
     innerContourFirst: true,
     travelOptimization: 2,
@@ -1785,7 +1803,7 @@ function resolveOptions(doc: EtchDocument, opts: Partial<GCodeOptions>): GCodeOp
     finishPass: true,
     leadInOut: true,
     overscan: true,
-    motion: readMotionProfile(),
+    motion,
     spindle: readSpindleRange(),
     laser: readLaserSource(),
     laserKerfMm: readLaserKerf(),
@@ -3671,6 +3689,11 @@ export function generateGCode(
     gcode += `; Material: ${material.name}`;
     if (doc.stockThickness) gcode += `, ${doc.stockThickness} mm thick`;
     gcode += `\n; Laser: ${describeLaserSource(options.laser)} — speeds and power are derived from these\n`;
+    // Said in the file because every S word below is a fraction of it, and a
+    // program scaled for one controller's `$30` is wrong on another's.
+    gcode += options.motion?.spindle?.max
+      ? `; Power scale: S${options.spindleSpeedMax} is full power — this machine's $30\n`
+      : `; Power scale: S${options.spindleSpeedMax} is full power — assumed; no machine has reported its $30\n`;
   }
   gcode += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   gcode += `; Segments: ${segments.length}\n`;
@@ -3776,13 +3799,20 @@ export function generateGCode(
       if (!options.laserMode) gcode += `G0 Z${SAFE_Z} ; retract clear of the work\n`;
       gcode += `M6 T${change.tool} ; PAUSE — load the tool, re-zero Z, then resume\n`;
       if (!options.laserMode) {
+        /*
+         * Lift *before* the spindle starts, not after. The usual way to re-zero
+         * at the pause is the paper trick, which leaves the new bit standing on
+         * the stock at Z0 — and this block used to spin it up right there, then
+         * lift. A bit started in contact skates and digs a ring into the face
+         * of the work before the job has moved at all.
+         */
+        gcode += `G0 Z${SAFE_Z} ; clear of the work before the spindle starts\n`;
         const rpm = segments[change.segIndex]?.rpm ?? firstRpm;
         if (rpm > 0) {
           gcode += `M3 S${rpm} ; spindle back on at ${formatRpm(rpm)} RPM\n`;
           gcode += `G4 P${SPINDLE_SPINUP_SECONDS} ; let it reach speed\n`;
           currentRpm = rpm;
         }
-        gcode += `G0 Z${SAFE_Z} ; clearance height before moving\n`;
       }
       beamOn = false;
       lastS = null;
