@@ -1445,16 +1445,20 @@ export function planToolpath(
                 pts,
                 [...finishOffset.contours, ...referenceContours],
                 millable,
-                leadRadiusFor(cut)
+                leadRadiusFor(cut),
+                { width: doc.width, height: doc.height }
               );
           if (lead) led++;
+          // The lead may have moved where the lap begins; the lap is the same
+          // loop in the same direction either way.
+          const lap = lead?.contour ?? pts;
           segments.push(
             makeSegment(layer, cut, options, {
-              points: pts,
+              points: lap,
               isClosed: true,
-              bBoxArea: boundingArea(pts),
+              bBoxArea: boundingArea(lap),
               linkTolerance: 0,
-              tabs: cut.tabs ? planTabs(pathLength(pts)) : [],
+              tabs: cut.tabs ? planTabs(pathLength(lap)) : [],
               finishPass: true,
               leadIn: lead?.leadIn,
               leadOut: lead?.leadOut,
@@ -2853,6 +2857,9 @@ function leadRadiusFor(cut: LayerCutting): number {
  */
 const LEAD_ARC_STEPS = 8;
 
+/** Rounding slack on the stock edge, so a lead that just kisses it still counts as on it. */
+const LEAD_STOCK_EPS = 1e-6;
+
 /**
  * A tangential lead-in and lead-out for one closed contour, or null.
  *
@@ -2901,15 +2908,99 @@ function planLead(
   contour: Pt[],
   siblings: Pt[][],
   keep: Pt[][],
-  radius: number
-): { leadIn: Pt[]; leadOut: Pt[] } | null {
+  radius: number,
+  stock: { width: number; height: number }
+): { contour: Pt[]; leadIn: Pt[]; leadOut: Pt[] } | null {
   if (radius <= 0 || contour.length < 4) return null;
-
-  const start = contour[0];
-  const perimeter = pathLength(contour);
   // A lead is only sane on a contour substantially longer than the lead itself.
-  if (perimeter < radius * 8) return null;
+  if (pathLength(contour) < radius * 8) return null;
 
+  /*
+   * A closed lap can begin anywhere on itself, so where it happens to start is
+   * not a reason to put the lead there. A lead swings out into waste, and on a
+   * part's outline at its extreme that is further out than anything the part
+   * itself needs: the job's footprint grows by a lead radius, off the stock or
+   * past the end of an axis on a part laid out near the edge of the machine's
+   * reach — which is a hard limit and a lost job. So the lead goes where it
+   * stays inside the lap's own extent if anywhere does (on a round part that is
+   * anywhere off the axes), and otherwise where it sticks out least. The lap's
+   * direction never changes: that is climb against conventional, and it is not
+   * the lead's to decide.
+   */
+  // A lap has its four points by now, so it has bounds.
+  const box = boundsOf(contour)!;
+  let best: { contour: Pt[]; leadIn: Pt[]; leadOut: Pt[] } | null = null;
+  let bestOvershoot = Infinity;
+  for (const at of leadStartCandidates(contour)) {
+    const lap = at === 0 ? contour : rotateClosedPath(contour, at);
+    const lead = leadAtStart(lap, contour, siblings, keep, radius, stock);
+    if (!lead) continue;
+    let overshoot = 0;
+    for (const p of [...lead.leadIn, ...lead.leadOut]) {
+      overshoot = Math.max(
+        overshoot,
+        box.minX - p.x, p.x - box.maxX,
+        box.minY - p.y, p.y - box.maxY
+      );
+    }
+    if (overshoot <= LEAD_STOCK_EPS) return { contour: lap, ...lead };
+    if (overshoot < bestOvershoot - LEAD_STOCK_EPS) {
+      best = { contour: lap, ...lead };
+      bestOvershoot = overshoot;
+    }
+  }
+  return best;
+}
+
+/** How many places round a closed lap are tried for a lead before going without. */
+const LEAD_START_CANDIDATES = 16;
+
+/**
+ * Vertex indices to try a lead at: where the lap already starts, then points
+ * spread evenly round it by length. An open path offers only its own start.
+ */
+function leadStartCandidates(contour: Pt[]): number[] {
+  const first = contour[0];
+  const last = contour[contour.length - 1];
+  if (Math.hypot(first.x - last.x, first.y - last.y) > 1e-6) return [0];
+
+  const n = contour.length - 1;
+  const along: number[] = [0];
+  for (let i = 1; i < n; i++) {
+    along.push(along[i - 1] + Math.hypot(contour[i].x - contour[i - 1].x, contour[i].y - contour[i - 1].y));
+  }
+  const total = along[n - 1] + Math.hypot(first.x - contour[n - 1].x, first.y - contour[n - 1].y);
+
+  const picks = [0];
+  let v = 0;
+  for (let k = 1; k < LEAD_START_CANDIDATES; k++) {
+    const target = (k / LEAD_START_CANDIDATES) * total;
+    while (v + 1 < n && along[v + 1] <= target) v++;
+    if (!picks.includes(v)) picks.push(v);
+  }
+  return picks;
+}
+
+/** A closed path (last point repeating the first) re-entered at vertex `at`. */
+function rotateClosedPath(contour: Pt[], at: number): Pt[] {
+  const ring = contour.slice(0, -1);
+  return [...ring.slice(at), ...ring.slice(0, at), ring[at]];
+}
+
+/**
+ * The lead for a lap as it starts, or null if it would leave the stock or
+ * swing into kept material. `self` is the lap as the sibling set holds it, so
+ * a re-entered copy is not counted as enclosing itself.
+ */
+function leadAtStart(
+  contour: Pt[],
+  self: Pt[],
+  siblings: Pt[][],
+  keep: Pt[][],
+  radius: number,
+  stock: { width: number; height: number }
+): { leadIn: Pt[]; leadOut: Pt[] } | null {
+  const start = contour[0];
   const tangent = unitBetween(start, contour[1]);
   const end = contour[contour.length - 1];
   const outTangent = unitBetween(contour[contour.length - 2], end);
@@ -2918,7 +3009,7 @@ function planLead(
   // Inside-ness of the contour's own region, and then of the layer: an odd
   // enclosure count makes this contour a hole, whose waste is on the inside.
   const enclosingCount = siblings.filter(
-    (other) => other !== contour && pointInPolygon(start, other)
+    (other) => other !== self && pointInPolygon(start, other)
   ).length;
   const isHole = enclosingCount % 2 === 1;
 
@@ -2961,7 +3052,12 @@ function planLead(
    * hole's lead swings inward. Counting them as one region each would refuse
    * every lead on every hole in the job.
    */
+  const onStock = (p: Pt) =>
+    p.x >= -LEAD_STOCK_EPS && p.y >= -LEAD_STOCK_EPS &&
+    p.x <= stock.width + LEAD_STOCK_EPS && p.y <= stock.height + LEAD_STOCK_EPS;
+
   for (const p of [...leadIn, ...leadOut]) {
+    if (!onStock(p)) return null;
     let enclosing = 0;
     for (const region of keep) {
       if (pointInPolygon(p, region)) enclosing++;
@@ -3648,6 +3744,14 @@ export function generateGCode(
   const toMachine = (x: number, y: number) => docToMachine(doc, x, y);
 
   const changeAtMove = new Map(program.toolChanges.map((c) => [c.moveIndex, c]));
+  /*
+   * Segments whose bit has yet to be fitted. A tool change is preceded by the
+   * move that parks the old bit, and that move already belongs to the new
+   * segment — so its header comes out first, and a speed change there would
+   * spin up the bit that is about to come out, only for the change to stop it
+   * again. The change sets the new bit's speed itself.
+   */
+  const awaitingTool = new Set(program.toolChanges.map((c) => c.segIndex));
   let lastFeed: number | null = null;
   let lastZ: number | null = null;
   let beamOn = false;
@@ -3664,6 +3768,7 @@ export function generateGCode(
 
     const change = changeAtMove.get(i);
     if (change) {
+      awaitingTool.delete(change.segIndex);
       // M6 is not motion: the stream stops here and waits to be resumed, so
       // everything is parked and switched off before it is sent.
       gcode += `\n; --- Tool change: ${describeTool(machineKind, change.tool, options.customCncTools)} ---\n`;
@@ -3695,7 +3800,7 @@ export function generateGCode(
         gcode += `; ${seg.passes} pass${seg.passes === 1 ? '' : 'es'} to ${seg.zDepth} mm ` +
           `at ${seg.speed} mm/min${tabNote}\n`;
         // A layer with its own tool may also want its own speed.
-        if (seg.rpm > 0 && seg.rpm !== currentRpm) {
+        if (seg.rpm > 0 && seg.rpm !== currentRpm && !awaitingTool.has(m.segIndex)) {
           gcode += `M3 S${seg.rpm} ; ${formatRpm(seg.rpm)} RPM\n`;
           currentRpm = seg.rpm;
         }

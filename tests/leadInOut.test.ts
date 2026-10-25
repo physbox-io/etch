@@ -131,6 +131,47 @@ describe('tangential lead-in and lead-out', () => {
     }
   });
 
+  it('enters a round part off its extremes, so the lead adds nothing to the job’s reach', () => {
+    // A spare hub ring nested near the back of the stock: a lead at the top of
+    // the lap reached 1.7 mm further back than the cut, and on a job laid out
+    // to the end of the Y axis that was the move that hit the limit switch.
+    const d = doc();
+    d.elements = [{
+      id: 'hub', name: 'Hub', type: 'circle', layerId: 'cut', x: 134.37, y: 17.46, r: 12,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.2,
+      visible: true, locked: false,
+    } as EtchElement];
+    const finish = plan(d).segments.find((s) => s.finishPass)!;
+    expect(finish.leadIn?.length).toBeGreaterThan(2);
+    const ys = finish.points.map((p) => p.y);
+    const xs = finish.points.map((p) => p.x);
+    for (const p of [...finish.leadIn!, ...finish.leadOut!]) {
+      expect(p.y).toBeGreaterThanOrEqual(Math.min(...ys) - 1e-6);
+      expect(p.y).toBeLessThanOrEqual(Math.max(...ys) + 1e-6);
+      expect(p.x).toBeGreaterThanOrEqual(Math.min(...xs) - 1e-6);
+      expect(p.x).toBeLessThanOrEqual(Math.max(...xs) + 1e-6);
+    }
+    // Re-entered, not reversed: the lead still lands on the lap's start.
+    const at = finish.leadIn![finish.leadIn!.length - 1];
+    expect(at.x).toBeCloseTo(finish.points[0].x, 6);
+    expect(at.y).toBeCloseTo(finish.points[0].y, 6);
+  });
+
+  it('moves round the part rather than swinging off the stock', () => {
+    // The outline's top lap runs half a millimetre inside the stock edge, so a
+    // lead anywhere along the top would leave the material.
+    const d = doc();
+    (d.elements[0] as EtchElement & { y: number }).y = 2;
+    const finish = plan(d).segments.find((s) => s.finishPass)!;
+    expect(finish.leadIn?.length).toBeGreaterThan(2);
+    for (const p of [...finish.leadIn!, ...finish.leadOut!]) {
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.y).toBeGreaterThanOrEqual(0);
+      expect(p.x).toBeLessThanOrEqual(d.width);
+      expect(p.y).toBeLessThanOrEqual(d.height);
+    }
+  });
+
   it('can be turned off', () => {
     const { segments } = plan(doc(), { leadInOut: false });
     expect(segments.every((s) => !s.leadIn)).toBe(true);

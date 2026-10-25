@@ -169,6 +169,16 @@ describe('tool change G-code', () => {
     expect(after).toMatch(/M3 S/); // spindle back on
   });
 
+  it('does not spin up the outgoing bit at the next tool’s speed on the way to the change', () => {
+    // The park before a change belongs to the next segment, whose header used
+    // to set that segment's speed — on the bit about to come out.
+    const lines = generateGCode(multi()).split('\n');
+    const changes = lines.flatMap((l, i) => (/^M6 T/.test(l) ? [i] : []));
+    expect(changes.length).toBe(2);
+    const lastCut = lines.slice(0, changes[1]).findLastIndex((l) => /^G[123]\b/.test(l));
+    expect(lines.slice(lastCut, changes[1]).filter((l) => /^M3\b/.test(l))).toEqual([]);
+  });
+
   it('holds the spindle off until the first tool of a multi-tool job is confirmed', () => {
     const gcode = generateGCode(multi());
     const firstSpindle = gcode.indexOf('M3 S');

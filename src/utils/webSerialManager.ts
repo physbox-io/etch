@@ -4,6 +4,7 @@ import {
   GrblMachine,
   RAPID_OVERRIDE_BYTES,
   SPINDLE_OVERRIDE_BYTES,
+  TelemetryThrottle,
   classifyPauseLine,
   describeGrblFault,
   stripGcodeComment,
@@ -24,6 +25,7 @@ import {
   type MotionProfile,
 } from './motionProfile';
 import { machineSocketUrl, postMachineTelemetry, submitMachineJob,
+  type MachiningTelemetry,
   type RemoteCommand,
 } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
@@ -313,10 +315,12 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
   /** The highest line already credited with a trim reset, so it fires once. */
   private layerResetAt = -1;
 
-  /** Telemetry pacing — see `onStateNotified`. */
-  private lastTelemetryAt = 0;
-  private lastTelemetryStatus = '';
-  private telemetryInFlight = false;
+  /** Telemetry pacing — see `publishTelemetry`. */
+  private telemetry = new TelemetryThrottle<MachiningTelemetry>({
+    intervalMs: TELEMETRY_INTERVAL_MS,
+    post: (frame) =>
+      postMachineTelemetry('etch', frame).then((commands) => this.applyRemoteCommands(commands)),
+  });
 
   private jobContext: JobContext = {};
 
@@ -1019,20 +1023,25 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     this.restoreLaserMode();
     this.updateState({ guideSpot: false });
 
-    const lineCount = scanJobProgram(gcode).lines.length;
-    if (lineCount === 0) {
+    const lines = scanJobProgram(gcode).lines;
+    if (lines.length === 0) {
       return { started: false, message: 'That program has no machine commands in it.' };
     }
-
-    try {
-      void this.startJob(gcode);
-    } catch (err) {
-      return {
-        started: false,
-        message: err instanceof Error ? err.message : 'The job could not be started.',
-      };
+    // Asked here so the Run button can say why; `startJob` refuses it anyway.
+    const offTheBed = this.travelBlockedReason(lines);
+    if (offTheBed) {
+      this.updateState({ lastError: offTheBed });
+      return { started: false, message: offTheBed };
     }
-    return { started: true, message: `Running ${lineCount} lines.` };
+
+    // The job runs for as long as the program does, so this is not awaited —
+    // but a refusal from inside it still has to reach the operator.
+    this.startJob(gcode).catch((err) => {
+      this.updateState({
+        lastError: err instanceof Error ? err.message : 'The job could not be started.',
+      });
+    });
+    return { started: true, message: `Running ${lines.length} lines.` };
   }
 
   /**
@@ -1073,55 +1082,48 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
 
   /**
    * Reports the machine's state to api.physbox.io, for a phone or a second
-   * workstation to watch a running job from.
+   * workstation to watch a running job from, and for the run archive.
    *
-   * This used to fire on every single notify — the 5 Hz status poll *plus*
-   * every acknowledged line of the program, so a job cutting at a few hundred
-   * lines a minute meant a POST per line — with no interval floor, no in-flight
-   * guard, and no check that a machine was even connected.
-   *
-   * A change of state jumps the floor. A job finishing, a tool-change pause or
-   * an alarm are precisely the moments somebody is watching for, and making
-   * them wait out an interval is how a delay becomes the reason nobody trusts
-   * the dashboard.
+   * Paced by the shared `TelemetryThrottle`: a floor between position updates,
+   * a change of state that jumps it — a job finishing, a tool-change pause or
+   * an alarm are precisely the moments somebody is watching for — and a final
+   * frame when the controller drops off mid-job, so the run is closed as the
+   * crash it was rather than left reading "running".
    */
   private publishTelemetry(state: EtchMachineState): void {
-    if (!state.connected) return;
+    if (!state.connected) {
+      const reason = state.lastError ? ` (${state.lastError})` : '';
+      this.telemetry.connectionLost((last) => ({
+        ...last,
+        status: 'error',
+        lastError: `Lost the connection to the controller at line ${last.currentLine}${reason}.`,
+      }));
+      return;
+    }
 
-    const now = Date.now();
-    const changed = state.status !== this.lastTelemetryStatus;
-    if (!changed && now - this.lastTelemetryAt < TELEMETRY_INTERVAL_MS) return;
-    // One at a time: a stalled network would otherwise queue a backlog of stale
-    // positions that all land at once when it recovers.
-    if (this.telemetryInFlight) return;
-
-    this.lastTelemetryAt = now;
-    this.lastTelemetryStatus = state.status;
-    this.telemetryInFlight = true;
-
-    void postMachineTelemetry('etch', {
-      status: state.grblState ?? state.status,
-      jobName: this.jobContext.name,
-      progressPercent: state.progressPercent,
-      currentLine: state.currentLine,
-      totalLines: state.totalLines,
-      xyz: { x: state.mpos.x, y: state.mpos.y, z: state.mpos.z },
-      spindleSpeed: state.spindleSpeed ?? 0,
-      // What that S word means, and what its full scale is. The dashboard has
-      // no other way to tell 840 RPM from 84% of a diode laser, and it showed
-      // the laser as a spindle running at 840 RPM.
-      machine: this.jobMachine,
-      spindleMax: this.spindlePwmMax(),
-      feedRate: state.feedRate ?? 0,
-      lastError: state.lastError,
-      documentId: this.jobContext.documentId ?? null,
-      documentRevision: this.jobContext.documentRevision ?? null,
-      settings: this.jobContext.settings ?? null,
-    })
-      .then((commands) => this.applyRemoteCommands(commands))
-      .finally(() => {
-        this.telemetryInFlight = false;
-      });
+    this.telemetry.offer(
+      {
+        status: state.grblState ?? state.status,
+        jobName: this.jobContext.name,
+        progressPercent: state.progressPercent,
+        currentLine: state.currentLine,
+        totalLines: state.totalLines,
+        xyz: { x: state.mpos.x, y: state.mpos.y, z: state.mpos.z },
+        spindleSpeed: state.spindleSpeed ?? 0,
+        // What that S word means, and what its full scale is. The dashboard has
+        // no other way to tell 840 RPM from 84% of a diode laser, and it showed
+        // the laser as a spindle running at 840 RPM.
+        machine: this.jobMachine,
+        spindleMax: this.spindlePwmMax(),
+        feedRate: state.feedRate ?? 0,
+        lastError: state.lastError,
+        documentId: this.jobContext.documentId ?? null,
+        documentRevision: this.jobContext.documentRevision ?? null,
+        settings: this.jobContext.settings ?? null,
+      },
+      state.status,
+      this.isJobRunning
+    );
   }
 
   /**
