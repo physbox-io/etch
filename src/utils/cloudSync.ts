@@ -20,7 +20,8 @@ import {
   syncCloudPreset,
   deleteCloudPreset,
 } from './apiClient';
-import { TOOL_RACK_PARAMETER } from '@physbox-io/machining';
+import { CNC_BED_PARAMETER, TOOL_RACK_PARAMETER } from '@physbox-io/machining';
+import { machineBedStore } from './machineBed';
 import {
   CNC_TOOLS_KEY,
   parseCncLibrary,
@@ -158,6 +159,9 @@ export async function pullCloudState(localPresetNames: string[]): Promise<CloudP
     const value = key in globalParams ? globalParams[key] : etchParams[key];
     if (value !== undefined && applyParameter(key, value)) result.parameters += 1;
   }
+
+  // The machine's envelope is shared with Volt and Mesh, like the rack.
+  machineBedStore.adoptRemote(globalParams[CNC_BED_PARAMETER] ?? etchParams[CNC_BED_PARAMETER]);
 
   result.cncTools = settleCncTools(
     globalParams[TOOL_RACK_PARAMETER] ?? etchParams[TOOL_RACK_PARAMETER],

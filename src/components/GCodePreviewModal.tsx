@@ -978,6 +978,7 @@ export const GCodePreviewModal: React.FC = () => {
                           plan
                         );
                         const result = await webSerialManager.runProgram(airCutGCode, {
+                          auxiliary: true,
                           machine: laserMode ? 'laser' : 'cnc',
                           job: jobContext(cuttingSubset ? `air cut, ${selectedIds.length} selected` : 'air cut'),
                         });

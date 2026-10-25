@@ -30,6 +30,7 @@ import { machineSocketUrl, postMachineTelemetry, submitMachineJob,
 } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
 import { setJobWakeLock } from './jobWakeLock';
+import { machineBedStore } from './machineBed';
 import {
   DEFAULT_PLATE_THICKNESS_MM,
   DEFAULT_SPINDLE_PWM_MAX,
@@ -1061,7 +1062,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    */
   public async runProgram(
     gcode: string,
-    opts: { machine?: MachineKind; job?: JobContext } = {}
+    opts: { machine?: MachineKind; job?: JobContext; auxiliary?: boolean } = {}
   ): Promise<{ started: boolean; message: string }> {
     if (!this.state.connected) return { started: false, message: 'Connect to a machine first.' };
     if (this.isRunning()) return { started: false, message: 'A job is already running.' };
@@ -1093,7 +1094,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     // Recorded before the first line goes out, so the very first telemetry frame
     // already says what this run is — that frame is what opens the archived run.
     this.jobContext = opts.job ?? {};
-    this.lastJobName = this.jobContext.name;
+    if (!opts.auxiliary) this.lastJobName = this.jobContext.name;
 
     // A guide spot left lit would be a beam already firing as the program's
     // first rapid runs, dragging a burn across the stock on the way to the
@@ -1121,7 +1122,10 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
 
     // The job runs for as long as the program does, so this is not awaited —
     // but a refusal from inside it still has to reach the operator.
-    this.startJob(gcode).catch((err) => {
+    // An air cut is a check, not the job: it must not replace the program a
+    // stopped job would be run from, or clear the offer to do so.
+    const start = opts.auxiliary ? this.startAuxiliaryJob(gcode) : this.startJob(gcode);
+    start.catch((err) => {
       this.updateState({
         lastError: err instanceof Error ? err.message : 'The job could not be started.',
       });
@@ -1732,3 +1736,9 @@ function legacyStateWord(s: EtchMachineState): MachineStatus['state'] {
 }
 
 export const webSerialManager = new WebSerialManager();
+
+// The owner's figure for the working envelope, for the travel check wherever
+// the controller has not reported its own; kept current as it is edited or
+// arrives from the account.
+webSerialManager.setBed(machineBedStore.get());
+machineBedStore.subscribe((bed) => webSerialManager.setBed(bed));

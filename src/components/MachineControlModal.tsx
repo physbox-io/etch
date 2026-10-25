@@ -12,6 +12,8 @@ import { X, Cpu, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
 import { MachineWorkOriginPanel } from './MachineWorkOriginPanel';
 import { JobOverridePanel } from './JobOverridePanel';
+import { MachineBedFields } from '@physbox-io/ui';
+import { machineBedStore } from '../utils/machineBed';
 
 /** Bounds of everything visible, in bed mm — what framing traces and probing covers. */
 function useJobBounds() {
@@ -77,6 +79,7 @@ export const MachineControlModal: React.FC = () => {
   );
   /** What to write into the controller with `$I=`, before it is written. */
   const [machineNameDraft, setMachineNameDraft] = useState('');
+  const [bed, setBed] = useState(() => machineBedStore.get());
 
   const [consoleInput, setConsoleInput] = useState('');
   const [log, setLog] = useState<string[]>([]);
@@ -273,6 +276,17 @@ export const MachineControlModal: React.FC = () => {
                 )}
               </div>
             )}
+
+            {/* The envelope the travel check falls back on when the controller
+                has not reported its own, shared with Volt and Mesh. */}
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-xl space-y-2">
+              <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">Machine bed</div>
+              <MachineBedFields
+                bed={bed}
+                onChange={(next) => setBed(machineBedStore.set(next))}
+                note="How far each axis can travel. Used to check a job fits when the controller has not reported its own travel, and shared with Volt and Mesh through your account."
+              />
+            </div>
 
             {/* How the machine is reached. WiFi is a Tekno Box, reached through
                 physbox rather than by address — the box is behind the router

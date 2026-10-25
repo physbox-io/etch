@@ -222,3 +222,24 @@ describe('running a stopped job from a line', () => {
     expect(result.message).toMatch(/Unlock|lost its position|alarm/i);
   });
 });
+
+describe('an air cut after a stop', () => {
+  it('keeps the offer to run the stopped job from its line', async () => {
+    fake.silent = true;
+    await machine.runProgram(job, { machine: 'cnc', job: { name: 'hub' } });
+    await vi.waitFor(() => expect(fake.written.length).toBeGreaterThan(0));
+    await machine.cancelJob();
+    const stop = machine.getStatus().interruption;
+    expect(stop).not.toBeNull();
+
+    fake.silent = false;
+    await machine.runProgram(['G90 G21', 'G0 Z25', 'G0 X0 Y0', 'G0 X50 Y50'].join('\n'), {
+      machine: 'cnc',
+      job: { name: 'air cut' },
+      auxiliary: true,
+    });
+    await vi.waitFor(() => expect(machine.getStatus().jobRunning).toBe(false));
+    expect(machine.getStatus().interruption).toEqual(stop);
+    expect(machine.getStatus().lastJobName).toBe('hub');
+  });
+});
