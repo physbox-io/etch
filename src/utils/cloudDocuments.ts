@@ -445,6 +445,17 @@ class CloudAutosave {
     void this.save();
   }
 
+  /**
+   * Whether the account already holds the latest document, so closing the tab
+   * loses nothing of it. Hashes anything still waiting in the coalescing window
+   * first: an edit made a moment ago has not been looked at yet.
+   */
+  holdsLatest(): boolean {
+    this.ingest();
+    return this.enabled() && !this.blocked && !this.inFlight
+      && this.pendingHash === null && this.lastSentHash !== null;
+  }
+
   /** After a conflict: keep this browser's copy and overwrite the account's. */
   async keepLocalCopy(): Promise<void> {
     const id = this.status.documentId;

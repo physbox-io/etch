@@ -61,6 +61,7 @@ import {
   type Part,
 } from '../utils/packParts';
 import { cloudAutosave } from '../utils/cloudDocuments';
+import { markJobClean, markSheetClean } from '../utils/unsavedWork';
 import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
 import { copyName } from '../utils/documentCatalog';
 
@@ -1125,6 +1126,7 @@ export const useStore = create<EtchStore>((set, get) => ({
         // any of them saves the job rather than asking for a name again.
         tabs: state.tabs.map((t) => ({ ...t, activePreset: `user:${trimmed}` })),
       });
+      markJobClean(get());
       return null;
     } catch (e) {
       console.error('Failed to save user preset', e);
@@ -1156,6 +1158,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const job = get().tabs.length > 1 ? get().activePreset : presetId;
       get().setDocument(strip[0]);
       set({ activePreset: job });
+      markSheetClean(get());
       return;
     }
     const at = Math.min(Math.max(saved.sheetIndex ?? 0, 0), strip.length - 1);
@@ -1186,6 +1189,7 @@ export const useStore = create<EtchStore>((set, get) => ({
         centerY: live.document.height / 2,
       },
     }));
+    markJobClean(get());
   },
 
   /**
@@ -2639,6 +2643,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       // preset itself.
       get().setDocument(cloneDoc(preset.doc));
       set({ activePreset: presetId });
+      markSheetClean(get());
     }
   },
 
