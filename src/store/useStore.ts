@@ -64,6 +64,7 @@ import { cloudAutosave } from '../utils/cloudDocuments';
 import { markJobClean, markSheetClean } from '../utils/unsavedWork';
 import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
 import { copyName } from '../utils/documentCatalog';
+import { readDarkMode, applyDarkMode } from '../utils/darkModePref';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -766,6 +767,10 @@ export function numberedName(name: string, elements: readonly { name: string }[]
   return highest === 0 ? name : `${name} ${highest + 1}`;
 }
 
+// Before the first paint, so a dark page does not flash light while it loads.
+const initialDarkMode = readDarkMode();
+applyDarkMode(initialDarkMode, false);
+
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
   tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, DEFAULT_PRESET_ID)],
@@ -796,7 +801,7 @@ export const useStore = create<EtchStore>((set, get) => ({
     liveMode: false,
   },
   eraserWidth: DEFAULT_ERASER_WIDTH_MM,
-  darkMode: false,
+  darkMode: initialDarkMode,
   isAiPanelOpen: false,
   isGCodeModalOpen: false,
   isMachineModalOpen: false,
@@ -848,11 +853,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   toggleDarkMode: () =>
     set((state) => {
       const nextMode = !state.darkMode;
-      if (nextMode) {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
+      applyDarkMode(nextMode);
       return { darkMode: nextMode };
     }),
 
