@@ -1669,6 +1669,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     const s = this.state;
     return {
       connected: s.connected,
+      controllerSilent: s.controllerSilent,
       portName: s.portName,
       baudRate: s.baudRate,
       state: legacyStateWord(s),

@@ -571,6 +571,8 @@ export type MachineState =
 
 export interface MachineStatus {
   connected: boolean;
+  /** Connected, but nothing has come back from the controller for seconds. */
+  controllerSilent?: boolean;
   portName?: string;
   baudRate: number;
   state: MachineState;

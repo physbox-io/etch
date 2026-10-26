@@ -8,6 +8,7 @@ import { getBedBBox } from '../utils/geom';
 import { boundsToMachine } from '../utils/machineCoords';
 import { machineKind, machineWords } from '../utils/tooling';
 import type { MachineStatus } from '../types/etch';
+import { ControllerSilenceBanner } from './ControllerSilenceBanner';
 import { X, Cpu, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
 import { MachineWorkOriginPanel } from './MachineWorkOriginPanel';
@@ -214,6 +215,8 @@ export const MachineControlModal: React.FC = () => {
                 </button>
               )}
             </div>
+
+            <ControllerSilenceBanner connected={status.connected} silent={status.controllerSilent} />
 
             {/*
               Which machine this is, and a way to make it recognisable.
