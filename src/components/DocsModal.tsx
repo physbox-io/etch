@@ -1019,7 +1019,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
     <div className="flex flex-col gap-4">
       <H>⚖️ License &amp; Terms</H>
       <P>
-        PhysBox Etch is distributed under the <strong>PhysBox Permissive Public License (PPPL-1.0)</strong>.
+        PhysBox: Etch is distributed under the <strong>PhysBox Permissive Public License (PPPL-1.0)</strong>.
         Commercial use of generated G-code, toolpaths, and engraved goods is fully permitted with attribution.
       </P>
       <div className="bg-slate-100 dark:bg-slate-950 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[50vh] overflow-y-auto">

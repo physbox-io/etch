@@ -671,7 +671,7 @@ export const TopNavbar: React.FC = () => {
           <div className="hidden md:block">
             <div className="flex items-center gap-2">
               <h1 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white font-sans">
-                Physbox <span className="text-red-500 dark:text-red-400 font-normal">Etch</span>
+                PhysBox: <span className="text-red-500 dark:text-red-400 font-normal">Etch</span>
               </h1>
               <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/80 border border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-300">
                 2D Studio
