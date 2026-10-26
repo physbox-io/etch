@@ -28,6 +28,7 @@ import { DocumentBrowser } from './files/DocumentBrowser';
 import { firstBrowserTab } from '../utils/recentDocuments';
 import { materialCatalog } from '../utils/materials';
 import { downloadBlob } from '../utils/download';
+import { downloadJobFile } from '../utils/jobFile';
 import type { EtchDocument } from '../types/etch';
 import {
   Scissors,
@@ -183,11 +184,7 @@ export const TopNavbar: React.FC = () => {
 
   const handleExportJson = () => {
     try {
-      // The job, not the open sheet: a file that dropped the other three sheets
-      // is the same loss as a save that dropped them.
-      const job = jobDocument(useStore.getState());
-      const blob = new Blob([JSON.stringify(job, null, 2)], { type: 'application/json' });
-      downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.json`);
+      downloadJobFile();
     } catch (e) {
       console.error('Failed to export JSON', e);
       alert('Failed to export JSON');

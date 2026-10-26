@@ -1,0 +1,81 @@
+import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { useStore } from '../store/useStore';
+import { downloadJobFile } from '../utils/jobFile';
+
+/**
+ * The last thing standing when the app throws while rendering.
+ *
+ * Without this, one exception in any component unmounted the whole tree and
+ * left a blank page, and the only way out was a reload — which drops straight
+ * back to the default drawing, because the open document is kept nowhere but
+ * memory. The store survives a render error (it is a module, not a component),
+ * so the job is still there to be saved, and this page offers exactly that
+ * before it offers the reload.
+ */
+export class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; saveFailed: boolean }> {
+  state = { error: null as Error | null, saveFailed: false };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Etch stopped on a render error', error, info.componentStack);
+  }
+
+  private save = () => {
+    try {
+      downloadJobFile();
+    } catch (e) {
+      console.error('Could not save the drawing after a crash', e);
+      this.setState({ saveFailed: true });
+    }
+  };
+
+  render() {
+    const { error, saveFailed } = this.state;
+    if (!error) return this.props.children;
+    // Dark mode is not persisted; it lives in the store and on <html>, both of
+    // which outlive the tree that threw.
+    const dark = useStore.getState().darkMode;
+    return (
+      <div className={`${dark ? 'dark' : ''} h-dvh w-screen`}>
+        <div className="h-full w-full flex items-center justify-center p-4 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans">
+          <div className="max-w-md w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 rounded-lg bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400">
+                <AlertTriangle size={20} />
+              </div>
+              <h1 className="text-lg font-semibold">Etch hit an error</h1>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
+              Your drawing is still here. Save a copy before reloading — every sheet goes in the file, and Open file…
+              in the document browser opens it again.
+            </p>
+            <pre className="text-xs whitespace-pre-wrap break-words max-h-32 overflow-auto rounded-lg bg-slate-100 dark:bg-slate-800 p-2 mb-4 text-slate-700 dark:text-slate-300">
+              {error.message || String(error)}
+            </pre>
+            {saveFailed && (
+              <p className="text-sm text-red-600 dark:text-red-400 mb-3">The drawing could not be saved either.</p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={this.save}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500 hover:bg-blue-600 text-white"
+              >
+                Save drawing
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700"
+              >
+                Reload
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
