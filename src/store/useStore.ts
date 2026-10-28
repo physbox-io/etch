@@ -51,6 +51,8 @@ import {
 import { beautifyElements } from '../utils/beautify';
 import { offsetElements, MIN_OFFSET_MM } from '../utils/offsetShape';
 import { joinElements, joinOutlineD } from '../utils/joinPieces';
+import { papercut, type PapercutOutcome } from '../utils/papercut';
+import { laceCut } from '../utils/laceCut';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { defaultsFor, type ShapeKind } from '../utils/parametricShapes';
 import {
@@ -506,6 +508,16 @@ interface EtchStore {
    */
   combineSelected: (op: BooleanOp) => void;
   /**
+   * Cut away everything inside the first-selected shape that the others do not
+   * cover, keeping every piece of paper attached. See `papercut.ts`.
+   */
+  papercutSelected: () => void;
+  /**
+   * Fill the first-selected shape with grown lace, round any others as
+   * motifs, and cut it. See `laceCut.ts`.
+   */
+  laceSelected: () => void;
+  /**
    * Why the last combine did nothing. Cleared by the next selection change, so
    * it cannot outlive the shapes it is talking about.
    */
@@ -611,6 +623,72 @@ const defaultDoc: EtchDocument = cloneDoc(DEFAULT_PRESET.doc);
  * looks like the tool malfunctioned. Naming it turns a mystery into a
  * measurement.
  */
+/*
+ * Where a papercut goes: the window's place in document order, its layer and
+ * its look, as for the booleans — the cut is a reworking of the window, and it
+ * is the window that says which layer cuts it. The paper is consumed: it is
+ * now the card the cut leaves standing, and left in the document it would be
+ * cut a second time along its own outline. Undo gives it back.
+ */
+function placeCut(
+  state: Pick<EtchStore, 'document' | 'history' | 'historyIndex'>,
+  frame: EtchElement,
+  paper: EtchElement[],
+  result: PapercutOutcome,
+  name: string,
+  lead: string[]
+): Partial<EtchStore> {
+  const { document, history, historyIndex } = state;
+  const skippedIds = new Set(result.skipped.map((s) => s.id));
+  const consumed = new Set([frame.id, ...paper.filter((e) => !skippedIds.has(e.id)).map((e) => e.id)]);
+  const cut: EtchElement = {
+    id: `papercut_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    name,
+    type: 'path',
+    layerId: frame.layerId,
+    objectId: frame.objectId,
+    x: result.x,
+    y: result.y,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    opacity: frame.opacity,
+    strokeWidth: frame.strokeWidth,
+    strokeColor: frame.strokeColor,
+    fillColor: 'none',
+    visible: true,
+    locked: false,
+    d: result.d,
+  };
+
+  const baseIndex = document.elements.findIndex((el) => el.id === frame.id);
+  const kept = document.elements.filter((el) => !consumed.has(el.id));
+  const insertAt = document.elements.slice(0, baseIndex).filter((el) => !consumed.has(el.id)).length;
+  const newDoc = releaseUnusedAnchors({ ...document, elements: [...kept.slice(0, insertAt), cut, ...kept.slice(insertAt)] });
+  const newHistory = history.slice(0, historyIndex + 1);
+  newHistory.push(newDoc);
+
+  const notes = [...lead, `Cut ${result.holes} hole${result.holes === 1 ? '' : 's'}.`];
+  if (result.bridges) {
+    notes.push(
+      `${result.bridges} piece${result.bridges === 1 ? ' was' : 's were'} not attached to anything and would have fallen out — ` +
+        `bridged on, the longest bridge ${result.longestBridgeMm.toFixed(1)} mm.`
+    );
+  }
+  if (result.closedSlits) {
+    notes.push(`${result.closedSlits} gap${result.closedSlits === 1 ? ' was' : 's were'} too narrow to cut cleanly and left as paper.`);
+  }
+  if (result.skipped.length) notes.push(`Left out ${result.skipped.map((s) => s.name).join(', ')} — nothing to read.`);
+
+  return {
+    document: newDoc,
+    history: newHistory,
+    historyIndex: newHistory.length - 1,
+    selectedIds: [cut.id],
+    combineNotice: notes.join(' '),
+  };
+}
+
 function combineNoticeFor(result: {
   skipped: Array<{ name: string }>;
   slivers: number;
@@ -2167,6 +2245,49 @@ export const useStore = create<EtchStore>((set, get) => ({
   },
 
   /*
+   * The window's place in document order, its layer and its look, as for the
+   * booleans: the cut is a reworking of the window, and it is the window that
+   * says which layer cuts it. The paper is consumed — it is now the card the
+   * cut leaves standing, and left in the document it would be cut a second
+   * time along its own outline. Undo gives it back.
+   */
+  papercutSelected: () => {
+    const { document, selectedIds } = get();
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (selected.length < 2) {
+      set({ combineNotice: 'Select the window first, then the shapes to keep as paper.' });
+      return;
+    }
+    const [frame, ...paper] = selected;
+    const result = papercut(frame, paper);
+    if ('error' in result) {
+      set({ combineNotice: result.error });
+      return;
+    }
+    set(placeCut(get(), frame, paper, result, `Papercut of ${frame.name}`, []));
+  },
+
+  /*
+   * Papercut with the paper grown rather than drawn. A fresh seed each press,
+   * so undo and press again is how to ask for a different lace.
+   */
+  laceSelected: () => {
+    const { document, selectedIds } = get();
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (selected.length < 1) return;
+    const [frame, ...motifs] = selected;
+    const result = laceCut(frame, motifs, Math.floor(Math.random() * 1e9));
+    if ('error' in result) {
+      set({ combineNotice: result.error });
+      return;
+    }
+    const lead = result.symmetry === 'none' ? 'Grew lace.' : `Grew lace, ${result.symmetry} like the shape.`;
+    set(placeCut(get(), frame, motifs, result, `Lace in ${frame.name}`, [lead]));
+  },
+
+  /*
    * One history entry for the whole thing, and every element keeps its id: this
    * is a single Ctrl+Z, and the selection survives it. `beautifyElements` never
    * adds or removes anything, so the document can be rebuilt by lookup rather
@@ -2639,6 +2760,10 @@ export const useStore = create<EtchStore>((set, get) => ({
 
     const preset = PRESET_ETCHINGS.find((p) => p.id === presetId);
     if (preset) {
+      if (preset.doc.sheets?.length) {
+        get().openJob(preset.doc, presetId);
+        return;
+      }
       // Clone: PRESET_ETCHINGS holds module-level objects, and handing one
       // straight to the store would make every later edit an edit of the
       // preset itself.

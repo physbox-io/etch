@@ -29,6 +29,7 @@ import {
   Wand2,
   Expand,
   Shrink,
+  Flower2,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -544,6 +545,8 @@ export const PropertiesSidebar: React.FC = () => {
     updateElement,
     centerSelected,
     combineSelected,
+    papercutSelected,
+    laceSelected,
     combineNotice,
     offsetSelected,
     offsetNotice,
@@ -579,6 +582,8 @@ export const PropertiesSidebar: React.FC = () => {
       updateElement: s.updateElement,
       centerSelected: s.centerSelected,
       combineSelected: s.combineSelected,
+      papercutSelected: s.papercutSelected,
+      laceSelected: s.laceSelected,
       combineNotice: s.combineNotice,
       offsetSelected: s.offsetSelected,
       offsetNotice: s.offsetNotice,
@@ -1137,6 +1142,13 @@ export const PropertiesSidebar: React.FC = () => {
                       {BOOLEAN_OP_LABEL[op]}
                     </button>
                   ))}
+                  <button
+                    onClick={papercutSelected}
+                    className="col-span-2 flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                    title={`Papercut: cut away everything inside ${anchorElement?.name ?? 'the first shape'} except the other shapes, which stay as paper — lace, filigree, a shadow-box layer. Lines become strands of card. Anything that would fall out is bridged on.`}
+                  >
+                    Papercut
+                  </button>
                 </div>
                 {combineNotice && (
                   <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
@@ -1146,6 +1158,27 @@ export const PropertiesSidebar: React.FC = () => {
                 )}
               </div>
             )}
+            {/*
+              Lace from one shape upwards: the first is the window, any others
+              motifs it grows round. The notice shows here too when one shape
+              is selected — which is what is selected after a lace, the cut.
+            */}
+            <div className="col-span-2">
+              <button
+                onClick={laceSelected}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                title={`Fill with lace: grow scrolls, leaves and dots inside ${anchorElement?.name ?? 'this shape'} and cut it as a papercut, symmetric where the shape is. Any other selected shapes are kept as paper and grown round. Undo and press again for a different lace.`}
+              >
+                <Flower2 className="w-3.5 h-3.5" />
+                Fill with Lace
+              </button>
+              {selectedIds.length === 1 && combineNotice && (
+                <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                  <span>{combineNotice}</span>
+                </div>
+              )}
+            </div>
             {wTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Width (mm)</label>

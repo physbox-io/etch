@@ -126,6 +126,7 @@ This is the least-sourced part of the app and the most worth calibrating.
 |---|---|---|---|
 | Speed derived by holding **energy per unit length/area** constant | `deriveLaserFeeds` | `watts ÷ dose = mm/s`. Marking depth follows delivered energy; power and speed are two ways to spend the same budget. | **Derived** (the arithmetic) |
 | `etchDoseJPerMm`, `fillDoseJPerMm2`, `cutDoseJPerMm2` per material | `materials.ts` | The per-material energy budgets the whole laser model rests on. | **Judgement** — these are our estimates. No published table was used. |
+| Cardstock doses: etch 0.05 J/mm, fill 0.2 J/mm², cut 0.8 J/mm² per mm, `diodeFactor` 1.4 | `materials.ts` (`cardstock`) | Set as fractions of the wood figures: paper marks at a dose that barely darkens birch, and a wood dose burns through rather than scoring. The diode factor is higher than wood's because pastel card reflects blue. At 0.3 mm a 10 W diode derives roughly 25 mm/s to cut, in line with commonly quoted diode cardstock settings. | **Judgement** — not cut on this app's machines yet. Run a test grid on the card you have. |
 | `diodeFactor` (≈1.2 for wood) | `materials.ts` | A diode's shorter wavelength and poorer beam quality do not deliver the same useful energy per watt as a CO₂ tube. | **Judgement** |
 | `maxPowerFraction` | `materials.ts` | Some materials mark better below full power than at it. | **Judgement** |
 | `MAX_LASER_SPEED_MM_MIN = 12000`, `MIN = 120` | `feeds.ts` | Gantry limits, not optical ones. | **Judgement** |
@@ -185,6 +186,22 @@ onto a pendant.
 | `MIN_BRIDGE_MM = 1` | `joinPieces.ts` | The bridge is all that holds a letter on. Under a millimetre of 1.5 mm aluminium bends when a pendant catches, and a laser kerf takes a tenth or two off each side. | **Judgement** — unverified against material |
 | Fillet radius `0.6 ×` bridge width, applied per junction only | `FILLET_FRACTION`, `filletAt` | Rounds the bar into the stroke so it reads as drawn, not repaired; also leaves no inside corner tighter than the radius for a router to fail to reach. Local, because a closing of the whole word fused neighbouring letters and filled their inside corners. | **Judgement** |
 | New holes under `4 × width²` filled | `joinElements` | A pocket the bar closed off between two near-touching strokes: not a feature anyone drew, and narrower than any cutter that would have to clear it. Holes the drawing had are never filled. | **Judgement** |
+
+### Papercut and lace (`papercut.ts`, `laceFill.ts`, `laceCut.ts`)
+
+What decides whether a cut-paper frame survives being cut and handled: how thin
+a strand of card may be, and how narrow an opening is worth cutting.
+
+| Value | Where | Basis | Source |
+|---|---|---|---|
+| `MIN_STRAND_MM = 1.2` — open lines thickened to at least this; bridges this wide | `papercut.ts` | The beam takes a tenth or so off each side of every cut in card and chars a little further. A 250 gsm strand much under this survives the cut and tears when the card is picked up. | **Judgement** — not yet cut |
+| `MIN_HOLE_MM = 0.8` — narrower openings closed up, not cut | `papercut.ts` | About four diode beam widths. Narrower, the two sides of the opening are one charred line and the backing never shows through. | **Judgement** |
+| Loose paper bridged on, nearest first (Prim's algorithm from the card) | `holdOn` | A piece not joined to the card is a hole with an island in it, and falls out on to the bed. The fewest, shortest strands that hold everything on. | **Derived** |
+| Arc tolerance 0.02 mm for strand ends and the opening | `papercut.ts` | The flattener's chord tolerance; these outlines are not flattened again, so the 0.05 mm budget is spent once. | **Derived** |
+| Invitation lace: strands 1.5 mm, openings 2.2 mm, no opening wider than 7 mm | `birthdayInvite.ts`, `tests/birthdayInvite.test.ts` | Heavier than the minimum because lace is seen at arm's length and minimum-width strands read as wire; an even opening size is what makes it read as lace at all. | **Judgement** (a design choice, inside the limits above) |
+| Fill with Lace: strands `LACE_STRAND_MM = 1.5`, openings `LACE_GAP_MM = 2.2`, scrolls up to 5.5 mm, leaves 6.5 mm | `laceCut.ts` | The invitation's numbers, the one lace that has been looked at; strand and opening sit above the two minimums. | **Judgement** (a design choice, inside the limits above) |
+| Last dots `DOT_GAP = 0.65` of the opening (1.4 mm) | `laceFill.ts` | An opening too narrow for a dot a full opening clear of everything is still twice the width of the rest; this closes it and stays well above `MIN_HOLE_MM`. | **Judgement** |
+| Rings of vine `2 × (scroll + opening) + strand` apart, stretched to share the window out | `laceCut.ts` | Room for a scroll from each side of the band and a hole between. At a fixed pitch the last ring left a slot too narrow to grow in. | **Derived** (from the values above) |
 
 ### Packing parts onto stock (`packParts.ts`)
 
