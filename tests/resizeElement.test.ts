@@ -252,3 +252,58 @@ describe('computeResize — a stroke with no thickness', () => {
     expect(after.scaleX).toBeCloseTo(1.25, 6);
   });
 });
+
+describe('computeResize — side edge handles (n, s, e, w)', () => {
+  it('stretches only width when dragging e or w, pinning the opposite edge midpoint', () => {
+    const el = base({ type: 'rect', w: 40, h: 20 });
+    const westEdge = at(el, 0, 10);
+    const afterE = drag(el, 15, 99, 'e');
+    expect(afterE.w).toBeCloseTo(55, 6);
+    expect(afterE.h).toBeCloseTo(20, 6);
+    expect(at(afterE, 0, afterE.h! / 2).x).toBeCloseTo(westEdge.x, 6);
+    expect(at(afterE, 0, afterE.h! / 2).y).toBeCloseTo(westEdge.y, 6);
+
+    const eastEdge = at(el, 40, 10);
+    const afterW = drag(el, -12, 50, 'w');
+    expect(afterW.w).toBeCloseTo(52, 6);
+    expect(afterW.h).toBeCloseTo(20, 6);
+    expect(at(afterW, afterW.w!, afterW.h! / 2).x).toBeCloseTo(eastEdge.x, 6);
+    expect(at(afterW, afterW.w!, afterW.h! / 2).y).toBeCloseTo(eastEdge.y, 6);
+  });
+
+  it('stretches only height when dragging n or s, pinning the opposite edge midpoint', () => {
+    const el = base({ type: 'rect', w: 40, h: 20 });
+    const northEdge = at(el, 20, 0);
+    const afterS = drag(el, 99, 10, 's');
+    expect(afterS.w).toBeCloseTo(40, 6);
+    expect(afterS.h).toBeCloseTo(30, 6);
+    expect(at(afterS, afterS.w! / 2, 0).x).toBeCloseTo(northEdge.x, 6);
+    expect(at(afterS, afterS.w! / 2, 0).y).toBeCloseTo(northEdge.y, 6);
+
+    const southEdge = at(el, 20, 20);
+    const afterN = drag(el, -50, -8, 'n');
+    expect(afterN.w).toBeCloseTo(40, 6);
+    expect(afterN.h).toBeCloseTo(28, 6);
+    expect(at(afterN, afterN.w! / 2, afterN.h!).x).toBeCloseTo(southEdge.x, 6);
+    expect(at(afterN, afterN.w! / 2, afterN.h!).y).toBeCloseTo(southEdge.y, 6);
+  });
+
+  it('keeps the opposite edge midpoint stationary on rotated shapes', () => {
+    const el = base({ type: 'rect', w: 40, h: 20, rotation: 35 });
+    const oppositeMid = at(el, 40, 10);
+    const afterW = drag(el, -8, -5, 'w');
+    expect(afterW.h).toBeCloseTo(20, 6);
+    expect(at(afterW, afterW.w!, afterW.h! / 2).x).toBeCloseTo(oppositeMid.x, 6);
+    expect(at(afterW, afterW.w!, afterW.h! / 2).y).toBeCloseTo(oppositeMid.y, 6);
+  });
+
+  it('scales proportionally around the opposite edge midpoint when Shift is held on an edge handle', () => {
+    const el = base({ type: 'rect', w: 40, h: 20 });
+    const westMid = at(el, 0, 10);
+    const afterE = drag(el, 20, 0, 'e', true);
+    expect(afterE.w).toBeCloseTo(60, 6);
+    expect(afterE.h).toBeCloseTo(30, 6);
+    expect(at(afterE, 0, afterE.h! / 2).x).toBeCloseTo(westMid.x, 6);
+    expect(at(afterE, 0, afterE.h! / 2).y).toBeCloseTo(westMid.y, 6);
+  });
+});

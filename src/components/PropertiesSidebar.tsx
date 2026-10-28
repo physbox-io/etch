@@ -15,6 +15,8 @@ import {
   Trash2,
   Eye,
   EyeOff,
+  Lock,
+  Unlock,
   Sun,
   CheckCircle2,
   AlertTriangle,
@@ -672,10 +674,35 @@ export const PropertiesSidebar: React.FC = () => {
   const machiningTargets = selectedEls.filter(canBeStroked);
   const fillableTargets = machiningTargets.filter(canBeFilled);
   const filledTargets = machiningTargets.filter((el) => el.machining === 'filled');
+  const wTargets = selectedEls.filter((el) => el.w !== undefined);
+  const hTargets = selectedEls.filter((el) => el.h !== undefined);
+  const rTargets = selectedEls.filter((el) => el.r !== undefined);
+  const sidesTargets = selectedEls.filter((el) => el.sides !== undefined);
+  const rx2Targets = selectedEls.filter((el) => el.rx2 !== undefined);
+  const ry2Targets = selectedEls.filter((el) => el.ry2 !== undefined);
+  const rectTargets = selectedEls.filter((el) => el.type === 'rect');
+  const textTargets = selectedEls.filter((el) => el.type === 'text');
+  const imageTargets = selectedEls.filter((el) => el.type === 'image');
+  const allLocked = selectedEls.length > 0 && selectedEls.every((el) => el.locked);
+  const allVisible = selectedEls.length > 0 && selectedEls.every((el) => el.visible !== false);
   const sharedLayerId = sharedValue(selectedEls, (el) => el.layerId);
   const sharedRotation = sharedValue(selectedEls, (el) => el.rotation ?? 0);
   const sharedStrokeWidth = sharedValue(strokeTargets, (el) => el.strokeWidth);
   const sharedMachining = sharedValue(machiningTargets, (el) => el.machining ?? 'outline');
+  const sharedW = sharedValue(wTargets, (el) => round1(el.w!));
+  const sharedH = sharedValue(hTargets, (el) => round1(el.h!));
+  const sharedR = sharedValue(rTargets, (el) => round1(el.r!));
+  const sharedSides = sharedValue(sidesTargets, (el) => el.sides!);
+  const sharedRx2 = sharedValue(rx2Targets, (el) => round1(el.rx2!));
+  const sharedRy2 = sharedValue(ry2Targets, (el) => round1(el.ry2!));
+  const sharedCornerRadius = sharedValue(rectTargets, (el) => round1(el.rx || 0));
+  const sharedFontSize = sharedValue(textTargets, (el) => round1(el.fontSize || 14));
+  const sharedFontFamily = sharedValue(textTargets, (el) => el.fontFamily || 'Outfit');
+  const sharedImageAngle = sharedValue(imageTargets, (el) => el.hatchAngle ?? 0);
+  const sharedImagePitch = sharedValue(
+    imageTargets,
+    (el) => el.hatchSpacing ?? DEFAULT_SHADE_PITCH_MM,
+  );
   const sharedHatchAngle = sharedValue(
     filledTargets,
     (el) => el.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
@@ -889,20 +916,60 @@ export const PropertiesSidebar: React.FC = () => {
               <span className="font-semibold text-slate-800 dark:text-slate-200">
                 {anchorElement.name}
               </span>
-              . Layer, rotation, line thickness and machining apply to all{' '}
+              . Shared dimensions, layer, rotation, line thickness and machining apply across all{' '}
               {selectedIds.length}.
             </div>
           )}
 
-          {/* Element Name */}
+          {/* Element Name + Batch Visibility / Lock */}
           <div>
             <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Element Name</label>
-            <input
-              type="text"
-              value={selectedElement.name}
-              onChange={(e) => updateElement(selectedElement.id, { name: e.target.value })}
-              className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:border-red-500"
-            />
+            <div className="mt-1 flex items-center gap-1.5">
+              <input
+                type="text"
+                value={selectedElement.name}
+                onChange={(e) => updateElement(selectedElement.id, { name: e.target.value })}
+                className="flex-1 min-w-0 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:border-red-500"
+              />
+              <button
+                type="button"
+                aria-label={allVisible ? 'Hide selected' : 'Show selected'}
+                onClick={() => applyTo(selectedEls, () => ({ visible: !allVisible }))}
+                title={
+                  selectedEls.length > 1
+                    ? allVisible
+                      ? `Hide all ${selectedEls.length} selected elements`
+                      : `Show all ${selectedEls.length} selected elements`
+                    : allVisible
+                      ? 'Hide element'
+                      : 'Show element'
+                }
+                className="p-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+              >
+                {allVisible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+              </button>
+              <button
+                type="button"
+                aria-label={allLocked ? 'Unlock selected' : 'Lock selected'}
+                onClick={() => applyTo(selectedEls, () => ({ locked: !allLocked }))}
+                title={
+                  selectedEls.length > 1
+                    ? allLocked
+                      ? `Unlock all ${selectedEls.length} selected elements`
+                      : `Lock all ${selectedEls.length} selected elements`
+                    : allLocked
+                      ? 'Unlock element'
+                      : 'Lock element'
+                }
+                className={`p-1.5 border rounded cursor-pointer transition-colors ${
+                  allLocked
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/25'
+                    : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                {allLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+              </button>
+            </div>
           </div>
 
           {/* Position & Size */}
@@ -1079,26 +1146,38 @@ export const PropertiesSidebar: React.FC = () => {
                 )}
               </div>
             )}
-            {selectedElement.w !== undefined && (
+            {wTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Width (mm)</label>
                 <NumberInput
                   min={0.1}
-                  fallbackOnBlur={5}
-                  value={round1(selectedElement.w)}
-                  onChange={(val) => updateElement(selectedElement.id, { w: val ?? 5 })}
+                  fallbackOnBlur={sharedW === null ? undefined : 5}
+                  value={sharedW}
+                  placeholder="Mixed"
+                  allowEmpty={sharedW === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedW === null) return;
+                    applyTo(wTargets, () => ({ w: val ?? 5 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
                 />
               </div>
             )}
-            {selectedElement.h !== undefined && (
+            {hTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Height (mm)</label>
                 <NumberInput
                   min={0.1}
-                  fallbackOnBlur={5}
-                  value={round1(selectedElement.h)}
-                  onChange={(val) => updateElement(selectedElement.id, { h: val ?? 5 })}
+                  fallbackOnBlur={sharedH === null ? undefined : 5}
+                  value={sharedH}
+                  placeholder="Mixed"
+                  allowEmpty={sharedH === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedH === null) return;
+                    applyTo(hTargets, () => ({ h: val ?? 5 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
                 />
               </div>
@@ -1108,15 +1187,21 @@ export const PropertiesSidebar: React.FC = () => {
           {/* Type-specific size fields — the SE handle is not the only way to
               set a radius, and circles/polygons have no w/h at all. */}
           <div className="grid grid-cols-2 gap-2">
-            {selectedElement.r !== undefined && (
+            {rTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius (mm)</label>
                 <NumberInput
                   step={0.5}
                   min={0.1}
-                  fallbackOnBlur={0.1}
-                  value={round1(selectedElement.r)}
-                  onChange={(val) => updateElement(selectedElement.id, { r: val ?? 0.1 })}
+                  fallbackOnBlur={sharedR === null ? undefined : 0.1}
+                  value={sharedR}
+                  placeholder="Mixed"
+                  allowEmpty={sharedR === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedR === null) return;
+                    applyTo(rTargets, () => ({ r: val ?? 0.1 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className={NUM_INPUT}
                 />
               </div>
@@ -1231,46 +1316,64 @@ export const PropertiesSidebar: React.FC = () => {
                 )}
               </>
             )}
-            {selectedElement.sides !== undefined && (
+            {sidesTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Sides</label>
                 <NumberInput
                   min={3}
                   max={64}
-                  fallbackOnBlur={3}
-                  value={selectedElement.sides}
-                  onChange={(val) => updateElement(selectedElement.id, { sides: val ? Math.round(val) : 3 })}
+                  fallbackOnBlur={sharedSides === null ? undefined : 3}
+                  value={sharedSides}
+                  placeholder="Mixed"
+                  allowEmpty={sharedSides === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedSides === null) return;
+                    applyTo(sidesTargets, () => ({ sides: val ? Math.round(val) : 3 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className={NUM_INPUT}
                 />
               </div>
             )}
-            {selectedElement.rx2 !== undefined && (
+            {rx2Targets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius X (mm)</label>
                 <NumberInput
                   step={0.5}
                   min={0.1}
-                  fallbackOnBlur={0.1}
-                  value={round1(selectedElement.rx2)}
-                  onChange={(val) => updateElement(selectedElement.id, { rx2: val ?? 0.1 })}
+                  fallbackOnBlur={sharedRx2 === null ? undefined : 0.1}
+                  value={sharedRx2}
+                  placeholder="Mixed"
+                  allowEmpty={sharedRx2 === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedRx2 === null) return;
+                    applyTo(rx2Targets, () => ({ rx2: val ?? 0.1 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className={NUM_INPUT}
                 />
               </div>
             )}
-            {selectedElement.ry2 !== undefined && (
+            {ry2Targets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Radius Y (mm)</label>
                 <NumberInput
                   step={0.5}
                   min={0.1}
-                  fallbackOnBlur={0.1}
-                  value={round1(selectedElement.ry2)}
-                  onChange={(val) => updateElement(selectedElement.id, { ry2: val ?? 0.1 })}
+                  fallbackOnBlur={sharedRy2 === null ? undefined : 0.1}
+                  value={sharedRy2}
+                  placeholder="Mixed"
+                  allowEmpty={sharedRy2 === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedRy2 === null) return;
+                    applyTo(ry2Targets, () => ({ ry2: val ?? 0.1 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className={NUM_INPUT}
                 />
               </div>
             )}
-            {selectedElement.type === 'rect' && (
+            {rectTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
                   Corner Radius <InfoTooltip text="Rounds rectangle corners to specified radius (mm)." />
@@ -1278,22 +1381,34 @@ export const PropertiesSidebar: React.FC = () => {
                 <NumberInput
                   step={0.5}
                   min={0}
-                  fallbackOnBlur={0}
-                  value={round1(selectedElement.rx || 0)}
-                  onChange={(val) => updateElement(selectedElement.id, { rx: val ?? 0 })}
+                  fallbackOnBlur={sharedCornerRadius === null ? undefined : 0}
+                  value={sharedCornerRadius}
+                  placeholder="Mixed"
+                  allowEmpty={sharedCornerRadius === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedCornerRadius === null) return;
+                    applyTo(rectTargets, () => ({ rx: val ?? 0 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className={NUM_INPUT}
                 />
               </div>
             )}
-            {selectedElement.type === 'text' && (
+            {textTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Font Size (mm)</label>
                 <NumberInput
                   step={1}
                   min={1}
-                  fallbackOnBlur={14}
-                  value={round1(selectedElement.fontSize || 14)}
-                  onChange={(val) => updateElement(selectedElement.id, { fontSize: val ?? 1 })}
+                  fallbackOnBlur={sharedFontSize === null ? undefined : 14}
+                  value={sharedFontSize}
+                  placeholder="Mixed"
+                  allowEmpty={sharedFontSize === null}
+                  onChange={(val) => {
+                    if (val === undefined && sharedFontSize === null) return;
+                    applyTo(textTargets, () => ({ fontSize: val ?? 1 }), true);
+                  }}
+                  onCommit={commitHistory}
                   className={NUM_INPUT}
                 />
               </div>
@@ -1372,22 +1487,24 @@ export const PropertiesSidebar: React.FC = () => {
           </div>
 
           {/* Vector Text Content & Font Family */}
-          {selectedElement.type === 'text' && (
+          {textTargets.length > 0 && (
             <>
-              <div>
-                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Text Content</label>
-                <input
-                  type="text"
-                  value={selectedElement.text || ''}
-                  onChange={(e) => updateElement(selectedElement.id, { text: e.target.value })}
-                  className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-sans"
-                />
-              </div>
+              {selectedElement.type === 'text' && (
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Text Content</label>
+                  <input
+                    type="text"
+                    value={selectedElement.text || ''}
+                    onChange={(e) => updateElement(selectedElement.id, { text: e.target.value })}
+                    className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-sans"
+                  />
+                </div>
+              )}
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Google Font</label>
                 <FontPicker
-                  value={selectedElement.fontFamily || 'Outfit'}
-                  onChange={(family) => updateElement(selectedElement.id, { fontFamily: family })}
+                  value={sharedFontFamily ?? selectedElement.fontFamily ?? 'Outfit'}
+                  onChange={(family) => applyTo(textTargets, () => ({ fontFamily: family }))}
                 />
               </div>
             </>
@@ -1545,7 +1662,7 @@ export const PropertiesSidebar: React.FC = () => {
               hatch fields, because sweeping a picture and sweeping a fill are
               the same motion — what differs is that here the tone varies along
               the sweep instead of being one setting for all of it. */}
-          {selectedElement.type === 'image' && (
+          {imageTargets.length > 0 && (
             <div className="space-y-2">
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
                 Shading
@@ -1557,8 +1674,14 @@ export const PropertiesSidebar: React.FC = () => {
                   </label>
                   <NumberInput
                     step={5}
-                    value={selectedElement.hatchAngle ?? 0}
-                    onChange={(val) => updateElement(selectedElement.id, { hatchAngle: val ?? 0 })}
+                    value={sharedImageAngle}
+                    placeholder="Mixed"
+                    allowEmpty={sharedImageAngle === null}
+                    onChange={(val) => {
+                      if (val === undefined && sharedImageAngle === null) return;
+                      applyTo(imageTargets, () => ({ hatchAngle: val ?? 0 }), true);
+                    }}
+                    onCommit={commitHistory}
                     className={NUM_INPUT}
                   />
                 </div>
@@ -1569,11 +1692,19 @@ export const PropertiesSidebar: React.FC = () => {
                   <NumberInput
                     step={0.05}
                     min={0.02}
-                    fallbackOnBlur={0.02}
-                    value={selectedElement.hatchSpacing ?? DEFAULT_SHADE_PITCH_MM}
-                    onChange={(val) =>
-                      updateElement(selectedElement.id, { hatchSpacing: val ?? DEFAULT_SHADE_PITCH_MM })
-                    }
+                    fallbackOnBlur={sharedImagePitch === null ? undefined : 0.02}
+                    value={sharedImagePitch}
+                    placeholder="Mixed"
+                    allowEmpty={sharedImagePitch === null}
+                    onChange={(val) => {
+                      if (val === undefined && sharedImagePitch === null) return;
+                      applyTo(
+                        imageTargets,
+                        () => ({ hatchSpacing: val ?? DEFAULT_SHADE_PITCH_MM }),
+                        true,
+                      );
+                    }}
+                    onCommit={commitHistory}
                     className={NUM_INPUT}
                   />
                 </div>

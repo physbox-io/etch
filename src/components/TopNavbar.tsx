@@ -75,8 +75,8 @@ export const TopNavbar: React.FC = () => {
     isSettingsOpen,
     undo,
     redo,
-    historyIndex,
-    history,
+    canUndo,
+    canRedo,
     activePreset,
     userPresetNames,
     saveUserPresetByName,
@@ -99,8 +99,8 @@ export const TopNavbar: React.FC = () => {
       isSettingsOpen: s.isSettingsOpen,
       undo: s.undo,
       redo: s.redo,
-      historyIndex: s.historyIndex,
-      history: s.history,
+      canUndo: s.historyIndex > 0,
+      canRedo: s.historyIndex < s.history.length - 1,
       activePreset: s.activePreset,
       userPresetNames: s.userPresetNames,
       saveUserPresetByName: s.saveUserPresetByName,
@@ -830,7 +830,7 @@ export const TopNavbar: React.FC = () => {
 
           <button
             onClick={undo}
-            disabled={historyIndex === 0}
+            disabled={!canUndo}
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
             title="Undo (Ctrl+Z)"
           >
@@ -839,7 +839,7 @@ export const TopNavbar: React.FC = () => {
 
           <button
             onClick={redo}
-            disabled={historyIndex >= history.length - 1}
+            disabled={!canRedo}
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
             title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
           >

@@ -26,7 +26,19 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ToolConfigModal } from './components/ToolConfigModal';
 import { ImageImportModal } from './components/ImageImportModal';
 import { prefetchClipArt } from './utils/clipArtLibrary';
+import type { ToolMode } from './types/etch';
 import { Zap } from 'lucide-react';
+
+/** Single-key tool switches when no text field is focused. */
+const TOOL_SHORTCUTS: Record<string, ToolMode> = {
+  r: 'rect',
+  c: 'circle',
+  l: 'line',
+  p: 'bezier',
+  t: 'text',
+  e: 'erase',
+  n: 'node-edit',
+};
 
 /**
  * Which way each arrow key moves the selection, in document space.
@@ -144,6 +156,16 @@ export const App: React.FC = () => {
         !e.ctrlKey &&
         !e.metaKey &&
         !e.altKey &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === 'v' &&
+        (selectedIds.length === 0 || useStore.getState().activeTool !== 'select')
+      ) {
+        e.preventDefault();
+        useStore.getState().setToolMode('select');
+      } else if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
         (e.key.toLowerCase() === 'h' || e.key.toLowerCase() === 'v') &&
         selectedIds.length > 0
       ) {
@@ -153,6 +175,15 @@ export const App: React.FC = () => {
         useStore
           .getState()
           .centerSelected(e.key.toLowerCase() === 'h' ? 'horizontal' : 'vertical');
+      } else if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        TOOL_SHORTCUTS[e.key.toLowerCase()]
+      ) {
+        e.preventDefault();
+        useStore.getState().setToolMode(TOOL_SHORTCUTS[e.key.toLowerCase()]);
       } else if (NUDGE[e.key] && selectedIds.length > 0 && !e.ctrlKey && !e.metaKey) {
         /*
           Arrow keys nudge the selection.

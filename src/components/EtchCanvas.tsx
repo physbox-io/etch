@@ -37,6 +37,7 @@ import {
   rankHits,
   elementsInMarquee,
   marqueeMode,
+  nearOutline,
   normalizeRect,
   toggleSelection,
 } from '../utils/selection';
@@ -760,18 +761,22 @@ export const EtchCanvas: React.FC = () => {
       if (!hit) {
         const raw = toBed(e);
 
-        // Nothing inked under the pointer, but an element is already selected
-        // and the pointer is inside its box: grab it. Outline-only shapes are
-        // otherwise only draggable by their stroke, which is a hairline.
+        // Nothing inked under the pointer, but an element is already selected:
+        // if it has a solid fill, clicking its interior grabs it; for an outline-only
+        // shape, only clicking near its outline grabs it so the empty interior space
+        // remains clickable to deselect or start a marquee selection.
         const selected = document.elements.filter(
           (el) => selectedIds.includes(el.id) && !el.locked
         );
         const inside = selected.some((el) => {
-          const b = getBedBBox(el);
-          return (
-            raw.x >= b.minX && raw.x <= b.minX + b.width &&
-            raw.y >= b.minY && raw.y <= b.minY + b.height
-          );
+          if (el.machining === 'filled') {
+            const b = getBedBBox(el);
+            return (
+              raw.x >= b.minX && raw.x <= b.minX + b.width &&
+              raw.y >= b.minY && raw.y <= b.minY + b.height
+            );
+          }
+          return nearOutline(el, raw);
         });
         if (inside && !e.shiftKey) {
           beginTransform(selected[0], 'move', toBedSnapped(e), selected);
@@ -926,7 +931,11 @@ export const EtchCanvas: React.FC = () => {
 
     const coords = toBedSnapped(e);
     const rawCoords = toBed(e);
-    setCursorPos(coords);
+    // Only update local cursorPos when an overlay tool actually displays it on canvas,
+    // avoiding a 2,800-line canvas re-render on every hover move for all other tools.
+    if (activeTool === 'erase' || activeTool === 'bezier') {
+      setCursorPos(coords);
+    }
     setCursor(coords);
 
     if (isPanning) {
@@ -1069,20 +1078,36 @@ export const EtchCanvas: React.FC = () => {
             updateElement(m.id, { x: newX, y: newY, rotation: newRot }, true);
           }
         } else if (isTransforming === 'resize') {
-          // The corner opposite the one grabbed is what the whole group is
-          // scaled about, so dragging the group's west side grows it westwards
-          // instead of hauling it across the bed.
-          const west = transformStart.handle === 'nw' || transformStart.handle === 'sw';
-          const north = transformStart.handle === 'nw' || transformStart.handle === 'ne';
-          const anchorX = west ? mb.minX + mb.width : mb.minX;
-          const anchorY = north ? mb.minY + mb.height : mb.minY;
-          const newW = Math.max(1, mb.width + (west ? -dx : dx));
-          const newH = Math.max(1, mb.height + (north ? -dy : dy));
+          // The corner or edge midpoint opposite the one grabbed is what the
+          // whole group is scaled about, so dragging the group's west side
+          // grows it westwards instead of hauling it across the bed.
+          const west =
+            transformStart.handle === 'nw' ||
+            transformStart.handle === 'sw' ||
+            transformStart.handle === 'w';
+          const east =
+            transformStart.handle === 'ne' ||
+            transformStart.handle === 'se' ||
+            transformStart.handle === 'e';
+          const north =
+            transformStart.handle === 'nw' ||
+            transformStart.handle === 'ne' ||
+            transformStart.handle === 'n';
+          const south =
+            transformStart.handle === 'sw' ||
+            transformStart.handle === 'se' ||
+            transformStart.handle === 's';
+          const anchorX = west ? mb.minX + mb.width : east ? mb.minX : mb.centerX;
+          const anchorY = north ? mb.minY + mb.height : south ? mb.minY : mb.centerY;
+          const dW = west ? -dx : east ? dx : 0;
+          const dH = north ? -dy : south ? dy : 0;
+          const newW = Math.max(1, mb.width + dW);
+          const newH = Math.max(1, mb.height + dH);
           let sxRatio = newW / mb.width;
           let syRatio = newH / mb.height;
           setAspectLocked(e.shiftKey);
           if (e.shiftKey) {
-            const sRatio = Math.max(sxRatio, syRatio);
+            const sRatio = Math.abs(sxRatio - 1) > Math.abs(syRatio - 1) ? sxRatio : syRatio;
             sxRatio = syRatio = sRatio;
           }
 
@@ -1347,24 +1372,33 @@ export const EtchCanvas: React.FC = () => {
     let handleBed: { x: number; y: number } | undefined;
     if (mode === 'resize') {
       if (mbInfo) {
-        const west = handle === 'nw' || handle === 'sw';
-        const north = handle === 'nw' || handle === 'ne';
+        const west = handle === 'nw' || handle === 'sw' || handle === 'w';
+        const east = handle === 'ne' || handle === 'se' || handle === 'e';
+        const north = handle === 'nw' || handle === 'ne' || handle === 'n';
+        const south = handle === 'sw' || handle === 'se' || handle === 's';
         handleBed = {
-          x: west ? mbInfo.minX : mbInfo.minX + mbInfo.width,
-          y: north ? mbInfo.minY : mbInfo.minY + mbInfo.height,
+          x: west ? mbInfo.minX : east ? mbInfo.minX + mbInfo.width : mbInfo.centerX,
+          y: north ? mbInfo.minY : south ? mbInfo.minY + mbInfo.height : mbInfo.centerY,
         };
       } else if (el.type === 'line') {
-        const grabStart = handle === 'line-start' || handle === 'nw' || handle === 'sw';
+        const grabStart =
+          handle === 'line-start' ||
+          handle === 'nw' ||
+          handle === 'sw' ||
+          handle === 'w' ||
+          handle === 'n';
         handleBed = grabStart
           ? localToBed(el, 0, 0)
           : localToBed(el, el.x2 ?? 40, el.y2 ?? 0);
       } else {
         const b = getBedBBox(el);
-        const west = handle === 'nw' || handle === 'sw';
-        const north = handle === 'nw' || handle === 'ne';
+        const west = handle === 'nw' || handle === 'sw' || handle === 'w';
+        const east = handle === 'ne' || handle === 'se' || handle === 'e';
+        const north = handle === 'nw' || handle === 'ne' || handle === 'n';
+        const south = handle === 'sw' || handle === 'se' || handle === 's';
         handleBed = {
-          x: west ? b.minX : b.minX + b.width,
-          y: north ? b.minY : b.minY + b.height,
+          x: west ? b.minX : east ? b.minX + b.width : b.centerX,
+          y: north ? b.minY : south ? b.minY + b.height : b.centerY,
         };
       }
     }
@@ -2354,12 +2388,16 @@ export const EtchCanvas: React.FC = () => {
                     />
                   </g>
 
-                  {/* Multi-selection resize knobs, one per corner */}
+                  {/* Multi-selection resize knobs: four corners and four side midpoints */}
                   {([
                     { key: 'nw' as const, hx: handleBox.minX, hy: handleBox.minY, cursor: 'cursor-nwse-resize' },
+                    { key: 'n' as const, hx: mbCx, hy: handleBox.minY, cursor: 'cursor-ns-resize' },
                     { key: 'ne' as const, hx: handleBox.maxX, hy: handleBox.minY, cursor: 'cursor-nesw-resize' },
-                    { key: 'sw' as const, hx: handleBox.minX, hy: handleBox.maxY, cursor: 'cursor-nesw-resize' },
+                    { key: 'e' as const, hx: handleBox.maxX, hy: mbCy, cursor: 'cursor-ew-resize' },
                     { key: 'se' as const, hx: handleBox.maxX, hy: handleBox.maxY, cursor: 'cursor-nwse-resize' },
+                    { key: 's' as const, hx: mbCx, hy: handleBox.maxY, cursor: 'cursor-ns-resize' },
+                    { key: 'sw' as const, hx: handleBox.minX, hy: handleBox.maxY, cursor: 'cursor-nesw-resize' },
+                    { key: 'w' as const, hx: handleBox.minX, hy: mbCy, cursor: 'cursor-ew-resize' },
                   ]).map((h) => (
                     <rect
                       key={h.key}
@@ -2480,9 +2518,13 @@ export const EtchCanvas: React.FC = () => {
                   ]
                 : [
                     { key: 'nw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY, cursor: 'cursor-nwse-resize' },
+                    { key: 'n' as const, hx: selectedLocal.centerX, hy: selectedLocal.minY, cursor: 'cursor-ns-resize' },
                     { key: 'ne' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY, cursor: 'cursor-nesw-resize' },
-                    { key: 'sw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nesw-resize' },
+                    { key: 'e' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.centerY, cursor: 'cursor-ew-resize' },
                     { key: 'se' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nwse-resize' },
+                    { key: 's' as const, hx: selectedLocal.centerX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-ns-resize' },
+                    { key: 'sw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nesw-resize' },
+                    { key: 'w' as const, hx: selectedLocal.minX, hy: selectedLocal.centerY, cursor: 'cursor-ew-resize' },
                   ]
               ).map((h) => (
                 <rect

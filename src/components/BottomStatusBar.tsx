@@ -78,11 +78,21 @@ const KerfField: React.FC<{ machineId?: string; machineName?: string }> = ({
 /** Common machining grid pitches, in mm. */
 const GRID_PRESETS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
 
+/** Isolated cursor readout so high-frequency mouse movements do not re-render the entire status bar. */
+const CursorCoordinates: React.FC<{ readoutCh: number }> = ({ readoutCh }) => {
+  const cursor = useStore((s) => s.cursor);
+  return (
+    <div className="whitespace-nowrap shrink-0">
+      X:<span className="inline-block text-right text-slate-800 dark:text-slate-200" style={{ minWidth: `${readoutCh}ch` }}>{cursor.x.toFixed(1)}</span>{' '}
+      Y:<span className="inline-block text-right text-slate-800 dark:text-slate-200" style={{ minWidth: `${readoutCh}ch` }}>{cursor.y.toFixed(1)}</span> mm
+    </div>
+  );
+};
+
 export const BottomStatusBar: React.FC = () => {
   const {
     document,
     zoom,
-    cursor,
     setGridSize,
     setDocumentSize,
     toggleSnapToGrid,
@@ -99,7 +109,6 @@ export const BottomStatusBar: React.FC = () => {
     useShallow((s) => ({
       document: s.document,
       zoom: s.zoom,
-      cursor: s.cursor,
       setGridSize: s.setGridSize,
       setDocumentSize: s.setDocumentSize,
       toggleSnapToGrid: s.toggleSnapToGrid,
@@ -225,10 +234,7 @@ export const BottomStatusBar: React.FC = () => {
           the only time it moves. Kept on one line and unshrinkable: a narrow
           window squeezed it until "Y:" and "mm" wrapped under the X.
         */}
-        <div className="whitespace-nowrap shrink-0">
-          X:<span className="inline-block text-right text-slate-800 dark:text-slate-200" style={{ minWidth: `${readoutCh}ch` }}>{cursor.x.toFixed(1)}</span>{' '}
-          Y:<span className="inline-block text-right text-slate-800 dark:text-slate-200" style={{ minWidth: `${readoutCh}ch` }}>{cursor.y.toFixed(1)}</span> mm
-        </div>
+        <CursorCoordinates readoutCh={readoutCh} />
       </div>
 
       {/*

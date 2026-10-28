@@ -45,19 +45,19 @@ export const LeftToolbar: React.FC = () => {
   );
 
   const tools: Array<{ id: ToolMode; label: string; icon: React.FC<{ className?: string }> }> = [
-    { id: 'select', label: 'Select & Move', icon: MousePointer },
+    { id: 'select', label: 'Select & Move (V)', icon: MousePointer },
     { id: 'freehand', label: 'Fluid Freehand Pencil', icon: Pencil },
     { id: 'grid-freehand', label: 'Grid-Snapped Freehand Pencil', icon: Grid },
-    { id: 'bezier', label: 'Bezier Curve Pen', icon: Spline },
-    { id: 'node-edit', label: 'Edit Nodes & Curve Handles', icon: Waypoints },
-    { id: 'line', label: 'Line Tool', icon: Minus },
-    { id: 'rect', label: 'Rectangle', icon: Square },
-    { id: 'circle', label: 'Circle / Oval', icon: Circle },
+    { id: 'bezier', label: 'Bezier Curve Pen (P)', icon: Spline },
+    { id: 'node-edit', label: 'Edit Nodes & Curve Handles (N)', icon: Waypoints },
+    { id: 'line', label: 'Line Tool (L)', icon: Minus },
+    { id: 'rect', label: 'Rectangle (R)', icon: Square },
+    { id: 'circle', label: 'Circle / Oval (C)', icon: Circle },
     { id: 'polygon', label: 'Polygon', icon: Hexagon },
     { id: 'star', label: 'Star Tool', icon: Star },
-    { id: 'text', label: 'Vector Text', icon: Type },
+    { id: 'text', label: 'Vector Text (T)', icon: Type },
     { id: 'fill', label: 'Fill a Region (click inside enclosed lines)', icon: PaintBucket },
-    { id: 'erase', label: 'Eraser — mask out part of the active layer (nothing is deleted)', icon: Eraser },
+    { id: 'erase', label: 'Eraser — mask out part of the active layer (E)', icon: Eraser },
     { id: 'mandala', label: 'Mandala Symmetry', icon: Sun },
   ];
 

@@ -66,7 +66,17 @@ export function resizeSeed(el: EtchElement): ResizeStart {
  * — and its direction lives in `x2`/`y2` rather than in a width, so "the end
  * you grabbed" is the only sense a line handle can have.
  */
-export type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | 'line-start' | 'line-end';
+export type ResizeHandle =
+  | 'nw'
+  | 'ne'
+  | 'sw'
+  | 'se'
+  | 'n'
+  | 's'
+  | 'e'
+  | 'w'
+  | 'line-start'
+  | 'line-end';
 
 /**
  * Keeps the corner opposite the one being dragged exactly where it was.
@@ -88,13 +98,15 @@ function anchorTo(
   return { ...patch, x: el.x + (was.x - now.x), y: el.y + (was.y - now.y) };
 }
 
-/** The local-bbox corner that must stay still while `handle` is dragged. */
+/** The local-bbox corner or opposite edge midpoint that must stay still while `handle` is dragged. */
 function anchorCorner(box: { minX: number; minY: number; width: number; height: number }, handle: ResizeHandle) {
-  const west = handle === 'nw' || handle === 'sw';
-  const north = handle === 'nw' || handle === 'ne';
+  const west = handle === 'nw' || handle === 'sw' || handle === 'w';
+  const east = handle === 'ne' || handle === 'se' || handle === 'e';
+  const north = handle === 'nw' || handle === 'ne' || handle === 'n';
+  const south = handle === 'sw' || handle === 'se' || handle === 's';
   return {
-    x: west ? box.minX + box.width : box.minX,
-    y: north ? box.minY + box.height : box.minY,
+    x: west ? box.minX + box.width : east ? box.minX : box.minX + box.width / 2,
+    y: north ? box.minY + box.height : south ? box.minY : box.minY + box.height / 2,
   };
 }
 
@@ -138,9 +150,14 @@ export function computeResize(
   const ldy = rdy / (sy || 1);
 
   if (el.type === 'line') {
-    // A west corner on a line means its start; anything else, its end. The
-    // group box hands out corners even for a line inside a multi-selection.
-    const grabStart = handle === 'line-start' || handle === 'nw' || handle === 'sw';
+    // A west or north handle on a line means its start; anything else, its end.
+    // The group box hands out corners/edges even for a line inside a multi-selection.
+    const grabStart =
+      handle === 'line-start' ||
+      handle === 'nw' ||
+      handle === 'sw' ||
+      handle === 'w' ||
+      handle === 'n';
     const sign = grabStart ? -1 : 1;
     let x2 = start.elW + sign * ldx;
     let y2 = start.elH + sign * ldy;
@@ -164,12 +181,15 @@ export function computeResize(
       : anchorTo(el, { x2, y2 }, { x: 0, y: 0 }, { x: 0, y: 0 });
   }
 
-  // Which way each side of the box grows for this corner. A drag towards the
-  // anchor shrinks the shape; away from it, grows it.
-  const east = handle === 'se' || handle === 'ne';
-  const south = handle === 'se' || handle === 'sw';
-  const signW = east ? 1 : -1;
-  const signH = south ? 1 : -1;
+  // Which way each side of the box grows for this corner or edge handle. A drag
+  // towards the anchor shrinks the shape; away from it, grows it; perpendicular
+  // to an edge handle leaves the untouched axis at 0.
+  const east = handle === 'se' || handle === 'ne' || handle === 'e';
+  const west = handle === 'sw' || handle === 'nw' || handle === 'w';
+  const south = handle === 'se' || handle === 'sw' || handle === 's';
+  const north = handle === 'ne' || handle === 'nw' || handle === 'n';
+  const signW = east ? 1 : west ? -1 : 0;
+  const signH = south ? 1 : north ? -1 : 0;
 
   /** New extent from the start extent, with Shift locking the proportions. */
   const sized = (w0: number, h0: number, dw: number, dh: number, floor: number) => {

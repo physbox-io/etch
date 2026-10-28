@@ -352,6 +352,9 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
   /** When the job on the wire started streaming, for the run time it finishes with. */
   private jobStartedAt: number | null = null;
 
+  /** Whether a multi-point bed surface probe walk is currently active on the machine. */
+  private probingGrid = false;
+
   constructor() {
     super({ endpoints: { machineSocketUrl, submitMachineJob } });
   }
@@ -1180,7 +1183,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * app overruling a safety choice.
    */
   protected onStateNotified(state: EtchMachineState): void {
-    setJobWakeLock(this.isRunning());
+    setJobWakeLock(this.isRunning() || this.probingGrid);
     if (this.isRunning() && this.layerStartLines.size > 0) {
       const crossed = state.currentLine;
       if (crossed > this.layerResetAt && this.layerStartLines.has(crossed)) {
@@ -1523,138 +1526,150 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     let firstContactZ: number | null = null;
 
     if (isLive) {
-      // The walk is the shared one — lift, traverse, read, retract, report —
-      // and what a *reading* is is this app's: a probe, or the operator winding
-      // the tool down onto material that will not close a circuit.
-      const walk = await this.probeGridCycle({
-        bounds,
-        cols: gx,
-        rows: gy,
-        // A *relative* lift from each surface just measured. Nothing in a probe
-        // cycle may command an absolute Z: against a datum left over from
-        // another setup that is a plunge through the work, which is how a tool
-        // and a plate were destroyed on Mesh.
-        liftMm: 5,
-        travelFeed: 3000,
-        takeReading: async point => {
-          let action: AssistedProbeAction = 'probe';
-          if (assisted) action = await opts.onPointReady!(point);
+      this.probingGrid = true;
+      setJobWakeLock(true);
+    }
 
-          if (action === 'abort') {
-            operatorAborted = true;
-            return null;
-          }
-          if (action === 'skip') return null;
-          if (action === 'capture') {
-            // The operator has wound the tool down onto the surface, so the
-            // measurement is simply where it is standing. Machine Z, the same
-            // frame `[PRB:]` reports in — mixing the work frame in here would
-            // offset hand-captured points against probed ones by the work
-            // offset.
-            return (await this.refreshPosition()).mpos.z;
-          }
-          this.assertProbeCircuit();
-          return this.probePoint(20, 50);
-        },
-        onProgress: (done, total) => {
-          probed = done;
-          onProgress?.(done, total);
-        },
-        // An alarm (a failed probe raises ALARM:5) refuses every command that
-        // follows it, so the rest of the grid would record as dead flat and
-        // then be applied to a job as though it had been measured. Stop.
-        abortWhen: () => operatorAborted || this.state.status === 'ALARM',
-      });
+    try {
+      if (isLive) {
+        // The walk is the shared one — lift, traverse, read, retract, report —
+        // and what a *reading* is is this app's: a probe, or the operator winding
+        // the tool down onto material that will not close a circuit.
+        const walk = await this.probeGridCycle({
+          bounds,
+          cols: gx,
+          rows: gy,
+          // A *relative* lift from each surface just measured. Nothing in a probe
+          // cycle may command an absolute Z: against a datum left over from
+          // another setup that is a plunge through the work, which is how a tool
+          // and a plate were destroyed on Mesh.
+          liftMm: 5,
+          travelFeed: 3000,
+          takeReading: async point => {
+            let action: AssistedProbeAction = 'probe';
+            if (assisted) action = await opts.onPointReady!(point);
 
-      raw = walk.readings;
-      aborted = walk.aborted;
-      for (const row of raw) {
-        for (const z of row) {
-          if (z === null) missed++;
-          else if (firstContactZ === null) firstContactZ = z;
+            if (action === 'abort') {
+              operatorAborted = true;
+              return null;
+            }
+            if (action === 'skip') return null;
+            if (action === 'capture') {
+              // The operator has wound the tool down onto the surface, so the
+              // measurement is simply where it is standing. Machine Z, the same
+              // frame `[PRB:]` reports in — mixing the work frame in here would
+              // offset hand-captured points against probed ones by the work
+              // offset.
+              return (await this.refreshPosition()).mpos.z;
+            }
+            this.assertProbeCircuit();
+            return this.probePoint(20, 50);
+          },
+          onProgress: (done, total) => {
+            probed = done;
+            onProgress?.(done, total);
+          },
+          // An alarm (a failed probe raises ALARM:5) refuses every command that
+          // follows it, so the rest of the grid would record as dead flat and
+          // then be applied to a job as though it had been measured. Stop.
+          abortWhen: () => operatorAborted || this.state.status === 'ALARM',
+        });
+
+        raw = walk.readings;
+        aborted = walk.aborted;
+        for (const row of raw) {
+          for (const z of row) {
+            if (z === null) missed++;
+            else if (firstContactZ === null) firstContactZ = z;
+          }
+        }
+        // Points never reached because the walk stopped are not misses of their
+        // own; `missed` counts them once, below.
+        missed -= Math.max(0, totalPoints - walk.taken);
+      } else {
+        for (let row = 0; row < gy; row++) {
+          const rawRow: Array<number | null> = [];
+          for (let col = 0; col < gx; col++) {
+            // Simulated heightmap: slight 0.18mm bed tilt + 0.08mm dish warp.
+            const normX = col / (gx - 1);
+            const normY = row / (gy - 1);
+            const tilt = (normX - 0.5) * 0.18 + (normY - 0.5) * 0.12;
+            const warp = Math.sin(normX * Math.PI) * Math.sin(normY * Math.PI) * -0.08;
+            rawRow.push(parseFloat((tilt + warp).toFixed(3)));
+            probed++;
+            onProgress?.(probed, totalPoints);
+            await new Promise(r => setTimeout(r, 80));
+          }
+          raw.push(rawRow);
         }
       }
-      // Points never reached because the walk stopped are not misses of their
-      // own; `missed` counts them once, below.
-      missed -= Math.max(0, totalPoints - walk.taken);
-    } else {
-      for (let row = 0; row < gy; row++) {
-        const rawRow: Array<number | null> = [];
-        for (let col = 0; col < gx; col++) {
-          // Simulated heightmap: slight 0.18mm bed tilt + 0.08mm dish warp.
-          const normX = col / (gx - 1);
-          const normY = row / (gy - 1);
-          const tilt = (normX - 0.5) * 0.18 + (normY - 0.5) * 0.12;
-          const warp = Math.sin(normX * Math.PI) * Math.sin(normY * Math.PI) * -0.08;
-          rawRow.push(parseFloat((tilt + warp).toFixed(3)));
-          probed++;
-          onProgress?.(probed, totalPoints);
-          await new Promise(r => setTimeout(r, 80));
+
+      // Anchor the map somewhere real first: misses record flat *against the
+      // measured surface*, not against zero in an absolute machine frame.
+      const anchor = isLive ? (firstContactZ ?? 0) : 0;
+      const points: ProbePoint[][] = raw.map((rawRow, row) =>
+        rawRow.map((z, col) => ({
+          x: bounds.minX + col * stepX,
+          y: bounds.minY + row * stepY,
+          z: z === null ? 0 : parseFloat((z - anchor).toFixed(3)),
+        }))
+      );
+
+      let grid: BedProbeGrid = {
+        minX: bounds.minX,
+        minY: bounds.minY,
+        maxX: bounds.maxX,
+        maxY: bounds.maxY,
+        gridX: gx,
+        gridY: gy,
+        points,
+        missed: missed + (aborted ? totalPoints - probed : 0),
+        simulated: !isLive,
+        referencedTo: 'first-point',
+        probedAt: Date.now(),
+      };
+
+      // Re-reference to the Z datum, so the correction is zero where the depth is
+      // already known to be right. Outside the probed area `interpolateGridZ`
+      // clamps to the edge, which is the nearest measurement there is.
+      const datum = isLive ? this.zDatumWorkXY() : null;
+      if (datum) {
+        grid = { ...rereferenceGrid(grid, datum.x, datum.y), referencedTo: 'z-datum' };
+      }
+
+      if (isLive) {
+        const finalRetractZ = Math.max(10, (await this.refreshPosition()).wpos.z);
+        await this.sendCommandAndWait(`G0 Z${finalRetractZ.toFixed(3)} F3000`);
+        if (aborted) {
+          this.updateState({
+            lastError:
+              `Bed probing stopped after ${probed} of ${totalPoints} points — the machine went into ` +
+              `alarm. The heightmap is incomplete and should not be used. Clear the alarm, check the ` +
+              `probe clip and starting Z, and probe again.`,
+          });
+        } else if (missed > 0) {
+          this.updateState({
+            lastError:
+              `Probe made no contact at ${missed} of ${totalPoints} points — those are recorded flat, ` +
+              `so levelling will be wrong there. Check the probe clip and the starting Z.`,
+          });
+        } else if (!datum) {
+          this.updateState({
+            lastError:
+              `Heightmap measured, but work Z0 has not been set this session — it is referenced to the ` +
+              `first probed point instead. Probe Z zero, then probe the bed again, or cut depth will be ` +
+              `off by the height difference between the two.`,
+          });
         }
-        raw.push(rawRow);
+      }
+
+      return grid;
+    } finally {
+      if (isLive) {
+        this.probingGrid = false;
+        setJobWakeLock(this.isRunning());
       }
     }
-
-    // Anchor the map somewhere real first: misses record flat *against the
-    // measured surface*, not against zero in an absolute machine frame.
-    const anchor = isLive ? (firstContactZ ?? 0) : 0;
-    const points: ProbePoint[][] = raw.map((rawRow, row) =>
-      rawRow.map((z, col) => ({
-        x: bounds.minX + col * stepX,
-        y: bounds.minY + row * stepY,
-        z: z === null ? 0 : parseFloat((z - anchor).toFixed(3)),
-      }))
-    );
-
-    let grid: BedProbeGrid = {
-      minX: bounds.minX,
-      minY: bounds.minY,
-      maxX: bounds.maxX,
-      maxY: bounds.maxY,
-      gridX: gx,
-      gridY: gy,
-      points,
-      missed: missed + (aborted ? totalPoints - probed : 0),
-      simulated: !isLive,
-      referencedTo: 'first-point',
-      probedAt: Date.now(),
-    };
-
-    // Re-reference to the Z datum, so the correction is zero where the depth is
-    // already known to be right. Outside the probed area `interpolateGridZ`
-    // clamps to the edge, which is the nearest measurement there is.
-    const datum = isLive ? this.zDatumWorkXY() : null;
-    if (datum) {
-      grid = { ...rereferenceGrid(grid, datum.x, datum.y), referencedTo: 'z-datum' };
-    }
-
-    if (isLive) {
-      const finalRetractZ = Math.max(10, (await this.refreshPosition()).wpos.z);
-      await this.sendCommandAndWait(`G0 Z${finalRetractZ.toFixed(3)} F3000`);
-      if (aborted) {
-        this.updateState({
-          lastError:
-            `Bed probing stopped after ${probed} of ${totalPoints} points — the machine went into ` +
-            `alarm. The heightmap is incomplete and should not be used. Clear the alarm, check the ` +
-            `probe clip and starting Z, and probe again.`,
-        });
-      } else if (missed > 0) {
-        this.updateState({
-          lastError:
-            `Probe made no contact at ${missed} of ${totalPoints} points — those are recorded flat, ` +
-            `so levelling will be wrong there. Check the probe clip and the starting Z.`,
-        });
-      } else if (!datum) {
-        this.updateState({
-          lastError:
-            `Heightmap measured, but work Z0 has not been set this session — it is referenced to the ` +
-            `first probed point instead. Probe Z zero, then probe the bed again, or cut depth will be ` +
-            `off by the height difference between the two.`,
-        });
-      }
-    }
-
-    return grid;
   }
 
   // -------------------------------------------------------------------------
