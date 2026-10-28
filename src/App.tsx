@@ -134,6 +134,12 @@ export const App: React.FC = () => {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         e.preventDefault();
         useStore.getState().pasteClipboard();
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+        // The browser's Ctrl+D bookmarks the page. Taken only when there is
+        // something to duplicate, so with nothing selected it still bookmarks.
+        if (selectedIds.length === 0) return;
+        e.preventDefault();
+        useStore.getState().duplicateSelected();
       } else if (
         !e.ctrlKey &&
         !e.metaKey &&

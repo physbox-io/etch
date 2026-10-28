@@ -131,7 +131,7 @@ export const LeftToolbar: React.FC = () => {
         onClick={duplicateSelected}
         disabled={selectedIds.length === 0}
         className="w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
-        title="Duplicate Selected"
+        title="Duplicate Selected (Ctrl+D)"
       >
         <Copy className="w-4 h-4 max-lg:w-5 max-lg:h-5" />
       </button>
