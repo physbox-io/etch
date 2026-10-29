@@ -26,7 +26,8 @@ export type MaterialId =
   | 'glass'
   | 'stone'
   | 'ceramic'
-  | 'film';
+  | 'film'
+  | 'cardstock';
 
 export interface MaterialProfile {
   id: MaterialId;
@@ -289,6 +290,39 @@ const MATERIALS: MaterialProfile[] = [
       // Better than acrylic's 1.5: the point of black film is that it absorbs
       // blue, which is the wavelength a diode has.
       diodeFactor: 1.1,
+    },
+  },
+  {
+    id: 'cardstock',
+    name: 'Cardstock (paper)',
+    // As with film, a router cannot hold paper; these exist because every
+    // profile has them, and the note says so.
+    chiploadAt3mm: 0.02,
+    rpmAt3mm: 16000,
+    stepdownRatio: 0.5,
+    note:
+      'Not routable. A cutter lifts a sheet of card and tears it rather than shearing it. ' +
+      'This is laser stock.',
+    laser: {
+      note:
+        '200-300 gsm card, about 0.3 mm. Tape or pin the sheet flat — card cockles in the heat and a ' +
+        'lifted corner is out of focus. Low air assist, or the cut-outs blow about under the head.',
+      warning:
+        'Paper burns rather than vaporising. Never leave a card job running unwatched, and keep air ' +
+        'assist on so a flare-up is blown out rather than fed.',
+      // A small fraction of wood's: cellulose with no lignin bulk to char
+      // through. Light card marks brown at a dose that barely darkens birch,
+      // and a wood dose would burn through it rather than score it.
+      etchDoseJPerMm: 0.05,
+      fillDoseJPerMm2: 0.2,
+      // Per mm of thickness, and card is a third of a millimetre, so the
+      // energy actually spent on a cut is a fifth of what 1 mm of ply costs.
+      // Below wood per mm because there is no glue line and no dense grain.
+      cutDoseJPerMm2: 0.8,
+      maxPowerFraction: 1,
+      // Pastel card reflects much of a blue diode's light, where dark wood
+      // absorbs it; the colours invites are cut from cost more than ply does.
+      diodeFactor: 1.4,
     },
   },
   {

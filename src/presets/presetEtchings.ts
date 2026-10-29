@@ -1,4 +1,5 @@
 import { thaiTileElements, TILE_RELIEF_DEPTH_MM } from './thaiTile';
+import { birthdayInviteDoc } from './birthdayInvite';
 import type { EtchDocument, EtchElement, LivingHingeSpec, PerforationSpec } from '../types/etch';
 import { hingeField, HINGE_LAYER_ID } from '../utils/livingHinge';
 import { perforationField, PERFORATION_LAYER_ID } from '../utils/perforation';
@@ -4491,6 +4492,13 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       selectedIds: [],
       elements: generateSlateCharcuterieElements(),
     }
+  },
+  {
+    id: 'birthday-lace-invite',
+    name: "Charlotte & Rose's Birthday Invite",
+    category: 'Cards & Invitations',
+    description: 'Two-layer 150mm papercut invitation: a pink card with a lace frame of butterflies, flowers and stars cut through it over a plain lavender backing, with the party details engraved on a round centre panel.',
+    doc: birthdayInviteDoc(),
   }
 ];
 

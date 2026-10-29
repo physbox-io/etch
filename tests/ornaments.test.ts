@@ -172,7 +172,10 @@ describe('guilloche', () => {
     }
   });
 
-  it('keeps every figure inside the region whatever it is asked for', () => {
+  // Three seconds on its own, against vitest's default of five: any other
+  // heavy file running alongside it — the invitation's lace regeneration was
+  // the first — tipped it over and failed the suite on a timeout.
+  it('keeps every figure inside the region whatever it is asked for', { timeout: 20000 }, () => {
     for (const figure of ['rosette', 'spiro', 'band']) {
       for (const depth of [0.05, 0.42, 0.9]) {
         const d = spec.build(region, { ...spec.defaults, figure, depth, turns: 4, ripple: 1, rings: 5 });

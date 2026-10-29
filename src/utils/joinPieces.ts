@@ -101,7 +101,7 @@ interface Piece {
  * An island standing inside a hole — the dot inside a drawn ring — is a piece
  * of its own, which is right: nothing holds it to the ring.
  */
-function piecesOf(region: ClipperLib.Paths): ClipperLib.Paths[] {
+export function piecesOf(region: ClipperLib.Paths): ClipperLib.Paths[] {
   const clipper = new ClipperLib.Clipper();
   clipper.AddPaths(region, ClipperLib.PolyType.ptSubject, true);
   const tree = new ClipperLib.PolyTree();
@@ -249,7 +249,11 @@ function closestBetween(a: Piece, b: Piece): Closest {
   const p = mean((t) => t.p);
   const q = mean((t) => t.q);
   const d = Math.hypot(q.x - p.x, q.y - p.y);
-  if (ties.length > 1 && d <= bestD + TIE_MM) return { p, q, d };
+  // As far apart as the nearest approach, not merely no further: ties all
+  // round a piece centred in another — a dot in the middle of a ring, a panel
+  // in the middle of a frame — average to the centre, a zero-length bridge in
+  // mid-air that joined nothing.
+  if (ties.length > 1 && Math.abs(d - bestD) <= TIE_MM) return { p, q, d };
   // Ties that are not along one face — two separate near-misses — have an
   // average in the air between them; take the tie nearest that middle instead.
   return ties.reduce((best, t) =>
@@ -383,7 +387,7 @@ function filletAt(
     .flat();
 }
 
-interface JoinedRegion {
+export interface JoinedRegion {
   contours: Pt[][];
   pieces: number;
   bridges: number;
@@ -394,7 +398,7 @@ interface JoinedRegion {
  * The join itself, on a region already assembled, in whatever units it is in.
  * `minBridge` is `MIN_BRIDGE_MM` in those units.
  */
-function joinRegion(region: ClipperLib.Paths, minBridge: number): JoinedRegion | BooleanFailure {
+export function joinRegion(region: ClipperLib.Paths, minBridge: number): JoinedRegion | BooleanFailure {
   const pieces = piecesOf(region).map(toPiece);
   if (pieces.length < 2) {
     return { error: 'Already one piece — nothing to join.' };

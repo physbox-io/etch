@@ -1022,7 +1022,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
        * the order *is* the operation: the first id is the base, and for
        * subtract it is the shape being cut into.
        */
-      const op = (msg.op || msg.operation) as BooleanOp | 'join' | 'unjoin';
+      const op = (msg.op || msg.operation) as BooleanOp | 'papercut' | 'lace' | 'join' | 'unjoin';
       if (op === 'join' || op === 'unjoin') {
         /*
          * Join rides on combine rather than being a tool of its own because it
@@ -1066,15 +1066,18 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           note: after.joinNotice ?? undefined,
         };
       }
-      if (!BOOLEAN_OP_LABEL[op]) {
+      // Papercut is a combine like the booleans — first id the window, the rest
+      // paper — and so rides on them rather than adding a tool. Lace is a
+      // papercut with the paper grown, and takes a window alone.
+      if (!BOOLEAN_OP_LABEL[op as BooleanOp] && op !== 'papercut' && op !== 'lace') {
         return {
           ok: false,
-          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'join', 'unjoin'].join(', ')}`,
+          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'papercut', 'lace', 'join', 'unjoin'].join(', ')}`,
         };
       }
       const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
-      if (!Array.isArray(ids) || ids.length < 2) {
-        return { ok: false, error: 'elementIds must name two or more elements' };
+      if (!Array.isArray(ids) || ids.length < (op === 'lace' ? 1 : 2)) {
+        return { ok: false, error: op === 'lace' ? 'elementIds must name the window to fill' : 'elementIds must name two or more elements' };
       }
       const known = new Set(store.document.elements.map((el) => el.id));
       const missing = ids.filter((id) => !known.has(id));
@@ -1084,7 +1087,9 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
 
       const before = new Set(store.document.elements.map((el) => el.id));
       store.setSelectedIds(ids);
-      useStore.getState().combineSelected(op);
+      if (op === 'papercut') useStore.getState().papercutSelected();
+      else if (op === 'lace') useStore.getState().laceSelected();
+      else useStore.getState().combineSelected(op);
 
       const after = useStore.getState();
       const created = after.document.elements.find((el) => !before.has(el.id));

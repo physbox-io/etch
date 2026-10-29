@@ -21,6 +21,7 @@ export const TEMPLATE_SHELVES = [
   'Badges & Tags',
   'Signs & Typography',
   'Coasters & Art',
+  'Cards & Invitations',
   'Enclosures & Boxes',
   'Mechanical Parts',
 ];

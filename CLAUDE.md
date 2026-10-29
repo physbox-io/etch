@@ -227,6 +227,40 @@ reaches both as `etch_combine` ops `join` / `unjoin` — ops, not a new tool, so
 the tool count the website advertises does not move. See
 `tests/joinPieces.test.ts`.
 
+`src/utils/papercut.ts` — Papercut, under Combine Shapes. Lace and filigree
+are drawn the other way round from everything else here: the vines, leaves and
+butterflies are the card that *stays*, and the cut is the space between them,
+which nobody can draw. The first-selected shape is the window; the rest are
+paper (closed shapes solid, with their own holes cut as detail; open lines
+thickened into strands). The cut is the window minus the paper. Two things it
+does that the drawing cannot show: any piece of paper not joined to the card
+is **bridged on** (Prim's algorithm out from the card, measuring each piece
+only against the network near it — Join's all-pairs tree took fifteen seconds
+on a lace), because otherwise it is an island in a hole and falls out; and
+openings too narrow to cut are closed up. MCP reaches it as `etch_combine` op
+`papercut`. Hand-placing holes was the first invitation, and it read as a card
+with holes in it; see `tests/papercut.test.ts`.
+
+`src/utils/laceFill.ts` — grows the paper for a papercut: scrolls off seed
+vines, leaves, then motifs in whatever openings are still large, all against a
+distance field so every opening comes out about one size. That evenness is what
+reads as lace. Order matters: big scrolls, then leaves and flowers while there is
+room, then small scrolls; leaves tried last never fit anywhere. Symmetry is
+applied while growing, so a scroll stops short of its own reflection. The
+invitation preset (`presets/birthdayInvite.ts`) is built with both, and stores
+its lace in `birthdayInviteLace.ts` because building it takes a couple of
+seconds — `tests/birthdayInvite.test.ts` regenerates it and fails on drift
+(`ETCH_BAKE_LACE=1` rewrites it).
+
+`src/utils/laceCut.ts` — "Fill with Lace" in the sidebar, from one shape up:
+the two above wired together for any shape. The first selected is the window,
+the rest motifs grown round. It derives what the preset placed by hand: the
+symmetry (mirrors, half turn, the square's diagonals) is read off a raster of
+the window, and rings of vine a band apart, each tied to the next, give scrolls
+something to grow from all the way in — grown off the edge alone, a wide window
+was a border of lace round a field of loose dots. A fresh seed per press, so
+undo and press again is a different lace. MCP: `etch_combine` op `lace`.
+
 `src/utils/beautify.ts` — the "Make Pretty" button, next to the boolean ops in
 the sidebar. It regularises a hand-drawn selection in four passes, and the order
 is load-bearing:
