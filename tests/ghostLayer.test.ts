@@ -98,7 +98,9 @@ describe('Ghost layer functionality', () => {
     expect(gcode).not.toContain('Guide Path');
   });
 
-  it('safely generates G-code for Lobster text-on-path anchored by a ghost path', async () => {
+  // Vectorises a script font along a path: about two seconds alone, and past
+  // the default five under a full parallel run.
+  it('safely generates G-code for Lobster text-on-path anchored by a ghost path', { timeout: 20000 }, async () => {
     const anchorPath: EtchElement = {
       id: 'anchor-path',
       name: 'Text Anchor Path',

@@ -3,6 +3,7 @@ import { useStore } from '../src/store/useStore';
 import { PRESET_ETCHINGS, DEFAULT_PRESET_ID } from '../src/presets/presetEtchings';
 import { THROUGH_CUT_OVERCUT_MM, findMaterial } from '../src/utils/materials';
 import { planToolpath, scoreLineRisk, tabHoldingMm } from '../src/utils/gcodeExporter';
+import { isOutsideStock, clearGeomBBoxCache } from '../src/utils/geom';
 
 describe('presets declare the stock they were drawn for', () => {
   /**
@@ -68,6 +69,73 @@ describe('presets declare the stock they were drawn for', () => {
     expect(cutElements?.length).toBeGreaterThan(0);
     expect(etchElements?.length).toBeGreaterThan(30);
     expect(fillElements?.length).toBeGreaterThan(0);
+  });
+
+  it('keeps every element of every preset (and its extra sheets) inside its stock', () => {
+    clearGeomBBoxCache();
+    for (const preset of PRESET_ETCHINGS) {
+      const docs = [preset.doc, ...(preset.doc.sheets ?? [])];
+      for (const d of docs) {
+        const strays = d.elements.filter((el) => isOutsideStock(el, d.width, d.height));
+        expect(strays.map((s) => `${preset.id}/${d.id}/${s.id}`)).toEqual([]);
+      }
+    }
+  });
+
+  it('uses parametric gear shapes in spur-gear-set and includes the 7 feature showcase presets', () => {
+    const gearSet = PRESET_ETCHINGS.find((p) => p.id === 'spur-gear-set')!;
+    expect(gearSet).toBeDefined();
+    const gears = gearSet.doc.elements.filter((el) => el.type === 'star' && el.shape === 'gear');
+    expect(gears.map((g) => g.pointsCount)).toEqual([20, 10]);
+    expect(gearSet.doc.objects?.length).toBe(2);
+
+    // 1. Living hinge journal
+    const journal = PRESET_ETCHINGS.find((p) => p.id === 'living-hinge-journal')!;
+    expect(journal.doc.elements.some((el) => el.hinge?.axis === 'y' && Boolean(el.d))).toBe(true);
+
+    // 2. Synth speaker grille
+    const synth = PRESET_ETCHINGS.find((p) => p.id === 'synth-speaker-grille')!;
+    expect(synth.doc.material).toBe('aluminium');
+    expect(synth.doc.elements.some((el) => el.perforation?.lattice === 'hex' && el.perforation?.ramp === 'radial')).toBe(true);
+
+    // 3. Multi-sheet mountain diorama with registration pins
+    const diorama = PRESET_ETCHINGS.find((p) => p.id === 'layered-mountain-diorama')!;
+    expect(diorama.doc.sheets).toHaveLength(2);
+    useStore.getState().loadPreset('layered-mountain-diorama');
+    expect(useStore.getState().tabs).toHaveLength(3);
+    for (const tab of useStore.getState().tabs) {
+      expect(tab.document.elements.filter((el) => el.layerId === 'registration')).toHaveLength(3);
+      // Close extra tabs when done so later tests start from a single sheet
+    }
+    for (const tab of useStore.getState().tabs.slice(1)) {
+      useStore.getState().closeTab(tab.id);
+    }
+
+    // 4. 3D V-carved guild sign with text-on-path and ghost layer
+    const guild = PRESET_ETCHINGS.find((p) => p.id === 'vcarve-guild-sign')!;
+    expect(guild.doc.machine).toBe('cnc');
+    expect(guild.doc.layers.some((l) => l.vCarve3D && l.tool === 3)).toBe(true);
+    expect(guild.doc.layers.some((l) => l.operation === 'ghost')).toBe(true);
+    expect(guild.doc.elements.some((el) => el.type === 'text' && el.textPathId === 'guild_arch_guide')).toBe(true);
+
+    // 5. Bridged Mylar stencil with joinPieces
+    const stencil = PRESET_ETCHINGS.find((p) => p.id === 'bridged-stencil-topper')!;
+    expect(stencil.doc.material).toBe('film');
+    expect(stencil.doc.layers.some((l) => l.operation === 'cut' && l.bridges)).toBe(true);
+    expect(stencil.doc.elements.some((el) => el.type === 'text' && el.joinPieces)).toBe(true);
+
+    // 6. Flat-pack phone stand with named EtchObjects
+    const stand = PRESET_ETCHINGS.find((p) => p.id === 'flatpack-phone-stand')!;
+    expect(stand.doc.objects?.map((o) => o.id)).toEqual([
+      'obj_stand_left',
+      'obj_stand_right',
+      'obj_stand_cross',
+    ]);
+
+    // 7. Surface-only slate charcuterie board
+    const slate = PRESET_ETCHINGS.find((p) => p.id === 'slate-charcuterie-board')!;
+    expect(slate.doc.material).toBe('stone');
+    expect(slate.doc.layers.every((l) => l.operation !== 'cut')).toBe(true);
   });
 });
 

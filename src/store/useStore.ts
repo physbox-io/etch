@@ -2639,6 +2639,10 @@ export const useStore = create<EtchStore>((set, get) => ({
 
     const preset = PRESET_ETCHINGS.find((p) => p.id === presetId);
     if (preset) {
+      if (preset.doc.sheets?.length) {
+        get().openJob(preset.doc, presetId);
+        return;
+      }
       // Clone: PRESET_ETCHINGS holds module-level objects, and handing one
       // straight to the store would make every later edit an edit of the
       // preset itself.

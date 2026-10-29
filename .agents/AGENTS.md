@@ -52,3 +52,9 @@ wsl -d Ubuntu-20.04 bash -c "cd /home/boab/etch && npm run build"
 ```
 
 If updating `opentype.js` path handling, remember to update ambient type declarations in `src/types/fonts.d.ts` if adding properties to `OTPath`.
+
+---
+
+## Deployment Workflow (`main` -> CI -> `deploy`)
+- **Push to `origin main` only**: Do **not** manually push to `origin/deploy`.
+- Pushing to `main` triggers `.github/workflows/test.yml` (`npm ci`, `npm run typecheck`, `npm run lint`, `npm run test`). Once the test job succeeds, the workflow's `deploy` job automatically force-pushes the verified commit SHA to `refs/heads/deploy`, which triggers Google Cloud Build to deploy to Cloud Run.

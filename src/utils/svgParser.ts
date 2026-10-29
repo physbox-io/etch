@@ -1,5 +1,6 @@
 import type { EtchDocument, EtchElement, EtchLayer } from '../types/etch';
 import { getElementTransform } from './geom';
+import { shapeOutlineD } from './parametricShapes';
 import { hasFreshOutline } from './textVectorizer';
 
 /**
@@ -74,7 +75,17 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
       return `    <line ${transform} x1="0" y1="0" x2="${el.x2 || 40}" y2="${el.y2 || 0}" ${style} />\n`;
 
     case 'polygon': {
-      const pts = el.points?.map(p => `${p.x},${p.y}`).join(' ') || '0,0 20,40 -20,40';
+      let pts = el.points?.map(p => `${p.x},${p.y}`).join(' ');
+      if (!pts) {
+        const sides = el.sides || 6;
+        const r = el.r || 25;
+        const polyPts: string[] = [];
+        for (let i = 0; i < sides; i++) {
+          const a = (i * 2 * Math.PI) / sides;
+          polyPts.push(`${(r * Math.cos(a)).toFixed(3)},${(r * Math.sin(a)).toFixed(3)}`);
+        }
+        pts = polyPts.join(' ');
+      }
       return `    <polygon ${transform} points="${pts}" ${style} />\n`;
     }
 
@@ -93,8 +104,10 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
     case 'freehand':
     case 'bezier':
     case 'symbol':
-    case 'star':
-      return `    <path ${transform} d="${escapeXml(el.d || '')}" ${style} />\n`;
+    case 'star': {
+      const d = el.type === 'star' ? shapeOutlineD(el) : (el.d || '');
+      return `    <path ${transform} d="${escapeXml(d)}" ${style} />\n`;
+    }
 
     case 'image': {
       /**
