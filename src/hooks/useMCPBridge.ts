@@ -30,6 +30,7 @@ import { defaultRegistration, planRegistration } from '../utils/registration';
 import { defaultLivingHinge, planLivingHinge } from '../utils/livingHinge';
 import { defaultPerforation, planPerforation } from '../utils/perforation';
 import { ORNAMENTS, ornamentById, planOrnament, defaultOrnamentRegion } from '../utils/ornaments';
+import { cutTopologyProblems } from '../utils/cutTopology';
 
 /** Millimetres, to the micron — past that it is float noise, not a dimension. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -266,6 +267,10 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
             message: `Cut layer '${layer.name}' goes ${layer.zDepth}mm deep into ${doc.stockThickness}mm stock, so it will score rather than cut through.`,
           });
         }
+      }
+
+      for (const p of cutTopologyProblems(doc.elements, doc.layers)) {
+        problems.push({ severity: 'warning', elementId: p.elementId, message: p.message });
       }
 
       if (doc.elements.length === 0) {

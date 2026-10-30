@@ -1,4 +1,4 @@
-import type { EtchElement, EtchLayer } from '../types/etch';
+import type { EtchElement, EtchLayer, LayerOperation } from '../types/etch';
 import { matrixScale, multiply, parseTransform, type Matrix } from './matrix';
 import { transformPathD } from './pathTransform';
 import { pathPoints } from './pathFlatten';
@@ -18,7 +18,14 @@ interface InheritedStyle {
   strokeWidth?: number;
   opacity?: number;
   display?: string;
+  /**
+   * What the sender says this artwork is for, from `data-operation` on it or
+   * a group around it. A file that says nothing is cut, as it always was.
+   */
+  operation?: LayerOperation;
 }
+
+const OPERATIONS: readonly LayerOperation[] = ['cut', 'etch', 'fill', 'shade', 'ghost'];
 
 const MM_PER_INCH = 25.4;
 const CSS_DPI = 96;
@@ -78,6 +85,8 @@ function readStyle(node: Element, inherited: InheritedStyle): InheritedStyle {
   }
   const display = prop('display');
   if (display) out.display = display;
+  const operation = attr('data-operation')?.trim().toLowerCase();
+  if (operation && (OPERATIONS as readonly string[]).includes(operation)) out.operation = operation as LayerOperation;
 
   return out;
 }
@@ -211,14 +220,19 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     : [unitScaleX, 0, 0, unitScaleY, 0, 0];
 
   // ---- Walk ----------------------------------------------------------------
-  const byColour = new Map<string, string>(); // colour → layerId
+  const byColour = new Map<string, string>(); // colour|operation → layerId
   const layers: EtchLayer[] = [];
   const prefix = opts.layerIdPrefix ?? 'svg';
   let count = 0;
   const seenUse = new Set<Element>();
 
-  const layerFor = (colour: string, label?: string): string => {
-    const key = colour.toLowerCase();
+  let declared = false;
+  const layerFor = (colour: string, label?: string, operation?: LayerOperation): string => {
+    if (operation) declared = true;
+    const op = operation ?? 'cut';
+    // Colour and operation: a sender can draw a guide and a cut in one
+    // colour, and they must not share a layer.
+    const key = `${colour.toLowerCase()}|${op}`;
     const existing = byColour.get(key);
     if (existing) return existing;
     const id = `${prefix}_${byColour.size + 1}`;
@@ -232,7 +246,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
       // an SVG <title>, a hand-written id — has already said something better.
       name: label || `Imported ${colour}`,
       color: colour,
-      operation: 'cut',
+      operation: op,
       visible: true,
       locked: false,
       speed: 600,
@@ -327,7 +341,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
           id: `imported_text_${++count}_${Date.now()}`,
           name: `Imported Text ${count}`,
           type: 'text',
-          layerId: layerFor(stroke, label),
+          layerId: layerFor(stroke, label, style.operation),
           x: matrix[0] * origin.x + matrix[2] * origin.y + matrix[4],
           y: matrix[1] * origin.x + matrix[3] * origin.y + matrix[5],
           text: content,
@@ -361,7 +375,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
       id: `imported_${++count}_${Date.now()}`,
       name: `Imported ${node.tagName.toLowerCase()} ${count}`,
       type: 'path',
-      layerId: layerFor(stroke, label),
+      layerId: layerFor(stroke, label, style.operation),
       x: 0,
       y: 0,
       d: bakedD,
@@ -400,6 +414,12 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     : null;
 
   if (elements.length === 0) warnings.push('No drawable geometry found in that SVG.');
+  if (!declared && layers.length > 1) {
+    warnings.push(
+      `All ${layers.length} colours came in as cut layers. If any are fold lines, engraving or ` +
+        'reference outlines, set their layer to etch or ghost before cutting, or they will be cut through.'
+    );
+  }
 
   return { elements, layers, warnings, bounds };
 }

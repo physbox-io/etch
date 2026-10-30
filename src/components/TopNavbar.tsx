@@ -9,6 +9,7 @@ import { importDXF } from '../utils/dxfImport';
 import { analyseSheetedSvg, splitIntoSheets } from '../utils/sheetedSvg';
 import { exportToDXFString, dxfFilename } from '../utils/dxfExport';
 import { readSvgHandoff, placeUnscaled, type SvgHandoff } from '../utils/svgHandoff';
+import { cutTopologyProblems } from '../utils/cutTopology';
 import {
   buildShareLink,
   readShareLink,
@@ -411,17 +412,30 @@ export const TopNavbar: React.FC = () => {
         selectedIds: [],
       });
     } else {
-      // Merge in the layers the file's stroke colours implied, skipping any
-      // whose id is already present.
-      const existingIds = new Set(doc.layers.map((l) => l.id));
-      const newLayers = result.layers.filter((l) => !existingIds.has(l.id));
+      // Merge in the layers the file implied. Ids run svg_1, svg_2 … in every
+      // import, so one already in the document is renamed rather than
+      // skipped: skipped, this import's shapes landed on the last import's
+      // layer, whatever its operation — a guide on a cut layer.
+      const taken = new Set(doc.layers.map((l) => l.id));
+      const renamed = new Map<string, string>();
+      for (const l of result.layers) {
+        if (!taken.has(l.id)) { taken.add(l.id); continue; }
+        let n = 2;
+        while (taken.has(`${l.id}_${n}`)) n++;
+        renamed.set(l.id, `${l.id}_${n}`);
+        taken.add(`${l.id}_${n}`);
+      }
+      const newLayers = result.layers.map((l) => ({ ...l, id: renamed.get(l.id) ?? l.id }));
+      const newElements = placed.elements.map((el) => ({ ...el, layerId: renamed.get(el.layerId) ?? el.layerId }));
       setDocument({
         ...doc,
         ...stock,
         layers: [...doc.layers, ...newLayers],
-        elements: [...doc.elements, ...placed.elements],
+        elements: [...doc.elements, ...newElements],
       });
     }
+    const after = useStore.getState().document;
+    for (const p of cutTopologyProblems(after.elements, after.layers)) notes.push(p.message);
 
     setImportReport({
       headline:
