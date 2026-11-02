@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { getStoredAuthToken } from '../utils/apiClient';
+import { tabSession } from '../utils/tabSession';
 import { createEtchMachineHandlers, setCurrentDocument } from '../utils/machineMcp';
 import { useStore } from '../store/useStore';
 import { exportToSVGString } from '../utils/svgParser';
@@ -88,6 +89,71 @@ export type MCPResult = Record<string, unknown> & { ok: boolean };
  */
 const machineHandlers = createEtchMachineHandlers();
 
+/*
+ * Every name the switch in handleMCPCommand answers, for LIST_COMMANDS.
+ *
+ * A list kept beside a switch is a list that drifts: a new case nobody adds
+ * here is a command an agent asking "what can this tab do?" is never told
+ * about. tests/mcpBridge.test.ts reads the case labels out of this file and
+ * fails unless they equal this list, so the two cannot part.
+ */
+export const SWITCH_COMMANDS: readonly string[] = [
+  'etch_get_state', 'GET_STATE',
+  'etch_set_document', 'SET_DOCUMENT',
+  'etch_get_summary', 'GET_SUMMARY',
+  'etch_validate_document', 'VALIDATE_DOCUMENT',
+  'etch_update_element', 'UPDATE_ELEMENT',
+  'etch_get_screenshot', 'SCREENSHOT',
+  'etch_get_note_card', 'GET_NOTE_CARD',
+  'etch_set_note_card', 'SET_NOTE_CARD',
+  'etch_set_svg', 'SET_SVG',
+  'etch_export_svg', 'EXPORT_SVG',
+  'etch_list_presets', 'LIST_PRESETS',
+  'etch_load_preset', 'LOAD_PRESET',
+  'etch_save_preset', 'SAVE_PRESET',
+  'etch_delete_preset', 'DELETE_PRESET',
+  'etch_add_element', 'ADD_ELEMENT',
+  'etch_generate_gcode', 'GENERATE_GCODE',
+  'etch_list_clipart', 'LIST_CLIPART',
+  'etch_add_clipart', 'ADD_CLIPART',
+  'etch_add_image', 'ADD_IMAGE',
+  'etch_fill_region', 'FILL_REGION',
+  'etch_erase', 'ERASE',
+  'etch_list_sheets', 'LIST_SHEETS',
+  'etch_select_sheet', 'SELECT_SHEET',
+  'etch_new_sheet', 'NEW_SHEET',
+  'etch_close_sheet', 'CLOSE_SHEET',
+  'etch_add_registration', 'ADD_REGISTRATION',
+  'etch_make_ornament', 'MAKE_ORNAMENT',
+  'etch_make_living_hinge', 'MAKE_LIVING_HINGE',
+  'etch_make_perforation', 'MAKE_PERFORATION',
+  'etch_update_layer', 'UPDATE_LAYER',
+  'etch_combine', 'COMBINE',
+  'etch_make_test_grid', 'MAKE_TEST_GRID',
+  'etch_machine_status', 'MACHINE_STATUS',
+  'etch_machine_trim', 'MACHINE_TRIM',
+  'etch_list_capabilities', 'LIST_CAPABILITIES',
+];
+
+/** Every command this tab takes: the switch's, the machine ones, and this one. */
+export function listCommands(): string[] {
+  return [...new Set([...SWITCH_COMMANDS, ...Object.keys(machineHandlers), 'LIST_COMMANDS'])].sort();
+}
+
+/*
+ * Which TAB this is, sent with the HELLO. Several tabs of one app all connect
+ * to the one hub, and without a name for each the hub lists them as "unknown
+ * (old client)" and cannot address one: an agent's command goes to whichever
+ * connected last, and a document built in one tab is not there when the next
+ * command lands in another. Same fields, same shape as Mesh's.
+ */
+export function tabIdentity(): { sessionId: string; label: string; href: string; startedAt: number } {
+  const { id, startedAt } = tabSession();
+  const href = typeof location !== 'undefined' ? location.href : '';
+  const port = typeof location !== 'undefined' ? location.port : '';
+  return { sessionId: id, label: `Etch :${port} ${id.slice(4)}`, href, startedAt };
+}
+
 export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MCPResult> {
   const store = useStore.getState();
 
@@ -105,6 +171,11 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       // exception here would surface as a bridge fault instead.
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  // Ahead of the switch so it is not one of its cases: the list is of them.
+  if (cmd === 'LIST_COMMANDS') {
+    return { ok: true, commands: listCommands() };
   }
 
   switch (cmd) {
@@ -1289,7 +1360,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
     }
 
     default:
-      return { ok: false, error: `Unknown MCP command: ${cmd}` };
+      return { ok: false, error: `Unknown MCP command: ${cmd}. LIST_COMMANDS names every command this app takes.` };
   }
 }
 
@@ -1333,6 +1404,7 @@ export function useMCPBridge() {
           app: 'etch',
           port: location.port,
           token: getStoredAuthToken() ?? undefined,
+          ...tabIdentity(),
         }));
         console.log('[Physbox Etch] MCP Bridge WebSocket connected');
       };

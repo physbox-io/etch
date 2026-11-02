@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleMCPCommand } from '../src/hooks/useMCPBridge';
+import { readFileSync } from 'fs';
+import { handleMCPCommand, SWITCH_COMMANDS, tabIdentity } from '../src/hooks/useMCPBridge';
 import { useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
@@ -460,5 +461,43 @@ describe('etch_set_svg from a sibling app', () => {
     expect(doc.name).toBe('Doc');
     expect(doc.stockThickness).toBe(3);
     expect(doc.machine).toBe('laser');
+  });
+});
+
+describe('MCP: LIST_COMMANDS', () => {
+  it('lists exactly the cases the switch answers, read from the source', () => {
+    const src = readFileSync('src/hooks/useMCPBridge.ts', 'utf8');
+    const body = src.slice(src.indexOf('export async function handleMCPCommand('), src.indexOf('export function useMCPBridge('));
+    const cases = [...body.matchAll(/^\s*case '([^']+)':/gm)].map(m => m[1]);
+    expect(cases.length).toBeGreaterThan(50);
+    expect([...SWITCH_COMMANDS].sort()).toEqual([...new Set(cases)].sort());
+  });
+
+  it('answers with the switch, the machine commands and itself, every one of which is taken', async () => {
+    const r = await handleMCPCommand('LIST_COMMANDS', {});
+    expect(r.ok).toBe(true);
+    const commands = r.commands as string[];
+    for (const c of ['etch_get_state', 'SET_SVG', 'MACHINE_JOG', 'MACHINE_ZERO_Z', 'RUN_JOB', 'LIST_COMMANDS']) {
+      expect(commands).toContain(c);
+    }
+    expect(commands).toEqual([...commands].sort());
+    expect(new Set(commands).size).toBe(commands.length);
+  });
+
+  it('points an unknown command at LIST_COMMANDS', async () => {
+    const r = await handleMCPCommand('NOT_A_COMMAND', {});
+    expect(r.ok).toBe(false);
+    expect(String(r.error)).toContain('LIST_COMMANDS');
+  });
+});
+
+describe('MCP: tab identity in the HELLO', () => {
+  it('names this tab with a stable session id the hub can pin', () => {
+    const a = tabIdentity();
+    expect(a.sessionId).toMatch(/^tab_[a-z0-9]+$/);
+    expect(a.label).toContain('Etch');
+    expect(a.label).toContain(a.sessionId.slice(4));
+    expect(typeof a.startedAt).toBe('number');
+    expect(tabIdentity().sessionId).toBe(a.sessionId);
   });
 });
