@@ -99,9 +99,11 @@ describe('tool routing', () => {
       [rect('a', 'etchA'), rect('b', 'fill'), rect('c', 'etchB'), rect('d', 'cut')]
     );
 
-    // fill (T1) runs first by operation; the two etch layers then run together
-    // on T3, and the cut follows on T1. Three blocks, not four.
-    expect(toolsInOrder(d)).toEqual([1, 3, 1]);
+    // The two etch layers run together on T3, then the fill on T1 runs
+    // straight on into the cut on T1. Two blocks, not four — and not three,
+    // which grouping only within each operation used to give: surface work
+    // commutes, so a fill need not run before an etch on another tool.
+    expect(toolsInOrder(d)).toEqual([3, 1]);
   });
 
   it('carries the loaded tool across an operation boundary when it can', () => {

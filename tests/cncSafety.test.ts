@@ -234,16 +234,21 @@ describe('spindle speed', () => {
 });
 
 describe('holding tabs', () => {
-  it('leaves tabs on a through-cut by default, on the pass that frees the part', () => {
+  it('leaves tabs on a through-cut by default, on every lap that reaches the floor', () => {
     const { segments } = planToolpath(doc([layer('cut', 'cut')], [rect('r', 'cut')]));
-    // Tabs belong on the finishing lap: nothing comes free until it has taken
-    // the last of the wall, and a tab on the roughing pass would be a lump of
-    // material the finishing pass then cuts away.
+    // The roughing slot runs full depth, so it is the roughing lap that parts
+    // the sheet; the finishing lap only trims the part's own side of it. A tab
+    // on the finish alone used to be a ledge on the part with air beyond it —
+    // the tab has to be on both laps for there to be a bridge to the sheet.
     const freeing = segments.find((s) => s.finishPass) ?? segments[0];
     expect(freeing.tabs.length).toBeGreaterThanOrEqual(3);
     expect(freeing.tabHeight).toBeGreaterThan(0);
+    // Compared by total length: a tab landing across the roughing lap's start
+    // is split in two, so the counts can differ by one.
+    const held = (tabs: { start: number; end: number }[]) =>
+      tabs.reduce((sum, t) => sum + t.end - t.start, 0);
     for (const rough of segments.filter((s) => !s.finishPass)) {
-      expect(rough.tabs).toEqual([]);
+      expect(held(rough.tabs)).toBeCloseTo(held(freeing.tabs), 6);
     }
   });
 

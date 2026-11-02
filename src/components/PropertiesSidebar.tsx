@@ -1,4 +1,5 @@
 import React from 'react';
+import { noteText } from '../utils/planNotes';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { getLocalBBox } from '../utils/geom';
@@ -132,7 +133,7 @@ const LaserLayerCutting: React.FC<{
         <p className="mt-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-100">
           {speed} mm/min · {power}% · {passes} pass{passes === 1 ? '' : 'es'}
         </p>
-        {[...(refusal ? [refusal] : []), ...(recipe?.notes ?? [])].map((n) => (
+        {[...(refusal ? [refusal] : []), ...(recipe?.notes ?? []).map(noteText)].map((n) => (
           <p
             key={n}
             className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug"
@@ -341,7 +342,7 @@ const CncLayerCutting: React.FC<{
           {rpm > 0 ? `${formatRpm(rpm)} RPM · ` : ''}
           {feed} mm/min · {stepdown} mm/pass
         </p>
-        {recipe?.notes.map((n) => (
+        {recipe?.notes.map(noteText).map((n) => (
           <p
             key={n}
             className="mt-1 flex items-start gap-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug"

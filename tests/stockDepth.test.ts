@@ -260,6 +260,26 @@ describe('score lines in thin stock', () => {
     expect(scoreLineRisk(doc())).toBeNull();
   });
 
+  /**
+   * A filled shape clears a field, and a field has no line to fold along. A
+   * 3 mm candle recess in 6 mm ply was reported as a fold line the holder
+   * would snap along, which is the kind of false alarm that teaches people to
+   * stop reading the notes.
+   */
+  it('does not call a pocket a fold line', () => {
+    useStore.getState().setStockThickness(1.4);
+    const etchIds = doc()
+      .layers.filter((l) => l.operation !== 'cut')
+      .map((l) => l.id);
+    for (const el of doc().elements.filter(
+      (e) => etchIds.includes(e.layerId) && e.machining !== 'filled'
+    )) {
+      useStore.getState().deleteElements([el.id]);
+    }
+    expect(doc().elements.some((e) => e.machining === 'filled')).toBe(true);
+    expect(scoreLineRisk(doc())).toBeNull();
+  });
+
   it('ignores a layer with nothing drawn on it', () => {
     useStore.getState().setStockThickness(1.4);
     const etchIds = doc()

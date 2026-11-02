@@ -8,6 +8,7 @@ import { describeLaserSource, type LaserSource } from './machineSettings';
 import { DEFAULT_HATCH_SPACING } from './hatchFill';
 import { defaultFeedDiameter, type ToolProfile } from './tooling';
 import type { MachinedOperation } from '../types/etch';
+import { routine } from './planNotes';
 
 /**
  * The operation a layer's *feeds* are derived as.
@@ -179,22 +180,22 @@ export function deriveFeeds(
   );
 
   if (rpm < targetRpm * 0.95 && rpm <= spindle.min) {
-    notes.push(
+    notes.push(routine(
       `Ideal here is ${formatRpm(targetRpm)} RPM, and holding chipload at that speed needs ` +
         `${Math.round(targetRpm * feedPerRev)} mm/min. The spindle will not turn below ` +
         `${formatRpm(spindle.min)} RPM, so the chip is thinner than ideal — expect more heat, and ` +
         `slow down if it starts to burn.`
-    );
+    ));
   } else if (rpm > targetRpm * 1.05) {
-    notes.push(
+    notes.push(routine(
       `${mat.name} with this tool wants ${formatRpm(targetRpm)} RPM; the spindle will not turn ` +
         `below ${formatRpm(spindle.min)}. Feed is calculated for the speed it can actually hold.`
-    );
+    ));
   } else if (rpm < targetRpm * 0.95) {
-    notes.push(
+    notes.push(routine(
       `Spindle turned down from ${formatRpm(targetRpm)} to ${formatRpm(rpm)} RPM so the feed ` +
         `stays within ${Math.round(maxFeed)} mm/min at the right chip thickness.`
-    );
+    ));
   }
 
   let feed = rpm * feedPerRev;
@@ -463,11 +464,11 @@ export function deriveLaserFeeds(
     speed = MAX_LASER_SPEED_MM_MIN;
     watts = (dose * speed) / 60;
     powerFraction = watts / source.watts;
-    notes.push(
+    notes.push(routine(
       `${material.name} needs so little of a ${describeLaserSource(source)} that the head would have ` +
         `to outrun the machine. Power is turned down to ${Math.round(powerFraction * 100)}% instead, ` +
         `so the line gets the energy it needs at a speed the gantry can hold.`
-    );
+    ));
   } else if (speed < MIN_LASER_SPEED_MM_MIN) {
     /**
      * Not enough laser — so go over it more than once.
@@ -511,10 +512,10 @@ export function deriveLaserFeeds(
          * guarantees.
          */
         speed = Math.min(MAX_LASER_SPEED_MM_MIN, singlePass * passes);
-        notes.push(
+        notes.push(routine(
           `One pass would need ${Math.round(singlePass)} mm/min, slow enough to char and to risk a ` +
             `flare-up. Split into ${passes} passes at ${Math.round(speed)} mm/min instead.`
-        );
+        ));
       }
     }
   }

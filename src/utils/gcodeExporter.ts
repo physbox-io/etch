@@ -17,6 +17,7 @@ import {
 import { hasFreshOutline } from './textVectorizer';
 import { hatchRegion, DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from './hatchFill';
 import { pocketRings } from './pocketOffset';
+import { routine, splitNotes } from './planNotes';
 import { docToMachine, describeOrigin, originFlipsY } from './machineCoords';
 import {
   DEFAULT_MOTION_PROFILE,
@@ -341,8 +342,25 @@ export function scoreLineRisk(doc: EtchDocument): ScoreLineRisk | null {
     // A relief is area work, not a scored line, and is checked by
     // `reliefFloorRisk` against what it leaves under itself instead.
     if (layer.operation === 'shade') continue;
-    // A layer nothing is drawn on cuts nothing, however deep it claims to go.
-    if (!doc.elements.some((el) => el.layerId === layer.id && el.visible)) continue;
+    /*
+     * Only a *line* is a fold line. A layer nothing is drawn on cuts nothing,
+     * however deep it claims to go, and a filled shape clears a field: its
+     * wall is the pocket's edge, not a groove with board on both sides to
+     * hinge about. A 3 mm candle recess in 6 mm ply was being reported as a
+     * line the holder would snap along.
+     */
+    if (
+      !doc.elements.some(
+        (el) =>
+          el.layerId === layer.id &&
+          el.visible &&
+          el.type !== 'erase' &&
+          el.type !== 'image' &&
+          el.machining !== 'filled'
+      )
+    ) {
+      continue;
+    }
 
     const zDepth = Math.abs(layer.zDepth);
     const fraction = zDepth / stockThickness;
@@ -493,8 +511,9 @@ export interface GCodeSegment {
    * one comes back at the true line and takes only that fraction off. The
    * roughing pass is where the cutter is loaded, deflected and pushed off the
    * line; the finishing pass is barely loaded at all, so the wall it leaves is
-   * straight and square. It is also the pass that frees the part, which is why
-   * the tabs are on this one and not on the roughing pass.
+   * straight and square. Both laps carry the tabs, in the same places: the
+   * roughing slot runs full depth, so a tab on the finish alone would be a
+   * ledge on the part with nothing on the other side of it.
    */
   finishPass?: boolean;
   /**
@@ -641,7 +660,14 @@ function effectiveCutWidth(cut: LayerCutting, laserMode: boolean): number {
 export function planToolpath(
   fullDoc: EtchDocument,
   opts: Partial<GCodeOptions> = {}
-): { segments: GCodeSegment[]; skipped: string[]; notes: string[] } {
+): {
+  segments: GCodeSegment[];
+  skipped: string[];
+  /** Everything the planner had to say, for the file header. */
+  notes: string[];
+  /** The notes that only describe routine work — see `planNotes.ts`. */
+  routine: string[];
+} {
   const options = resolveOptions(fullDoc, opts);
 
   /*
@@ -660,16 +686,16 @@ export function planToolpath(
   if (!options.laserMode) {
     const fit = spindleRangeForMachine(options.spindle, options.motion);
     options.spindle = fit.range;
-    if (fit.note) notes.push(fit.note);
+    if (fit.note) notes.push(routine(fit.note));
   }
   if (options.selectionOnly) {
     const n = selectedMachinedCount(fullDoc, options.selectionOnly);
-    notes.push(
+    notes.push(routine(
       `Selection only: ${n} shape${n === 1 ? '' : 's'} of ${fullDoc.elements.length} in the drawing ` +
         `${n === 1 ? 'is' : 'are'} cut, and the rest of the sheet is left alone. The drawing is still ` +
         `read for what encloses what, so a part re-cut this way comes out the size it would have the ` +
         `first time.`
-    );
+    ));
   }
   /**
    * Whether the emit mirrors Y, which decides which winding climb-mills. Read
@@ -950,6 +976,14 @@ export function planToolpath(
       }
 
       const contours = extractElementContours(el);
+      /*
+       * The contours the line work below follows. The drawn outline, except
+       * for a router's filled shape, whose outline lap rides the pocket wall:
+       * run on the drawn line, the cutter's far half went past it and the
+       * pocket came out a whole cutter width too big — a 78 mm recess cut at
+       * 81.2 mm — after the rings had been carefully inset to stop exactly that.
+       */
+      let lineContours = contours;
 
       /**
        * Detail finer than the groove, said before the job runs rather than
@@ -1040,11 +1074,11 @@ export function planToolpath(
                 `clear at that depth either. Go deeper, or clear it with an end mill first.`
             );
           } else {
-            notes.push(
+            notes.push(routine(
               `"${el.name}" is wider than a ${cut.toolName} spans at ${vMaxDepth} mm deep, so the ` +
                 `walls are V-carved and the floor between them is cleared flat at that depth, in ` +
                 `${flat.rings.length} pass${flat.rings.length === 1 ? '' : 'es'}.`
-            );
+            ));
           }
         }
         if (el.hatchOutline === false) continue;
@@ -1066,10 +1100,10 @@ export function planToolpath(
         let pitch =
           el.hatchSpacing ?? doc.defaultHatchSpacing ?? defaultPitch(cut, options.laserMode);
         if (!options.laserMode && cut.stepover > 0 && pitch > cut.stepover) {
-          notes.push(
+          notes.push(routine(
             `Fill pitch on layer "${layer.name}" reduced from ${pitch} mm to ${cut.stepover} mm — ` +
               `wider than that and the cutter is slotting at full width rather than clearing.`
-          );
+          ));
           pitch = cut.stepover;
         }
 
@@ -1091,7 +1125,8 @@ export function planToolpath(
          *
          * Scanlines run to the outline itself, so the cutter's far half hangs
          * over the edge and the pocket comes out a full width too big. The
-         * outline pass that follows cuts the true edge; this clears up to it.
+         * outline lap that follows runs on this same boundary, which on a
+         * router is where the cutter's edge meets the drawn line.
          *
          * Half the *groove*, not half the shank: a V-bit insetting by its
          * 0.1 mm tip leaves a scanline a tenth of a millimetre from the edge
@@ -1102,6 +1137,9 @@ export function planToolpath(
           options.laserMode || cut.grooveRadius <= 0
             ? contours
             : offsetContours(contours, cut.grooveRadius, 'inside').contours;
+        // A cut layer offsets its own contours by the cutter later; handing it
+        // the inset ones would take the radius off twice.
+        if (layer.operation !== 'cut') lineContours = region;
 
         /*
          * Two ways to clear an area, and the machine decides which.
@@ -1236,11 +1274,11 @@ export function planToolpath(
         strokeGroup = fillGroup;
         widened++;
       } else if (el.machining === 'stroked') {
-        notes.push(
+        notes.push(routine(
           `"${el.name}" is set to machine at its stroke width, but that width ` +
             `(${strokeWidth} mm) is no wider than the ${cutWidth.toFixed(2)} mm one pass ` +
             `already cuts — it comes out as a single line, which is what it would have been anyway.`
-        );
+        ));
       } else if (strokeWidth >= cutWidth * 2) {
         drawnThick++;
       }
@@ -1248,7 +1286,7 @@ export function planToolpath(
       // Each subpath becomes its own segment: a path with several M commands
       // (an imported letterform, say) must not be joined end-to-end into one
       // continuous cut.
-      for (const pts of contours) {
+      for (const pts of lineContours) {
         if (pts.length < 2) continue;
 
         // Through-cuts are held back so the whole layer can be offset together;
@@ -1367,14 +1405,14 @@ export function planToolpath(
       referenceHoles.length === 0 ? millable : millable.filter((c) => !referenceHoles.includes(c));
 
     if (referenceHoles.length > 0) {
-      notes.push(
+      notes.push(routine(
         `${referenceHoles.length} contour${referenceHoles.length === 1 ? '' : 's'} on layer ` +
           `"${layer.name}" ${referenceHoles.length === 1 ? 'is' : 'are'} cut as ` +
           `${referenceHoles.length === 1 ? 'a hole' : 'holes'} because a reference (ghost) outline ` +
           `encloses ${referenceHoles.length === 1 ? 'it' : 'them'}. The reference itself is not cut. ` +
           `Without it ${referenceHoles.length === 1 ? 'it' : 'they'} would have been read as ` +
           `${referenceHoles.length === 1 ? 'a disc' : 'discs'} and cut oversize by the cutter diameter.`
-      );
+      ));
     }
 
     if (millable.length > 0) {
@@ -1413,20 +1451,10 @@ export function planToolpath(
         );
       }
 
-      for (const pts of roughOffset.contours) {
-        segments.push(
-          makeSegment(layer, cut, options, {
-            points: pts,
-            isClosed: true,
-            bBoxArea: boundingArea(pts),
-            linkTolerance: 0,
-            // Tabs hold a part that is about to come free, and nothing comes
-            // free until the finishing pass has taken the last of the wall.
-            tabs: cut.tabs && !finishing ? planTabs(pathLength(pts)) : [],
-          })
-        );
-      }
-
+      // The finishing laps are planned first, because the roughing lap's tabs
+      // have to be where theirs are; they still run second (see the sort).
+      const finishSegments: GCodeSegment[] = [];
+      const finishTabCentres: Pt[] = [];
       if (finishing) {
         const finishParts = offsetContours(ordinary, cut.radius, cut.side);
         const finishHoles =
@@ -1460,7 +1488,7 @@ export function planToolpath(
           // The lead may have moved where the lap begins; the lap is the same
           // loop in the same direction either way.
           const lap = lead?.contour ?? pts;
-          segments.push(
+          finishSegments.push(
             makeSegment(layer, cut, options, {
               points: lap,
               isClosed: true,
@@ -1483,9 +1511,37 @@ export function planToolpath(
             })
           );
         }
+        for (const seg of finishSegments) finishTabCentres.push(...tabCentres(seg.points, seg.tabs));
         finished += finishOffset.contours.length;
         finishedAllowance = allowance;
       }
+      for (const pts of roughOffset.contours) {
+        segments.push(
+          makeSegment(layer, cut, options, {
+            points: pts,
+            isClosed: true,
+            bBoxArea: boundingArea(pts),
+            linkTolerance: 0,
+            /*
+             * The roughing lap carries the finishing lap's tabs, in the same
+             * places. It used to carry none, on the reasoning that nothing
+             * comes free until the finish — but the rougher cuts its slot to
+             * full depth just wide of the line, and the skin it leaves is on
+             * the *part's* side of that slot. Once it closes, the part and its
+             * skin are already free of the sheet; the finishing lap's tabs
+             * were bridges from the part to the air in the rough slot, holding
+             * nothing. Where the two laps leave a tab together, it reaches
+             * all the way across to the sheet.
+             */
+            tabs: !cut.tabs
+              ? []
+              : finishing
+                ? tabsAtPoints(pts, finishTabCentres, allowance)
+                : planTabs(pathLength(pts)),
+          })
+        );
+      }
+      segments.push(...finishSegments);
     }
   }
 
@@ -1515,14 +1571,14 @@ export function planToolpath(
   if (bridged.contours > 0) {
     segments.length = 0;
     segments.push(...bridged.segments);
-    notes.push(
+    notes.push(routine(
       `${bridged.bridges} bridge${bridged.bridges === 1 ? '' : 's'} of ${bridged.widthMm.toFixed(
         1
       )} mm left uncut across ${bridged.contours} outline${bridged.contours === 1 ? '' : 's'}, so ` +
         `${bridged.contours === 1 ? 'the piece' : 'those pieces'} stay joined to the sheet instead ` +
         `of dropping when the cut closes. Snap or knife them afterwards; turn bridges off on the ` +
         `layer to cut straight through.`
-    );
+    ));
   }
 
   /*
@@ -1535,13 +1591,13 @@ export function planToolpath(
   if (erase.erased > 0 || erase.dropped > 0) {
     segments.length = 0;
     segments.push(...erase.segments);
-    notes.push(
+    notes.push(routine(
       `Erased: ${Math.round(erase.removedMm)} mm of path lies under the eraser and is not machined` +
         (erase.dropped > 0
           ? `, including ${erase.dropped} path${erase.dropped === 1 ? '' : 's'} covered entirely`
           : '') +
         `. Nothing on the canvas has changed — delete the eraser stroke and all of it comes back.`
-    );
+    ));
   }
 
   const clip = clipSegmentsToStock(segments, doc.width, doc.height);
@@ -1577,13 +1633,13 @@ export function planToolpath(
     if (deduped.affected > 0) {
       segments.length = 0;
       segments.push(...deduped.segments);
-      notes.push(
+      notes.push(routine(
         `${Math.round(deduped.removedMm)} mm of doubled-up line removed across ` +
           `${deduped.affected} path${deduped.affected === 1 ? '' : 's'}: shapes that share an edge ` +
           `now have it cut once. Cutting it twice ` +
           `${options.laserMode ? 'comes out darker there, and burns through where nothing else does' : 'sends the cutter down a slot that is already air'}. ` +
           `Turn this off in the advanced options if a doubled line was the intent.`
-      );
+      ));
     }
   }
 
@@ -1598,24 +1654,23 @@ export function planToolpath(
   if (sheet) notes.push(sheet);
 
   if (finished > 0) {
-    notes.push(
+    notes.push(routine(
       `${finished} through-cut${finished === 1 ? '' : 's'} ` +
         `${finished === 1 ? 'is' : 'are'} roughed ${finishedAllowance.toFixed(2)} mm wide of the ` +
         `line and then finished with one light lap at the line. A cutter deflects under load in a ` +
         `deep cut, so a single pass leaves a wall that is neither straight nor square; the ` +
-        `finishing lap is barely loaded and takes the wall true. It also carries the tabs, since ` +
-        `it is the pass that frees the part.`
-    );
+        `finishing lap is barely loaded and takes the wall true.`
+    ));
   }
 
   if (led > 0) {
-    notes.push(
+    notes.push(routine(
       `${led} finishing lap${led === 1 ? '' : 's'} curve${led === 1 ? 's' : ''} onto the wall along ` +
         `a tangent rather than driving straight at it, so the cut begins with the tool already ` +
         `moving along the edge. Driving at it leaves a dwell mark where the direction changes — ` +
         `visible on a finished edge, measurable on a fitted one. The arcs run in waste; any ` +
         `contour with no room for one is cut as it was.`
-    );
+    ));
   }
 
   /*
@@ -1630,39 +1685,39 @@ export function planToolpath(
    */
   {
     const motion = options.motion ?? DEFAULT_MOTION_PROFILE;
-    notes.push(describeMotionProfile(motion, motion.source === 'machine'));
+    notes.push(routine(describeMotionProfile(motion, motion.source === 'machine')));
   }
 
   if (adaptiveEngagement < 1) {
-    notes.push(
+    notes.push(routine(
       `Pockets are cleared at ${Math.round(adaptiveEngagement * 100)}% of the cutter's width ` +
         `rather than the full slot the feeds were derived for, so the rings are fed faster and ` +
         `cut ${adaptiveDeepest} mm at a time. A narrower bite makes a thinner chip at the same ` +
         `feed, and a chip too thin to shear is rubbed instead of cut — which is heat in the tool, ` +
         `and in aluminium is what welds swarf to the flutes. The opening ring of each pocket is ` +
         `still a slot and is still cut like one.`
-    );
+    ));
   }
 
   if (drilled.length > 0) {
     const sizes = [...new Set(drilled.map((d) => `${d.drawn.toFixed(1)} mm`))].join(', ');
     const made = [...new Set(drilled.map((d) => d.made.toFixed(2)))].join(', ');
-    notes.push(
+    notes.push(routine(
       `${drilled.length} hole${drilled.length === 1 ? '' : 's'} (${sizes}) ` +
         `${drilled.length === 1 ? 'is' : 'are'} drilled by plunging rather than milled round, ` +
         `because ${drilled.length === 1 ? 'it is' : 'they are'} the size of the cutter. ` +
         `${drilled.length === 1 ? 'It comes' : 'They come'} out at ${made} mm — the cutter's own ` +
         `diameter — and the cut is pecked so the chips clear. Draw the hole wider than the cutter ` +
         `if you need it milled to an exact size.`
-    );
+    ));
   }
 
   if (widened > 0) {
-    notes.push(
+    notes.push(routine(
       `${widened} element${widened === 1 ? ' is' : 's are'} machined at ${widened === 1 ? 'its' : 'their'} ` +
         `stroke width, as passes laid side by side. That is area work, so it takes proportionally ` +
         `longer than scoring the same line once.`
-    );
+    ));
   }
   if (drawnThick > 0) {
     notes.push(
@@ -1702,15 +1757,15 @@ export function planToolpath(
   // saying travel fell by two percent is noise in a panel whose whole value is
   // that everything in it is something the operator needs to know.
   if (before - after > 50 && after < before * 0.8) {
-    notes.push(
+    notes.push(routine(
       `Path order optimised: the ${machineWords(doc.machine ?? 'laser').head} travels ` +
         `${Math.round(before - after)} mm less between paths (${Math.round(before)} mm down to ` +
         `${Math.round(after)} mm). Only surface line work is reordered — cuts keep their ` +
         `inner-before-outer order.`
-    );
+    ));
   }
 
-  return { segments: ordered, skipped, notes: [...new Set(notes)] };
+  return { segments: ordered, skipped, ...splitNotes(notes) };
 }
 
 /** Options with the document's own settings filled in for anything unstated. */
@@ -1943,11 +1998,11 @@ function resolveLayerCutting(
     const asked = Math.max(1, layer.passes || 1);
     const passes = Math.max(asked, recipe?.passes ?? 1);
     if (recipe && recipe.passes > asked) {
-      notes.push(
+      notes.push(routine(
         `Layer "${layer.name}" asks for ${asked} pass${asked === 1 ? '' : 'es'}; a ` +
           `${describeLaserSource(laser)} needs ${recipe.passes} at ${speed} mm/min to get through ` +
           `${material.name}. Running ${recipe.passes}.`
-      );
+      ));
     }
 
     /*
@@ -1968,12 +2023,12 @@ function resolveLayerCutting(
     const kerf = Math.max(0, laserKerfMm);
     const side = resolveCutSide(layer);
     if (kerf > 0 && side !== 'on') {
-      notes.push(
+      notes.push(routine(
         `Layer "${layer.name}" is offset ${(kerf / 2).toFixed(3)}mm to the ` +
           `${side === 'outside' ? 'outside' : 'inside'} for a ${kerf}mm kerf, so it finishes the ` +
           `size it was drawn. Measure a test cut and set the kerf in the status bar if parts come ` +
           `out over or under.`
-      );
+      ));
     }
 
     return {
@@ -2058,11 +2113,11 @@ function resolveLayerCutting(
   if (asked > depths.length && zDepth > 0) {
     depths = planPasses(zDepth, zDepth / asked).depths;
   } else if (asked > 0 && asked < depths.length && layer.stepdownOverride === undefined) {
-    notes.push(
+    notes.push(routine(
       `Layer "${layer.name}" asks for ${asked} pass${asked === 1 ? '' : 'es'} at ${zDepth} mm; ` +
         `a ${toolName} in ${material.name} takes ${stepdown} mm at a time, so it is being cut in ` +
         `${depths.length}. Set a stepdown override if you really want deeper passes.`
-    );
+    ));
   }
 
   /**
@@ -2356,12 +2411,12 @@ function planShadeSegments(
   if (!options.laserMode && step > 0 && reachable > 0 && reachable < shaded.zDepth - 1e-6) {
     const trimmed = planPasses(reachable, step).depths;
     if (trimmed.length > 0 && trimmed.length < shaded.depths.length) {
-      notes.push(
+      notes.push(routine(
         `"${el.name}" is never darker than ${Math.round(peak * 100)}% of black, so it carves ` +
           `${reachable.toFixed(1)} mm of the layer's ${shaded.zDepth} mm and needs ` +
           `${trimmed.length} pass${trimmed.length === 1 ? '' : 'es'}, not the ` +
           `${shaded.depths.length} the full depth would take.`
-      );
+      ));
       deepened = { ...shaded, depths: trimmed };
     }
   }
@@ -2448,32 +2503,32 @@ function planShadeSegments(
         )
       );
     }
-    notes.push(
+    notes.push(routine(
       `"${el.name}" is roughed with a ${rough.cutting.toolName} at ${rough.pitch} mm, leaving ` +
         `${rough.leave} mm for the ${shaded.toolName} to finish in one pass. Anywhere the roughing ` +
         `tool is too wide to reach — the tight corners between motifs — the finisher meets full ` +
         `material instead of that ${rough.leave} mm, so rough with a cutter that fits the design.`
-    );
+    ));
   }
 
   const finish = rough ? { ...deepened, depths: [-reachable] } : deepened;
   for (const run of runs) segments.push(shadeGeometry(run, finish, pitch, run.intensities));
 
   if (!options.laserMode && shaded.flatBottomed) {
-    notes.push(
+    notes.push(routine(
       `"${el.name}" is carved as a relief with a ${shaded.toolName}. A flat-ended cutter leaves ` +
         `each sweep as a terrace with a square shoulder, so the tone comes out stepped rather ` +
         `than modelled — a ball nose follows a slope, and is what a relief wants.`
-    );
+    ));
   }
 
   const points = shadePointCount(runs);
   if (points > SHADE_BUSY_POINTS) {
-    notes.push(
+    notes.push(routine(
       `"${el.name}" shades into about ${Math.round(points / 1000)}k moves at ${pitch} mm pitch. ` +
         `That is a long job and a large file, and the controller has to keep up with it — ` +
         `a coarser pitch, or a smaller picture, is the setting that answers it.`
-    );
+    ));
   }
 
   return { segments, notes };
@@ -2501,6 +2556,77 @@ export function planTabs(perimeter: number): TabSpan[] {
     tabs.push({ start: centre - TAB_WIDTH_MM / 2, end: centre + TAB_WIDTH_MM / 2 });
   }
   return tabs;
+}
+
+/** Where each tab sits on its contour, as a point rather than a distance along it. */
+function tabCentres(pts: Pt[], tabs: TabSpan[]): Pt[] {
+  return tabs.map((t) => pointAtLength(pts, (t.start + t.end) / 2));
+}
+
+function pointAtLength(pts: Pt[], at: number): Pt {
+  let run = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (run + len >= at && len > 0) {
+      const t = (at - run) / len;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+    run += len;
+  }
+  return { ...pts[pts.length - 1] };
+}
+
+/**
+ * Tabs on one contour placed against points on a neighbouring one — the
+ * roughing lap's tabs opposite the finishing lap's.
+ *
+ * Distances along the two laps do not correspond: they start in different
+ * places (the finishing lap's lead moves its start) and the roughing lap is
+ * longer or shorter by the allowance all the way round. So each tab is carried
+ * across as the nearest point on this contour to the other's tab, and only
+ * from a contour within reach — the allowance and a little — so a part's tabs
+ * are not borrowed by the hole cut inside it.
+ *
+ * A tab landing across this contour's start is split in two rather than left
+ * hanging off the end of the path, where nothing reads it.
+ */
+function tabsAtPoints(pts: Pt[], centres: Pt[], allowance: number): TabSpan[] {
+  const perimeter = pathLength(pts);
+  if (perimeter <= TAB_WIDTH_MM * 2) return [];
+  const reach = allowance + 0.5;
+  const spans: TabSpan[] = [];
+  for (const c of centres) {
+    let best = Infinity;
+    let bestAt = 0;
+    let run = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / len2)) : 0;
+      const d = Math.hypot(a.x + dx * t - c.x, a.y + dy * t - c.y);
+      if (d < best) {
+        best = d;
+        bestAt = run + Math.sqrt(len2) * t;
+      }
+      run += Math.sqrt(len2);
+    }
+    if (best > reach) continue;
+    const start = bestAt - TAB_WIDTH_MM / 2;
+    const end = bestAt + TAB_WIDTH_MM / 2;
+    if (start < 0) {
+      spans.push({ start: 0, end }, { start: perimeter + start, end: perimeter });
+    } else if (end > perimeter) {
+      spans.push({ start, end: perimeter }, { start: 0, end: end - perimeter });
+    } else {
+      spans.push({ start, end });
+    }
+  }
+  return spans.sort((a, b) => a.start - b.start);
 }
 
 /**
@@ -2551,7 +2677,7 @@ function reportSheetPieces(
     `${Math.round(p.maxX - p.minX)} x ${Math.round(p.maxY - p.minY)} mm`;
 
   if (carrying.length === 0) {
-    return (
+    return routine(
       `This job frees ${n} piece${n === 1 ? '' : 's'} from the sheet ` +
       `(largest ${size(analysis.loose[0])}) — which is what a cut is usually for. ` +
       `Nothing else comes away.`
@@ -3156,24 +3282,24 @@ function pathLength(pts: Pt[]): number {
 }
 
 /**
- * Groups each operation's segments by tool, so a job stops to change tools once
- * per tool rather than once per layer boundary.
+ * Groups the job's segments by tool, so it stops to change tools once per tool
+ * rather than once per layer boundary.
  *
- * Regrouping happens strictly *within* one operation. Tool changes are cheaper
- * than a ruined part, so nothing here is allowed to hoist a cut ahead of an etch
- * to save a change — the fill/etch/cut order the sort established stands.
+ * Two blocks, split where it matters: surface work (shading, fills, etching)
+ * and cuts. Nothing is ever hoisted across that line — a cut releases the
+ * part, and no number of saved changes is worth engraving a loose one.
  *
- * Within an operation the ordering rule differs by how reversible that operation
- * is:
- *
- *   - fill and etch remove surface only, so the groups are free to reorder. The
- *     group matching the tool already in the spindle goes first, which is what
- *     turns "etch with the V-bit, fill with the V-bit" plus an end-milled cut
- *     into two changes instead of three.
- *   - cut releases the part, so its groups keep inner-before-outer order: the
- *     group containing the smallest enclosed area runs first. Reordering here to
- *     save a change could cut an outline free before another tool cuts the holes
- *     inside it.
+ *   - Surface work only removes surface, so its tool groups are free to run in
+ *     any order, across operations as well as within them, and the tool the
+ *     cuts begin with goes last so the job runs straight on into them.
+ *     Grouping strictly per operation was the first version, and it turned a
+ *     candle holder — pocket and outline on a 1/8" end mill, grooves on a
+ *     1.5 mm one — into 1/8" → 1.5 mm → 1/8", a change that bought nothing:
+ *     a groove cut before the pocket is the same groove. Within one tool's
+ *     group the operations keep their order, fills before etching.
+ *   - Cuts keep inner-before-outer order: the group containing the smallest
+ *     enclosed area runs first. Reordering here to save a change could cut an
+ *     outline free before another tool cuts the holes inside it.
  *
  * The number of changes inside a block is the number of distinct tools whatever
  * the order, so the cut rule costs at most one extra change at the boundary.
@@ -3181,39 +3307,39 @@ function pathLength(pts: Pt[]): number {
 function routeByTool(segments: GCodeSegment[]): GCodeSegment[] {
   if (segments.length === 0) return segments;
 
-  const routed: GCodeSegment[] = [];
-  let carry: number | null = null;
-
-  for (let i = 0; i < segments.length; ) {
-    // One operation's worth of segments — the sort left them contiguous.
-    const op = segments[i].type;
-    let end = i;
-    while (end < segments.length && segments[end].type === op) end++;
-    const block = segments.slice(i, end);
-    i = end;
-
-    // Grouped in first-appearance order, so a block with one tool is untouched.
+  const groupByTool = (block: GCodeSegment[]) => {
+    // First-appearance order, so a block with one tool is untouched.
     const groups = new Map<number, GCodeSegment[]>();
     for (const seg of block) {
       const g = groups.get(seg.tool);
       if (g) g.push(seg);
       else groups.set(seg.tool, [seg]);
     }
+    return groups;
+  };
 
-    let order = [...groups.keys()];
-    if (op === 'cut') {
-      const minArea = new Map(
-        order.map((tool) => [tool, Math.min(...groups.get(tool)!.map((s) => s.bBoxArea))])
-      );
-      order.sort((a, b) => minArea.get(a)! - minArea.get(b)!);
-    } else if (carry !== null && groups.has(carry)) {
-      order = [carry, ...order.filter((t) => t !== carry)];
-    }
+  // The sort put every cut after all surface work, so this is one split.
+  const firstCut = segments.findIndex((s) => s.type === 'cut');
+  const surface = firstCut < 0 ? segments : segments.slice(0, firstCut);
+  const cuts = firstCut < 0 ? [] : segments.slice(firstCut);
 
-    for (const tool of order) routed.push(...groups.get(tool)!);
-    carry = order[order.length - 1];
+  const cutGroups = groupByTool(cuts);
+  const cutOrder = [...cutGroups.keys()];
+  const minArea = new Map(
+    cutOrder.map((tool) => [tool, Math.min(...cutGroups.get(tool)!.map((s) => s.bBoxArea))])
+  );
+  cutOrder.sort((a, b) => minArea.get(a)! - minArea.get(b)!);
+
+  const surfaceGroups = groupByTool(surface);
+  let surfaceOrder = [...surfaceGroups.keys()];
+  const next = cutOrder[0];
+  if (next !== undefined && surfaceGroups.has(next) && surfaceOrder.length > 1) {
+    surfaceOrder = [...surfaceOrder.filter((t) => t !== next), next];
   }
 
+  const routed: GCodeSegment[] = [];
+  for (const tool of surfaceOrder) routed.push(...surfaceGroups.get(tool)!);
+  for (const tool of cutOrder) routed.push(...cutGroups.get(tool)!);
   return routed;
 }
 
@@ -3590,11 +3716,11 @@ export function optimizeTravel(
   }
 
   if (unrefined > 0) {
-    notes.push(
+    notes.push(routine(
       `Travel optimisation stopped at reordering for ${unrefined} paths: the extra refinement ` +
         `pass compares every path against every gap, and past ${RELOCATE_LIMIT} paths that takes ` +
         `longer to plan than it saves at the machine. The reordering itself was applied in full.`
-    );
+    ));
   }
 
   return { segments: out, notes };
@@ -3644,6 +3770,8 @@ export interface ToolpathPlan {
   segments: GCodeSegment[];
   skipped: string[];
   notes: string[];
+  /** The subset of `notes` that only describe routine work — see `planNotes.ts`. */
+  routine?: string[];
 }
 
 export function generateGCode(

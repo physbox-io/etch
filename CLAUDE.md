@@ -351,7 +351,13 @@ way — a preview that does its own conversion will drift from the file.
 - `skipped` is geometry that could not be cut. `notes` is everything the planner
   had to compromise on, plus warnings (score-line risk, unmarkable material,
   off-stock geometry). Both surface in the G-code header comments and in the
-  preview panel. Prefer adding a note over failing silently.
+  preview panel. Prefer adding a note over failing silently. The preview boxes
+  only the notes that change what comes off the machine; a note that merely
+  explains the planner's own routine work (pass counts, the finishing lap,
+  adaptive pockets, a less-than-ideal spindle speed) is wrapped in `routine()`
+  (`planNotes.ts`) where it is written and folds into one closed line. Untagged
+  is the default for a reason — a new warning is seen until someone decides
+  it is routine.
 - Layers carry `operation: 'cut' | 'etch' | 'fill' | 'shade'`, and elements carry
   `machining: 'outline' | 'filled'`. `fill`/`filled` routes through
   `hatchFill.ts`; cut side and kerf compensation through `contourOffset.ts`
@@ -385,8 +391,9 @@ way — a preview that does its own conversion will drift from the file.
   life. A laser keeps hatch lines: it has no side load, and the scan *is* the
   picture. A through-cut is roughed wide of the line and finished with one light
   lap at it (`finishAllowanceFor`), because a loaded cutter deflects and springs
-  back; the finishing lap carries the tabs, since it is the pass that frees the
-  part, and it curves onto the wall along a tangent arc in waste (`planLead`)
+  back; both laps carry the tabs at the same places (the roughing slot runs
+  full depth, so tabs on the finish alone held nothing), and the finishing lap
+  curves onto the wall along a tangent arc in waste (`planLead`)
   rather than driving straight at it and leaving a dwell mark. A round hole
   within a tenth of the cutter's own diameter is **drilled** — pecked as
   explicit plunges and retracts, because GRBL implements no canned cycles — and
@@ -413,6 +420,11 @@ way — a preview that does its own conversion will drift from the file.
   air. On by default (`removeOverlaps`), and deliberately blind to fills,
   shading, tabbed cuts and anything on another layer — in each of those the
   repetition either is the job or is a decision the planner cannot make.
+- **Tools are grouped across surface work.** `routeByTool` treats shading,
+  fills and etching as one block — a groove cut before a pocket is the same
+  groove — and runs the tool the cuts start with last, so a pocket and outline
+  on one cutter with grooves on another is one change, not two. Cuts are never
+  hoisted ahead of surface work, and keep inner-before-outer order.
 - `travelOptimization` (0–3, in the export dialog's advanced options) shortens
   the hops between **etched** paths only. Cuts keep inner-before-outer order
   because an outline releases the part; hatch fills and shaded sweeps keep

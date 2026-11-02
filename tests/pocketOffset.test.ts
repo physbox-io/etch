@@ -132,3 +132,38 @@ describe('a routed pocket in a real document', () => {
     expect(width(segments[segments.length - 1])).toBeGreaterThan(width(segments[0]));
   });
 });
+
+/**
+ * A filled shape's outline lap, on a router, rides the pocket wall. It used to
+ * run on the drawn line, so the cutter's far half went a radius past it and a
+ * 78 mm recess came out at 81.2 mm — the rings carefully inset, then undone by
+ * the last lap.
+ */
+describe('the outline lap of a routed pocket', () => {
+  const recess = (hatchOutline: boolean): EtchDocument => ({
+    id: 'd', name: 'Recess', width: 131, height: 140, gridSize: 10, snapToGrid: false,
+    units: 'mm', origin: 'top-left', machine: 'cnc', material: 'plywood', stockThickness: 6,
+    layers: [{ id: 'f', name: 'Recess', color: '#f90', operation: 'fill', visible: true,
+      locked: false, speed: 1000, power: 100, passes: 1, zDepth: 3, tool: 1 }],
+    elements: [{ id: 'c', name: 'Recess', type: 'circle', layerId: 'f', x: 65.5, y: 70, r: 39,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true,
+      locked: false, machining: 'filled', hatchSpacing: 1.4, hatchOutline } as EtchElement],
+  } as EtchDocument);
+
+  const reach = (d: EtchDocument) => {
+    clearGeomBBoxCache();
+    const { segments } = planToolpath(d);
+    return Math.max(
+      ...segments.flatMap((s) => s.points.map((p) => Math.hypot(p.x - 65.5, p.y - 70)))
+    );
+  };
+
+  it('keeps the cutter inside the drawn circle', () => {
+    const radius = 3.175 / 2;
+    expect(reach(recess(true))).toBeCloseTo(39 - radius, 1);
+  });
+
+  it('comes out the same size with the outline lap on or off', () => {
+    expect(reach(recess(true))).toBeCloseTo(reach(recess(false)), 3);
+  });
+});

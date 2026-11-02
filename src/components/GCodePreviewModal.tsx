@@ -35,7 +35,7 @@ import { NumberInput } from '@physbox-io/ui';
  * dependency of half the memos below, and a new `[]` each time would make every
  * one of them recompute on every frame of a live job.
  */
-const NO_PLAN: ToolpathPlan = { segments: [], skipped: [], notes: [] };
+const NO_PLAN: ToolpathPlan = { segments: [], skipped: [], notes: [], routine: [] };
 
 const TRAVEL_OPT_LABELS = ['Off', 'Reorder', 'Nearest entry', 'Thorough'];
 
@@ -276,6 +276,12 @@ export const GCodePreviewModal: React.FC = () => {
   }, [isGCodeModalOpen]);
 
   const plan = program?.plan ?? NO_PLAN;
+  // Warnings first and alone; the routine notes are folded away below them.
+  const routineNotes = plan.routine ?? [];
+  const attention = useMemo(() => {
+    const quiet = new Set(plan.routine ?? []);
+    return plan.notes.filter((n) => !quiet.has(n));
+  }, [plan.notes, plan.routine]);
 
   // The pass-order choice only means anything where something takes more than
   // one pass; on a single-pass job the two orders are the same program.
@@ -787,26 +793,23 @@ export const GCodePreviewModal: React.FC = () => {
             )}
 
             {/*
-              Where the planner could not do exactly what the settings asked.
-
-              A pass count overridden because the cutter could not take that
-              bite, a feature dropped because it is narrower than the tool, a
-              spindle that will not turn slowly enough. These are already in the
-              G-code header, but nobody reads the header — and each one is a
-              difference between the part on screen and the part that comes off
-              the machine, which has to be seen before the Run button, not after.
+              What the operator has to know before the Run button: a feature
+              dropped because it is narrower than the tool, geometry off the
+              stock, a piece that comes loose carrying engraving. These are in
+              the G-code header too, but nobody reads the header. Routine
+              adjustments are kept out of this box (see below) — listed here
+              they buried these, and the box stopped being read.
             */}
-            {plan.notes.length > 0 && (
+            {attention.length > 0 && (
               <div className="mx-4 mb-3 p-2.5 rounded-lg border border-amber-400/60 bg-amber-50 dark:bg-amber-950/40">
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
                   <div className="space-y-1">
                     <div className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
-                      Etch changed {plan.notes.length === 1 ? 'something' : 'a few things'} to keep the
-                      cutter alive
+                      Check before you run
                     </div>
                     <ul className="space-y-1">
-                      {plan.notes.map((n) => (
+                      {attention.map((n) => (
                         <li
                           key={n}
                           className="text-[10px] text-amber-700 dark:text-amber-400/90 leading-snug"
@@ -870,6 +873,28 @@ export const GCodePreviewModal: React.FC = () => {
                   </div>
                 </div>
               </div>
+            )}
+
+            {/*
+              What the planner did as a matter of course — pass counts, the
+              finishing lap, adaptive pockets. True and in the file header, but
+              shown in full beside the warnings it drowned them out, so it is
+              one closed line here and opened by whoever wants it.
+            */}
+            {routineNotes.length > 0 && (
+              <details className="mx-4 mb-3 text-[10px] text-slate-500 dark:text-slate-400">
+                <summary className="cursor-pointer select-none hover:text-slate-700 dark:hover:text-slate-200">
+                  {routineNotes.length} adjustment{routineNotes.length === 1 ? '' : 's'} Etch made
+                  for you
+                </summary>
+                <ul className="mt-1 space-y-1 pl-3">
+                  {routineNotes.map((n) => (
+                    <li key={n} className="leading-snug">
+                      {n}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
 
             </div>

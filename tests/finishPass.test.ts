@@ -113,3 +113,58 @@ describe('finish allowance', () => {
     expect(finish.depths[finish.depths.length - 1]).toBeCloseTo(-18, 6);
   });
 });
+
+/**
+ * The roughing slot runs full depth just wide of the line, and the skin it
+ * leaves is on the part's side of it — so once it closes, the part is free of
+ * the sheet. Tabs on the finishing lap alone were ledges on the part with air
+ * on the other side. Both laps must leave a tab, and in the same place, or
+ * there is no bridge from the part to the sheet.
+ */
+describe('tabs on a finished cut', () => {
+  const tabbed = () => {
+    const d = doc(6.3);
+    d.stockThickness = 6;
+    return d;
+  };
+
+  const tabPoints = (s: { points: { x: number; y: number }[]; tabs: { start: number; end: number }[] }) =>
+    s.tabs.map((t) => {
+      const at = (t.start + t.end) / 2;
+      let run = 0;
+      for (let i = 1; i < s.points.length; i++) {
+        const a = s.points[i - 1];
+        const b = s.points[i];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (run + len >= at) {
+          const k = (at - run) / len;
+          return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+        }
+        run += len;
+      }
+      return s.points[s.points.length - 1];
+    });
+
+  it('are left by the roughing lap as well as the finishing one', () => {
+    const { segments } = plan(tabbed());
+    const rough = segments.filter((s) => s.layerId === 'cut' && !s.finishPass);
+    const finish = segments.filter((s) => s.finishPass);
+    expect(finish.length).toBe(1);
+    expect(rough.length).toBe(1);
+    expect(finish[0].tabs.length).toBeGreaterThan(0);
+    const held = (tabs: { start: number; end: number }[]) =>
+      tabs.reduce((sum, t) => sum + t.end - t.start, 0);
+    expect(held(rough[0].tabs)).toBeCloseTo(held(finish[0].tabs), 6);
+    expect(rough[0].tabHeight).toBe(finish[0].tabHeight);
+  });
+
+  it('sit opposite each other on the two laps', () => {
+    const { segments } = plan(tabbed());
+    const rough = tabPoints(segments.find((s) => s.layerId === 'cut' && !s.finishPass)!);
+    const finish = tabPoints(segments.find((s) => s.finishPass)!);
+    for (const f of finish) {
+      const nearest = Math.min(...rough.map((r) => Math.hypot(r.x - f.x, r.y - f.y)));
+      expect(nearest).toBeLessThan(1);
+    }
+  });
+});
