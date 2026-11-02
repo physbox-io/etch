@@ -4,6 +4,7 @@ import { createEtchMachineHandlers, setCurrentDocument } from '../utils/machineM
 import { useStore } from '../store/useStore';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
+import { placeUnscaled } from '../utils/svgHandoff';
 import { generateGCode } from '../utils/gcodeExporter';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { CLIP_ART_INDEX, buildSymbolElement, loadClipArtItem } from '../utils/clipArtLibrary';
@@ -352,15 +353,29 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
 
       const result = importSVG(svgContent);
       const existingIds = new Set(store.document.layers.map((l) => l.id));
+      const doc = store.document;
+      // A part sent from a sibling app (Mesh's physics_export_cut) comes at
+      // true size, named, with the stock it was laid out for, as the link
+      // hand-off does it (svgHandoff.ts): its size is the point, and the
+      // feeds come from the thickness.
+      const trueSize = msg.trueSize === true;
+      const placed = trueSize ? placeUnscaled(result.elements, result.bounds, doc.width, doc.height) : null;
+      const thickness = typeof msg.thicknessMm === 'number' && msg.thicknessMm > 0 ? msg.thicknessMm : null;
+      const machine = msg.machine === 'laser' || msg.machine === 'cnc' ? msg.machine : null;
       store.setDocument({
-        ...store.document,
-        layers: [...store.document.layers, ...result.layers.filter((l) => !existingIds.has(l.id))],
-        elements: result.elements,
+        ...doc,
+        ...(typeof msg.name === 'string' && msg.name ? { name: msg.name } : {}),
+        ...(thickness ? { stockThickness: thickness } : {}),
+        ...(machine ? { machine } : {}),
+        layers: [...doc.layers, ...result.layers.filter((l) => !existingIds.has(l.id))],
+        elements: placed ? placed.elements : result.elements,
       });
       return {
         ok: true,
         importedCount: result.elements.length,
-        warnings: result.warnings,
+        ...(thickness ? { stockThicknessMm: thickness } : {}),
+        ...(machine ? { machine } : {}),
+        warnings: [...result.warnings, ...(placed?.note ? [placed.note] : [])],
       };
     }
 

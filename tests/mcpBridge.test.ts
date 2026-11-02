@@ -438,3 +438,27 @@ describe('MCP: the ornaments', () => {
     expect(r.ok).toBe(true);
   });
 });
+
+describe('etch_set_svg from a sibling app', () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="40mm" viewBox="0 0 80 40"><rect x="0" y="0" width="80" height="40" fill="none" stroke="#ff0000"/></svg>';
+
+  it('takes the name, stock thickness and machine it was laid out for', async () => {
+    load([]);
+    const res = await handleMCPCommand('SET_SVG', { svg, name: 'lid panels', thicknessMm: 6, machine: 'cnc', trueSize: true });
+    expect(res.ok).toBe(true);
+    const doc = useStore.getState().document;
+    expect(doc.name).toBe('lid panels');
+    expect(doc.stockThickness).toBe(6);
+    expect(doc.machine).toBe('cnc');
+    expect(doc.elements.length).toBeGreaterThan(0);
+  });
+
+  it('leaves the document as it was without them', async () => {
+    load([]);
+    await handleMCPCommand('SET_SVG', { svg });
+    const doc = useStore.getState().document;
+    expect(doc.name).toBe('Doc');
+    expect(doc.stockThickness).toBe(3);
+    expect(doc.machine).toBe('laser');
+  });
+});
