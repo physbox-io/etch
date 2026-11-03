@@ -4,7 +4,7 @@ import { useStore, jobDocument } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
-import { importSVG, fitToBed, type SvgImportResult } from '../utils/svgImporter';
+import { importSVG, fitToBed, nameFromImport, type SvgImportResult } from '../utils/svgImporter';
 import { importDXF } from '../utils/dxfImport';
 import { analyseSheetedSvg, splitIntoSheets } from '../utils/sheetedSvg';
 import { exportToDXFString, dxfFilename } from '../utils/dxfExport';
@@ -364,9 +364,10 @@ export const TopNavbar: React.FC = () => {
    */
   const applyImportedVector = (
     result: SvgImportResult,
-    opts: { mayScale: boolean; handoff?: SvgHandoff; replace?: boolean }
+    opts: { mayScale: boolean; handoff?: SvgHandoff; replace?: boolean; fileStem?: string }
   ) => {
     const doc = useStore.getState().document;
+    const fileName = nameFromImport(doc, opts.fileStem);
     const placed = opts.mayScale
       ? fitToBed(result.elements, result.bounds, doc.width, doc.height)
       : placeUnscaled(result.elements, result.bounds, doc.width, doc.height);
@@ -430,6 +431,7 @@ export const TopNavbar: React.FC = () => {
       setDocument({
         ...doc,
         ...stock,
+        ...(fileName ? { name: fileName } : {}),
         layers: [...doc.layers, ...newLayers],
         elements: [...doc.elements, ...newElements],
       });
@@ -466,7 +468,7 @@ export const TopNavbar: React.FC = () => {
       const content = evt.target?.result as string;
       if (!content) return;
       if (!isDxf && openAsSheets(content, stem)) return;
-      applyImportedVector(isDxf ? importDXF(content) : importSVG(content), { mayScale: !isDxf });
+      applyImportedVector(isDxf ? importDXF(content) : importSVG(content), { mayScale: !isDxf, fileStem: stem });
     };
     reader.readAsText(file);
     e.target.value = '';

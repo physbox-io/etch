@@ -474,3 +474,16 @@ export function fitToBed(
       : `Artwork scaled to ${Math.round(scale * 100)}% and centred to fit the ${bedW}×${bedH} mm bed.`;
   return { elements: out, note };
 }
+
+/**
+ * The name a document takes from a file brought into it: the file's own name,
+ * but only while the document is still the blank one nobody has named. A file
+ * dropped into a named or populated job is an addition to it, and leaves its
+ * name alone.
+ */
+export function nameFromImport(doc: { name?: string; elements: readonly unknown[] }, fileStem: string | undefined): string | undefined {
+  const stem = fileStem?.trim();
+  if (!stem) return undefined;
+  const unnamed = !doc.name || doc.name.trim() === '' || doc.name === 'Untitled';
+  return unnamed && doc.elements.length === 0 ? stem : undefined;
+}

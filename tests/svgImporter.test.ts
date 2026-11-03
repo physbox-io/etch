@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { importSVG, fitToBed } from '../src/utils/svgImporter';
+import { importSVG, fitToBed, nameFromImport } from '../src/utils/svgImporter';
 import { pathPoints } from '../src/utils/pathFlatten';
 import { transformPathD } from '../src/utils/pathTransform';
 import { parseTransform } from '../src/utils/matrix';
@@ -203,5 +203,17 @@ describe('fitToBed', () => {
     const { elements, note } = fitToBed(r.elements, r.bounds, 300, 200);
     expect(note).toBeNull();
     expect(elements[0].d).toBe(r.elements[0].d);
+  });
+});
+
+describe('nameFromImport', () => {
+  it('names a blank, unnamed document after the file', () => {
+    expect(nameFromImport({ name: 'Untitled', elements: [] }, 'bracket')).toBe('bracket');
+    expect(nameFromImport({ name: '', elements: [] }, 'bracket')).toBe('bracket');
+  });
+  it('leaves a named or populated document alone', () => {
+    expect(nameFromImport({ name: 'Coasters', elements: [] }, 'bracket')).toBeUndefined();
+    expect(nameFromImport({ name: 'Untitled', elements: [{}] }, 'bracket')).toBeUndefined();
+    expect(nameFromImport({ name: 'Untitled', elements: [] }, '  ')).toBeUndefined();
   });
 });
