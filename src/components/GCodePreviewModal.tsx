@@ -66,7 +66,7 @@ function TRAVEL_OPT_HELP(level: number, laserMode: boolean, head: string): strin
 export const GCodePreviewModal: React.FC = () => {
   const {
     isGCodeModalOpen, toggleGCodeModal, document, vectorizeText,
-    isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid, setMachineTarget,
+    isVectorizing, textVectorizeError, setHatchDefaults, bedProbeGrid,
     toggleMachineModal,
     setDocumentOrigin,
     setThickTabs,
@@ -83,7 +83,6 @@ export const GCodePreviewModal: React.FC = () => {
       textVectorizeError: s.textVectorizeError,
       setHatchDefaults: s.setHatchDefaults,
       bedProbeGrid: s.bedProbeGrid,
-      setMachineTarget: s.setMachineTarget,
       toggleMachineModal: s.toggleMachineModal,
       setDocumentOrigin: s.setDocumentOrigin,
       setThickTabs: s.setThickTabs,
@@ -446,17 +445,16 @@ export const GCodePreviewModal: React.FC = () => {
               </div>
             )}
 
-            {/* Machine Mode */}
+            {/* Machine: shown, not chosen. It is the document's machine and is
+                set in the bottom bar; a selector here switched the whole job
+                (power for depth passes, the tooling, every other export) from
+                inside one export. */}
             <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Target Machine Mode</label>
-              <select
-                value={laserMode ? 'laser' : 'cnc'}
-                onChange={(e) => setMachineTarget(e.target.value === 'laser' ? 'laser' : 'cnc')}
-                className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200"
-              >
-                <option value="laser">Laser GRBL (M3 / M5 Power S-Value)</option>
-                <option value="cnc">CNC Router / Mill (G0 Z-Clearance &amp; Passes)</option>
-              </select>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Machine</label>
+              <div className="w-full mt-1 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded text-slate-800 dark:text-slate-200 flex items-center justify-between gap-2">
+                <span>{laserMode ? 'Laser (M3 / M5, power by S-value)' : 'CNC router / mill (Z passes)'}</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">change it in the bottom bar</span>
+              </div>
             </div>
 
             {/* Bed levelling — only offered for CNC output, since a laser
