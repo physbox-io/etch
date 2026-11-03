@@ -6,6 +6,8 @@ import type {
   EtchObject,
   ToolMode,
   MandalaSettings,
+  RepeatSettings,
+  FillSettings,
   BedProbeGrid,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
@@ -28,11 +30,15 @@ import {
   sanitizeStoredTool,
   snapshotDocumentTools,
   jobTools,
+  machineKind,
+  suggestTool,
+  DEFAULT_TOOL,
   type ToolProfile,
 } from '../utils/tooling';
 import type { RackTool } from '@physbox-io/machining';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
-import { createRadialArray } from '../utils/mandalaGenerator';
+import { repeatElements, selectionCentre, type RepeatSpec } from '../utils/repeatPattern';
+import { TEXTURES, autoTextureSize, textureCut, textureEngrave, textureLimits } from '../utils/textureFill';
 import { replanField } from '../utils/generatedField';
 import { groupElements, newObjectId, objectNameFor, pruneObjects, ungroupObject } from '../utils/objects';
 import type { LivingHingePlan } from '../utils/livingHinge';
@@ -301,6 +307,7 @@ interface EtchStore {
   pan: { x: number; y: number };
   cursor: { x: number; y: number };
   mandalaSettings: MandalaSettings;
+  repeatSettings: RepeatSettings;
   /**
    * How wide the next eraser stroke is drawn, in mm.
    *
@@ -363,6 +370,7 @@ interface EtchStore {
   setDocumentName: (name: string) => void;
   setNotecard: (markdown: string) => void;
   setMandalaSettings: (settings: Partial<MandalaSettings>) => void;
+  setRepeatSettings: (settings: Partial<RepeatSettings>) => void;
   setEraserWidth: (width: number) => void;
   /**
    * What the shape tool will draw next.
@@ -518,6 +526,14 @@ interface EtchStore {
    */
   laceSelected: () => void;
   /**
+   * Fill the first-selected shape with the Fill section's texture, cut out of
+   * it or engraved on it, round any other selected shapes. Lace goes to
+   * `laceSelected`; the tilings to `textureFill.ts`.
+   */
+  fillSelected: () => void;
+  fillSettings: FillSettings;
+  setFillSettings: (settings: Partial<FillSettings>) => void;
+  /**
    * Why the last combine did nothing. Cleared by the next selection change, so
    * it cannot outlive the shapes it is talking about.
    */
@@ -571,8 +587,12 @@ interface EtchStore {
   nudgeSelected: (dx: number, dy: number) => void;
   clearCanvas: () => void;
 
-  // Mandala Symmetry
-  applyRadialSymmetryToSelected: () => void;
+  /**
+   * Symmetry & Repeat: adds copies of the selection placed by the panel's
+   * settings — see `utils/repeatPattern.ts`. The originals stay; the selection
+   * becomes originals and copies together. One undo.
+   */
+  applyRepeatToSelected: () => void;
 
   // Layer Operations
   /**
@@ -676,7 +696,7 @@ function placeCut(
     );
   }
   if (result.closedSlits) {
-    notes.push(`${result.closedSlits} gap${result.closedSlits === 1 ? ' was' : 's were'} too narrow to cut cleanly and left as paper.`);
+    notes.push(`${result.closedSlits} gap${result.closedSlits === 1 ? ' was' : 's were'} too narrow to cut cleanly and left standing.`);
   }
   if (result.skipped.length) notes.push(`Left out ${result.skipped.map((s) => s.name).join(', ')} — nothing to read.`);
 
@@ -877,6 +897,17 @@ export const useStore = create<EtchStore>((set, get) => ({
     centerX: 150,
     centerY: 100,
     liveMode: false,
+  },
+  fillSettings: { texture: 'lace', mode: 'cut', sizeMm: null },
+  repeatSettings: {
+    kind: 'radial',
+    centre: 'stock',
+    axis: 'vertical',
+    copies: 4,
+    cols: 3,
+    rows: 2,
+    dx: 20,
+    dy: 20,
   },
   eraserWidth: DEFAULT_ERASER_WIDTH_MM,
   darkMode: initialDarkMode,
@@ -1479,6 +1510,14 @@ export const useStore = create<EtchStore>((set, get) => ({
   setMandalaSettings: (settings) =>
     set((state) => ({
       mandalaSettings: { ...state.mandalaSettings, ...settings },
+    })),
+  setFillSettings: (settings) =>
+    set((state) => ({
+      fillSettings: { ...state.fillSettings, ...settings },
+    })),
+  setRepeatSettings: (settings) =>
+    set((state) => ({
+      repeatSettings: { ...state.repeatSettings, ...settings },
     })),
 
   toggleAiPanel: () => set((state) => ({ isAiPanelOpen: !state.isAiPanelOpen })),
@@ -2287,6 +2326,100 @@ export const useStore = create<EtchStore>((set, get) => ({
     set(placeCut(get(), frame, motifs, result, `Lace in ${frame.name}`, [lead]));
   },
 
+  fillSelected: () => {
+    const { document, selectedIds, fillSettings: f, cncTools, history, historyIndex } = get();
+    if (f.texture === 'lace') {
+      get().laceSelected();
+      return;
+    }
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (selected.length < 1) return;
+    const [frame, ...motifs] = selected;
+
+    // The narrowest strand and opening come from the machine that will cut
+    // it — on a router, from the bit on the shape's own layer.
+    const machine = machineKind(document);
+    const layer = document.layers.find((l) => l.id === frame.layerId);
+    const tool = machine === 'cnc'
+      ? jobTools(document, cncTools).find((t) => t.id === (layer?.tool ?? DEFAULT_TOOL))
+      : undefined;
+    const limits = textureLimits(machine, tool?.diameter);
+    const size = f.sizeMm ?? autoTextureSize(limits);
+    const seed = Math.floor(Math.random() * 1e9);
+    const label = TEXTURES.find((t) => t.id === f.texture)?.label ?? f.texture;
+
+    if (f.mode === 'cut') {
+      const result = textureCut(frame, motifs, f.texture, size, limits, seed);
+      if ('error' in result) {
+        set({ combineNotice: result.error });
+        return;
+      }
+      set(placeCut(get(), frame, motifs, result, `${label} in ${frame.name}`, [`${label} at a ${size} mm repeat.`]));
+      return;
+    }
+
+    const result = textureEngrave(frame, motifs, f.texture, size, seed);
+    if ('error' in result) {
+      set({ combineNotice: result.error });
+      return;
+    }
+    /*
+     * Onto the document's first engraving layer, or a new one. Never the
+     * shape's own layer: that is usually a cut, and a texture on a cut layer
+     * is a sheet of slots.
+     */
+    let layers = document.layers;
+    let etch = layers.find((l) => l.operation === 'etch');
+    if (!etch) {
+      // The shipped presets' own "Vector Etch" layer, not a copy of the
+      // shape's layer: copied from a through-cut, the texture inherited its
+      // 3.3 mm depth.
+      etch = {
+        id: `layer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: 'Texture',
+        color: '#3b82f6',
+        operation: 'etch',
+        visible: true,
+        locked: false,
+        speed: 1800,
+        power: 35,
+        passes: 1,
+        zDepth: 0.5,
+        tool: suggestTool(machine, 'etch', cncTools),
+      };
+      layers = [...layers, etch];
+    }
+    const texture: EtchElement = {
+      id: `el_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: `${label} on ${frame.name}`,
+      type: 'path',
+      layerId: etch.id,
+      x: 0,
+      y: 0,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: 1,
+      strokeWidth: 0.2,
+      strokeColor: etch.color,
+      fillColor: 'none',
+      visible: true,
+      locked: false,
+      d: result.d,
+    };
+    const newDoc = { ...document, layers, elements: [...document.elements, texture] };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: [texture.id],
+      combineNotice: `${label} engraved at a ${size} mm repeat on layer "${etch.name}" — ${result.lines} lines. The shape itself is unchanged.`,
+    });
+  },
+
   /*
    * One history entry for the whole thing, and every element keeps its id: this
    * is a single Ctrl+Z, and the selection survives it. `beautifyElements` never
@@ -2586,38 +2719,47 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
   },
 
-  applyRadialSymmetryToSelected: () => {
-    const { document, selectedIds, mandalaSettings, history, historyIndex } = get();
-    if (selectedIds.length === 0) return;
-
+  applyRepeatToSelected: () => {
+    const { document, selectedIds, mandalaSettings, repeatSettings: r, history, historyIndex } = get();
     const selected = document.elements.filter((el) => selectedIds.includes(el.id));
-    let newElements = [...document.elements];
-    const newIds: string[] = [];
+    if (selected.length === 0) return;
 
-    for (const el of selected) {
-      const arrayCopies = createRadialArray(
-        el,
-        mandalaSettings.sectorCount,
-        mandalaSettings.mirror,
-        mandalaSettings.centerX,
-        mandalaSettings.centerY
-      );
-      // Replace original with array copies
-      newElements = newElements.filter((item) => item.id !== el.id);
-      newElements.push(...arrayCopies);
-      newIds.push(...arrayCopies.map((c) => c.id));
-    }
+    // "About the stock" is derived from this document's size, never a stored
+    // 150, 100 — which is the middle only of the 300 × 200 presets.
+    const centre =
+      r.centre === 'custom'
+        ? { x: mandalaSettings.centerX, y: mandalaSettings.centerY }
+        : r.centre === 'selection'
+          ? (selectionCentre(selected) ?? { x: document.width / 2, y: document.height / 2 })
+          : { x: document.width / 2, y: document.height / 2 };
+    const spec: RepeatSpec =
+      r.kind === 'radial'
+        ? { kind: 'radial', copies: mandalaSettings.sectorCount, mirror: mandalaSettings.mirror, centre }
+        : r.kind === 'mirror'
+          ? { kind: 'mirror', axis: r.axis, centre }
+          : r.kind === 'linear'
+            ? { kind: 'linear', copies: r.copies, dx: r.dx, dy: r.dy }
+            : { kind: 'grid', cols: r.cols, rows: r.rows, dx: r.dx, dy: r.dy };
+
+    let k = 0;
+    const stamp = Date.now();
+    const added = repeatElements(
+      selected,
+      spec,
+      () => `el_${stamp}_${k++}_${Math.random().toString(36).substring(2, 6)}`
+    );
+    if (added.length === 0) return;
 
     // Push onto history rather than going through setDocument, which resets it
     // — applying symmetry used to be un-undoable.
-    const newDoc = { ...document, elements: newElements };
+    const newDoc = { ...document, elements: [...document.elements, ...added] };
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
     set({
       document: newDoc,
       history: newHistory,
       historyIndex: newHistory.length - 1,
-      selectedIds: newIds,
+      selectedIds: [...selectedIds, ...added.map((c) => c.id)],
     });
   },
 

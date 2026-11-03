@@ -6,6 +6,8 @@ import { getLocalBBox } from '../utils/geom';
 import { SHAPE_KINDS, defaultsFor, type ShapeKind } from '../utils/parametricShapes';
 import { FontPicker } from './FontPicker';
 import { ObjectsPanel } from './ObjectsPanel';
+import { SymmetryPanel } from './SymmetryPanel';
+import { FillPanel } from './FillPanel';
 import { NumberInput } from '@physbox-io/ui';
 import type { LayerOperation, EtchLayer, MachinedLayer } from '../types/etch';
 import { isMachinedLayer } from '../types/etch';
@@ -18,7 +20,6 @@ import {
   EyeOff,
   Lock,
   Unlock,
-  Sun,
   CheckCircle2,
   AlertTriangle,
   Loader2,
@@ -30,7 +31,6 @@ import {
   Wand2,
   Expand,
   Shrink,
-  Flower2,
 } from 'lucide-react';
 import { hasFreshOutline, registerLocalFont } from '../utils/textVectorizer';
 import { InfoTooltip } from './InfoTooltip';
@@ -540,14 +540,12 @@ export const PropertiesSidebar: React.FC = () => {
     activeTool,
     eraserWidth,
     setEraserWidth,
-    mandalaSettings,
     shapeSettings,
     setShapeSettings,
     updateElement,
     centerSelected,
     combineSelected,
     papercutSelected,
-    laceSelected,
     combineNotice,
     offsetSelected,
     offsetNotice,
@@ -558,7 +556,6 @@ export const PropertiesSidebar: React.FC = () => {
     updateLayer,
     deleteLayer,
     commitHistory,
-    applyRadialSymmetryToSelected,
     vectorizeText,
     isVectorizing,
     textVectorizeError,
@@ -577,14 +574,12 @@ export const PropertiesSidebar: React.FC = () => {
       activeTool: s.activeTool,
       eraserWidth: s.eraserWidth,
       setEraserWidth: s.setEraserWidth,
-      mandalaSettings: s.mandalaSettings,
       shapeSettings: s.shapeSettings,
       setShapeSettings: s.setShapeSettings,
       updateElement: s.updateElement,
       centerSelected: s.centerSelected,
       combineSelected: s.combineSelected,
       papercutSelected: s.papercutSelected,
-      laceSelected: s.laceSelected,
       combineNotice: s.combineNotice,
       offsetSelected: s.offsetSelected,
       offsetNotice: s.offsetNotice,
@@ -595,7 +590,6 @@ export const PropertiesSidebar: React.FC = () => {
       updateLayer: s.updateLayer,
       deleteLayer: s.deleteLayer,
       commitHistory: s.commitHistory,
-      applyRadialSymmetryToSelected: s.applyRadialSymmetryToSelected,
       vectorizeText: s.vectorizeText,
       isVectorizing: s.isVectorizing,
       textVectorizeError: s.textVectorizeError,
@@ -1159,27 +1153,8 @@ export const PropertiesSidebar: React.FC = () => {
                 )}
               </div>
             )}
-            {/*
-              Lace from one shape upwards: the first is the window, any others
-              motifs it grows round. The notice shows here too when one shape
-              is selected — which is what is selected after a lace, the cut.
-            */}
-            <div className="col-span-2">
-              <button
-                onClick={laceSelected}
-                className="w-full flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
-                title={`Fill with lace: grow scrolls, leaves and dots inside ${anchorElement?.name ?? 'this shape'} and cut it as a papercut, symmetric where the shape is. Any other selected shapes are kept as paper and grown round. Undo and press again for a different lace.`}
-              >
-                <Flower2 className="w-3.5 h-3.5" />
-                Fill with Lace
-              </button>
-              {selectedIds.length === 1 && combineNotice && (
-                <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
-                  <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
-                  <span>{combineNotice}</span>
-                </div>
-              )}
-            </div>
+            {/* Lace and the tiled textures — see FillPanel. */}
+            <FillPanel />
             {wTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Width (mm)</label>
@@ -1868,16 +1843,8 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
           )}
 
-          {/* Mandala Radial Symmetry Button */}
-          <div className="pt-2">
-            <button
-              onClick={applyRadialSymmetryToSelected}
-              className="w-full py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-700 dark:text-amber-300 rounded font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Sun className="w-3.5 h-3.5 text-amber-500" />
-              <span>Apply {mandalaSettings.sectorCount}-Fold Symmetry</span>
-            </button>
-          </div>
+          {/* Copies by rotation, reflection or translation — see SymmetryPanel. */}
+          <SymmetryPanel />
         </div>
       ) : activeTool === 'erase' || activeTool === 'star' ? null : (
         <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">

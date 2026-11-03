@@ -364,7 +364,7 @@ All **Documented**, from the GRBL v1.1 documentation (`gnea/grbl` wiki):
 
 ## 10. Generated patterns
 
-`src/utils/livingHinge.ts`, `src/utils/perforation.ts`
+`src/utils/livingHinge.ts`, `src/utils/perforation.ts`, `src/utils/textureFill.ts`
 
 A living hinge is a mechanism, not a mark: these numbers decide whether a panel
 folds or snaps, and none of them has been cut in anger yet.
@@ -380,6 +380,10 @@ folds or snaps, and none of them has been cut in anger yet.
 | Resize re-plans the field rather than scaling it | `generatedField.ts`, `livingHinge.ts`, `perforation.ts` | A hinge and a grille are a spacing rule over a region, not a shape. Scaled, the beam width and the pitch scale with the box, so the field no longer matches the spec it was generated from — and nothing on screen shows it. Dragging a corner changes how many slits or holes fit, never how big they are. | **Derived** |
 | Hex lattice by default | `perforation.ts` | At one pitch a staggered lattice leaves a wider web than a square one for the same open area — the stronger panel for the same air. | **Derived** |
 | Perforation layer is `cutSide: 'inside'` | `perforation.ts` | A closed shape with nothing enclosing it reads to the planner as a disc to be cut out, so the tool would be driven round the outside and every hole would come out a full tool-width oversize. | **Derived** |
+
+| Router texture strand ≥ ¾ of the cutter, opening ≥ the cutter | `textureLimits`, `textureFill.ts` | An opening narrower than the bit is one it cannot get into. A wall much thinner than the bit cutting beside it chatters and breaks out. On a laser the papercut's `MIN_STRAND_MM` / `MIN_HOLE_MM` stand. | **Derived** (opening), **Judgement** (¾) |
+| Texture repeat defaults to 4 × (strand + opening), at least 5 mm | `autoTextureSize`, `textureFill.ts` | At the minimum everywhere, the papercut's slit-closing fills openings in and the texture becomes a few random holes. 8 mm on a laser, 22 mm with a 1/8" bit. | **Judgement** — not yet cut |
+| An engraved texture goes on the first etch layer, or a new one at the presets' "Vector Etch" values (0.5 mm, 1800, 35%) | `fillSelected`, `useStore.ts` | Never the shape's own layer: that is usually a cut, and copied from one the texture inherited a 3.3 mm through-depth. Feeds are derived from the material as on any layer. | **Derived** (layer), values as the shipped presets |
 
 The four ornament generators — guilloche, maze, animal print and vine
 scrollwork — introduce no numbers of their own that reach material. They draw

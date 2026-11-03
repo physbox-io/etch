@@ -550,6 +550,32 @@ export interface MandalaSettings {
   liveMode: boolean;
 }
 
+/** The Fill section's choices. UI state, not part of any document. */
+export interface FillSettings {
+  texture: 'lace' | 'herringbone' | 'knit' | 'basketweave' | 'honeycomb' | 'scales' | 'crosshatch' | 'craquelure';
+  /** Cut the texture out of the shape, or engrave it on the shape. Lace is cut only. */
+  mode: 'cut' | 'engrave';
+  /** The repeat, mm; null derives it from the machine — see `autoTextureSize`. */
+  sizeMm: number | null;
+}
+
+/**
+ * The Symmetry & Repeat panel's choices, beyond the radial ones that live in
+ * `MandalaSettings` (shared with the Mandala tool, so its guide lines show the
+ * ring the button will make). UI state, not part of any document.
+ */
+export interface RepeatSettings {
+  kind: 'radial' | 'mirror' | 'linear' | 'grid';
+  /** What radial and mirror turn about: the stock's middle, the selection's, or `MandalaSettings.centerX/Y`. */
+  centre: 'stock' | 'selection' | 'custom';
+  axis: 'vertical' | 'horizontal' | 'both';
+  copies: number;
+  cols: number;
+  rows: number;
+  dx: number;
+  dy: number;
+}
+
 /**
  * GRBL's own run states, plus the two the browser side owns (`Disconnected`
  * before a port is open, `Connecting` while the picker is up). `Jog` and `Home`
