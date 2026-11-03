@@ -933,3 +933,24 @@ export function parseToolNumber(line: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+
+/**
+ * The distinct tools a document's job will use, without planning it.
+ *
+ * For the machine panel, which has to warn before a plan exists: a job with
+ * more than one tool opens by stopping to load the first of them and asks for
+ * Z to be zeroed again there, so Z zeroed beforehand — with whatever bit was in
+ * the collet — is thrown away. Read off the layers that have something
+ * visible on them, which is what the planner cuts.
+ */
+export function jobToolIds(doc: EtchDocument): number[] {
+  const used = new Set<string>();
+  for (const el of doc.elements) if (el.visible !== false) used.add(el.layerId);
+  const ids = new Set<number>();
+  for (const layer of doc.layers) {
+    if (layer.operation === 'ghost' || layer.visible === false || !used.has(layer.id)) continue;
+    ids.add(layer.tool ?? DEFAULT_TOOL);
+    if (layer.roughTool != null) ids.add(layer.roughTool);
+  }
+  return [...ids].sort((a, b) => a - b);
+}

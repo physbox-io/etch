@@ -114,3 +114,69 @@ describe('G2/G3 emission stays on the planned path', () => {
     });
   }
 });
+
+/**
+ * Depth survives arc fitting.
+ *
+ * The fitter works in XY. The move coming down off the far side of a holding
+ * tab ends at full depth, and it used to be allowed to open a run of level
+ * moves — so it was folded into an arc with no Z word, and the controller cut
+ * that whole arc at the top of the tab. A spacer ring bore in 3 mm acrylic came
+ * off the machine with two thirds of its circle 0.5–1.1 mm short of through.
+ * The XY check above cannot see it; this one walks Z.
+ */
+function lengthAtDepth(gcode: string, floor: number): number {
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let total = 0;
+  for (const raw of gcode.split('\n')) {
+    const line = raw.split(';')[0].trim();
+    const g = /^G([0123])\b/.exec(line);
+    if (!g) continue;
+    const word = (k: string) => {
+      const m = new RegExp(`${k}(-?[\\d.]+)`).exec(line);
+      return m ? parseFloat(m[1]) : null;
+    };
+    const nx = word('X') ?? x;
+    const ny = word('Y') ?? y;
+    const nz = word('Z') ?? z;
+    let len = Math.hypot(nx - x, ny - y);
+    if (g[1] === '2' || g[1] === '3') {
+      const cx = x + (word('I') ?? 0);
+      const cy = y + (word('J') ?? 0);
+      const r = Math.hypot(x - cx, y - cy);
+      const a0 = Math.atan2(y - cy, x - cx);
+      const a1 = Math.atan2(ny - cy, nx - cx);
+      let sweep = g[1] === '2' ? a0 - a1 : a1 - a0;
+      while (sweep <= 1e-9) sweep += 2 * Math.PI;
+      len = sweep * r;
+    }
+    if (g[1] !== '0' && z <= floor + 1e-3 && nz <= floor + 1e-3) total += len;
+    x = nx;
+    y = ny;
+    z = nz;
+  }
+  return total;
+}
+
+describe('arc fitting keeps the depth it was given', () => {
+  it('cuts a tabbed ring bore to full depth all the way round', () => {
+    const doc = {
+      version: 1, name: 'ring', width: 300, height: 200, origin: 'top-left', gridSize: 10,
+      snapToGrid: false, machine: 'cnc', material: 'acrylic', stockThickness: 3,
+      layers: [{ id: 'cut', name: 'cut', color: '#f00', visible: true, operation: 'cut',
+        passes: 1, zDepth: 3.3, tool: 1, tabs: true }],
+      elements: [
+        { id: 'od', type: 'circle', layerId: 'cut', visible: true, x: 75, y: 100, r: 70, rotation: 0 },
+        { id: 'id', type: 'circle', layerId: 'cut', visible: true, x: 75, y: 100, r: 62, rotation: 0 },
+      ],
+    } as unknown as EtchDocument;
+    const arced = generateGCode(doc, { arcFitting: true });
+    const linear = generateGCode(doc, { arcFitting: false });
+    expect(arced).toMatch(/^G[23] /m);
+    const want = lengthAtDepth(linear, -3.3);
+    expect(want).toBeGreaterThan(0);
+    expect(lengthAtDepth(arced, -3.3)).toBeGreaterThan(want * 0.99);
+  });
+});

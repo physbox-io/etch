@@ -238,6 +238,32 @@ describe('tool changes in the preview timeline', () => {
     expect(timeline.toolChanges[1].t).toBeGreaterThan(0);
   });
 
+  /**
+   * A router job that opened with `M6 T6`, drilled with T6, then changed to T1:
+   * the live preview showed an amber "T6" sitting in the top-left corner the
+   * whole time T6 was cutting. That badge was the opening stop, pinned to the
+   * planner's notional start at document (0, 0) — a point no line of the
+   * program visits — and the head was drawn underneath it.
+   */
+  it('does not pin the opening stop to the planner\'s notional start', () => {
+    const d = doc(
+      [layer('etch', 'etch', 3), layer('cut', 'cut', 1, { zDepth: 3 })],
+      [rect('a', 'etch'), rect('b', 'cut')],
+      'cnc'
+    );
+    const timeline = buildTimeline(planToolpath(d).segments, { travelSpeed: 3000, laserMode: false });
+    const [opening, later] = timeline.toolChanges;
+    expect(opening.atStart).toBe(true);
+    expect(later.atStart).toBe(false);
+    // Placed where the new tool first goes, which is somewhere the job is.
+    const first = timeline.moves[0];
+    expect({ x: opening.x, y: opening.y }).toEqual({ x: first.x2, y: first.y2 });
+    expect(opening.x !== 0 || opening.y !== 0).toBe(true);
+    // A later stop is still where the old tool was parked for it.
+    const parked = timeline.moves.find((m) => m.t0 >= later.t);
+    expect({ x: later.x, y: later.y }).toEqual({ x: parked?.x1, y: parked?.y1 });
+  });
+
   it('does not link a fill hop across a tool change', () => {
     const d = doc(
       [layer('f1', 'fill', 3), layer('f2', 'fill', 1)],
@@ -317,5 +343,25 @@ describe('groove width at depth', () => {
 
   it('has no width for a tool it does not know', () => {
     expect(cutWidthAtDepth(findTool('cnc', 99), 2)).toBe(0);
+  });
+});
+
+describe('jobToolIds', () => {
+  it('names every tool a visible layer with something on it will use', async () => {
+    const { jobToolIds } = await import('../src/utils/tooling');
+    const doc = {
+      layers: [
+        { id: 'a', operation: 'cut', visible: true, tool: 6 },
+        { id: 'b', operation: 'cut', visible: true, tool: 1 },
+        { id: 'c', operation: 'cut', visible: true, tool: 3 }, // empty
+        { id: 'g', operation: 'ghost', visible: true, tool: 4 },
+      ],
+      elements: [
+        { id: '1', layerId: 'a', visible: true },
+        { id: '2', layerId: 'b', visible: true },
+        { id: '3', layerId: 'g', visible: true },
+      ],
+    } as unknown as Parameters<typeof jobToolIds>[0];
+    expect(jobToolIds(doc)).toEqual([1, 6]);
   });
 });

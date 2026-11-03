@@ -180,3 +180,32 @@ describe('the peck itself', () => {
     expect(gcode).toMatch(/G1 Z-/);
   });
 });
+
+describe('holes just wider than the cutter', () => {
+  // An M3 clearance hole and a 1/8" cutter, in stock deep enough to be roughed
+  // and finished — which is where the roughing allowance used to swallow it.
+  const m3 = () => doc(1.7, { thickness: 6 });
+
+  it('mills an M3 clearance hole with a 1/8" cutter instead of refusing it', () => {
+    expect(tool.diameter).toBeCloseTo(3.175, 3);
+    const { segments, notes } = plan(m3());
+    expect(notes.some((n) => n.includes('smaller cutter'))).toBe(false);
+    expect(segments.some((s) => s.drill)).toBe(false);
+    // One lap, at the line: centre 1.7 − 1.5875 from the hole's middle.
+    const lap = segments.find((s) => !s.finishPass && s.points.every((p) => Math.hypot(p.x - 100, p.y - 75) < 0.5));
+    expect(lap).toBeDefined();
+    for (const p of lap!.points) expect(Math.hypot(p.x - 100, p.y - 75)).toBeCloseTo(1.7 - tool.diameter / 2, 3);
+    expect(lap!.depths.length).toBeGreaterThan(1);
+  });
+
+  it('reads a circle as a hole on a layer set to cut inside, whatever is on other layers', () => {
+    // The holes of a part on their own layer, the outline that encloses them on
+    // another. Nothing on the holes' layer encloses them, and they used to be
+    // read as discs and cut round the outside.
+    const d = doc(tool.diameter / 2);
+    d.layers.push({ ...d.layers[0], id: 'holes', name: 'Holes', cutSide: 'inside' });
+    d.elements[1] = { ...d.elements[1], layerId: 'holes' } as EtchElement;
+    const { segments } = plan(d);
+    expect(segments.filter((s) => s.drill)).toHaveLength(1);
+  });
+});

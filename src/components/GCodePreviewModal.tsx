@@ -1037,6 +1037,16 @@ export const GCodePreviewModal: React.FC = () => {
                       a half-cut part waiting for one that is still in a drawer. */}
                   {toolChanges.length > 0 && (
                     <div className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                      {/* The first stop is before anything is cut. Said first,
+                          because Z zeroed with a different bit in the collet
+                          is wasted the moment the job asks for this one. */}
+                      <p className="font-semibold">
+                        Starts with {describeTool('cnc', toolChanges[0].tool, cncTools)}.
+                      </p>
+                      <p className="mb-1">
+                        The job stops first to load it — zero Z then, with it fitted.
+                        Zeroing Z before Start is wasted.
+                      </p>
                       <p className="font-semibold">
                         {toolChanges.length} tool stops — have these ready:
                       </p>

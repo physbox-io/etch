@@ -517,6 +517,21 @@ export interface GCodeSegment {
    */
   finishPass?: boolean;
   /**
+   * Set on a hole with nothing inside it: an opening whose waste is waste.
+   *
+   * Such a hole is cut start to finish in one visit — every level, then its
+   * finishing lap — before the tool moves on. Level interleaving exists so a
+   * *part* is not freed while the rest of the job is still cut around it, and
+   * freeing a 3 mm slug frees nothing anyone wants to keep. Interleaved anyway,
+   * eight M3 holes were visited five levels deep and then again to finish:
+   * eighty trips between holes for eight holes.
+   *
+   * The value identifies the hole, so a roughing lap and its finishing lap can
+   * be found as a pair. A hole that encloses another contour is not marked:
+   * the waste inside a ring's bore is where the hub parts are.
+   */
+  opening?: number;
+  /**
    * A hole made by plunging rather than by milling round it.
    *
    * Set only for a round hole close enough to the cutter's own diameter that
@@ -708,6 +723,8 @@ export function planToolpath(
   let widened = 0;
   /** Holes plunged rather than milled, for the note that has to name the size. */
   const drilled: Array<{ drawn: number; made: number }> = [];
+  /** Holes just bigger than the cutter, milled in one lap with no finish. */
+  let tightHoles = 0;
   /** Contours getting a finishing pass, and how much wall it takes off. */
   let finished = 0;
   let finishedAllowance = 0;
@@ -931,6 +948,8 @@ export function planToolpath(
      * is not knowable until every contour on the layer has been collected.
      */
     const drillable: Array<{ index: number; centre: Pt; diameter: number }> = [];
+    /** The finishing allowance this layer will rough with, for sizing holes against. */
+    const holeAllowance = layer.operation === 'cut' ? finishAllowanceFor(cut, options) : 0;
 
     for (const el of layerElements) {
       /*
@@ -1307,7 +1326,10 @@ export function planToolpath(
           if (
             circle &&
             toolDia > 0 &&
-            Math.abs(circle.r * 2 - toolDia) <= toolDia * DRILLABLE_TOLERANCE
+            circle.r * 2 >= toolDia * (1 - DRILLABLE_TOLERANCE) &&
+            // Up to the size where the roughing lap still has room to orbit;
+            // past that the hole is milled like any other contour.
+            circle.r - cut.radius - holeAllowance < MIN_HOLE_ORBIT_MM
           ) {
             drillable.push({
               index: pendingCuts.length,
@@ -1361,6 +1383,12 @@ export function planToolpath(
     const drilledIndices = new Set<number>();
     for (const candidate of drillable) {
       const enclosed =
+        // A layer set to cut inside its lines has said every shape on it is an
+        // opening. The M3 holes of a part usually sit on a layer of their own
+        // for a smaller cutter, with the outline they are holes in on another
+        // layer — so nothing on *their* layer encloses them, and without this
+        // they were read as discs.
+        cut.side === 'inside' ||
         pendingCuts.some(
           (other, i) => i !== candidate.index && pointInPolygon(candidate.centre, other)
         ) ||
@@ -1369,6 +1397,41 @@ export function planToolpath(
       if (!enclosed) continue;
 
       drilledIndices.add(candidate.index);
+      const orbit = candidate.diameter / 2 - cut.radius;
+      if (orbit >= MIN_HOLE_ORBIT_MM) {
+        /*
+         * Bigger than the cutter, but too tight for a roughing lap wide of the
+         * line: milled in one lap at the line, with no finish.
+         *
+         * An M3 clearance hole is 3.4 mm, and a 1/8" cutter is 3.175. Roughing
+         * 0.16 mm wide of the line asked for an orbit of minus a few
+         * hundredths, so the offset dropped the hole and the note said the
+         * feature was "narrower than the cutter" — which it is not — and to
+         * fit a smaller one. Drilling it would make it 3.175, a tight fit on
+         * an M3 bolt. One lap round a 0.11 mm orbit makes it 3.4, and a cut
+         * that is a full-width slot from the first lap has no lighter pass for
+         * a finish to be.
+         */
+        const lap: Pt[] = [];
+        const n = 24;
+        for (let k = 0; k <= n; k++) {
+          const a = (k / n) * Math.PI * 2;
+          lap.push({
+            x: candidate.centre.x + orbit * Math.cos(a),
+            y: candidate.centre.y + orbit * Math.sin(a),
+          });
+        }
+        segments.push(
+          makeSegment(layer, cut, options, {
+            points: orientForClimb(lap, 'outside', flipsY),
+            isClosed: true,
+            bBoxArea: boundingArea(pendingCuts[candidate.index]),
+            linkTolerance: 0,
+          })
+        );
+        tightHoles++;
+        continue;
+      }
       const toolDia = cut.radius * 2;
       drilled.push({ drawn: candidate.diameter, made: toolDia });
       segments.push(
@@ -1567,6 +1630,7 @@ export function planToolpath(
    * along a contour that has already had pieces taken out of it would put them
    * somewhere other than where they were asked for.
    */
+  markOpenings(segments, doc);
   const bridged = applyBridges(segments, doc, machineKind, stock.thickness);
   if (bridged.contours > 0) {
     segments.length = 0;
@@ -1699,6 +1763,15 @@ export function planToolpath(
     ));
   }
 
+  if (tightHoles > 0) {
+    notes.push(routine(
+      `${tightHoles} hole${tightHoles === 1 ? ' is' : 's are'} only just wider than the cutter, so ` +
+        `${tightHoles === 1 ? 'it is' : 'they are'} milled in one lap at the line with no finishing ` +
+        `lap — there is no room to rough wide of it, and a hole that tight is a full-width slot ` +
+        `from the first pass.`
+    ));
+  }
+
   if (drilled.length > 0) {
     const sizes = [...new Set(drilled.map((d) => `${d.drawn.toFixed(1)} mm`))].join(', ');
     const made = [...new Set(drilled.map((d) => d.made.toFixed(2)))].join(', ');
@@ -1746,6 +1819,7 @@ export function planToolpath(
     if (finishDelta !== 0) return finishDelta;
     return options.innerContourFirst ? a.bBoxArea - b.bBoxArea : 0;
   });
+  pairOpeningLaps(segments);
 
   const routed = routeByTool(segments);
   const before = travelDistance(routed);
@@ -1766,6 +1840,96 @@ export function planToolpath(
   }
 
   return { segments: ordered, skipped, ...splitNotes(notes) };
+}
+
+/**
+ * Marks the holes that have nothing inside them — see `GCodeSegment.opening`.
+ *
+ * Read off the planned laps rather than the drawing, roughing and finishing
+ * laps each among their own kind, because offset laps keep the nesting of the
+ * contours they came from and are what is actually about to be cut. A lap is a
+ * hole when an odd number of its layer's laps enclose it, or when the layer
+ * cuts inside every line (it has said all of them are openings).
+ */
+function markOpenings(segments: GCodeSegment[], doc: EtchDocument): void {
+  let next = 0;
+  const byLayer = new Map<string, GCodeSegment[]>();
+  for (const seg of segments) {
+    if (seg.type !== 'cut' || seg.intensities) continue;
+    if (!seg.drill && (!seg.isClosed || seg.points.length < 4)) continue;
+    const list = byLayer.get(seg.layerId) ?? [];
+    list.push(seg);
+    byLayer.set(seg.layerId, list);
+  }
+  for (const [layerId, laps] of byLayer) {
+    const layer = doc.layers.find((l) => l.id === layerId);
+    const allInside = layer?.cutSide === 'inside';
+    const rings = laps.filter((s) => !s.drill);
+    const finishes: GCodeSegment[] = [];
+    for (const seg of laps) {
+      if (seg.drill) {
+        seg.opening = next++;
+        continue;
+      }
+      const kin = rings.filter((o) => o !== seg && !!o.finishPass === !!seg.finishPass);
+      const enclosing = kin.filter((o) => pointInPolygon(seg.points[0], o.points)).length;
+      const isHole = allInside || enclosing % 2 === 1;
+      if (!isHole) continue;
+      // Anything inside it — a lap or a drilled hole — means its waste is not
+      // just waste.
+      const holdsSomething = laps.some(
+        (o) => o !== seg && !!o.finishPass === !!seg.finishPass && pointInPolygon(o.points[0], seg.points)
+      );
+      if (holdsSomething) continue;
+      if (seg.finishPass) finishes.push(seg);
+      else seg.opening = next++;
+    }
+    // A finishing lap takes the number of the roughing lap inside it, so the
+    // two can be cut together.
+    for (const fin of finishes) {
+      const rough = rings.find(
+        (o) => !o.finishPass && o.opening !== undefined && pointInPolygon(o.points[0], fin.points)
+      );
+      fin.opening = rough ? rough.opening : next++;
+    }
+  }
+}
+
+/**
+ * Moves each hole's finishing lap to straight after its own roughing lap.
+ *
+ * The sort finishes the whole layer after roughing the whole layer, which is
+ * right for a part — its finishing lap is the one that frees it — and pointless
+ * for a hole with nothing in it, where it only sends the tool back round every
+ * hole a second time.
+ */
+function pairOpeningLaps(segments: GCodeSegment[]): void {
+  const finishes = new Map<number, GCodeSegment[]>();
+  const roughIds = new Set<number>();
+  for (const seg of segments) {
+    if (seg.opening === undefined) continue;
+    if (seg.finishPass) {
+      const list = finishes.get(seg.opening) ?? [];
+      list.push(seg);
+      finishes.set(seg.opening, list);
+    } else {
+      roughIds.add(seg.opening);
+    }
+  }
+  if (finishes.size === 0) return;
+  const out: GCodeSegment[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.finishPass && seg.opening !== undefined && roughIds.has(seg.opening)) continue;
+    out.push(seg);
+    const next = segments[i + 1];
+    const lastOfRough =
+      !seg.finishPass && seg.opening !== undefined &&
+      !(next && !next.finishPass && next.opening === seg.opening);
+    if (lastOfRough) out.push(...(finishes.get(seg.opening!) ?? []));
+  }
+  segments.length = 0;
+  segments.push(...out);
 }
 
 /** Options with the document's own settings filled in for anything unstated. */
@@ -2977,6 +3141,17 @@ function circleFromContour(pts: Pt[]): { cx: number; cy: number; r: number } | n
 const DRILLABLE_TOLERANCE = 0.1;
 
 /**
+ * The smallest orbit, in mm of radius, worth milling a hole round rather than
+ * plunging it.
+ *
+ * Below this the hole a plunge makes is within 0.04 mm of the drawn one —
+ * inside the 0.05 mm the flattening and arc fitting are allowed between them —
+ * and an orbit that small is the controller interpolating a circle smaller
+ * than its own arc tolerance.
+ */
+const MIN_HOLE_ORBIT_MM = 0.02;
+
+/**
  * Whether a point lies inside a closed contour — the ray-crossing test.
  *
  * Used to tell a hole from a disc. Exactness at the boundary does not matter
@@ -4002,9 +4177,23 @@ export function generateGCode(
     }
 
     // If arc fitting is enabled and we are at the start of a series of planar cutting moves
+    /*
+     * A run is level moves only, and that includes the one it starts with.
+     *
+     * Each move after the first was checked for being at the run's depth, but
+     * the first was not — and the move coming down off the far side of a tab
+     * ends at full depth, so it opened a run with everything after it. The
+     * fitter sees XY only, and the arc it made began at the top of the tab
+     * with no Z word: GRBL cut the whole arc at tab height. On a Ø124 bore in
+     * 3 mm acrylic that left two thirds of the circle 0.5–1.1 mm short of
+     * through — the "lot of plastic to remove", and a ring that cracked
+     * coming off what were in effect three long tabs instead of six short
+     * ones.
+     */
     if (
       options.arcFitting &&
       m.kind === 'cut' &&
+      Math.abs(m.z1 - m.z2) < 1e-6 &&
       !segments[m.segIndex]?.intensities
     ) {
       let runEnd = i;
@@ -4017,6 +4206,7 @@ export function generateGCode(
           nextM.kind === 'cut' &&
           nextM.segIndex === m.segIndex &&
           nextM.pass === m.pass &&
+          Math.abs(nextM.z1 - m.z2) < 1e-6 &&
           Math.abs(nextM.z2 - m.z2) < 1e-6 &&
           Math.abs(nextM.feed - m.feed) < 1e-3 &&
           Math.abs(nextM.power - m.power) < 1e-3 &&

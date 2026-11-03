@@ -194,6 +194,17 @@ function planPassVisits(segments: GCodeSegment[], opts: PlanMoveOptions): PassVi
     // that is about to come out.
     if (group.length > 0 && opts.toolChanges.has(sIdx)) flush();
     /*
+     * A hole with nothing in it is cut whole, where it stands — see
+     * `GCodeSegment.opening`. Interleaving is there to keep parts attached,
+     * and a slug is not a part: levelled, eight small holes were eighty visits
+     * with a rapid between each, where the tool could have stayed put.
+     */
+    if (segments[sIdx].opening !== undefined) {
+      flush();
+      visits.push({ sIdx, passes: allPasses(sIdx) });
+      continue;
+    }
+    /*
      * So does the first finishing lap.
      *
      * Levels are interleaved so that nothing is cut free while the tool is

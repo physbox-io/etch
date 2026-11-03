@@ -52,10 +52,26 @@ export interface TimelineToolChange {
   tool: number;
   from: number | null;
   segIndex: number;
-  /** Where the tool was parked, and when the job reaches this point. */
+  /**
+   * Where the tool was parked, and when the job reaches this point.
+   *
+   * For a stop at the very start of the job (`atStart`) nothing has been
+   * parked: the machine is wherever the operator jogged it, which the program
+   * cannot know. That stop is placed at the first point the new tool goes to.
+   */
   x: number;
   y: number;
   t: number;
+  /**
+   * The job opens with this stop, before the machine has moved.
+   *
+   * The planner starts its pen at document (0, 0), which is only a notional
+   * start — no line of the program goes there. Pinning the opening stop to it
+   * put an amber "T6" badge on the back-left corner of the stock (top-left on
+   * screen, on a top-left origin) for the whole of the T6 work, where it read
+   * as the tool and looked like a preview whose tool never moved.
+   */
+  atStart: boolean;
 }
 
 export interface Timeline {
@@ -302,13 +318,17 @@ export function buildTimeline(
     const change = changeAtMove.get(i);
     if (change) {
       const at = program.moves[i];
+      // Nothing has moved yet: `at.x1/y1` is the planner's notional start, not
+      // a place the machine stops. See `atStart`.
+      const atStart = moves.length === 0;
       toolChanges.push({
         tool: change.tool,
         from: change.from,
         segIndex: change.segIndex,
-        x: at.x1,
-        y: at.y1,
+        x: atStart ? at.x2 : at.x1,
+        y: atStart ? at.y2 : at.y1,
         t,
+        atStart,
       });
     }
 

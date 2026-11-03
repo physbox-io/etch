@@ -704,12 +704,6 @@ export const ToolpathPreview: React.FC<{
             opacity={0}
           />
 
-          {/* The tool itself, coloured by how deep it is */}
-          <g ref={headRef} opacity={0}>
-            <circle r={headSize * 1.9} fill="none" stroke="#0f172a" strokeWidth={headSize * 0.18} opacity={0.35} />
-            <circle ref={headDotRef} r={headSize} fill={depthColor(0)} stroke="#0f172a" strokeWidth={headSize * 0.16} />
-          </g>
-
           {/* Where the job stops for the operator. Drawn on the bed because
               "three tool changes" means little next to seeing that two of them
               land in the middle of the same engraving. */}
@@ -727,6 +721,16 @@ export const ToolpathPreview: React.FC<{
               </text>
             </g>
           ))}
+
+          {/* The tool itself, coloured by how deep it is. Drawn after the
+              tool-change badges, not under them: a badge is larger and nearly
+              opaque, so a head passing one — or standing at the first hole of
+              a job that opens with a change — vanished behind an amber "T6",
+              and the badge was all there was to look at. */}
+          <g ref={headRef} opacity={0}>
+            <circle r={headSize * 1.9} fill="none" stroke="#0f172a" strokeWidth={headSize * 0.18} opacity={0.35} />
+            <circle ref={headDotRef} r={headSize} fill={depthColor(0)} stroke="#0f172a" strokeWidth={headSize * 0.16} />
+          </g>
 
           {segments.length === 0 && (
             <text

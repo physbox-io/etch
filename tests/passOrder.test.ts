@@ -115,3 +115,58 @@ describe('pass order', () => {
     expect(finishedA).toBeGreaterThan(startedB);
   });
 });
+
+describe('holes with nothing in them', () => {
+  const hole = (id: string, x: number): EtchElement =>
+    ({ ...rect(id, 0), type: 'circle', x, y: 35, r: 4 }) as unknown as EtchElement;
+
+  // One plate with three holes, then a ring whose bore holds a disc.
+  const plate = (): EtchDocument => {
+    const d = doc();
+    d.elements = [
+      { ...rect('plate', 20), w: 120, h: 30 },
+      hole('h1', 40), hole('h2', 80), hole('h3', 120),
+    ];
+    return d;
+  };
+
+  it('cuts each hole to depth and finishes it before moving to the next', () => {
+    // The failure: eight M3 holes visited a level at a time and then again to
+    // finish — a rapid between holes for every pass of every one, where the
+    // tool could have stayed put. A slug is not a part; nothing is gained by
+    // keeping it attached.
+    const d = plate();
+    const plan = planToolpath(d);
+    const holes = plan.segments
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.opening !== undefined);
+    // Three roughing laps and three finishing laps.
+    expect(holes.length).toBe(6);
+    const order = visits(planProgramMoves(d).moves);
+    for (const id of new Set(holes.map(({ s }) => s.opening))) {
+      const mine = holes.filter(({ s }) => s.opening === id).map(({ i }) => i);
+      const at = order.map((v, k) => (mine.includes(Number(v.split('/')[0])) ? k : -1)).filter((k) => k >= 0);
+      // Contiguous: nothing else is cut between this hole's first and last pass.
+      expect(at[at.length - 1] - at[0]).toBe(at.length - 1);
+    }
+  });
+
+  it('still levels the plate, and leaves a bore with a part in it levelled too', () => {
+    const d = plate();
+    d.elements.push(
+      { ...rect('ring', 160), w: 100, h: 100, y: 60 },
+      { ...rect('bore', 175), w: 70, h: 70, y: 75 },
+      { ...rect('disc', 195), w: 30, h: 30, y: 95 },
+    );
+    const plan = planToolpath(d);
+    const outline = plan.segments.find((s) => s.opening === undefined && !s.finishPass)!;
+    expect(outline).toBeDefined();
+    // The bore encloses the disc: its waste is where a part is, so it is not
+    // an opening to be cut whole.
+    const big = plan.segments.filter(
+      (s) => !s.finishPass && s.bBoxArea > 60 * 60 && s.bBoxArea < 80 * 80 && s.points[0].x > 150
+    );
+    expect(big.length).toBe(1);
+    expect(big[0].opening).toBeUndefined();
+  });
+});

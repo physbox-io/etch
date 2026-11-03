@@ -29,7 +29,7 @@ import {
   writeGuideJiggle,
   MAX_GUIDE_POWER_PCT,
 } from '../utils/machineSettings';
-import { machineWords, type MachineKind } from '../utils/tooling';
+import { jobToolIds, machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
 import { JogPad, NumberInput } from '@physbox-io/ui';
@@ -79,6 +79,7 @@ export const MachineWorkOriginPanel: React.FC<{
       cncTools: s.cncTools,
     })),
   );
+  const jobTools = useMemo(() => jobToolIds(document), [document]);
   const words = machineWords(machine);
   const isLaser = machine === 'laser';
   const [isProbingZ, setIsProbingZ] = useState(false);
@@ -608,6 +609,17 @@ export const MachineWorkOriginPanel: React.FC<{
               {zZeroed ? doneMark : <span className={stepNo}>3</span>}
               {zZeroed ? 'Z is zeroed on the stock' : 'Zero Z on the stock'}
             </span>
+            {/* A job with several tools opens with a stop to load the first and
+                asks for Z again there. Zeroing it here with whichever bit is in
+                the collet was time spent for nothing — and, done with the wrong
+                bit, a Z that is wrong by the difference in stick-out. */}
+            {jobTools.length > 1 && (
+              <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug max-w-md">
+                This job uses {jobTools.map((t) => `T${t}`).join(' and ')}, so it starts by stopping to
+                load the first tool and zero Z with it. Zeroing Z here now is wasted — set X/Y, start
+                the job, and zero Z at that stop.
+              </p>
+            )}
             {/* Two ways, side by side and on equal footing. The plate is not the
                 better method, only a different one: it needs stock or a clip that
                 conducts, and the paper trick is how most hobby routers are zeroed
