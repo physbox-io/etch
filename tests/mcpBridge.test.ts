@@ -559,3 +559,35 @@ describe('MCP: etch_combine fretwork, fill and repeat', () => {
     expect(r.error).toMatch(/would add/);
   });
 });
+
+describe('MCP: taking a fill off again', () => {
+  it('puts back the shape a cut-out fill consumed, where the cut now is', async () => {
+    load([rect('w', 10, 10, 60, 60)]);
+    const r = await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'brick' });
+    expect(r.ok).toBe(true);
+    // Move the cut, then remove the fill: the square comes back moved with it.
+    const cut = useStore.getState().document.elements.find((e) => e.id === r.addedId)!;
+    useStore.getState().updateElement(cut.id, { x: cut.x + 25 });
+    const u = await handleMCPCommand('etch_combine', { elementIds: [r.addedId], op: 'unfill' });
+    expect(u.ok).toBe(true);
+    const back = useStore.getState().document.elements;
+    expect(back).toHaveLength(1);
+    expect(back[0]).toMatchObject({ id: 'w', x: 35, y: 10 });
+  });
+
+  it('cuts along the lines on the shape\'s own layer, and removes them from the shape', async () => {
+    load([rect('w', 10, 10, 60, 60)]);
+    const r = await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'craquelure', mode: 'lines' });
+    expect(r.ok).toBe(true);
+    const tex = useStore.getState().document.elements.find((e) => e.id === r.addedId)!;
+    expect(tex.layerId).toBe('cut');
+    expect(tex.textureOf).toBe('w');
+    // Pressing again replaces the texture rather than stacking a second.
+    await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'craquelure', mode: 'lines' });
+    expect(useStore.getState().document.elements.filter((e) => e.textureOf === 'w')).toHaveLength(1);
+    // Selecting the shape, not the texture, is enough to take it off.
+    const u = await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'unfill' });
+    expect(u.ok).toBe(true);
+    expect(useStore.getState().document.elements.map((e) => e.id)).toEqual(['w']);
+  });
+});

@@ -36,7 +36,12 @@ export type TextureKind =
   | 'honeycomb'
   | 'scales'
   | 'crosshatch'
-  | 'craquelure';
+  | 'craquelure'
+  | 'brick'
+  | 'waves'
+  | 'chevron'
+  | 'triangles'
+  | 'diamonds';
 
 export const TEXTURES: Array<{ id: TextureKind; label: string; hint: string }> = [
   { id: 'lace', label: 'Lace', hint: 'Scrolls, leaves and dots grown to fit the shape, symmetric where it is. Cut out only.' },
@@ -47,9 +52,22 @@ export const TEXTURES: Array<{ id: TextureKind; label: string; hint: string }> =
   { id: 'scales', label: 'Scales', hint: 'Rows of overlapping arcs, each row offset half a scale.' },
   { id: 'crosshatch', label: 'Crosshatch', hint: 'Two sets of diagonal lines crossing at right angles.' },
   { id: 'craquelure', label: 'Craquelure', hint: 'An irregular network of cracks, like old glaze. Different each press.' },
+  { id: 'brick', label: 'Brick', hint: 'Courses of bricks, each course offset half a brick.' },
+  { id: 'waves', label: 'Waves', hint: 'Parallel wavy lines.' },
+  { id: 'chevron', label: 'Chevron', hint: 'Stacked zig-zags.' },
+  { id: 'triangles', label: 'Triangles', hint: 'A triangular grid — three sets of lines at 60°.' },
+  { id: 'diamonds', label: 'Diamonds', hint: 'A lattice of diamonds, like a trellis.' },
 ];
 
-export type TextureMode = 'cut' | 'engrave';
+/**
+ * - `cut` — the pattern is the material that stays; the gaps are cut. A line
+ *   of material has two edges, so every line of the pattern is cut twice,
+ *   once down each side.
+ * - `lines` — each line of the pattern is cut once, through: the shape comes
+ *   apart along it, into crazy paving or a puzzle.
+ * - `engrave` — each line is marked once, on an engraving layer.
+ */
+export type TextureMode = 'cut' | 'lines' | 'engrave';
 
 export interface TextureLimits {
   /** Narrowest line of material left standing, mm. */
@@ -201,6 +219,59 @@ export function textureLines(kind: Exclude<TextureKind, 'lace'>, box: Box, s: nu
             arc.push(P(x + r + r * Math.cos(Math.PI - a), y + r * Math.sin(a)));
           }
           lines.push(arc);
+        }
+      }
+      break;
+    }
+    case 'brick': {
+      // Bricks twice as long as they are high; each course's joints sit
+      // over the middle of the bricks below.
+      const h = s / 2;
+      let row = 0;
+      for (let y = y0; y < y1; y += h, row++) {
+        lines.push([P(x0, y), P(x1, y)]);
+        const off = row % 2 === 0 ? 0 : s / 2;
+        for (let x = x0 - off; x < x1; x += s) lines.push([P(x, y), P(x, y + h)]);
+      }
+      break;
+    }
+    case 'waves': {
+      // A sine a repeat long and a quarter repeat high, lines half a repeat
+      // apart: further apart than the wave is tall, so neighbours never touch.
+      const amp = s / 4;
+      for (let y = y0; y < y1 + s; y += s / 2) {
+        const wave: Pt[] = [];
+        for (let x = x0; x <= x1; x += s / 16) wave.push(P(x, y + amp * Math.sin((2 * Math.PI * (x - x0)) / s)));
+        lines.push(wave);
+      }
+      break;
+    }
+    case 'chevron': {
+      // Zig-zags a repeat wide and half a repeat deep, stacked half a repeat
+      // apart.
+      for (let y = y0; y < y1 + s; y += s / 2) {
+        const zig: Pt[] = [];
+        let up = true;
+        for (let x = x0; x <= x1 + s / 2; x += s / 2, up = !up) zig.push(P(x, up ? y : y + s / 4));
+        lines.push(zig);
+      }
+      break;
+    }
+    case 'triangles':
+    case 'diamonds': {
+      // Families of parallel lines a repeat apart: at 0° and ±60° for
+      // triangles, at ±60° alone for diamonds.
+      const angles = kind === 'triangles' ? [0, 60, -60] : [60, -60];
+      const cx = (x0 + x1) / 2;
+      const cy = (y0 + y1) / 2;
+      const reach = Math.hypot(x1 - x0, y1 - y0) / 2 + s;
+      for (const deg of angles) {
+        const a = (deg * Math.PI) / 180;
+        const ux = Math.cos(a), uy = Math.sin(a);
+        const nx = -uy, ny = ux;
+        for (let d = -reach; d <= reach; d += s) {
+          const ox = cx + nx * d, oy = cy + ny * d;
+          lines.push([P(ox - ux * reach, oy - uy * reach), P(ox + ux * reach, oy + uy * reach)]);
         }
       }
       break;

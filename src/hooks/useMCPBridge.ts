@@ -1117,7 +1117,23 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       const rawOp = (msg.op || msg.operation) as string;
       // 'papercut' was the op's first name; it still answers to it.
       const op = (rawOp === 'papercut' ? 'fretwork' : rawOp) as
-        BooleanOp | 'fretwork' | 'lace' | 'fill' | 'repeat' | 'join' | 'unjoin';
+        BooleanOp | 'fretwork' | 'lace' | 'fill' | 'unfill' | 'repeat' | 'join' | 'unjoin';
+      if (op === 'unfill') {
+        // Takes a fill, fretwork or lace back off: the cut is replaced by the
+        // shapes it was made from, and a texture is deleted.
+        const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
+        if (!Array.isArray(ids) || ids.length < 1) {
+          return { ok: false, error: 'elementIds must name the filled shape, the cut, or the texture' };
+        }
+        const beforeIds = new Set(store.document.elements.map((el) => el.id));
+        store.setSelectedIds(ids);
+        useStore.getState().removeFillSelected();
+        const after = useStore.getState();
+        const afterIds = new Set(after.document.elements.map((el) => el.id));
+        const removedIds = [...beforeIds].filter((id) => !afterIds.has(id));
+        if (removedIds.length === 0) return { ok: false, error: after.combineNotice || 'Nothing had a fill to remove.' };
+        return { ok: true, removedIds, restoredIds: [...afterIds].filter((id) => !beforeIds.has(id)) };
+      }
       if (op === 'repeat') {
         /*
          * Symmetry & Repeat. Not a combine, but on this tool for the reason
@@ -1193,7 +1209,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       if (!BOOLEAN_OP_LABEL[op as BooleanOp] && op !== 'fretwork' && op !== 'lace' && op !== 'fill') {
         return {
           ok: false,
-          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'fretwork', 'lace', 'fill', 'repeat', 'join', 'unjoin'].join(', ')}`,
+          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'fretwork', 'lace', 'fill', 'unfill', 'repeat', 'join', 'unjoin'].join(', ')}`,
         };
       }
       const oneWillDo = op === 'lace' || op === 'fill';
@@ -1209,8 +1225,10 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           return { ok: false, error: `texture must be one of ${textures.join(', ')}` };
         }
         const mode = (msg.mode ?? 'cut') as string;
-        if (mode !== 'cut' && mode !== 'engrave') return { ok: false, error: "mode must be 'cut' or 'engrave'" };
-        if (texture === 'lace' && mode === 'engrave') return { ok: false, error: 'Lace is grown to be cut out; it has no engrave mode.' };
+        if (mode !== 'cut' && mode !== 'lines' && mode !== 'engrave') {
+          return { ok: false, error: "mode must be 'cut', 'lines' or 'engrave'" };
+        }
+        if (texture === 'lace' && mode !== 'cut') return { ok: false, error: "Lace is grown to be cut out; its only mode is 'cut'." };
         const sizeMm = typeof msg.sizeMm === 'number' && msg.sizeMm > 0 ? msg.sizeMm : null;
         fill = { texture: texture as FillSettings['texture'], mode, sizeMm };
       }

@@ -350,6 +350,20 @@ export interface EtchElement {
    */
   joinedFrom?: EtchElement[];
   joinedOrigin?: { x: number; y: number };
+  /**
+   * A cut made by Fill, Fretwork or lace: what it is (for the button that
+   * takes it off) and the elements it consumed, as they were, with where this
+   * path's `x`/`y` stood then — the same arrangement as `joinedFrom`, so
+   * removing a fill from a part that has since been moved puts the shapes back
+   * where the part is now.
+   */
+  madeFrom?: { label: string; elements: EtchElement[]; origin: { x: number; y: number } };
+  /**
+   * A texture laid on another shape by Fill — engraved, or cut along its lines
+   * — names that shape here, so selecting the shape can offer to take its
+   * texture off again without hunting for a few hundred lines on the canvas.
+   */
+  textureOf?: string;
 
   /**
    * How this element is machined, independent of its layer.
@@ -552,9 +566,11 @@ export interface MandalaSettings {
 
 /** The Fill section's choices. UI state, not part of any document. */
 export interface FillSettings {
-  texture: 'lace' | 'herringbone' | 'knit' | 'basketweave' | 'honeycomb' | 'scales' | 'crosshatch' | 'craquelure';
-  /** Cut the texture out of the shape, or engrave it on the shape. Lace is cut only. */
-  mode: 'cut' | 'engrave';
+  texture:
+    | 'lace' | 'herringbone' | 'knit' | 'basketweave' | 'honeycomb' | 'scales' | 'crosshatch' | 'craquelure'
+    | 'brick' | 'waves' | 'chevron' | 'triangles' | 'diamonds';
+  /** See `TextureMode` in `textureFill.ts`. Lace is cut out only. */
+  mode: 'cut' | 'lines' | 'engrave';
   /** The repeat, mm; null derives it from the machine — see `autoTextureSize`. */
   sizeMm: number | null;
 }

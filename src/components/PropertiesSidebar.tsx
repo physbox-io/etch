@@ -972,6 +972,197 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
           </div>
 
+          {/* What the shape *is* to the machine — its layer, angle, line and
+              machining — comes straight after its name: it is what most edits
+              are for. Position and size next, then the occasional tools. */}
+          {/* Layer assignment — elements were stuck on whatever layer they were
+              drawn on, with no way to move them between cut and etch. */}
+          <div>
+            <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Layer</label>
+            <select
+              value={sharedLayerId ?? ''}
+              onChange={(e) => applyTo(selectedEls, () => ({ layerId: e.target.value }))}
+              className="w-full mt-1 px-2 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100"
+            >
+              {sharedLayerId === null && (
+                <option value="" disabled>
+                  Mixed — pick one to move all {selectedEls.length}
+                </option>
+              )}
+              {document.layers.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name} ({l.operation})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Rotation & Stroke Width */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rotation (deg)</label>
+              <NumberInput
+                value={sharedRotation}
+                placeholder="Mixed"
+                allowEmpty={sharedRotation === null}
+                onChange={(val) => {
+                  // Empty is "leave them as they are": tabbing through a Mixed
+                  // field must not square every part up to 0.
+                  if (val === undefined && sharedRotation === null) return;
+                  applyTo(selectedEls, () => ({ rotation: val ?? 0 }), true);
+                }}
+                onCommit={commitHistory}
+                className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                {selectedElement.type === 'erase' ? (
+                  <>
+                    Eraser Width (mm){' '}
+                    <InfoTooltip text="How wide a band this stroke masks out of its layer. Widening it rubs out more; nothing underneath is changed either way." />
+                  </>
+                ) : (
+                  <>
+                    Line Thickness (mm){' '}
+                    <InfoTooltip text="Visual stroke width on canvas. Tool diameter determines physical cut width." />
+                  </>
+                )}
+              </label>
+              <NumberInput
+                step={0.1}
+                min={0.1}
+                fallbackOnBlur={sharedStrokeWidth === null ? undefined : 0.1}
+                value={sharedStrokeWidth}
+                placeholder="Mixed"
+                allowEmpty={sharedStrokeWidth === null}
+                onChange={(val) => {
+                  if (val === undefined && sharedStrokeWidth === null) return;
+                  applyTo(strokeTargets, () => ({ strokeWidth: val ?? 0.1 }), true);
+                }}
+                onCommit={commitHistory}
+                className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
+              />
+            </div>
+          </div>
+
+          {/* Machining mode: trace the edge, engrave the interior, or cut the
+              line at the width it was drawn. */}
+          {machiningTargets.length > 0 && (
+            <div className="space-y-2">
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                Machining
+              </label>
+              <div
+                className={`grid ${
+                  fillableTargets.length > 0 ? 'grid-cols-3' : 'grid-cols-2'
+                } gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700`}
+              >
+                {(fillableTargets.length > 0
+                  ? (['outline', 'filled', 'stroked'] as const)
+                  : (['outline', 'stroked'] as const)
+                ).map((mode) => {
+                  const active = sharedMachining === mode;
+                  // "Filled" goes only to the shapes that have an interior to
+                  // hatch; an open line in the selection keeps what it had.
+                  const targets = mode === 'filled' ? fillableTargets : machiningTargets;
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() =>
+                        applyTo(targets, (el) => ({
+                          machining: mode,
+                          hatchAngle: el.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
+                          hatchSpacing: el.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING,
+                        }))
+                      }
+                      title={
+                        mode === 'filled' && fillableTargets.length < machiningTargets.length
+                          ? `Fills the ${fillableTargets.length} closed shapes; open lines have no inside to fill`
+                          : undefined
+                      }
+                      className={`py-1 rounded-md font-semibold capitalize transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                          : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {sharedMachining === 'stroked' && (
+                <p className="pl-2 border-l-2 border-slate-200 dark:border-slate-700 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+                  Cut as a band {sharedStrokeWidth ?? selectedElement.strokeWidth ?? 0} mm wide, in passes laid side by
+                  side. Set the width under Stroke, above. This is area work — it takes
+                  proportionally longer than scoring the line once.
+                </p>
+              )}
+
+              {filledTargets.length > 0 && (
+                <div className="space-y-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                        Hatch Angle <InfoTooltip text="Scanline angle (in degrees) used for raster engrave fill paths." />
+                      </label>
+                      <NumberInput
+                        step={5}
+                        value={sharedHatchAngle}
+                        placeholder="Mixed"
+                        allowEmpty={sharedHatchAngle === null}
+                        onChange={(val) => {
+                          if (val === undefined && sharedHatchAngle === null) return;
+                          applyTo(filledTargets, () => ({ hatchAngle: val ?? 0 }), true);
+                        }}
+                        onCommit={commitHistory}
+                        className={NUM_INPUT}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                        Spacing (mm) <InfoTooltip text="Distance between parallel raster passes. Match tool/beam diameter for 100% overlap coverage." />
+                      </label>
+                      <NumberInput
+                        step={0.05}
+                        min={0.02}
+                        fallbackOnBlur={sharedHatchSpacing === null ? undefined : 0.02}
+                        value={sharedHatchSpacing}
+                        placeholder="Mixed"
+                        allowEmpty={sharedHatchSpacing === null}
+                        onChange={(val) => {
+                          if (val === undefined && sharedHatchSpacing === null) return;
+                          applyTo(filledTargets, () => ({ hatchSpacing: val ?? 0.02 }), true);
+                        }}
+                        onCommit={commitHistory}
+                        className={NUM_INPUT}
+                      />
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-slate-600 dark:text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sharedHatchOutline !== false}
+                      ref={(input) => {
+                        if (input) input.indeterminate = sharedHatchOutline === null;
+                      }}
+                      onChange={(e) =>
+                        applyTo(filledTargets, () => ({ hatchOutline: e.target.checked }))
+                      }
+                      className="w-3.5 h-3.5 accent-red-500 rounded cursor-pointer"
+                    />
+                    <span>Also cut the outline</span>
+                  </label>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">
+                    Tip: set spacing near your beam or bit width for solid coverage.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Position & Size */}
           <div className="grid grid-cols-2 gap-2">
             <div>
@@ -1153,8 +1344,6 @@ export const PropertiesSidebar: React.FC = () => {
                 )}
               </div>
             )}
-            {/* Lace and the tiled textures — see FillPanel. */}
-            <FillPanel />
             {wTargets.length > 0 && (
               <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Width (mm)</label>
@@ -1424,77 +1613,6 @@ export const PropertiesSidebar: React.FC = () => {
             )}
           </div>
 
-          {/* Layer assignment — elements were stuck on whatever layer they were
-              drawn on, with no way to move them between cut and etch. */}
-          <div>
-            <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Layer</label>
-            <select
-              value={sharedLayerId ?? ''}
-              onChange={(e) => applyTo(selectedEls, () => ({ layerId: e.target.value }))}
-              className="w-full mt-1 px-2 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100"
-            >
-              {sharedLayerId === null && (
-                <option value="" disabled>
-                  Mixed — pick one to move all {selectedEls.length}
-                </option>
-              )}
-              {document.layers.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name} ({l.operation})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Rotation & Stroke Width */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Rotation (deg)</label>
-              <NumberInput
-                value={sharedRotation}
-                placeholder="Mixed"
-                allowEmpty={sharedRotation === null}
-                onChange={(val) => {
-                  // Empty is "leave them as they are": tabbing through a Mixed
-                  // field must not square every part up to 0.
-                  if (val === undefined && sharedRotation === null) return;
-                  applyTo(selectedEls, () => ({ rotation: val ?? 0 }), true);
-                }}
-                onCommit={commitHistory}
-                className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                {selectedElement.type === 'erase' ? (
-                  <>
-                    Eraser Width (mm){' '}
-                    <InfoTooltip text="How wide a band this stroke masks out of its layer. Widening it rubs out more; nothing underneath is changed either way." />
-                  </>
-                ) : (
-                  <>
-                    Line Thickness (mm){' '}
-                    <InfoTooltip text="Visual stroke width on canvas. Tool diameter determines physical cut width." />
-                  </>
-                )}
-              </label>
-              <NumberInput
-                step={0.1}
-                min={0.1}
-                fallbackOnBlur={sharedStrokeWidth === null ? undefined : 0.1}
-                value={sharedStrokeWidth}
-                placeholder="Mixed"
-                allowEmpty={sharedStrokeWidth === null}
-                onChange={(val) => {
-                  if (val === undefined && sharedStrokeWidth === null) return;
-                  applyTo(strokeTargets, () => ({ strokeWidth: val ?? 0.1 }), true);
-                }}
-                onCommit={commitHistory}
-                className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
-              />
-            </div>
-          </div>
-
           {/* Vector Text Content & Font Family */}
           {textTargets.length > 0 && (
             <>
@@ -1726,125 +1844,10 @@ export const PropertiesSidebar: React.FC = () => {
             </div>
           )}
 
-          {/* Machining mode: trace the edge, engrave the interior, or cut the
-              line at the width it was drawn. */}
-          {machiningTargets.length > 0 && (
-            <div className="space-y-2">
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                Machining
-              </label>
-              <div
-                className={`grid ${
-                  fillableTargets.length > 0 ? 'grid-cols-3' : 'grid-cols-2'
-                } gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700`}
-              >
-                {(fillableTargets.length > 0
-                  ? (['outline', 'filled', 'stroked'] as const)
-                  : (['outline', 'stroked'] as const)
-                ).map((mode) => {
-                  const active = sharedMachining === mode;
-                  // "Filled" goes only to the shapes that have an interior to
-                  // hatch; an open line in the selection keeps what it had.
-                  const targets = mode === 'filled' ? fillableTargets : machiningTargets;
-                  return (
-                    <button
-                      key={mode}
-                      onClick={() =>
-                        applyTo(targets, (el) => ({
-                          machining: mode,
-                          hatchAngle: el.hatchAngle ?? document.defaultHatchAngle ?? DEFAULT_HATCH_ANGLE,
-                          hatchSpacing: el.hatchSpacing ?? document.defaultHatchSpacing ?? DEFAULT_HATCH_SPACING,
-                        }))
-                      }
-                      title={
-                        mode === 'filled' && fillableTargets.length < machiningTargets.length
-                          ? `Fills the ${fillableTargets.length} closed shapes; open lines have no inside to fill`
-                          : undefined
-                      }
-                      className={`py-1 rounded-md font-semibold capitalize transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
-                          : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {sharedMachining === 'stroked' && (
-                <p className="pl-2 border-l-2 border-slate-200 dark:border-slate-700 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
-                  Cut as a band {sharedStrokeWidth ?? selectedElement.strokeWidth ?? 0} mm wide, in passes laid side by
-                  side. Set the width under Stroke, above. This is area work — it takes
-                  proportionally longer than scoring the line once.
-                </p>
-              )}
-
-              {filledTargets.length > 0 && (
-                <div className="space-y-2 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                        Hatch Angle <InfoTooltip text="Scanline angle (in degrees) used for raster engrave fill paths." />
-                      </label>
-                      <NumberInput
-                        step={5}
-                        value={sharedHatchAngle}
-                        placeholder="Mixed"
-                        allowEmpty={sharedHatchAngle === null}
-                        onChange={(val) => {
-                          if (val === undefined && sharedHatchAngle === null) return;
-                          applyTo(filledTargets, () => ({ hatchAngle: val ?? 0 }), true);
-                        }}
-                        onCommit={commitHistory}
-                        className={NUM_INPUT}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                        Spacing (mm) <InfoTooltip text="Distance between parallel raster passes. Match tool/beam diameter for 100% overlap coverage." />
-                      </label>
-                      <NumberInput
-                        step={0.05}
-                        min={0.02}
-                        fallbackOnBlur={sharedHatchSpacing === null ? undefined : 0.02}
-                        value={sharedHatchSpacing}
-                        placeholder="Mixed"
-                        allowEmpty={sharedHatchSpacing === null}
-                        onChange={(val) => {
-                          if (val === undefined && sharedHatchSpacing === null) return;
-                          applyTo(filledTargets, () => ({ hatchSpacing: val ?? 0.02 }), true);
-                        }}
-                        onCommit={commitHistory}
-                        className={NUM_INPUT}
-                      />
-                    </div>
-                  </div>
-                  <label className="flex items-center gap-2 text-slate-600 dark:text-slate-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={sharedHatchOutline !== false}
-                      ref={(input) => {
-                        if (input) input.indeterminate = sharedHatchOutline === null;
-                      }}
-                      onChange={(e) =>
-                        applyTo(filledTargets, () => ({ hatchOutline: e.target.checked }))
-                      }
-                      className="w-3.5 h-3.5 accent-red-500 rounded cursor-pointer"
-                    />
-                    <span>Also cut the outline</span>
-                  </label>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">
-                    Tip: set spacing near your beam or bit width for solid coverage.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
           {/* Copies by rotation, reflection or translation — see SymmetryPanel. */}
           <SymmetryPanel />
+          {/* Lace and the tiled textures — see FillPanel. */}
+          <FillPanel />
         </div>
       ) : activeTool === 'erase' || activeTool === 'star' ? null : (
         <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">

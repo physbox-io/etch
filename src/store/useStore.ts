@@ -531,6 +531,13 @@ interface EtchStore {
    * `laceSelected`; the tilings to `textureFill.ts`.
    */
   fillSelected: (override?: Partial<FillSettings>) => void;
+  /**
+   * Takes a fill off again, as an edit rather than an undo: a cut-out fill
+   * (or fretwork, or lace) is replaced by the shapes it was made from, and a
+   * texture laid on a shape is deleted. Works on the cut, the texture, or the
+   * shape the texture is on.
+   */
+  removeFillSelected: () => void;
   fillSettings: FillSettings;
   setFillSettings: (settings: Partial<FillSettings>) => void;
   /**
@@ -690,6 +697,11 @@ function placeCut(
     visible: true,
     locked: false,
     d: result.d,
+    madeFrom: {
+      label: name.split(' ')[0],
+      elements: document.elements.filter((el) => consumed.has(el.id)),
+      origin: { x: result.x, y: result.y },
+    },
   };
 
   const baseIndex = document.elements.findIndex((el) => el.id === frame.id);
@@ -2386,12 +2398,13 @@ export const useStore = create<EtchStore>((set, get) => ({
       return;
     }
     /*
-     * Onto the document's first engraving layer, or a new one. Never the
-     * shape's own layer: that is usually a cut, and a texture on a cut layer
-     * is a sheet of slots.
+     * Cut along: on the shape's own layer, so each line is cut through once.
+     * Engrave: onto the document's first engraving layer, or a new one —
+     * never the shape's layer, which is usually a cut, where a texture meant
+     * to be marked would be a sheet of slots.
      */
     let layers = document.layers;
-    let etch = layers.find((l) => l.operation === 'etch');
+    let etch = f.mode === 'lines' ? layer : layers.find((l) => l.operation === 'etch');
     if (!etch) {
       // The shipped presets' own "Vector Etch" layer, not a copy of the
       // shape's layer: copied from a through-cut, the texture inherited its
@@ -2428,8 +2441,12 @@ export const useStore = create<EtchStore>((set, get) => ({
       visible: true,
       locked: false,
       d: result.d,
+      textureOf: frame.id,
     };
-    const newDoc = { ...document, layers, elements: [...document.elements, texture] };
+    // A texture already on this shape is replaced, not stacked: pressing again
+    // for a different craquelure should give one, not two over each other.
+    const others = document.elements.filter((el) => el.textureOf !== frame.id);
+    const newDoc = { ...document, layers, elements: [...others, texture] };
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
     set({
@@ -2437,7 +2454,51 @@ export const useStore = create<EtchStore>((set, get) => ({
       history: newHistory,
       historyIndex: newHistory.length - 1,
       selectedIds: [texture.id],
-      combineNotice: `${label} engraved at a ${size} mm repeat on layer "${etch.name}" — ${result.lines} lines. The shape itself is unchanged.`,
+      combineNotice:
+        `${label} ${f.mode === 'lines' ? 'to be cut along' : 'engraved'} at a ${size} mm repeat on layer ` +
+        `"${etch.name}" — ${result.lines} lines. The shape itself is unchanged; Remove takes the texture off.`,
+    });
+  },
+
+  removeFillSelected: () => {
+    const { document, selectedIds, history, historyIndex } = get();
+    const picked = new Set(selectedIds);
+    // The shapes whose textures go: those selected, and those whose texture is.
+    const bearers = new Set(selectedIds);
+    for (const el of document.elements) if (picked.has(el.id) && el.textureOf) bearers.add(el.textureOf);
+
+    const restoredIds: string[] = [];
+    let removed = 0;
+    const elements = document.elements.flatMap((el) => {
+      if (el.textureOf && bearers.has(el.textureOf)) {
+        removed++;
+        return [];
+      }
+      if (picked.has(el.id) && el.madeFrom) {
+        removed++;
+        const dx = el.x - el.madeFrom.origin.x;
+        const dy = el.y - el.madeFrom.origin.y;
+        return el.madeFrom.elements.map((orig) => {
+          restoredIds.push(orig.id);
+          return { ...orig, x: orig.x + dx, y: orig.y + dy };
+        });
+      }
+      return [el];
+    });
+    if (removed === 0) {
+      set({ combineNotice: 'Nothing selected has a fill to remove.' });
+      return;
+    }
+    const newDoc = { ...document, elements };
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+    const kept = new Set(elements.map((el) => el.id));
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: [...selectedIds.filter((id) => kept.has(id)), ...restoredIds],
+      combineNotice: null,
     });
   },
 
