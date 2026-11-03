@@ -156,7 +156,35 @@ export function repeatCount(spec: RepeatSpec): number {
 }
 
 /**
+ * The most shapes one press may add.
+ *
+ * The selection after a press is the originals and their copies, so pressing
+ * again repeats the whole ring: 8, 64, 512, then 4096 shapes, and the tab
+ * stopped answering on the fourth. Past this a press is refused with the count
+ * rather than attempted.
+ */
+export const MAX_REPEAT_ADDED = 1000;
+
+/** What a shape is, without where it is — the fields a placement does not touch. */
+function shapeKey(el: EtchElement): string {
+  const { id: _id, name: _name, objectId: _o, x: _x, y: _y, rotation: _r, scaleX: _sx, scaleY: _sy, ...rest } = el;
+  return JSON.stringify(rest);
+}
+
+const placeKey = (el: EtchElement) => {
+  const q = (v: number) => Math.round(v * 1000);
+  const rot = ((((el.rotation || 0) % 360) + 360) % 360);
+  return `${q(el.x)}|${q(el.y)}|${q(rot % 360 > 359.9995 ? 0 : rot)}|${q(el.scaleX ?? 1)}|${q(el.scaleY ?? 1)}`;
+};
+
+/**
  * The new elements a repeat adds — the originals are not in it.
+ *
+ * A copy that would land exactly on a shape already there (the same shape, in
+ * the same place) is not made. Pressing Radial again on a ring it has just
+ * made is the common case: every copy falls on a member of the ring, and the
+ * press adds nothing instead of stacking a second ring on the first — which
+ * would also be cut twice.
  *
  * `mintId` names each copy: the store's own id scheme, so two presses in one
  * tick cannot hand out the same id twice (`_mandala_3` did, the second time
@@ -167,13 +195,19 @@ export function repeatElements(
   spec: RepeatSpec,
   mintId: () => string
 ): EtchElement[] {
+  const keys = els.map(shapeKey);
+  const taken = new Set(els.map((el, i) => `${keys[i]}#${placeKey(el)}`));
   const added: EtchElement[] = [];
   const moves = placements(spec);
   moves.forEach((m, k) => {
     if (k === 0 && isIdentity(m)) return;
-    for (const el of els) {
-      added.push({ ...placeElement(el, m), id: mintId(), name: `${el.name ?? el.type} ${k + 1}` });
-    }
+    els.forEach((el, i) => {
+      const copy = placeElement(el, m);
+      const at = `${keys[i]}#${placeKey(copy)}`;
+      if (taken.has(at)) return;
+      taken.add(at);
+      added.push({ ...copy, id: mintId(), name: `${el.name ?? el.type} ${k + 1}` });
+    });
   });
   return added;
 }

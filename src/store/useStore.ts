@@ -37,7 +37,7 @@ import {
 } from '../utils/tooling';
 import type { RackTool } from '@physbox-io/machining';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
-import { repeatElements, selectionCentre, type RepeatSpec } from '../utils/repeatPattern';
+import { MAX_REPEAT_ADDED, repeatCount, repeatElements, selectionCentre, type RepeatSpec } from '../utils/repeatPattern';
 import { TEXTURES, autoTextureSize, textureCut, textureEngrave, textureLimits } from '../utils/textureFill';
 import { replanField } from '../utils/generatedField';
 import { groupElements, newObjectId, objectNameFor, pruneObjects, ungroupObject } from '../utils/objects';
@@ -530,7 +530,7 @@ interface EtchStore {
    * it or engraved on it, round any other selected shapes. Lace goes to
    * `laceSelected`; the tilings to `textureFill.ts`.
    */
-  fillSelected: () => void;
+  fillSelected: (override?: Partial<FillSettings>) => void;
   fillSettings: FillSettings;
   setFillSettings: (settings: Partial<FillSettings>) => void;
   /**
@@ -592,7 +592,9 @@ interface EtchStore {
    * settings — see `utils/repeatPattern.ts`. The originals stay; the selection
    * becomes originals and copies together. One undo.
    */
-  applyRepeatToSelected: () => void;
+  applyRepeatToSelected: (spec?: RepeatRequest) => void;
+  /** What the last repeat did, or why it did nothing. Cleared with the selection. */
+  repeatNotice: string | null;
 
   // Layer Operations
   /**
@@ -631,6 +633,15 @@ interface EtchStore {
   undo: () => void;
   redo: () => void;
 }
+
+/**
+ * A repeat asked for directly — by MCP — rather than through the panel. Any
+ * field left out is the panel's; `centre` may also be a point.
+ */
+export type RepeatRequest = Partial<Omit<RepeatSettings, 'centre'>> & {
+  centre?: RepeatSettings['centre'] | { x: number; y: number };
+  mirror?: boolean;
+};
 
 const defaultDoc: EtchDocument = cloneDoc(DEFAULT_PRESET.doc);
 
@@ -879,6 +890,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   selectedIds: [],
   clipboard: null,
   combineNotice: null,
+  repeatNotice: null,
   beautifyNotice: null,
   offsetNotice: null,
   joinNotice: null,
@@ -1118,7 +1130,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   // *these* shapes would not combine, and once the selection moves on it is
   // talking about something that is no longer on screen.
   setSelectedIds: (ids) =>
-    set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null, joinNotice: null }),
+    set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null, joinNotice: null, repeatNotice: null }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
   // Fires on every pointer move. A snapped cursor sits on the same grid point for
@@ -2299,12 +2311,20 @@ export const useStore = create<EtchStore>((set, get) => ({
       return;
     }
     const [frame, ...paper] = selected;
-    const result = papercut(frame, paper);
+    // On a router the narrowest opening is the bit, not the laser's 0.8 mm:
+    // an opening the cutter cannot enter is not cut, it is gouged.
+    const machine = machineKind(document);
+    const layer = document.layers.find((l) => l.id === frame.layerId);
+    const tool = machine === 'cnc'
+      ? jobTools(document, get().cncTools).find((t) => t.id === (layer?.tool ?? DEFAULT_TOOL))
+      : undefined;
+    const limits = textureLimits(machine, tool?.diameter);
+    const result = papercut(frame, paper, { minStrandMm: limits.strandMm, minHoleMm: limits.holeMm });
     if ('error' in result) {
       set({ combineNotice: result.error });
       return;
     }
-    set(placeCut(get(), frame, paper, result, `Papercut of ${frame.name}`, []));
+    set(placeCut(get(), frame, paper, result, `Fretwork of ${frame.name}`, []));
   },
 
   /*
@@ -2326,8 +2346,9 @@ export const useStore = create<EtchStore>((set, get) => ({
     set(placeCut(get(), frame, motifs, result, `Lace in ${frame.name}`, [lead]));
   },
 
-  fillSelected: () => {
-    const { document, selectedIds, fillSettings: f, cncTools, history, historyIndex } = get();
+  fillSelected: (override) => {
+    const { document, selectedIds, fillSettings, cncTools, history, historyIndex } = get();
+    const f = { ...fillSettings, ...override };
     if (f.texture === 'lace') {
       get().laceSelected();
       return;
@@ -2719,27 +2740,47 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
   },
 
-  applyRepeatToSelected: () => {
-    const { document, selectedIds, mandalaSettings, repeatSettings: r, history, historyIndex } = get();
+  applyRepeatToSelected: (req) => {
+    const { document, selectedIds, mandalaSettings, repeatSettings, history, historyIndex } = get();
     const selected = document.elements.filter((el) => selectedIds.includes(el.id));
-    if (selected.length === 0) return;
+    if (selected.length === 0) {
+      set({ repeatNotice: 'Select the shapes to repeat.' });
+      return;
+    }
+    // The panel's settings, with anything an MCP caller sent laid over them.
+    const r = { ...repeatSettings, ...req };
+    const copies = req?.copies ?? (r.kind === 'radial' ? mandalaSettings.sectorCount : r.copies);
+    const mirror = req?.mirror ?? mandalaSettings.mirror;
 
     // "About the stock" is derived from this document's size, never a stored
     // 150, 100 — which is the middle only of the 300 × 200 presets.
     const centre =
-      r.centre === 'custom'
-        ? { x: mandalaSettings.centerX, y: mandalaSettings.centerY }
-        : r.centre === 'selection'
-          ? (selectionCentre(selected) ?? { x: document.width / 2, y: document.height / 2 })
-          : { x: document.width / 2, y: document.height / 2 };
+      typeof r.centre === 'object'
+        ? r.centre
+        : r.centre === 'custom'
+          ? { x: mandalaSettings.centerX, y: mandalaSettings.centerY }
+          : r.centre === 'selection'
+            ? (selectionCentre(selected) ?? { x: document.width / 2, y: document.height / 2 })
+            : { x: document.width / 2, y: document.height / 2 };
     const spec: RepeatSpec =
       r.kind === 'radial'
-        ? { kind: 'radial', copies: mandalaSettings.sectorCount, mirror: mandalaSettings.mirror, centre }
+        ? { kind: 'radial', copies, mirror, centre }
         : r.kind === 'mirror'
           ? { kind: 'mirror', axis: r.axis, centre }
           : r.kind === 'linear'
-            ? { kind: 'linear', copies: r.copies, dx: r.dx, dy: r.dy }
+            ? { kind: 'linear', copies, dx: r.dx, dy: r.dy }
             : { kind: 'grid', cols: r.cols, rows: r.rows, dx: r.dx, dy: r.dy };
+
+    const wouldAdd = selected.length * (repeatCount(spec) - 1);
+    if (wouldAdd > MAX_REPEAT_ADDED) {
+      set({
+        repeatNotice:
+          `That would add ${wouldAdd.toLocaleString()} shapes — ${selected.length} selected × ` +
+          `${repeatCount(spec)} each. The selection after a repeat includes the copies, so ` +
+          `pressing again repeats the whole set; select just the shape you want repeated.`,
+      });
+      return;
+    }
 
     let k = 0;
     const stamp = Date.now();
@@ -2748,7 +2789,10 @@ export const useStore = create<EtchStore>((set, get) => ({
       spec,
       () => `el_${stamp}_${k++}_${Math.random().toString(36).substring(2, 6)}`
     );
-    if (added.length === 0) return;
+    if (added.length === 0) {
+      set({ repeatNotice: 'Nothing to add — every copy would land exactly on a shape that is already there.' });
+      return;
+    }
 
     // Push onto history rather than going through setDocument, which resets it
     // — applying symmetry used to be un-undoable.
@@ -2760,6 +2804,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       history: newHistory,
       historyIndex: newHistory.length - 1,
       selectedIds: [...selectedIds, ...added.map((c) => c.id)],
+      repeatNotice: `Added ${added.length} cop${added.length === 1 ? 'y' : 'ies'}.`,
     });
   },
 

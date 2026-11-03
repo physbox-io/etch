@@ -501,3 +501,61 @@ describe('MCP: tab identity in the HELLO', () => {
     expect(tabIdentity().sessionId).toBe(a.sessionId);
   });
 });
+
+describe('MCP: etch_combine fretwork, fill and repeat', () => {
+  it('takes fretwork, and still takes its old name papercut', async () => {
+    for (const op of ['fretwork', 'papercut']) {
+      load([rect('w', 10, 10, 80, 80), line('v')]);
+      const r = await handleMCPCommand('etch_combine', { elementIds: ['w', 'v'], op });
+      expect(r.ok).toBe(true);
+      expect(useStore.getState().document.elements.find((e) => e.id === r.addedId)?.name).toMatch(/^Fretwork/);
+    }
+  });
+
+  it('fills a shape with a tiled texture, cut out or engraved', async () => {
+    load([rect('w', 10, 10, 60, 60)]);
+    const cut = await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'honeycomb' });
+    expect(cut.ok).toBe(true);
+    load([rect('w', 10, 10, 60, 60)]);
+    const eng = await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'scales', mode: 'engrave', sizeMm: 10 });
+    expect(eng.ok).toBe(true);
+    const doc = useStore.getState().document;
+    // The shape is untouched and the texture is on an engraving layer.
+    expect(doc.elements.some((e) => e.id === 'w')).toBe(true);
+    const tex = doc.elements.find((e) => e.id === eng.addedId)!;
+    expect(doc.layers.find((l) => l.id === tex.layerId)?.operation).toBe('etch');
+  });
+
+  it('refuses a texture it does not know, and lace engraved', async () => {
+    load([rect('w', 10, 10, 60, 60)]);
+    expect((await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'tartan' })).ok).toBe(false);
+    expect((await handleMCPCommand('etch_combine', { elementIds: ['w'], op: 'fill', texture: 'lace', mode: 'engrave' })).ok).toBe(false);
+  });
+
+  it('repeats: a radial ring, then nothing more when pressed again on the ring', async () => {
+    load([rect('p', 140, 20, 10, 20)]);
+    const r = await handleMCPCommand('etch_combine', {
+      elementIds: ['p'], op: 'repeat', repeat: { kind: 'radial', copies: 6, centre: 'stock' },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.addedIds).toHaveLength(5);
+    const ring = ['p', ...r.addedIds];
+    const again = await handleMCPCommand('etch_combine', {
+      elementIds: ring, op: 'repeat', repeat: { kind: 'radial', copies: 6, centre: 'stock' },
+    });
+    // The failure: each press repeated the whole ring — 6, 36, 216 … — and
+    // the tab stopped answering. Every copy now lands on a member of the ring.
+    expect(again.ok).toBe(false);
+    expect(useStore.getState().document.elements).toHaveLength(6);
+  });
+
+  it('refuses a repeat that would add more than the cap, and says why', async () => {
+    load(Array.from({ length: 40 }, (_, i) => rect(`r${i}`, i * 5, 0, 3, 3)));
+    const r = await handleMCPCommand('etch_combine', {
+      elementIds: Array.from({ length: 40 }, (_, i) => `r${i}`), op: 'repeat',
+      repeat: { kind: 'grid', cols: 6, rows: 6, dx: 3, dy: 3 },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/would add/);
+  });
+});

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { Sun } from 'lucide-react';
+import { Sun, AlertTriangle } from 'lucide-react';
+import { InspectorSection } from './InspectorSection';
 import { NumberInput } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
 import { bedBoxOfAll } from '../utils/geom';
@@ -29,7 +30,7 @@ const select =
   'w-full mt-0.5 px-1.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-[11px]';
 
 export const SymmetryPanel: React.FC = () => {
-  const { r, m, setR, setM, apply, elements, selectedIds } = useStore(
+  const { r, m, setR, setM, apply, elements, selectedIds, notice } = useStore(
     useShallow((s) => ({
       r: s.repeatSettings,
       m: s.mandalaSettings,
@@ -38,6 +39,7 @@ export const SymmetryPanel: React.FC = () => {
       apply: s.applyRepeatToSelected,
       elements: s.document.elements,
       selectedIds: s.selectedIds,
+      notice: s.repeatNotice,
     }))
   );
   // Filtered outside the selector: a fresh array from inside one never
@@ -121,9 +123,17 @@ export const SymmetryPanel: React.FC = () => {
     </>
   );
 
+  const summary =
+    r.kind === 'radial'
+      ? `${m.sectorCount}-fold${m.mirror ? ', mirrored' : ''}`
+      : r.kind === 'mirror'
+        ? 'Mirror'
+        : r.kind === 'linear'
+          ? `Row of ${r.copies}`
+          : `${r.cols} × ${r.rows} grid`;
+
   return (
-    <div className="pt-2 space-y-1.5">
-      <span className={label}>Symmetry &amp; Repeat</span>
+    <InspectorSection id="symmetry" title="Symmetry & Repeat" summary={summary}>
       <div className="grid grid-cols-4 gap-0.5 p-0.5 rounded bg-slate-100 dark:bg-slate-800">
         {KINDS.map((k) => (
           <button
@@ -230,14 +240,24 @@ export const SymmetryPanel: React.FC = () => {
       </div>
 
       <button
-        onClick={apply}
+        onClick={() => apply()}
         disabled={total < 2}
         className="w-full py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-700 dark:text-amber-300 rounded font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
         title="Adds the copies around the selection and keeps the original. One undo takes them all away."
       >
         <Sun className="w-3.5 h-3.5 text-amber-500" />
-        <span>Apply — {total} in all</span>
+        <span>
+          {/* Per shape: with a finished ring selected, "8 × 8" promised 64
+              when copies landing on the ring are skipped and none are made. */}
+          Apply — {total} of {selected.length > 1 ? 'each' : 'it'}
+        </span>
       </button>
-    </div>
+      {notice && (
+        <div className="flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+          <span>{notice}</span>
+        </div>
+      )}
+    </InspectorSection>
   );
 };

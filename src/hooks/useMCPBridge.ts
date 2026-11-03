@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { getStoredAuthToken } from '../utils/apiClient';
 import { tabSession } from '../utils/tabSession';
 import { createEtchMachineHandlers, setCurrentDocument } from '../utils/machineMcp';
-import { useStore } from '../store/useStore';
+import { useStore, type RepeatRequest } from '../store/useStore';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
 import { placeUnscaled } from '../utils/svgHandoff';
@@ -27,7 +27,8 @@ import { getBedBBox, bedBoxOfAll, isOutsideStock } from '../utils/geom';
 import { floodFillRegion, fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
 import { DEFAULT_ERASER_WIDTH_MM, MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import type { Pt } from '../utils/pathFlatten';
-import type { EtchElement } from '../types/etch';
+import type { EtchElement, FillSettings } from '../types/etch';
+import { TEXTURES } from '../utils/textureFill';
 import { defaultRegistration, planRegistration } from '../utils/registration';
 import { defaultLivingHinge, planLivingHinge } from '../utils/livingHinge';
 import { defaultPerforation, planPerforation } from '../utils/perforation';
@@ -1113,7 +1114,36 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
        * the order *is* the operation: the first id is the base, and for
        * subtract it is the shape being cut into.
        */
-      const op = (msg.op || msg.operation) as BooleanOp | 'papercut' | 'lace' | 'join' | 'unjoin';
+      const rawOp = (msg.op || msg.operation) as string;
+      // 'papercut' was the op's first name; it still answers to it.
+      const op = (rawOp === 'papercut' ? 'fretwork' : rawOp) as
+        BooleanOp | 'fretwork' | 'lace' | 'fill' | 'repeat' | 'join' | 'unjoin';
+      if (op === 'repeat') {
+        /*
+         * Symmetry & Repeat. Not a combine, but on this tool for the reason
+         * join is: the tool count the website advertises does not move. Adds
+         * copies; the originals stay. Fields left out are the panel's.
+         */
+        const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
+        if (!Array.isArray(ids) || ids.length < 1) {
+          return { ok: false, error: 'elementIds must name at least one element to repeat' };
+        }
+        const known = new Set(store.document.elements.map((el) => el.id));
+        const missing = ids.filter((id) => !known.has(id));
+        if (missing.length) return { ok: false, error: `No such element: ${missing.join(', ')}` };
+        const req = (msg.repeat ?? {}) as Record<string, unknown>;
+        const kinds = ['radial', 'mirror', 'linear', 'grid'];
+        if (req.kind !== undefined && !kinds.includes(req.kind as string)) {
+          return { ok: false, error: `repeat.kind must be one of ${kinds.join(', ')}` };
+        }
+        const beforeIds = new Set(store.document.elements.map((el) => el.id));
+        store.setSelectedIds(ids);
+        useStore.getState().applyRepeatToSelected(req as RepeatRequest);
+        const after = useStore.getState();
+        const addedIds = after.document.elements.filter((el) => !beforeIds.has(el.id)).map((el) => el.id);
+        if (addedIds.length === 0) return { ok: false, error: after.repeatNotice || 'Nothing was added.' };
+        return { ok: true, addedIds, note: after.repeatNotice ?? undefined };
+      }
       if (op === 'join' || op === 'unjoin') {
         /*
          * Join rides on combine rather than being a tool of its own because it
@@ -1160,15 +1190,29 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       // Papercut is a combine like the booleans — first id the window, the rest
       // paper — and so rides on them rather than adding a tool. Lace is a
       // papercut with the paper grown, and takes a window alone.
-      if (!BOOLEAN_OP_LABEL[op as BooleanOp] && op !== 'papercut' && op !== 'lace') {
+      if (!BOOLEAN_OP_LABEL[op as BooleanOp] && op !== 'fretwork' && op !== 'lace' && op !== 'fill') {
         return {
           ok: false,
-          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'papercut', 'lace', 'join', 'unjoin'].join(', ')}`,
+          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'fretwork', 'lace', 'fill', 'repeat', 'join', 'unjoin'].join(', ')}`,
         };
       }
+      const oneWillDo = op === 'lace' || op === 'fill';
       const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
-      if (!Array.isArray(ids) || ids.length < (op === 'lace' ? 1 : 2)) {
-        return { ok: false, error: op === 'lace' ? 'elementIds must name the window to fill' : 'elementIds must name two or more elements' };
+      if (!Array.isArray(ids) || ids.length < (oneWillDo ? 1 : 2)) {
+        return { ok: false, error: oneWillDo ? 'elementIds must name the shape to fill' : 'elementIds must name two or more elements' };
+      }
+      let fill: Partial<FillSettings> | undefined;
+      if (op === 'fill') {
+        const textures = TEXTURES.map((t) => t.id) as string[];
+        const texture = (msg.texture ?? 'lace') as string;
+        if (!textures.includes(texture)) {
+          return { ok: false, error: `texture must be one of ${textures.join(', ')}` };
+        }
+        const mode = (msg.mode ?? 'cut') as string;
+        if (mode !== 'cut' && mode !== 'engrave') return { ok: false, error: "mode must be 'cut' or 'engrave'" };
+        if (texture === 'lace' && mode === 'engrave') return { ok: false, error: 'Lace is grown to be cut out; it has no engrave mode.' };
+        const sizeMm = typeof msg.sizeMm === 'number' && msg.sizeMm > 0 ? msg.sizeMm : null;
+        fill = { texture: texture as FillSettings['texture'], mode, sizeMm };
       }
       const known = new Set(store.document.elements.map((el) => el.id));
       const missing = ids.filter((id) => !known.has(id));
@@ -1178,8 +1222,9 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
 
       const before = new Set(store.document.elements.map((el) => el.id));
       store.setSelectedIds(ids);
-      if (op === 'papercut') useStore.getState().papercutSelected();
+      if (op === 'fretwork') useStore.getState().papercutSelected();
       else if (op === 'lace') useStore.getState().laceSelected();
+      else if (op === 'fill') useStore.getState().fillSelected(fill);
       else useStore.getState().combineSelected(op);
 
       const after = useStore.getState();

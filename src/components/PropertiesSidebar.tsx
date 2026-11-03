@@ -1140,9 +1140,9 @@ export const PropertiesSidebar: React.FC = () => {
                   <button
                     onClick={papercutSelected}
                     className="col-span-2 flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
-                    title={`Papercut: cut away everything inside ${anchorElement?.name ?? 'the first shape'} except the other shapes, which stay as paper — lace, filigree, a shadow-box layer. Lines become strands of card. Anything that would fall out is bridged on.`}
+                    title={`Fretwork (papercut, filigree): cut away everything inside ${anchorElement?.name ?? 'the first shape'} except the other shapes, which are kept — lace, a scroll-saw panel, a shadow-box layer. Lines become strands. Anything that would fall out is bridged on, and gaps too narrow to cut are filled in.`}
                   >
-                    Papercut
+                    Fretwork
                   </button>
                 </div>
                 {combineNotice && (

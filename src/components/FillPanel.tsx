@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { Flower2, AlertTriangle } from 'lucide-react';
 import { NumberInput } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
+import { InspectorSection } from './InspectorSection';
 import { TEXTURES, autoTextureSize, textureLimits } from '../utils/textureFill';
 import { jobTools, machineKind, DEFAULT_TOOL } from '../utils/tooling';
 import type { FillSettings } from '../types/etch';
@@ -46,8 +47,7 @@ export const FillPanel: React.FC = () => {
   const mode = cutOnly ? 'cut' : f.mode;
 
   return (
-    <div className="col-span-2 space-y-1.5">
-      <span className={label}>Fill</span>
+    <InspectorSection id="fill" title="Fill" summary={`${texture.label} · ${mode === 'cut' ? 'cut out' : 'engraved'}`}>
       <div className="grid grid-cols-2 gap-1.5">
         <div>
           <select
@@ -103,7 +103,7 @@ export const FillPanel: React.FC = () => {
         )}
       </div>
       <button
-        onClick={fill}
+        onClick={() => fill()}
         className="w-full flex items-center justify-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
         title={`${texture.hint} Fills ${anchorName}; any other selected shapes are kept solid and the pattern goes round them. Undo and press again for a different one.`}
       >
@@ -116,6 +116,6 @@ export const FillPanel: React.FC = () => {
           <span>{notice}</span>
         </div>
       )}
-    </div>
+    </InspectorSection>
   );
 };
