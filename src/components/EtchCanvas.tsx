@@ -450,8 +450,15 @@ export const EtchCanvas: React.FC = () => {
         addElement(fillElement(result, layerId, layer?.color ?? '#3b82f6'));
         // Say what happened when it is not the obvious thing. A region that
         // ran to the edge of the stock is "the background", which is
-        // sometimes meant and sometimes a line that did not close.
-        if (result.openToStock) {
+        // sometimes meant and sometimes a line that did not close. A fill
+        // that did not land on the active layer is the other surprise: the
+        // active one cuts through, and nothing on screen says where it went.
+        const active = document.layers.find((l) => l.id === activeLayerId);
+        if (layerId !== activeLayerId && layer) {
+          showFillNotice(
+            `Filled on "${layer.name}" — the active layer${active ? `, "${active.name}",` : ''} cuts through, so it cannot take a fill.`
+          );
+        } else if (result.openToStock) {
           showFillNotice(
             'Filled to the edge of the stock — the click was outside every closed shape. Undo if a line was meant to close this.'
           );

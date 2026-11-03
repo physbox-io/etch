@@ -390,12 +390,25 @@ export function floodFillRegion(
   };
 }
 
+/** Layers a paint-bucket fill may land on: surface work, never a through-cut. */
+export function canHoldFill(op: string | undefined): boolean {
+  return op === 'fill' || op === 'etch';
+}
+
 /**
- * The layer a fill should land on: the first fill layer, else the first etch
- * layer, else whatever is active. A fill on a cut layer would pocket the part
- * through, which is never what clicking a paint bucket means.
+ * The layer a fill should land on: the active layer when it can hold one,
+ * else the first fill layer, else the first etch layer, else whatever is
+ * active. A fill on a cut layer would pocket the part through, which is never
+ * what clicking a paint bucket means.
+ *
+ * The active layer comes first because it is the only way to choose. This
+ * used to start at "the first fill layer", so a job with fills at three depths
+ * put every fill on whichever was listed first, and the only way to get one
+ * onto the others was to move it by hand afterwards.
  */
 export function fillTargetLayerId(doc: EtchDocument, activeLayerId: string): string {
+  const active = doc.layers.find((l) => l.id === activeLayerId);
+  if (active && canHoldFill(active.operation)) return active.id;
   return (
     doc.layers.find((l) => l.operation === 'fill')?.id ??
     doc.layers.find((l) => l.operation === 'etch')?.id ??

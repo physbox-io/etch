@@ -203,6 +203,18 @@ describe('fill placement', () => {
     expect(fillTargetLayerId(doc([], { layers: [d.layers[0]] }), 'cut')).toBe('cut');
   });
 
+  it('lands on the active layer when it is a fill or etch layer', () => {
+    const d = doc([]);
+    const deep = { id: 'deep', name: 'Deep', color: '#0a0', operation: 'fill' as const, visible: true, locked: false, speed: 1, power: 1, passes: 1, zDepth: 3 };
+    const shallow = { ...deep, id: 'shallow', name: 'Shallow', zDepth: 1 };
+    const two = doc([], { layers: [...d.layers, shallow, deep] });
+    // The second fill layer is reachable — it used to always be the first.
+    expect(fillTargetLayerId(two, 'deep')).toBe('deep');
+    expect(fillTargetLayerId(two, 'etch')).toBe('etch');
+    // A cut layer active still never takes the fill.
+    expect(fillTargetLayerId(two, 'cut')).toBe('shallow');
+  });
+
   it('makes a filled path whose outline is not machined again', () => {
     const r = floodFillRegion(doc([rect('a', 20, 20, 40, 30)]), { x: 40, y: 35 });
     if (isFloodFillFailure(r)) throw new Error(r.error);

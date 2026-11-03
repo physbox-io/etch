@@ -66,6 +66,7 @@ import { DEFAULT_SHADE_PITCH_MM } from '../utils/rasterImage';
 import type { EtchElement } from '../types/etch';
 import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
 import { MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
+import { canHoldFill, fillTargetLayerId } from '../utils/floodFill';
 
 const NUM_INPUT =
   'w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono';
@@ -855,6 +856,54 @@ export const PropertiesSidebar: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* The paint bucket says where its fill will go, and is where you change
+          it — the same as the eraser's "Erases On". The bucket always used the
+          active layer (or fell back off a cut layer), but the active layer is
+          only a faint highlight in the Layers panel, so with fills at several
+          depths there was no telling which one a click would land on. */}
+      {activeTool === 'fill' && (() => {
+        const fillLayers = document.layers.filter((l) => canHoldFill(l.operation));
+        const target = fillTargetLayerId(document, activeLayerId);
+        const targetLayer = document.layers.find((l) => l.id === target);
+        return (
+          <div className="p-4 space-y-2 text-xs border-b border-slate-200 dark:border-slate-800/80">
+            <h3 className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+              Fill
+            </h3>
+            {fillLayers.length > 0 ? (
+              <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                  Fills On{' '}
+                  <InfoTooltip text="The layer a click fills onto. Its depth, power and hatch are what the fill is machined with. Only fill and etch layers are offered — a fill on a cut layer would go straight through." />
+                </label>
+                <select
+                  value={target}
+                  onChange={(e) => setActiveLayer(e.target.value)}
+                  className="w-full mt-1 px-2 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100"
+                >
+                  {fillLayers.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name} ({l.operation}
+                      {!isLaser && isMachinedLayer(l) ? `, ${l.zDepth} mm deep` : ''})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+                No fill or etch layer, so fills land on
+                {targetLayer ? ` "${targetLayer.name}"` : ' the active layer'}. Add a layer below and
+                set it to Fill to keep fills off the cut.
+              </p>
+            )}
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+              Click inside a closed shape to fill it. Choosing a layer here also makes it the
+              active layer in the Layers panel.
+            </p>
+          </div>
+        );
+      })()}
 
       {activeTool === 'erase' && (
         <div className="p-4 space-y-2 text-xs border-b border-slate-200 dark:border-slate-800/80">
@@ -1849,7 +1898,7 @@ export const PropertiesSidebar: React.FC = () => {
           {/* Lace and the tiled textures — see FillPanel. */}
           <FillPanel />
         </div>
-      ) : activeTool === 'erase' || activeTool === 'star' ? null : (
+      ) : activeTool === 'erase' || activeTool === 'star' || activeTool === 'fill' ? null : (
         <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
           Select any element on the canvas to inspect and edit properties.
         </div>
