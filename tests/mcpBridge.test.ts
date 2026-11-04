@@ -591,3 +591,88 @@ describe('MCP: taking a fill off again', () => {
     expect(useStore.getState().document.elements.map((e) => e.id)).toEqual(['w']);
   });
 });
+
+describe('MCP: etch_combine offset, inset, outset and sweep', () => {
+  it('offsets a shape inward (inset) and outward (outset) alongside the original', async () => {
+    load([rect('plate', 20, 20, 60, 40)]);
+    const inset = await handleMCPCommand('etch_combine', {
+      elementIds: ['plate'],
+      op: 'inset',
+      distanceMm: 3,
+    });
+    expect(inset.ok).toBe(true);
+    expect(inset.deltaMm).toBe(-3);
+    const afterInset = useStore.getState().document.elements;
+    // The original is kept alongside the new inset outline.
+    expect(afterInset).toHaveLength(2);
+
+    const outset = await handleMCPCommand('etch_combine', {
+      elementIds: ['plate'],
+      op: 'outset',
+      sizeMm: 5,
+    });
+    expect(outset.ok).toBe(true);
+    expect(outset.deltaMm).toBe(5);
+    expect(useStore.getState().document.elements).toHaveLength(3);
+  });
+
+  it('sweeps a variable-width snake along a bezier curve, insets it, re-tapers it, and unsweeps it', async () => {
+    load([]);
+    const added = await handleMCPCommand('etch_add_element', {
+      element: {
+        id: 'spine',
+        name: 'Snake',
+        type: 'bezier',
+        x: 30,
+        y: 100,
+        bezierNodes: [
+          { x: 0, y: 0, handleOut: { x: 25, y: -30 } },
+          { x: 70, y: 0, handleIn: { x: -25, y: 30 }, handleOut: { x: 25, y: -30 } },
+          { x: 140, y: 0, handleIn: { x: -25, y: 30 } },
+        ],
+      },
+    });
+    expect(added.ok).toBe(true);
+
+    // Sweep variable widths [6, 12, 5, 9, 0] along the curve
+    const swept = await handleMCPCommand('etch_combine', {
+      elementIds: ['spine'],
+      op: 'sweep',
+      widths: [6, 12, 5, 9, 0],
+    });
+    expect(swept.ok).toBe(true);
+    expect(swept.consumed).toEqual(['spine']);
+    const sweptId = swept.addedId as string;
+
+    // Summary reports the sweep profile
+    const summary = await handleMCPCommand('etch_get_summary', {});
+    expect(summary.elements[0].sweep).toEqual({ widths: [6, 12, 5, 9, 0], cap: 'round' });
+
+    // Inset the swept snake body inward by 1.5 mm for an outline-style drawing
+    const inner = await handleMCPCommand('etch_combine', {
+      elementIds: [sweptId],
+      op: 'inset',
+      distanceMm: 1.5,
+    });
+    expect(inner.ok).toBe(true);
+
+    // Re-sweep the snake with wider stations [8, 16, 6, 11, 0]
+    const reswept = await handleMCPCommand('etch_combine', {
+      elementIds: [sweptId],
+      op: 'sweep',
+      widths: [8, 16, 6, 11, 0],
+    });
+    expect(reswept.ok).toBe(true);
+    const resweptId = reswept.addedId as string;
+
+    // Unsweep restores the original bezier spine
+    const unswept = await handleMCPCommand('etch_combine', {
+      elementIds: [resweptId],
+      op: 'unsweep',
+    });
+    expect(unswept.ok).toBe(true);
+    expect(unswept.restoredIds).toEqual(['spine']);
+    const restored = useStore.getState().document.elements.find((e) => e.id === 'spine');
+    expect(restored?.type).toBe('bezier');
+  });
+});

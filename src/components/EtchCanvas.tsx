@@ -55,6 +55,7 @@ import {
   type NodePath,
   type HandleKind,
 } from '../utils/bezierNodes';
+import { smoothStrokePoints, sweepElement, widthsForBrushProfile } from '../utils/sweepPath';
 
 /** Equal 25mm margin on top, bottom, left and right of the bed. */
 const BED_MARGIN = 25;
@@ -143,6 +144,7 @@ export const EtchCanvas: React.FC = () => {
     pan,
     mandalaSettings,
     shapeSettings,
+    brushSettings,
     eraserWidth,
     setSelectedIds,
     setPan,
@@ -162,6 +164,7 @@ export const EtchCanvas: React.FC = () => {
       pan: s.pan,
       mandalaSettings: s.mandalaSettings,
       shapeSettings: s.shapeSettings,
+      brushSettings: s.brushSettings,
       eraserWidth: s.eraserWidth,
       setSelectedIds: s.setSelectedIds,
       setPan: s.setPan,
@@ -500,7 +503,7 @@ export const EtchCanvas: React.FC = () => {
         const ox = bezierNodes[0].x;
         const oy = bezierNodes[0].y;
         const local = bezierNodes.map((n) => ({ ...n, x: n.x - ox, y: n.y - oy }));
-        addElement({
+        const rawEl: EtchElement = {
           id: `bezier_${Date.now()}`,
           name: 'Bezier Path',
           type: 'bezier',
@@ -509,12 +512,48 @@ export const EtchCanvas: React.FC = () => {
           d: nodesToPath(local, close),
           bezierNodes: local,
           ...baseElementProps(),
-        } as EtchElement);
+        } as EtchElement;
+
+        const brushWidths = !close
+          ? widthsForBrushProfile(
+              brushSettings.profile,
+              brushSettings.widthMm,
+              brushSettings.customWidths,
+            )
+          : null;
+        if (brushWidths) {
+          const swept = sweepElement(rawEl, brushWidths, brushSettings.cap);
+          if (!('error' in swept)) {
+            addElement({
+              ...rawEl,
+              name: 'Brush Path',
+              type: 'path',
+              x: swept.x,
+              y: swept.y,
+              d: swept.d,
+              bezierNodes: swept.bezierNodes,
+              sweep: {
+                widths: swept.widths,
+                cap: swept.cap,
+                spineD: swept.spineD,
+              },
+              madeFrom: {
+                label: 'Sweep',
+                elements: [rawEl],
+                origin: { x: swept.x, y: swept.y },
+              },
+            });
+            setBezierNodes([]);
+            setIsDraggingHandle(false);
+            return;
+          }
+        }
+        addElement(rawEl);
       }
       setBezierNodes([]);
       setIsDraggingHandle(false);
     },
-    [bezierNodes, addElement, baseElementProps]
+    [bezierNodes, addElement, baseElementProps, brushSettings]
   );
 
   // Enter finishes an open path, Escape abandons it. Previously the pen could
@@ -633,7 +672,7 @@ export const EtchCanvas: React.FC = () => {
   const applyNodePath = useCallback(
     (np: NodePath, transient: boolean) => {
       if (!selectedElement) return;
-      const patch = nodePathUpdate(np);
+      const patch = nodePathUpdate(np, selectedElement);
       // Editing the geometry moves the bbox centre the element rotates about,
       // which would swing the untouched half of a rotated path across the bed.
       updateElement(
@@ -1225,24 +1264,52 @@ export const EtchCanvas: React.FC = () => {
         return;
       }
       if (pts.length > 1) {
-        const ox = pts[0].x;
-        const oy = pts[0].y;
-        const d =
-          'M 0 0' +
-          pts
-            .slice(1)
-            .map((p) => ` L ${(p.x - ox).toFixed(2)} ${(p.y - oy).toFixed(2)}`)
-            .join('');
+        const smoothMm = activeTool === 'freehand' ? brushSettings.smoothingMm : 0;
+        const smoothed = smoothStrokePoints(pts, smoothMm);
 
-        addElement({
+        const rawEl: EtchElement = {
           id: `freehand_${Date.now()}`,
           name: 'Freehand Stroke',
           type: 'freehand',
-          x: ox,
-          y: oy,
-          d,
+          x: smoothed.x,
+          y: smoothed.y,
+          d: smoothed.d,
+          ...(smoothed.bezierNodes ? { bezierNodes: smoothed.bezierNodes } : {}),
           ...baseElementProps(),
-        } as EtchElement);
+        } as EtchElement;
+
+        const brushWidths = widthsForBrushProfile(
+          brushSettings.profile,
+          brushSettings.widthMm,
+          brushSettings.customWidths,
+        );
+        if (brushWidths) {
+          const swept = sweepElement(rawEl, brushWidths, brushSettings.cap);
+          if (!('error' in swept)) {
+            addElement({
+              ...rawEl,
+              name: 'Brush Stroke',
+              type: 'path',
+              x: swept.x,
+              y: swept.y,
+              d: swept.d,
+              bezierNodes: swept.bezierNodes,
+              sweep: {
+                widths: swept.widths,
+                cap: swept.cap,
+                spineD: swept.spineD,
+              },
+              madeFrom: {
+                label: 'Sweep',
+                elements: [rawEl],
+                origin: { x: swept.x, y: swept.y },
+              },
+            });
+            setFreehandPoints([]);
+            return;
+          }
+        }
+        addElement(rawEl);
       }
       setFreehandPoints([]);
     }

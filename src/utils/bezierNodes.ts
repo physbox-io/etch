@@ -1,6 +1,7 @@
 import type { BezierNode, EtchElement } from '../types/etch';
 import { normalizePathD } from './pathTransform';
 import type { Pt } from './pathFlatten';
+import { resweepLocalSpine } from './sweepPath';
 
 /**
  * A path as the node editor sees it: anchor points carrying their own tangent
@@ -123,9 +124,20 @@ export function pathToNodes(d: string): NodePath | null {
  * The editable node form of an element, preferring its stored nodes and falling
  * back to parsing its `d`. The fallback is what makes freehand strokes and
  * imported SVG paths editable, not just paths drawn with the pen.
+ *
+ * When the element is a variable-width sweep (`el.sweep`), the nodes belong to
+ * its centreline spine rather than its outer boundary: dragging a node bends
+ * the spine down the middle and `nodePathUpdate` re-sweeps the body around it.
  */
 export function elementNodePath(el: EtchElement): NodePath | null {
   if (!EDITABLE_TYPES.includes(el.type)) return null;
+  if (el.sweep) {
+    const closed = /z\s*$/i.test((el.sweep.spineD || '').trim());
+    if (el.bezierNodes && el.bezierNodes.length > 1) {
+      return { nodes: el.bezierNodes.map(cloneNode), closed };
+    }
+    return el.sweep.spineD ? pathToNodes(el.sweep.spineD) : null;
+  }
   const closed = /z\s*$/i.test((el.d || '').trim());
   if (el.bezierNodes && el.bezierNodes.length > 1) {
     return { nodes: el.bezierNodes.map(cloneNode), closed };
@@ -133,9 +145,25 @@ export function elementNodePath(el: EtchElement): NodePath | null {
   return el.d ? pathToNodes(el.d) : null;
 }
 
-/** The element patch that writes a node edit back — geometry and nodes together. */
-export function nodePathUpdate(np: NodePath): Partial<EtchElement> {
-  return { bezierNodes: np.nodes.map(cloneNode), d: nodesToPath(np.nodes, np.closed) };
+/**
+ * The element patch that writes a node edit back — geometry and nodes together.
+ *
+ * For a swept path (`el.sweep`), the edited nodes are the spine: the spine's
+ * `d` is rebuilt and re-swept at the stored width profile so the closed outline
+ * in `el.d` follows the handle drag live.
+ */
+export function nodePathUpdate(np: NodePath, el?: EtchElement): Partial<EtchElement> {
+  const nodes = np.nodes.map(cloneNode);
+  const pathD = nodesToPath(np.nodes, np.closed);
+  if (el?.sweep) {
+    const sweptD = resweepLocalSpine(pathD, el.sweep.widths, el.sweep.cap) ?? el.d;
+    return {
+      bezierNodes: nodes,
+      d: sweptD,
+      sweep: { ...el.sweep, spineD: pathD, spineEdited: true },
+    };
+  }
+  return { bezierNodes: nodes, d: pathD };
 }
 
 function cloneNode(n: BezierNode): BezierNode {

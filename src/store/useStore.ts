@@ -9,6 +9,8 @@ import type {
   RepeatSettings,
   FillSettings,
   BedProbeGrid,
+  SweepCap,
+  BrushSettings,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
 import { saveCloudPreset, removeCloudPreset } from '../utils/cloudSync';
@@ -56,6 +58,8 @@ import {
 } from '../utils/booleanOps';
 import { beautifyElements } from '../utils/beautify';
 import { offsetElements, MIN_OFFSET_MM } from '../utils/offsetShape';
+import { sweepElement, resweepLocalSpine, parseWidthsInput } from '../utils/sweepPath';
+import { nodesToPath, pathToNodes } from '../utils/bezierNodes';
 import { joinElements, joinOutlineD } from '../utils/joinPieces';
 import { papercut, type PapercutOutcome } from '../utils/papercut';
 import { laceCut } from '../utils/laceCut';
@@ -383,6 +387,14 @@ interface EtchStore {
    */
   shapeSettings: { kind: ShapeKind; pointsCount: number; innerRatio: number };
   setShapeSettings: (patch: Partial<{ kind: ShapeKind; pointsCount: number; innerRatio: number }>) => void;
+  /**
+   * What brush profile the pencil and bezier tools sweep along the next stroke.
+   *
+   * `'none'` leaves the stroke as a plain open hairline path; the others sweep
+   * a closed variable-width outline whose spine stays editable in the Node Editor.
+   */
+  brushSettings: BrushSettings;
+  setBrushSettings: (patch: Partial<BrushSettings>) => void;
   toggleDarkMode: () => void;
   toggleAiPanel: () => void;
   toggleGCodeModal: () => void;
@@ -577,6 +589,20 @@ interface EtchStore {
   unjoinSelected: () => void;
   /** What the last join did, or why it did nothing. Cleared with the selection. */
   joinNotice: string | null;
+  /**
+   * Sweeps a constant or variable width profile along the selected curve(s),
+   * turning an open spine into a closed outline while keeping the spine in
+   * `el.sweep` so the node editor and width controls can still bend or re-taper
+   * it live. See `sweepPath.ts`.
+   */
+  sweepSelected: (widths: number[] | number | string, cap?: SweepCap, smoothingMm?: number) => void;
+  /**
+   * Restores a swept shape back to its open spine curve — either the original
+   * element it grew from, or the edited spine if its nodes were moved since.
+   */
+  unsweepSelected: () => void;
+  /** What the last sweep did, or why it did nothing. Cleared with the selection. */
+  sweepNotice: string | null;
   beautifySelected: () => void;
   /**
    * Rearranges the parts on this sheet so they fit in as little of the material
@@ -906,6 +932,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   beautifyNotice: null,
   offsetNotice: null,
   joinNotice: null,
+  sweepNotice: null,
   history: [defaultDoc],
   historyIndex: 0,
   zoom: 1.0,
@@ -915,6 +942,13 @@ export const useStore = create<EtchStore>((set, get) => ({
   userPresetNames: Object.keys(readUserPresets()).sort(),
   documentBrowser: null,
   shapeSettings: { kind: 'star' as ShapeKind, pointsCount: 5, innerRatio: 0.4 },
+  brushSettings: {
+    profile: 'none',
+    widthMm: 6,
+    customWidths: '6, 12, 5, 9, 0',
+    cap: 'round',
+    smoothingMm: 1.5,
+  },
   mandalaSettings: {
     sectorCount: 8,
     mirror: false,
@@ -1142,7 +1176,15 @@ export const useStore = create<EtchStore>((set, get) => ({
   // *these* shapes would not combine, and once the selection moves on it is
   // talking about something that is no longer on screen.
   setSelectedIds: (ids) =>
-    set({ selectedIds: ids, combineNotice: null, beautifyNotice: null, offsetNotice: null, joinNotice: null, repeatNotice: null }),
+    set({
+      selectedIds: ids,
+      combineNotice: null,
+      beautifyNotice: null,
+      offsetNotice: null,
+      joinNotice: null,
+      sweepNotice: null,
+      repeatNotice: null,
+    }),
   setZoom: (zoom) => set({ zoom: Math.max(0.2, Math.min(zoom, 5.0)) }),
   setPan: (pan) => set({ pan }),
   // Fires on every pointer move. A snapped cursor sits on the same grid point for
@@ -1528,6 +1570,10 @@ export const useStore = create<EtchStore>((set, get) => ({
       }
       return { shapeSettings: { ...state.shapeSettings, ...patch } };
     }),
+  setBrushSettings: (patch) =>
+    set((state) => ({
+      brushSettings: { ...state.brushSettings, ...patch },
+    })),
   setEraserWidth: (width) =>
     set({ eraserWidth: Math.max(MIN_ERASER_WIDTH_MM, width) }),
 
@@ -1657,6 +1703,12 @@ export const useStore = create<EtchStore>((set, get) => ({
 
   addElement: (el) => {
     const { document, history, historyIndex } = get();
+    // An agent adding a bezier by `bezierNodes` alone has not built its `d`
+    // string, and `extractElementContours` reads `d` — fill it in here so the
+    // curve renders and machines without a second step.
+    if (!el.d && el.bezierNodes && el.bezierNodes.length >= 2) {
+      el = { ...el, d: nodesToPath(el.bezierNodes, false) };
+    }
     el = { ...el, name: numberedName(el.name, document.elements) };
     const newDoc = {
       ...document,
@@ -1700,6 +1752,43 @@ export const useStore = create<EtchStore>((set, get) => ({
         if (el.id !== id) return el;
         const d = replanField(el);
         return d === null ? el : { ...el, d };
+      });
+    }
+
+    /*
+     * A swept curve carries its centreline spine (`el.sweep.spineD` and
+     * `el.bezierNodes`) alongside its closed outline in `el.d`. When the
+     * sidebar or an MCP caller updates `bezierNodes` or `sweep` without a
+     * pre-computed `d`, re-sweep the spine so the closed outline stays in step.
+     * Likewise, a plain bezier updated via `bezierNodes` alone needs `d`
+     * rebuilt from those nodes.
+     */
+    if (('bezierNodes' in updates || 'sweep' in updates) && !('d' in updates)) {
+      newElements = newElements.map((el) => {
+        if (el.id !== id) return el;
+        if (el.sweep) {
+          const closed = /z\s*$/i.test((el.sweep.spineD || '').trim());
+          const spineD =
+            'bezierNodes' in updates && el.bezierNodes && el.bezierNodes.length >= 2
+              ? nodesToPath(el.bezierNodes, closed)
+              : el.sweep.spineD;
+          const sweptD = resweepLocalSpine(spineD, el.sweep.widths, el.sweep.cap);
+          if (!sweptD) return el;
+          return {
+            ...el,
+            d: sweptD,
+            sweep: {
+              ...el.sweep,
+              spineD,
+              ...('bezierNodes' in updates ? { spineEdited: true } : {}),
+            },
+          };
+        }
+        if (el.bezierNodes && el.bezierNodes.length >= 2) {
+          const closed = /z\s*$/i.test((el.d || '').trim());
+          return { ...el, d: nodesToPath(el.bezierNodes, closed) };
+        }
+        return el;
       });
     }
 
@@ -2745,6 +2834,168 @@ export const useStore = create<EtchStore>((set, get) => ({
     });
     const text = elements.filter((el) => el.type === 'text' && restoredIds.includes(el.id));
     if (text.length) void get().vectorizeText(text.map((el) => el.id));
+  },
+
+  sweepSelected: (widthsInput, cap = 'round', smoothingMm = 0) => {
+    const { document, selectedIds, history, historyIndex } = get();
+    if (!selectedIds.length) {
+      set({ sweepNotice: 'Select a curve or line to sweep.' });
+      return;
+    }
+    const parsedWidths = parseWidthsInput(widthsInput);
+    if ('error' in parsedWidths) {
+      set({ sweepNotice: parsedWidths.error });
+      return;
+    }
+
+    const byId = new Map(document.elements.map((el) => [el.id, el]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
+    if (!selected.length) return;
+
+    const replacements = new Map<string, EtchElement>();
+    const skipped: string[] = [];
+    const newSelectedIds: string[] = [];
+    let firstError: string | null = null;
+
+    for (const el of selected) {
+      const result = sweepElement(el, parsedWidths, cap, smoothingMm);
+      if ('error' in result) {
+        firstError = firstError ?? result.error;
+        skipped.push(el.name);
+        continue;
+      }
+
+      const sweptId = `sweep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      newSelectedIds.push(sweptId);
+
+      // Preserve the original pre-sweep element across re-sweeps so Unsweep
+      // always returns the curve that started it.
+      const prevMadeFrom = el.sweep && el.madeFrom ? el.madeFrom : undefined;
+      const madeFrom = prevMadeFrom
+        ? {
+            ...prevMadeFrom,
+            origin: {
+              x: prevMadeFrom.origin.x + (result.x - el.x),
+              y: prevMadeFrom.origin.y + (result.y - el.y),
+            },
+          }
+        : { label: 'Sweep', elements: [el], origin: { x: result.x, y: result.y } };
+
+      const baseName = el.name.replace(/ \(swept\)$/i, '');
+      const sweptEl: EtchElement = {
+        id: sweptId,
+        name: `${baseName} (swept)`,
+        type: 'path',
+        layerId: el.layerId,
+        objectId: el.objectId,
+        x: result.x,
+        y: result.y,
+        rotation: 0,
+        scaleX: 1,
+        scaleY: 1,
+        opacity: el.opacity,
+        strokeWidth: el.strokeWidth,
+        strokeColor: el.strokeColor,
+        strokeDash: el.strokeDash,
+        fillColor: el.fillColor,
+        visible: true,
+        locked: false,
+        d: result.d,
+        bezierNodes: result.bezierNodes,
+        machining: el.machining,
+        sweep: {
+          widths: result.widths,
+          cap: result.cap,
+          spineD: result.spineD,
+          ...(el.sweep?.spineEdited ? { spineEdited: true } : {}),
+        },
+        madeFrom,
+      };
+      replacements.set(el.id, sweptEl);
+    }
+
+    if (replacements.size === 0) {
+      set({ sweepNotice: firstError || 'Nothing selected has a curve spine to sweep.' });
+      return;
+    }
+
+    const elements = document.elements.map((el) => replacements.get(el.id) ?? el);
+    const newDoc = releaseUnusedAnchors({ ...document, elements });
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+
+    const profileText =
+      parsedWidths.length === 1
+        ? `${parsedWidths[0]} mm`
+        : `${parsedWidths.join(' → ')} mm`;
+    const notes = [
+      `Swept ${profileText} along the spine. Use the Node Editor to bend the spine live, or Unsweep to get the curve back.`,
+    ];
+    if (skipped.length) {
+      notes.push(`Skipped ${skipped.join(', ')}.`);
+    }
+
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: newSelectedIds,
+      sweepNotice: notes.join(' '),
+    });
+  },
+
+  unsweepSelected: () => {
+    const { document, selectedIds, history, historyIndex } = get();
+    const targets = document.elements.filter((el) => selectedIds.includes(el.id) && !!el.sweep);
+    if (!targets.length) {
+      set({ sweepNotice: 'Nothing selected is a swept curve.' });
+      return;
+    }
+
+    const restoredIds: string[] = [];
+    const elements = document.elements.flatMap((el) => {
+      if (!targets.includes(el)) return [el];
+      // When the spine nodes were not edited after sweeping, restore the exact
+      // original element (a line, bezier, or freehand) shifted to where the
+      // swept shape sits now.
+      if (!el.sweep!.spineEdited && el.madeFrom?.elements.length) {
+        const dx = el.x - el.madeFrom.origin.x;
+        const dy = el.y - el.madeFrom.origin.y;
+        return el.madeFrom.elements.map((orig) => {
+          restoredIds.push(orig.id);
+          return { ...orig, x: orig.x + dx, y: orig.y + dy };
+        });
+      }
+      // If the spine was bent in the node editor while swept, keep that edited
+      // spine rather than throwing away the adjustment.
+      const spineId = el.madeFrom?.elements[0]?.id ?? `spine_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      restoredIds.push(spineId);
+      const nodes = el.bezierNodes ?? pathToNodes(el.sweep!.spineD)?.nodes;
+      const baseName = el.name.replace(/ \(swept\)$/i, '');
+      const restored: EtchElement = {
+        ...el,
+        id: spineId,
+        name: baseName,
+        type: nodes ? 'bezier' : 'path',
+        d: el.sweep!.spineD,
+        bezierNodes: nodes,
+        fillColor: 'none',
+        sweep: undefined,
+        madeFrom: undefined,
+      };
+      return [restored];
+    });
+
+    const newDoc = releaseUnusedAnchors({ ...document, elements });
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newDoc);
+    set({
+      document: newDoc,
+      history: newHistory,
+      historyIndex: newHistory.length - 1,
+      selectedIds: restoredIds,
+      sweepNotice: 'Unswept back to its spine curve.',
+    });
   },
 
   beautifySelected: () => {

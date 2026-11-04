@@ -228,6 +228,62 @@ export interface LivingHingeSpec {
   pitchMm: number;
 }
 
+/** How the non-zero ends of a swept curve are finished. */
+export type SweepCap = 'round' | 'flat';
+
+/**
+ * Named brush profiles for sweeping strokes along a curve.
+ *
+ * `'none'` draws a plain open hairline path; the others sweep a closed
+ * variable-width outline whose peak width is `BrushSettings.widthMm` (or
+ * `customWidths` when `'custom'` is chosen).
+ */
+export type BrushProfileId =
+  | 'none'
+  | 'uniform'
+  | 'taper'
+  | 'pointed'
+  | 'flare'
+  | 'snake'
+  | 'custom';
+
+export interface BrushSettings {
+  profile: BrushProfileId;
+  widthMm: number;
+  customWidths: string;
+  cap: SweepCap;
+  /**
+   * Hand-tremor smoothing in mm (0 = raw pointer stream; 1.5–4 mm smooths out
+   * shaky mouse/finger wobble and fits clean cubic Bézier nodes).
+   */
+  smoothingMm: number;
+}
+
+/**
+ * A variable-width body swept along a spine curve. See `sweepPath.ts`.
+ *
+ * Carried on the element alongside the closed outline in `d` so that `d` is
+ * what every consumer (canvas, booleans, offset, fill, toolpath planner) reads,
+ * while the node editor and width controls still have the centreline spine to
+ * bend or re-taper live without turning the shape into a dead polygon.
+ */
+export interface SweepSpec {
+  /**
+   * Full width (mm) at stations from start to end of the spine.
+   *
+   * One value is constant width; two is a linear taper from start to end;
+   * three or more is a smooth monotone spline through those stations (e.g.
+   * `[6, 12, 5, 9, 0]` for a snake's neck, head, neck, belly and pointed tail).
+   */
+  widths: number[];
+  /** How an end with non-zero width is finished. Defaults to `'round'`. */
+  cap?: SweepCap;
+  /** The open spine curve in this element's local coordinates. */
+  spineD: string;
+  /** Set once the spine's nodes have been edited after the initial sweep. */
+  spineEdited?: boolean;
+}
+
 export interface EtchElement {
   id: string;
   name: string;
@@ -327,6 +383,12 @@ export interface EtchElement {
   // bezier / freehand / path
   bezierNodes?: BezierNode[];
   d?: string;
+  /**
+   * Present when this path was made by sweeping a width profile along a curve.
+   * `d` holds the closed swept outline; `sweep` holds the centreline spine and
+   * widths so the node editor bends the spine and `updateElement` re-sweeps `d`.
+   */
+  sweep?: SweepSpec;
 
   /**
    * Vector outlines of a text element, in local coordinates. Text is a font

@@ -19,6 +19,9 @@ import { planImageImport } from '../utils/imageImport';
 import { jobTools, machineKind, toolCatalog } from '../utils/tooling';
 import { materialCatalog } from '../utils/materials';
 import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
+import { MIN_OFFSET_MM } from '../utils/offsetShape';
+import { sweepElement, parseWidthsInput } from '../utils/sweepPath';
+import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_TEST_GRID, buildTestGrid, type TestGridOptions } from '../utils/testGrid';
 import { DITHER_LABELS } from '../utils/imageProcessor';
 import { webSerialManager, type OverrideStep } from '../utils/webSerialManager';
@@ -269,6 +272,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
             rotation: el.rotation || 0,
             ...(el.objectId ? { objectId: el.objectId } : {}),
             ...(el.type === 'text' ? { text: (el as { text?: string }).text } : {}),
+            ...(el.sweep ? { sweep: { widths: el.sweep.widths, cap: el.sweep.cap ?? 'round' } } : {}),
           };
         }),
         extent: (() => {
@@ -555,7 +559,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         return { ok: true, addedId: built.id };
       }
 
-      const fullEl = {
+      let fullEl = {
         id: el.id || `el_${Date.now()}`,
         name: el.name || 'Agent Element',
         type: el.type || 'rect',
@@ -575,6 +579,37 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         locked: false,
         ...el,
       };
+      // Allow an agent to attach a width profile directly when adding a curve
+      // (`widths: [6, 12, 5, 9, 0]` or `sweep: { widths: [...] }`), so creating
+      // and sweeping a spine does not even need a second round trip.
+      const rawWidths = el.widths ?? (el.sweep && !el.sweep.spineD ? el.sweep.widths : undefined);
+      if (rawWidths !== undefined) {
+        const cap = (el.cap ?? el.sweep?.cap ?? 'round') as 'round' | 'flat';
+        if (cap !== 'round' && cap !== 'flat') {
+          return { ok: false, error: "cap must be 'round' or 'flat'" };
+        }
+        const parsed = parseWidthsInput(rawWidths);
+        if ('error' in parsed) return { ok: false, error: parsed.error };
+        const baseSpine = { ...fullEl };
+        delete baseSpine.widths;
+        delete baseSpine.cap;
+        delete baseSpine.sweep;
+        const swept = sweepElement(baseSpine, parsed, cap);
+        if ('error' in swept) return { ok: false, error: swept.error };
+        fullEl = {
+          ...baseSpine,
+          type: 'path',
+          x: swept.x,
+          y: swept.y,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          d: swept.d,
+          bezierNodes: swept.bezierNodes,
+          sweep: { widths: swept.widths, cap: swept.cap, spineD: swept.spineD },
+          madeFrom: { label: 'Sweep', elements: [baseSpine], origin: { x: swept.x, y: swept.y } },
+        };
+      }
       store.addElement(fullEl);
       return { ok: true, addedId: fullEl.id };
     }
@@ -1117,7 +1152,133 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       const rawOp = (msg.op || msg.operation) as string;
       // 'papercut' was the op's first name; it still answers to it.
       const op = (rawOp === 'papercut' ? 'fretwork' : rawOp) as
-        BooleanOp | 'fretwork' | 'lace' | 'fill' | 'unfill' | 'repeat' | 'join' | 'unjoin';
+        | BooleanOp
+        | 'fretwork'
+        | 'lace'
+        | 'fill'
+        | 'unfill'
+        | 'repeat'
+        | 'join'
+        | 'unjoin'
+        | 'offset'
+        | 'inset'
+        | 'outset'
+        | 'sweep'
+        | 'unsweep';
+      if (op === 'offset' || op === 'inset' || op === 'outset') {
+        /*
+         * Grow or shrink a selection by a distance in mm, adding the offset
+         * outline alongside the originals (`offsetShape.ts`).
+         *
+         * Exposed under `inset`, `outset` and signed `offset` so an agent can
+         * either name the direction explicitly (`op: 'inset', sizeMm: 2`) or
+         * pass a signed distance (`op: 'offset', distanceMm: -2`).
+         */
+        const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
+        if (!Array.isArray(ids) || ids.length < 1) {
+          return { ok: false, error: 'elementIds must name at least one shape to offset' };
+        }
+        const known = new Set(store.document.elements.map((el) => el.id));
+        const missing = ids.filter((id) => !known.has(id));
+        if (missing.length) {
+          return { ok: false, error: `No such element: ${missing.join(', ')}` };
+        }
+        const rawDist = msg.distanceMm ?? msg.deltaMm ?? msg.offsetMm ?? msg.sizeMm;
+        const dist = num(rawDist, NaN);
+        if (!Number.isFinite(dist) || Math.abs(dist) < MIN_OFFSET_MM) {
+          return {
+            ok: false,
+            error: 'Provide distanceMm (or sizeMm) in mm — positive to grow (outset), negative to shrink (inset).',
+          };
+        }
+        const deltaMm =
+          op === 'inset' ? -Math.abs(dist) : op === 'outset' ? Math.abs(dist) : dist;
+
+        // If any selected shape is text whose glyph outlines have not been
+        // built yet, build them first so `offsetElements` sees its contours.
+        const needsVectorize = store.document.elements.some(
+          (el) => ids.includes(el.id) && el.type === 'text' && !hasFreshOutline(el)
+        );
+        if (needsVectorize) await store.vectorizeText(ids);
+
+        const beforeIds = new Set(useStore.getState().document.elements.map((el) => el.id));
+        useStore.getState().setSelectedIds(ids);
+        useStore.getState().offsetSelected(deltaMm);
+        const after = useStore.getState();
+        const created = after.document.elements.find((el) => !beforeIds.has(el.id));
+        if (!created) {
+          return { ok: false, error: after.offsetNotice || 'Nothing was offset.' };
+        }
+        return {
+          ok: true,
+          addedId: created.id,
+          deltaMm: round3(deltaMm),
+          note: after.offsetNotice ?? undefined,
+        };
+      }
+      if (op === 'sweep' || op === 'unsweep') {
+        /*
+         * Sweep a constant or variable width profile along an open curve
+         * (`sweepPath.ts`), or unsweep a swept shape back to its spine.
+         *
+         * The swept path is a closed cubic-Bézier outline (`el.d`) that works
+         * with booleans, inset/outset and fill, while keeping its centreline
+         * spine and widths in `el.sweep` so the node editor or a later sweep
+         * call can bend or re-taper it without starting over.
+         */
+        const ids: string[] = msg.elementIds || msg.ids || store.selectedIds;
+        if (!Array.isArray(ids) || ids.length < 1) {
+          return { ok: false, error: 'elementIds must name at least one curve or swept shape' };
+        }
+        const known = new Set(store.document.elements.map((el) => el.id));
+        const missing = ids.filter((id) => !known.has(id));
+        if (missing.length) {
+          return { ok: false, error: `No such element: ${missing.join(', ')}` };
+        }
+
+        const before = store.historyIndex;
+        const beforeIds = new Set(store.document.elements.map((el) => el.id));
+        store.setSelectedIds(ids);
+
+        if (op === 'unsweep') {
+          useStore.getState().unsweepSelected();
+          const after = useStore.getState();
+          if (after.historyIndex === before) {
+            return { ok: false, error: after.sweepNotice || 'Nothing selected is a swept curve.' };
+          }
+          const present = new Set(after.document.elements.map((el) => el.id));
+          return {
+            ok: true,
+            restoredIds: after.selectedIds,
+            consumed: ids.filter((id) => !present.has(id)),
+            note: after.sweepNotice ?? undefined,
+          };
+        }
+
+        const rawWidths =
+          msg.widths ??
+          (msg.startMm !== undefined && msg.endMm !== undefined
+            ? [msg.startMm, msg.endMm]
+            : msg.widthMm ?? msg.sizeMm);
+        const cap = (msg.cap ?? 'round') as 'round' | 'flat';
+        if (cap !== 'round' && cap !== 'flat') {
+          return { ok: false, error: "cap must be 'round' or 'flat'" };
+        }
+        useStore.getState().sweepSelected(rawWidths, cap);
+        const after = useStore.getState();
+        if (after.historyIndex === before) {
+          return { ok: false, error: after.sweepNotice || 'Nothing was swept.' };
+        }
+        const present = new Set(after.document.elements.map((el) => el.id));
+        const created = after.document.elements.filter((el) => !beforeIds.has(el.id));
+        return {
+          ok: true,
+          addedId: created[0]?.id,
+          ...(created.length > 1 ? { addedIds: created.map((el) => el.id) } : {}),
+          consumed: ids.filter((id) => !present.has(id)),
+          note: after.sweepNotice ?? undefined,
+        };
+      }
       if (op === 'unfill') {
         // Takes a fill, fretwork or lace back off: the cut is replaced by the
         // shapes it was made from, and a texture is deleted.
@@ -1209,7 +1370,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       if (!BOOLEAN_OP_LABEL[op as BooleanOp] && op !== 'fretwork' && op !== 'lace' && op !== 'fill') {
         return {
           ok: false,
-          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'fretwork', 'lace', 'fill', 'unfill', 'repeat', 'join', 'unjoin'].join(', ')}`,
+          error: `op must be one of ${[...Object.keys(BOOLEAN_OP_LABEL), 'offset', 'inset', 'outset', 'sweep', 'unsweep', 'fretwork', 'lace', 'fill', 'unfill', 'repeat', 'join', 'unjoin'].join(', ')}`,
         };
       }
       const oneWillDo = op === 'lace' || op === 'fill';
@@ -1397,6 +1558,10 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         // handing a thresholder an already-dithered image traces the dots.
         imageDitherModes: Object.keys(DITHER_LABELS),
         booleanOps: Object.keys(BOOLEAN_OP_LABEL),
+        // Grows or shrinks a closed outline by a uniform distance in mm; see etch_combine.
+        offsetOps: ['offset', 'inset', 'outset'],
+        // Sweeps a constant or variable width profile along a curve; see etch_combine.
+        sweepOps: ['sweep', 'unsweep'],
         // Bridges the separate pieces of a selection into one part; see etch_combine.
         joinOps: ['join', 'unjoin'],
         generators: [

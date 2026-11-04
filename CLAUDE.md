@@ -227,6 +227,25 @@ reaches both as `etch_combine` ops `join` / `unjoin` — ops, not a new tool, so
 the tool count the website advertises does not move. See
 `tests/joinPieces.test.ts`.
 
+`src/utils/offsetShape.ts` — Inset / Outset in the sidebar, and `etch_combine`
+ops `offset`, `inset` and `outset` over MCP. Grows or shrinks the selection by
+a uniform distance in mm (`deltaMm`) and adds the new closed path alongside the
+originals, keeping hole parity via `assembleRegion`.
+
+`src/utils/sweepPath.ts` — Sweep Widths in the sidebar, and `etch_combine` ops
+`sweep` and `unsweep` over MCP (or `widths` on `etch_add_element`). Sweeps a
+constant or variable width profile (`widths: number[]`, e.g. `[6, 12, 5, 9, 0]`
+for a snake's neck, head, neck, body and pointed tail) along an open spine
+curve (`bezier`, `line`, `freehand`, `path`) using Fritsch–Carlson monotone
+cubic Hermite interpolation, Clipper self-union to strip inner swallowtails on
+tight bends, and `fitCubics` at 0.02 mm tolerance so `el.d` is a compact
+closed cubic-Bézier outline rather than a faceted polyline. The element retains
+its centreline spine and widths in `el.sweep` (`el.bezierNodes` stays the
+spine's control points), so the Node Editor (`node-edit`) and
+`etch_update_element` bend the spine down the middle and re-sweep `el.d` live,
+re-running `sweep` re-tapers the stored spine, and `unsweep` restores the open
+curve. See `tests/sweepPath.test.ts`.
+
 `src/utils/papercut.ts` — Papercut, under Combine Shapes. Lace and filigree
 are drawn the other way round from everything else here: the vines, leaves and
 butterflies are the card that *stays*, and the cut is the space between them,

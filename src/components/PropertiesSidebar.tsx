@@ -63,8 +63,15 @@ import {
 } from '../utils/machineSettings';
 import { DEFAULT_HATCH_ANGLE, DEFAULT_HATCH_SPACING } from '../utils/hatchFill';
 import { DEFAULT_SHADE_PITCH_MM } from '../utils/rasterImage';
-import type { EtchElement } from '../types/etch';
+import type { EtchElement, BrushProfileId, SweepCap } from '../types/etch';
 import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
+import {
+  BRUSH_PROFILES,
+  MIN_SWEEP_WIDTH_MM,
+  canSweepElement,
+  detectBrushProfile,
+  widthsForBrushProfile,
+} from '../utils/sweepPath';
 import { MIN_ERASER_WIDTH_MM } from '../utils/eraseMask';
 import { canHoldFill, fillTargetLayerId } from '../utils/floodFill';
 
@@ -543,6 +550,8 @@ export const PropertiesSidebar: React.FC = () => {
     setEraserWidth,
     shapeSettings,
     setShapeSettings,
+    brushSettings,
+    setBrushSettings,
     updateElement,
     centerSelected,
     combineSelected,
@@ -550,6 +559,9 @@ export const PropertiesSidebar: React.FC = () => {
     combineNotice,
     offsetSelected,
     offsetNotice,
+    sweepSelected,
+    unsweepSelected,
+    sweepNotice,
     beautifySelected,
     beautifyNotice,
     setActiveLayer,
@@ -577,6 +589,8 @@ export const PropertiesSidebar: React.FC = () => {
       setEraserWidth: s.setEraserWidth,
       shapeSettings: s.shapeSettings,
       setShapeSettings: s.setShapeSettings,
+      brushSettings: s.brushSettings,
+      setBrushSettings: s.setBrushSettings,
       updateElement: s.updateElement,
       centerSelected: s.centerSelected,
       combineSelected: s.combineSelected,
@@ -584,6 +598,9 @@ export const PropertiesSidebar: React.FC = () => {
       combineNotice: s.combineNotice,
       offsetSelected: s.offsetSelected,
       offsetNotice: s.offsetNotice,
+      sweepSelected: s.sweepSelected,
+      unsweepSelected: s.unsweepSelected,
+      sweepNotice: s.sweepNotice,
       beautifySelected: s.beautifySelected,
       beautifyNotice: s.beautifyNotice,
       setActiveLayer: s.setActiveLayer,
@@ -612,6 +629,7 @@ export const PropertiesSidebar: React.FC = () => {
    * document would mean it travelled to whoever opened the file next.
    */
   const [offsetDistance, setOffsetDistance] = React.useState(2);
+  const [sweepWidthsText, setSweepWidthsText] = React.useState('10, 2');
 
   /*
     The *last* selected element, not the first one in document order. With a
@@ -626,6 +644,15 @@ export const PropertiesSidebar: React.FC = () => {
     selectedIds.length > 1
       ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
       : null;
+
+  const [lastSweepOwner, setLastSweepOwner] = React.useState<string | null>(null);
+  const currentSweepOwner = selectedElement?.sweep ? `${selectedElement.id}:${selectedElement.sweep.widths.join(',')}` : null;
+  if (currentSweepOwner !== lastSweepOwner) {
+    setLastSweepOwner(currentSweepOwner);
+    if (selectedElement?.sweep) {
+      setSweepWidthsText(selectedElement.sweep.widths.join(', '));
+    }
+  }
 
   /*
     Layer, rotation, line thickness and machining apply to the *whole*
@@ -948,6 +975,120 @@ export const PropertiesSidebar: React.FC = () => {
           </p>
         </div>
       )}
+
+      {(activeTool === 'freehand' || activeTool === 'grid-freehand' || activeTool === 'bezier') && (() => {
+        const activeBrush = BRUSH_PROFILES.find((p) => p.id === brushSettings.profile);
+        return (
+          <div className="p-4 space-y-2 text-xs border-b border-slate-200 dark:border-slate-800/80">
+            <h3 className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+              {activeTool === 'bezier' ? 'Bezier Pen & Brush' : 'Pencil & Brush'}
+            </h3>
+            <div>
+              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                Brush Profile{' '}
+                <InfoTooltip text="Hairline draws an open path. Any other profile sweeps a closed variable-width outline along the stroke — and the centreline stays editable in the Node Editor afterwards." />
+              </label>
+              <select
+                value={brushSettings.profile}
+                onChange={(e) => setBrushSettings({ profile: e.target.value as BrushProfileId })}
+                className={NUM_INPUT}
+              >
+                {BRUSH_PROFILES.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {brushSettings.profile !== 'none' && brushSettings.profile !== 'custom' && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Brush Width (mm)
+                  </label>
+                  <NumberInput
+                    step={0.5}
+                    min={MIN_SWEEP_WIDTH_MM}
+                    fallbackOnBlur={6}
+                    value={brushSettings.widthMm}
+                    onChange={(val) => setBrushSettings({ widthMm: val ?? 6 })}
+                    className={NUM_INPUT}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Ends
+                  </label>
+                  <select
+                    value={brushSettings.cap}
+                    onChange={(e) => setBrushSettings({ cap: e.target.value as SweepCap })}
+                    className={NUM_INPUT}
+                  >
+                    <option value="round">Round</option>
+                    <option value="flat">Flat</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            {brushSettings.profile === 'custom' && (
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Widths Along Stroke (mm)
+                  </label>
+                  <input
+                    type="text"
+                    value={brushSettings.customWidths}
+                    onChange={(e) => setBrushSettings({ customWidths: e.target.value })}
+                    placeholder="e.g. 6, 12, 5, 9, 0"
+                    className={NUM_INPUT}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
+                    Ends
+                  </label>
+                  <select
+                    value={brushSettings.cap}
+                    onChange={(e) => setBrushSettings({ cap: e.target.value as SweepCap })}
+                    className={NUM_INPUT}
+                  >
+                    <option value="round">Round</option>
+                    <option value="flat">Flat</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            {activeTool === 'freehand' && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold flex items-center gap-1">
+                    <span>Hand Smoothing</span>
+                    <InfoTooltip text="Filters out hand tremor along the stroke and fits clean cubic Bézier curves. Set to 0 mm for raw unsmoothed points, or raise to 3–6 mm for steady calligraphy curves." />
+                  </label>
+                  <span className="text-[10px] font-mono text-slate-600 dark:text-slate-300">
+                    {brushSettings.smoothingMm === 0 ? 'Off' : `${brushSettings.smoothingMm.toFixed(1)} mm`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={8}
+                  step={0.5}
+                  value={brushSettings.smoothingMm}
+                  onChange={(e) => setBrushSettings({ smoothingMm: parseFloat(e.target.value) })}
+                  className="w-full mt-1 accent-red-500 cursor-pointer"
+                />
+              </div>
+            )}
+            {activeBrush?.hint && (
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                {activeBrush.hint}
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       {selectedElement ? (
         <div className="p-4 space-y-4 text-xs">
@@ -1350,6 +1491,127 @@ export const PropertiesSidebar: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {/*
+              Brush / Sweep a variable-width body along a curve — a snake, a
+              tentacle, a tapered ribbon or horn. Offered whenever a curve or an
+              already-swept path is selected; the spine stays live for the Node
+              Editor and Hairline / Unsweep gives the open curve back.
+            */}
+            {selectedEls.some(canSweepElement) && (() => {
+              const detected = detectBrushProfile(selectedElement?.sweep?.widths);
+              const currentCap: SweepCap = selectedElement?.sweep?.cap ?? 'round';
+              return (
+                <div className="col-span-2 space-y-1.5">
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold flex items-center gap-1">
+                    <span>Brush / Sweep Profile</span>
+                    <InfoTooltip text="Pick a preset brush profile or enter custom widths in mm from start to end — e.g. '10, 2' for a taper, or '6, 12, 5, 9, 0' for a snake's neck, head, neck, body and pointed tail. The Node Editor bends the spine down the middle live, and Hairline / Unsweep restores the open curve." />
+                  </label>
+                  <div className="flex gap-1">
+                    <select
+                      value={detected.profile}
+                      onChange={(e) => {
+                        const nextProfile = e.target.value as BrushProfileId;
+                        if (nextProfile === 'none') {
+                          unsweepSelected();
+                          return;
+                        }
+                        const widths = widthsForBrushProfile(
+                          nextProfile,
+                          detected.widthMm,
+                          sweepWidthsText,
+                        );
+                        if (widths) {
+                          setSweepWidthsText(widths.join(', '));
+                          sweepSelected(widths, currentCap, brushSettings.smoothingMm);
+                        }
+                      }}
+                      className="flex-1 min-w-0 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-xs"
+                    >
+                      {BRUSH_PROFILES.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={currentCap}
+                      onChange={(e) => {
+                        const nextCap = e.target.value as SweepCap;
+                        if (selectedElement?.sweep) {
+                          sweepSelected(selectedElement.sweep.widths, nextCap);
+                        }
+                      }}
+                      title="How non-zero ends of the swept stroke are capped"
+                      className="w-20 px-1.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-xs"
+                    >
+                      <option value="round">Round</option>
+                      <option value="flat">Flat</option>
+                    </select>
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      value={sweepWidthsText}
+                      onChange={(e) => setSweepWidthsText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') sweepSelected(sweepWidthsText, currentCap, brushSettings.smoothingMm);
+                      }}
+                      placeholder="Widths in mm, e.g. 6, 12, 5, 9, 0"
+                      className="flex-1 min-w-0 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono text-xs"
+                    />
+                    <button
+                      onClick={() => sweepSelected(sweepWidthsText, currentCap, brushSettings.smoothingMm)}
+                      className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                      title="Sweep these widths (mm) along the curve from start to end"
+                    >
+                      {selectedEls.some((el) => !!el.sweep) ? 'Re-sweep' : 'Sweep'}
+                    </button>
+                    {selectedEls.some((el) => !!el.sweep) && (
+                      <button
+                        onClick={unsweepSelected}
+                        className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded text-[10px] uppercase font-semibold text-slate-600 dark:text-slate-300 cursor-pointer transition-colors"
+                        title="Restore the swept shape back to its open spine curve"
+                      >
+                        Unsweep
+                      </button>
+                    )}
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold flex items-center gap-1">
+                        <span>Spine Smoothing</span>
+                        <InfoTooltip text="Smooth out hand wobble along the spine curve when sweeping or re-sweeping." />
+                      </label>
+                      <span className="text-[10px] font-mono text-slate-600 dark:text-slate-300">
+                        {brushSettings.smoothingMm === 0 ? 'Off' : `${brushSettings.smoothingMm.toFixed(1)} mm`}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={8}
+                      step={0.5}
+                      value={brushSettings.smoothingMm}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setBrushSettings({ smoothingMm: val });
+                        if (selectedElement?.sweep) {
+                          sweepSelected(selectedElement.sweep.widths, currentCap, val);
+                        }
+                      }}
+                      className="w-full mt-0.5 accent-red-500 cursor-pointer"
+                    />
+                  </div>
+                  {sweepNotice && (
+                    <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                      <span>{sweepNotice}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/*
               Boolean combining. Only offered with two or more selected, because
