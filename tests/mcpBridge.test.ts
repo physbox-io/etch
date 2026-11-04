@@ -675,4 +675,37 @@ describe('MCP: etch_combine offset, inset, outset and sweep', () => {
     const restored = useStore.getState().document.elements.find((e) => e.id === 'spine');
     expect(restored?.type).toBe('bezier');
   });
+
+  it('supports named brush profiles and smoothingMm in both etch_add_element and etch_combine', async () => {
+    load([]);
+    const added = await handleMCPCommand('etch_add_element', {
+      element: {
+        id: 'taper_curve',
+        type: 'bezier',
+        x: 20,
+        y: 50,
+        bezierNodes: [
+          { x: 0, y: 0, handleOut: { x: 20, y: -15 } },
+          { x: 80, y: 0, handleIn: { x: -20, y: 15 } },
+        ],
+        brush: 'taper',
+        widthMm: 10,
+        smoothingMm: 1.5,
+      },
+    });
+    expect(added.ok).toBe(true);
+    const el = useStore.getState().document.elements[0];
+    expect(el.sweep?.widths).toEqual([10, 0]);
+
+    const reswept = await handleMCPCommand('etch_combine', {
+      elementIds: [el.id],
+      op: 'sweep',
+      brush: 'snake',
+      sizeMm: 12,
+      smoothingMm: 2,
+    });
+    expect(reswept.ok).toBe(true);
+    const after = useStore.getState().document.elements[0];
+    expect(after.sweep?.widths).toEqual([6, 12, 5.04, 9, 0]);
+  });
 });

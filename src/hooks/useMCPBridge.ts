@@ -20,7 +20,12 @@ import { jobTools, machineKind, toolCatalog } from '../utils/tooling';
 import { materialCatalog } from '../utils/materials';
 import { BOOLEAN_OP_LABEL, type BooleanOp } from '../utils/booleanOps';
 import { MIN_OFFSET_MM } from '../utils/offsetShape';
-import { sweepElement, parseWidthsInput } from '../utils/sweepPath';
+import {
+  BRUSH_PROFILES,
+  sweepElement,
+  parseWidthsInput,
+  widthsForBrushProfile,
+} from '../utils/sweepPath';
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_TEST_GRID, buildTestGrid, type TestGridOptions } from '../utils/testGrid';
 import { DITHER_LABELS } from '../utils/imageProcessor';
@@ -579,22 +584,42 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         locked: false,
         ...el,
       };
-      // Allow an agent to attach a width profile directly when adding a curve
-      // (`widths: [6, 12, 5, 9, 0]` or `sweep: { widths: [...] }`), so creating
-      // and sweeping a spine does not even need a second round trip.
-      const rawWidths = el.widths ?? (el.sweep && !el.sweep.spineD ? el.sweep.widths : undefined);
+      // Allow an agent to attach a width profile or named brush directly when
+      // adding a curve (`widths: [6, 12, 5, 9, 0]`, `brush: 'snake', widthMm: 12`,
+      // or `sweep: { widths: [...] }`), so creating and sweeping a spine does
+      // not need a second round trip.
+      const brushName = el.brush ?? el.profile ?? el.sweep?.profile;
+      const brushWidthMm = num(el.widthMm ?? el.sizeMm, 6);
+      const fromBrush =
+        typeof brushName === 'string' && brushName !== 'none'
+          ? widthsForBrushProfile(
+              brushName as (typeof BRUSH_PROFILES)[number]['id'],
+              brushWidthMm,
+              typeof el.widths === 'string' ? el.widths : undefined,
+            )
+          : null;
+      const rawWidths =
+        el.widths ??
+        fromBrush ??
+        (el.sweep && !el.sweep.spineD ? el.sweep.widths : undefined);
       if (rawWidths !== undefined) {
         const cap = (el.cap ?? el.sweep?.cap ?? 'round') as 'round' | 'flat';
         if (cap !== 'round' && cap !== 'flat') {
           return { ok: false, error: "cap must be 'round' or 'flat'" };
         }
+        const smoothingMm = Math.max(0, num(el.smoothingMm ?? el.sweep?.smoothingMm, 0));
         const parsed = parseWidthsInput(rawWidths);
         if ('error' in parsed) return { ok: false, error: parsed.error };
         const baseSpine = { ...fullEl };
         delete baseSpine.widths;
+        delete baseSpine.brush;
+        delete baseSpine.profile;
+        delete baseSpine.widthMm;
+        delete baseSpine.sizeMm;
+        delete baseSpine.smoothingMm;
         delete baseSpine.cap;
         delete baseSpine.sweep;
-        const swept = sweepElement(baseSpine, parsed, cap);
+        const swept = sweepElement(baseSpine, parsed, cap, smoothingMm);
         if ('error' in swept) return { ok: false, error: swept.error };
         fullEl = {
           ...baseSpine,
@@ -1255,8 +1280,19 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
           };
         }
 
+        const brushName = msg.brush ?? msg.profile;
+        const brushWidthMm = num(msg.widthMm ?? msg.sizeMm, 6);
+        const fromBrush =
+          typeof brushName === 'string' && brushName !== 'none'
+            ? widthsForBrushProfile(
+                brushName as (typeof BRUSH_PROFILES)[number]['id'],
+                brushWidthMm,
+                typeof msg.widths === 'string' ? msg.widths : undefined,
+              )
+            : null;
         const rawWidths =
           msg.widths ??
+          fromBrush ??
           (msg.startMm !== undefined && msg.endMm !== undefined
             ? [msg.startMm, msg.endMm]
             : msg.widthMm ?? msg.sizeMm);
@@ -1264,7 +1300,8 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         if (cap !== 'round' && cap !== 'flat') {
           return { ok: false, error: "cap must be 'round' or 'flat'" };
         }
-        useStore.getState().sweepSelected(rawWidths, cap);
+        const smoothingMm = Math.max(0, num(msg.smoothingMm, 0));
+        useStore.getState().sweepSelected(rawWidths, cap, smoothingMm);
         const after = useStore.getState();
         if (after.historyIndex === before) {
           return { ok: false, error: after.sweepNotice || 'Nothing was swept.' };
@@ -1562,6 +1599,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         offsetOps: ['offset', 'inset', 'outset'],
         // Sweeps a constant or variable width profile along a curve; see etch_combine.
         sweepOps: ['sweep', 'unsweep'],
+        brushProfiles: BRUSH_PROFILES.filter((p) => p.id !== 'none').map((p) => p.id),
         // Bridges the separate pieces of a selection into one part; see etch_combine.
         joinOps: ['join', 'unjoin'],
         generators: [
