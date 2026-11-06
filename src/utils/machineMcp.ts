@@ -5,6 +5,8 @@ import {
   type ArmingState,
   type MachineControl,
   requireNumber,
+  cancelAgentJobOnDisarm,
+  disarmWhenMachineStops,
 } from '@physbox-io/machining';
 import { webSerialManager } from './webSerialManager';
 import { fetchMachineDevices } from './apiClient';
@@ -37,12 +39,9 @@ import type { EtchDocument } from '../types/etch';
  * opposite of what someone reaching for it wants.
  */
 export const machineArming = new ArmingGate({
-  onDisarm: () => {
-    if (webSerialManager.isRunning() || webSerialManager.isJobPaused()) {
-      void webSerialManager.cancelJob();
-    }
-  },
+  onDisarm: (reason) => cancelAgentJobOnDisarm(webSerialManager, reason),
 });
+disarmWhenMachineStops(webSerialManager, machineArming);
 
 /** What the UI banner watches. */
 export function subscribeToArming(listener: (state: ArmingState) => void): () => void {
