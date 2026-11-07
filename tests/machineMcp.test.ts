@@ -19,6 +19,8 @@ const machine = {
   isRunning: () => false,
   isJobPaused: () => false,
   cancelJob: vi.fn(),
+  addStopListener: vi.fn(() => () => {}),
+  expectAgentJob: vi.fn(),
 };
 vi.mock('../src/utils/webSerialManager', () => ({ webSerialManager: machine }));
 vi.mock('../src/utils/apiClient', () => ({ fetchMachineDevices: vi.fn().mockResolvedValue([]) }));
