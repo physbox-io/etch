@@ -27,7 +27,8 @@ export type MaterialId =
   | 'stone'
   | 'ceramic'
   | 'film'
-  | 'cardstock';
+  | 'cardstock'
+  | 'foam';
 
 export interface MaterialProfile {
   id: MaterialId;
@@ -384,6 +385,23 @@ const MATERIALS: MaterialProfile[] = [
    * that a 1/8" tool takes roughly a tenth to a third of a millimetre per pass —
    * about what these materials give up before they start fracturing.
    */
+  {
+    id: 'foam',
+    name: 'Modelling foam / wax',
+    chiploadAt3mm: 0.16,
+    rpmAt3mm: 18000,
+    stepdownRatio: 1.0,
+    note: 'Almost no cutting load. The limit is the machine, so feed it as fast as the gantry holds.',
+    laser: {
+      note: 'Melts rather than marks, and the fumes are not ones to breathe. Route it.',
+      warning: 'Foam melts under a beam and gives off fumes. Route it instead.',
+      etchDoseJPerMm: 0.1,
+      fillDoseJPerMm2: 0.4,
+      cutDoseJPerMm2: null,
+      maxPowerFraction: 0.3,
+      diodeFactor: null,
+    },
+  },
   {
     id: 'glass',
     name: 'Glass',
