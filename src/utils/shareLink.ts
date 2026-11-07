@@ -110,14 +110,14 @@ export async function buildShareLink(
   if (full.length > SHARE_SOFT_LIMIT) {
     notes.push(
       `The link is ${Math.round(full.length / 1024)}KB long. Some chat apps shorten a link that ` +
-        `long, and a shortened link loses the part of it the document is in — paste it somewhere ` +
+        `long, and a shortened link loses the part of it the design is in — paste it somewhere ` +
         `that keeps it whole, or export JSON instead.`
     );
   }
   notes.push(
     sheets > 1
       ? `All ${sheets} sheets travel with it, and it opens on the one you are looking at.`
-      : 'The document travels inside the link — nothing is uploaded, and there is nothing to expire.'
+      : 'The design travels inside the link — nothing is uploaded, and there is nothing to expire.'
   );
 
   return { url: full, length: full.length, sheets, travelsWell: full.length <= SHARE_SOFT_LIMIT, notes };
@@ -230,7 +230,7 @@ export async function buildAccountShareLink(
   job: EtchDocument,
   base: string = window.location.href
 ): Promise<ShareLink> {
-  const { token } = await createShare({ appId: 'etch', name: job.name || 'Etch document', data: job });
+  const { token } = await createShare({ appId: 'etch', name: job.name || 'Etch design', data: job });
 
   const url = new URL(base);
   url.search = '';
@@ -274,13 +274,13 @@ export async function readAccountShareLink(token: string): Promise<EtchDocument>
    */
   if (share.appId && share.appId !== 'etch') {
     const other = APP_NAMES[share.appId] ?? share.appId;
-    throw new Error(`That link is a ${other} document, not an Etch job. Open it in ${other}.`);
+    throw new Error(`That link is from ${other}, not an Etch design. Open it in ${other}.`);
   }
   const doc = share.data as EtchDocument | null;
   if (!doc || !Array.isArray(doc.elements) || !Array.isArray(doc.layers)) {
     throw new Error('That shared job could not be read — it may have been made by a newer version of Etch.');
   }
-  return { ...doc, name: doc.name || share.name || 'Shared document' };
+  return { ...doc, name: doc.name || share.name || 'Shared design' };
 }
 
 /** Takes an opened token back out of the address bar. See `clearShareFragment`. */

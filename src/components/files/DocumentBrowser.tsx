@@ -193,7 +193,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
 
   const remove = (name: string) => {
     const open = activeUser === name;
-    if (!window.confirm(`Delete the saved document “${name}”?${open ? ' It is open now, and the default template will be opened in its place.' : ''}`)) return;
+    if (!window.confirm(`Delete the saved design “${name}”?${open ? ' It is open now, and the default example will be opened in its place.' : ''}`)) return;
     deleteUserPreset(name);
   };
 
@@ -206,8 +206,8 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
 
   const tabs: { id: DocumentBrowserTab; label: string; Icon: typeof FolderOpen; count: number }[] = [
     { id: 'recent', label: 'Recent', Icon: Clock, count: recent.length },
-    { id: 'mine', label: 'My documents', Icon: FolderOpen, count: foundSaved.length },
-    { id: 'templates', label: 'Templates', Icon: BookOpen, count: foundTemplates.length },
+    { id: 'mine', label: 'My designs', Icon: FolderOpen, count: foundSaved.length },
+    { id: 'templates', label: 'Examples', Icon: BookOpen, count: foundTemplates.length },
     { id: 'generators', label: 'Generators', Icon: Wand2, count: foundGenerators.length },
   ];
 
@@ -244,7 +244,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
         onDelete={remove}
       />
     </>
-  ) : empty(q ? 'No saved document matches.' : <>Nothing saved yet. <kbd className="px-1 rounded bg-slate-100 dark:bg-slate-800">Ctrl+S</kbd> saves the job on screen.</>);
+  ) : empty(q ? 'No saved design matches.' : <>Nothing saved yet. <kbd className="px-1 rounded bg-slate-100 dark:bg-slate-800">Ctrl+S</kbd> saves the job on screen.</>);
 
   const templatesSection = SHELVES.map((shelf) => {
     const onShelf = foundTemplates.filter((t) => t.shelf === shelf);
@@ -320,9 +320,9 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') openFirst(); }}
-              placeholder="Search documents, templates and generators"
+              placeholder="Search designs, examples and generators"
               className="flex-1 min-w-0 bg-transparent outline-none text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
-              aria-label="Search documents"
+              aria-label="Search designs"
             />
             {query && (
               <button onClick={() => setQuery('')} className="text-slate-400 hover:text-slate-600 cursor-pointer" title="Clear">
@@ -368,7 +368,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
             <button
               onClick={() => { close(); onOpenFile(); }}
               className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap cursor-pointer"
-              title="Open an Etch document saved as a .json file"
+              title="Open an Etch design saved as a .json file"
             >
               <FileJson className="w-4 h-4 shrink-0" />
               <span>Open file…</span>
@@ -385,7 +385,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
               </div>
             ) : q ? (
               <>
-                {foundSaved.length > 0 && <><SectionHeading>My documents</SectionHeading>{savedSection}</>}
+                {foundSaved.length > 0 && <><SectionHeading>My designs</SectionHeading>{savedSection}</>}
                 {foundTemplates.length > 0 && templatesSection}
                 {foundGenerators.length > 0 && generatorsSection}
               </>
@@ -394,7 +394,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
                 <div className={GRID}>
                   {recent.map((item) => {
                     const label = item.kind === 'saved' ? item.doc.name : item.kind === 'template' ? item.entry.name : item.entry.label;
-                    const kind = item.kind === 'saved' ? 'Saved' : item.kind === 'template' ? 'Template' : 'Generator';
+                    const kind = item.kind === 'saved' ? 'Saved' : item.kind === 'template' ? 'Example' : 'Generator';
                     return (
                       <button
                         key={item.id}
@@ -419,7 +419,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
                     );
                   })}
                 </div>
-              ) : empty('Documents you open show up here.')
+              ) : empty('Designs you open show up here.')
             ) : tab === 'mine' ? savedSection : tab === 'templates' ? templatesSection : generatorsSection}
           </div>
         </div>

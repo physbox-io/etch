@@ -396,7 +396,7 @@ export const JobHistoryModal: React.FC<JobHistoryModalProps> = ({ isOpen, onClos
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search job, document or material…"
+                placeholder="Search job, design or material…"
                 aria-label="Search runs"
                 className="flex-1 min-w-[10rem] px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
               />

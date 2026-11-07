@@ -308,7 +308,7 @@ export const BottomStatusBar: React.FC = () => {
           <select
             value={document.machine ?? 'laser'}
             onChange={(e) => setMachineTarget(e.target.value === 'cnc' ? 'cnc' : 'laser')}
-            title="What this document is cut on — a laser has no Z depth, a router does"
+            title="What this design is cut on — a laser has no Z depth, a router does"
             className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
           >
             <option value="laser">Laser</option>

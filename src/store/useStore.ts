@@ -1342,7 +1342,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const quota = e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22);
       return quota
         ? `There is no room left in this browser to save “${trimmed}”. A shaded photograph is ` +
-            `megabytes of pixels and the browser allows a few in total — delete a saved document ` +
+            `megabytes of pixels and the browser allows a few in total — delete a saved design ` +
             `you no longer need, or export this job to a file instead.`
         : `Could not save “${trimmed}”: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -1471,13 +1471,13 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   renameUserPreset: (from, to) => {
     const name = to.trim();
-    if (!name) return 'A document needs a name.';
+    if (!name) return 'A design needs a name.';
     if (name === from) return null;
     try {
       const presets = readUserPresets();
       const saved = presets[from];
       if (!saved) return `“${from}” is no longer saved in this browser.`;
-      if (presets[name]) return `There is already a document called “${name}”.`;
+      if (presets[name]) return `There is already a design called “${name}”.`;
       // A one-sheet document is named after its save, as saving makes it.
       const renamed = saved.sheets?.length ? saved : { ...saved, name };
       presets[name] = renamed;
@@ -1524,7 +1524,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const quota = e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22);
       return {
         error: quota
-          ? `There is no room left in this browser for a copy of “${from}”. Delete a saved document you no longer need.`
+          ? `There is no room left in this browser for a copy of “${from}”. Delete a saved design you no longer need.`
           : `Could not copy “${from}”: ${e instanceof Error ? e.message : String(e)}`,
       };
     }

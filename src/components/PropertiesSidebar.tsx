@@ -2201,7 +2201,7 @@ export const PropertiesSidebar: React.FC = () => {
         </div>
 
         {/* Gated on the machine as well as the count: a laser has no tool
-            catalogue and never stops to swap, but a document cut on a router
+            catalogue and never stops to swap, but a design cut on a router
             first still carries its layers' T-numbers, so the count alone
             promised laser users a tool change that will never happen. */}
         {distinctTools > 1 && !isLaser && (

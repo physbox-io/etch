@@ -311,7 +311,7 @@ export const AICopilotPanel: React.FC = () => {
       say({
         role: 'assistant',
         mode,
-        text: 'Select the shapes you want changed first — this document is too large to send in full.',
+        text: 'Select the shapes you want changed first — this design is too large to send in full.',
         isError: true,
       });
       return;
@@ -437,7 +437,7 @@ export const AICopilotPanel: React.FC = () => {
             <p>
               {mode === 'generate' && 'Describe artwork to add to the bed. It arrives as real geometry you can edit and machine.'}
               {mode === 'mutate' && 'Select shapes, then describe the change. Edits go through undo like any other.'}
-              {mode === 'explain' && 'Ask about this document, its settings, or how it will cut. Nothing is changed.'}
+              {mode === 'explain' && 'Ask about this design, its settings, or how it will cut. Nothing is changed.'}
             </p>
             <button
               onClick={() => openDocs('toolpaths')}
@@ -500,7 +500,7 @@ export const AICopilotPanel: React.FC = () => {
               ? 'Describe the artwork to create…'
               : mode === 'mutate'
                 ? 'Describe the change to the selected shapes…'
-                : 'Ask about this document…'
+                : 'Ask about this design…'
           }
           className="w-full h-20 p-3 bg-slate-50 dark:bg-slate-950 border border-purple-200 dark:border-purple-500/30 rounded-xl text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-purple-400 resize-none"
         />

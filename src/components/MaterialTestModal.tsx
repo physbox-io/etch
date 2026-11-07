@@ -221,7 +221,7 @@ export const MaterialTestModal: React.FC = () => {
 
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-            This replaces what is on the canvas. Save the current document first if you want it
+            This replaces what is on the canvas. Save the current design first if you want it
             back — the grid is a job of its own.
           </p>
           <button

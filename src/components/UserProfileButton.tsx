@@ -92,7 +92,7 @@ export const UserProfileButton: React.FC = () => {
         parameters === 0 && added === 0
           ? 'Account is up to date'
           : `Restored ${parameters} setting${parameters === 1 ? '' : 's'}` +
-              (added > 0 ? ` and ${added} preset${added === 1 ? '' : 's'}` : '')
+              (added > 0 ? ` and ${added} design${added === 1 ? '' : 's'}` : '')
       );
     } catch (e) {
       console.warn('[PhysBox Cloud] Could not pull account state:', e);
@@ -314,7 +314,7 @@ export const UserProfileButton: React.FC = () => {
 
                 <div className="px-3 py-1.5 text-[10px] text-slate-500 flex items-center gap-1.5">
                   <CheckCircle className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
-                  <span>{syncSummary ?? 'Syncing parameters & presets…'}</span>
+                  <span>{syncSummary ?? 'Syncing parameters & designs…'}</span>
                 </div>
               </div>
 
@@ -334,7 +334,7 @@ export const UserProfileButton: React.FC = () => {
             <div className="space-y-3 p-1">
               <div className="text-center">
                 <p className="font-bold text-slate-800 dark:text-slate-100 text-xs">PhysBox Account Sign In</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Sign in to synchronize parameters, saved presets, and remote telemetry.</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Sign in to synchronize parameters, saved designs, and remote telemetry.</p>
               </div>
 
               <button

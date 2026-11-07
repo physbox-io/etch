@@ -13,10 +13,10 @@ Part of the [Physbox](https://physbox.io) suite, alongside [Mesh](https://mesh.p
 * **Engrave Fill (Hatch)** — Scanline fill with per-element angle and spacing, so solid glyphs and logos engrave as filled marks rather than outline drawings.
 * **Mandala & Radial Symmetry** — Live sector mirroring and radial array generation.
 * **SVG Import / Export** — Paths are flattened to real geometry, stroke colours become layers, and unit assumptions and skipped content are reported after every import.
-* **Toolpath Generation** — GRBL dialect, laser (M3/M5 power) or CNC (Z depth over multiple passes) mode, inner-contour-first ordering, and per-layer speed, power, depth and pass count. The program is streamed to the machine from the Run panel; it is not offered as a file, so a job can never drift out of step with the document and machine setup it was planned for. Documents leave the app as SVG or Etch JSON.
+* **Toolpath Generation** — GRBL dialect, laser (M3/M5 power) or CNC (Z depth over multiple passes) mode, inner-contour-first ordering, and per-layer speed, power, depth and pass count. The program is streamed to the machine from the Run panel; it is not offered as a file, so a job can never drift out of step with the design and machine setup it was planned for. Designs leave the app as SVG or Etch JSON.
 * **Machine Control & Work Origin** — Jog pad (0.1/1/10 mm steps) with cancellable jogs, `G10 L20` XY zeroing, touch-plate Z probing that refuses to set a datum when the probe never makes contact, low-power job framing, and a GRBL terminal. GRBL 1.1 / FluidNC / grblHAL over WebSerial.
 * **Bed Levelling** — 3×3 or finer probing over the job's bounds, bilinearly interpolated and applied to CNC G-code so cut depth follows a bed or board that is not flat.
-* **Clip Art & Templates** — Built-in symbol library and starter documents, plus local save/load of your own.
+* **Clip Art & Examples** — Built-in symbol library and starter designs, plus local save/load of your own.
 * **In-App Reference Guide** — Explainers for every fabrication setting, deep-linked from the panels they describe.
 
 ---
@@ -45,10 +45,10 @@ A **PhysBox Pro** account adds three more things on top of that:
 * **Remote monitoring** — the running job's progress, position, feed and faults,
   readable from any other device you are signed in on. Driving the machine is not
   gated; being somewhere else while it runs is.
-* **Cloud documents** — the drawing you are working on is auto-saved against the
+* **Cloud designs** — the drawing you are working on is auto-saved against the
   account, with revisions to fall back on. Distinct from preset sync above, which
-  only ever held documents you deliberately named and saved; nothing has ever kept
-  the *open* one, so a reload has always dropped back to the default document.
+  only ever held designs you deliberately named and saved; nothing has ever kept
+  the *open* one, so a reload has always dropped back to the default design.
 * **Job history** — every run is archived instead of overwritten: duration,
   progress, the feed/spindle/position trace, the line an alarm stopped it on, and
   the material and per-layer settings it was cut at. Readable from the account menu
@@ -92,7 +92,7 @@ The full walkthrough lives in the app under **Reference Guide → Fabrication �
 
 The Sparkles panel drives the app's generators from a written instruction, entirely client-side.
 
-In development the Vite server also exposes a WebSocket MCP bridge at `/mcp`, letting an external agent read the document, import SVG, add elements, load presets and generate G-code (`etch_get_state`, `etch_set_svg`, `etch_export_svg`, `etch_list_presets`, `etch_load_preset`, `etch_add_element`, `etch_generate_gcode`). The hosted build is static and has no bridge.
+In development the Vite server also exposes a WebSocket MCP bridge at `/mcp`, letting an external agent read the design, import SVG, add elements, load presets and generate G-code (`etch_get_state`, `etch_set_svg`, `etch_export_svg`, `etch_list_presets`, `etch_load_preset`, `etch_add_element`, `etch_generate_gcode`). The hosted build is static and has no bridge.
 
 ---
 

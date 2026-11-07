@@ -155,7 +155,7 @@ export const CloudSaveStatus: React.FC = () => {
             <span>Changed on another device</span>
           </div>
           <p className="leading-relaxed">
-            This document was saved somewhere else since you opened it, so cloud saving has
+            This design was saved somewhere else since you opened it, so cloud saving has
             paused rather than overwrite it. Your work here is still saved on this device.
           </p>
           <div className="flex flex-wrap gap-1.5 pt-0.5">

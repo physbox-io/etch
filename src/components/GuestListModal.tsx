@@ -62,10 +62,10 @@ export const GuestListModal: React.FC<GuestListModalProps> = ({ isOpen, onClose,
             <CheckCircle2 className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
             {/* Was "Auto-save and parameter sync configured", which promised one
                 thing that was true and one that was not: settings and presets do
-                sync, and the open document was never saved anywhere. Document
+                sync, and the open design was never saved anywhere. Design
                 auto-save is real now, and it is part of Pro — so say which is
                 which rather than implying both come with signing in. */}
-            <span>Settings and saved presets sync across your devices</span>
+            <span>Settings and saved designs sync across your devices</span>
           </div>
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" />

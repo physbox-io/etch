@@ -614,7 +614,7 @@ class CloudAutosave {
       this.set({
         state: 'conflict',
         conflictRevision: typeof err.body.revision === 'number' ? err.body.revision : null,
-        message: 'This document was changed on another device.',
+        message: 'This design was changed on another device.',
       });
       return;
     }

@@ -141,7 +141,7 @@ export const TopNavbar: React.FC = () => {
   const activePresetLabel = (() => {
     if (isUserPreset) return `💾 ${userPresetName}`;
     const preset = PRESET_ETCHINGS.find((p) => p.id === activePreset);
-    return preset ? preset.name : '✏️ Modified document';
+    return preset ? preset.name : '✏️ Modified design';
   })();
 
   /*
@@ -178,7 +178,7 @@ export const TopNavbar: React.FC = () => {
 
   const handleDelete = () => {
     if (!isUserPreset) return;
-    if (window.confirm(`Are you sure you want to delete the saved document "${userPresetName}"?`)) {
+    if (window.confirm(`Are you sure you want to delete the saved design "${userPresetName}"?`)) {
       deleteUserPreset(userPresetName);
     }
   };
@@ -302,7 +302,7 @@ export const TopNavbar: React.FC = () => {
   /** The OS share sheet, where there is one — the route to a message or a post. */
   const shareToSystem = async (link: ShareLink) => {
     try {
-      await navigator.share({ title: document.name || 'Etch document', url: link.url });
+      await navigator.share({ title: document.name || 'Etch design', url: link.url });
     } catch {
       // Cancelled, or refused for a URL this long. The copy is already made.
     }
@@ -316,13 +316,13 @@ export const TopNavbar: React.FC = () => {
       try {
         const parsed = JSON.parse(evt.target?.result as string) as EtchDocument;
         if (!parsed || !Array.isArray(parsed.elements) || !Array.isArray(parsed.layers)) {
-          throw new Error('Not an Etch document');
+          throw new Error('Not an Etch design');
         }
         // openJob, so a file exported from a job of four sheets opens as four.
         openJob(parsed);
       } catch (err) {
         console.error('Failed to import JSON', err);
-        alert('That file is not a valid Etch document.');
+        alert('That file is not a valid Etch design.');
       }
     };
     reader.readAsText(file);
@@ -352,7 +352,7 @@ export const TopNavbar: React.FC = () => {
     const blob = new Blob([svgStr], { type: 'image/svg+xml' });
     // Imported documents are not guaranteed to carry a name, and exporting one
     // used to throw rather than fall back.
-    downloadBlob(blob, `${(document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.svg`);
+    downloadBlob(blob, `${(document.name || 'etch_design').toLowerCase().replace(/\s+/g, '_')}.svg`);
   };
 
   /**
@@ -586,7 +586,7 @@ export const TopNavbar: React.FC = () => {
     if (
       !empty &&
       !window.confirm(
-        `Open "${shared.name || 'a shared document'}"` +
+        `Open "${shared.name || 'a shared design'}"` +
           (sheets > 1 ? ` (${sheets} sheets)` : '') +
           '?\n\n' +
           `This closes the ${tabs.length} sheet${tabs.length === 1 ? '' : 's'} you have open. ` +
@@ -707,8 +707,8 @@ export const TopNavbar: React.FC = () => {
           <button
             onClick={() => openDocumentBrowser(firstBrowserTab(userPresetNames.length > 0))}
             className="flex items-center gap-1.5 min-w-0 max-w-[16rem] max-lg:flex-1 max-lg:max-w-none px-2 py-1 rounded-md text-xs font-medium text-slate-700 dark:text-slate-100 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-            title="Open a document, a template or a generator (Ctrl+O)"
-            aria-label="Open document"
+            title="Open a design, an example or a generator (Ctrl+O)"
+            aria-label="Open design"
           >
             <FolderOpen className="w-3.5 h-3.5 shrink-0 text-slate-500 dark:text-slate-400" />
             <span className="truncate flex-1 text-left">{activePresetLabel}</span>
@@ -720,14 +720,14 @@ export const TopNavbar: React.FC = () => {
               <button
                 onClick={handleSave}
                 className="flex items-center justify-center p-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                title={`Update document "${userPresetName}" (Ctrl+S)`}
+                title={`Update design "${userPresetName}" (Ctrl+S)`}
               >
                 <Save className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={handleDelete}
                 className="flex items-center justify-center p-1 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
-                title={`Delete saved document "${userPresetName}"`}
+                title={`Delete saved design "${userPresetName}"`}
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -800,7 +800,7 @@ export const TopNavbar: React.FC = () => {
 
           <label
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
-            title="Open Etch document (.json)"
+            title="Open Etch design (.json)"
           >
             <FolderInput className="w-3.5 h-3.5" />
             <input ref={jsonInputRef} type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
@@ -1121,9 +1121,9 @@ export const TopNavbar: React.FC = () => {
                 <Save className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="font-bold text-slate-800 dark:text-slate-100 text-base">Save Document</h2>
+                <h2 className="font-bold text-slate-800 dark:text-slate-100 text-base">Save Design</h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Give your document a name to save it locally
+                  Give your design a name to save it locally
                 </p>
               </div>
             </div>
@@ -1141,7 +1141,7 @@ export const TopNavbar: React.FC = () => {
             />
             {userPresetNames.includes(presetNameInput.trim()) && (
               <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                A document called “{presetNameInput.trim()}” already exists — saving will overwrite it.
+                A design called “{presetNameInput.trim()}” already exists — saving will overwrite it.
               </p>
             )}
             <div className="flex justify-end gap-2 text-xs">

@@ -15,6 +15,6 @@ export function downloadJobFile(): void {
   const state = useStore.getState();
   const job = jobDocument(state);
   const blob = new Blob([JSON.stringify(job, null, 2)], { type: 'application/json' });
-  downloadBlob(blob, `${(state.document.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.json`);
+  downloadBlob(blob, `${(state.document.name || 'etch_design').toLowerCase().replace(/\s+/g, '_')}.json`);
   markJobClean(state);
 }

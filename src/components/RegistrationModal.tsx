@@ -194,7 +194,7 @@ export const RegistrationModal: React.FC = () => {
           <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
             {allSheets && tabs.length > 1
               ? 'Added to every sheet — nothing already drawn is changed, and one undo per sheet takes them back out.'
-              : 'Added to this document — nothing already on the canvas is changed, and one undo takes them back out.'}
+              : 'Added to this design — nothing already on the canvas is changed, and one undo takes them back out.'}
           </p>
           <button
             onClick={add}

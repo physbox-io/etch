@@ -150,7 +150,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           for ten steps at a time, or <strong>Alt</strong> for a tenth of one. Holding a key down
           undoes as a single move, however far it travelled.
         </Key>
-        <Key combo="Ctrl/Cmd + A">Select every shape in the document.</Key>
+        <Key combo="Ctrl/Cmd + A">Select every shape in the design.</Key>
         <Key combo="Ctrl/Cmd + C">Copy the selection.</Key>
         <Key combo="Ctrl/Cmd + V">
           Paste, offset slightly from the original so the copy is not hidden underneath it.
@@ -194,7 +194,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
     <div className="flex flex-col gap-4">
       <H>🗂️ Sheets &amp; Layered Work</H>
       <P>
-        The strip under the toolbar holds the sheets of one job. Etch still edits one document at a
+        The strip under the toolbar holds the sheets of one job. Etch still edits one design at a
         time — a sheet is one piece of stock, cut in one run — but a layered picture is six of them
         that share a size, a frame and a set of pin holes, and they now live side by side instead of
         as six saved files you load one after another.
@@ -226,7 +226,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           Ctrl+S saves every sheet under one name, from whichever sheet you are on, and opening
           that name brings the whole strip back. Sheet names are left alone — the job is called one
           thing, its sheets are called what you called them. Exporting JSON writes the same job to
-          a file. Until you save, sheets live in the browser session like the open document always
+          a file. Until you save, sheets live in the browser session like the open design always
           has, and close only takes a sheet away — there is always at least one open.
         </Step>
       </Card>
@@ -240,7 +240,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         The canvas is the piece of material you are cutting, drawn 1:1 in millimetres. Set its size
         with the <strong>Stock</strong> boxes in the status bar, at the bottom left, and make it the
         real size of what is clamped down: it is the rectangle framing traces, the area the bed is
-        probed over, and — through the work origin — what X0 Y0 is measured from. Documents start at
+        probed over, and — through the work origin — what X0 Y0 is measured from. Designs start at
         300 × 200 mm; after that it is yours to set.
       </P>
       <P>
@@ -302,7 +302,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         <Step title="Fonts come from the network">
           The picker lists Google Fonts and fetches the TTF on demand. Offline, you get the built-in
           font list only. Convert text to outlines while you still have a connection if you are
-          taking a document to a machine that has none.
+          taking a design to a machine that has none.
         </Step>
         <Step title="Thin strokes and small text">
           Below about 6 mm cap height most fonts have strokes narrower than a router bit, and the
@@ -443,7 +443,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           screen.
         </Step>
         <Step title="Artwork can also arrive by link">
-          A sibling app can hand a document straight over: Volt sends a PCB paste stencil as a
+          A sibling app can hand a design straight over: Volt sends a PCB paste stencil as a
           link that opens here with the artwork already loaded. It travels in the URL fragment, so
           it never reaches a server or a log, and it is cleared from the address bar as it is read
           — a reload will not import it twice. Artwork that arrives this way is never scaled to the
@@ -453,9 +453,9 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         <Step title="Sharing a job as a link">
           The share button copies a link with the whole job inside it — every sheet, not just the
           one on screen — which is why there is no account, no expiry and nothing to take down.
-          Nothing is uploaded; the document travels in the part of the URL that never reaches a
+          Nothing is uploaded; the design travels in the part of the URL that never reaches a
           server. The cost is length: a job with a shaded photograph in it can want tens of
-          kilobytes of link, and a chat app that shortens a link that long throws the document
+          kilobytes of link, and a chat app that shortens a link that long throws the design
           away with it. Etch says how long the link is, and refuses outright rather than hand you
           one too long for a browser to open — export the JSON and send the file instead.
         </Step>
@@ -523,7 +523,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           is nearly always the setting to move first.
         </Step>
         <Step title="Photo Tone (or Carved Relief)">
-          The fourth mode does not trace anything. The pixels go into the document as an image, and
+          The fourth mode does not trace anything. The pixels go into the design as an image, and
           the exporter sweeps across them line by line, varying laser power — or, on a router,
           cutter depth — with how dark the picture is at each point. Because the greys are kept
           rather than baked into a toolpath, the size, sweep pitch, angle and depth all stay
@@ -575,7 +575,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         An image on a cut or etch layer is skipped by the planner with a note. &ldquo;Cut this photo
         out&rdquo; and &ldquo;engrave it as tone&rdquo; are different jobs, and only one of them is
         ever meant — so the dialog will only aim a Photo Tone import at a Shade layer, making one
-        if the document has none.
+        if the design has none.
       </Warn>
     </div>
   ),
@@ -779,7 +779,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       <H>🧪 Material Test Grid</H>
       <P>
         A grid of squares, each cut at different settings, on a scrap of the material you are about
-        to use for real. Open the document browser (click the document name, or Ctrl+O) and pick it under <strong>Generators</strong>. It is
+        to use for real. Open the design browser (click the design name, or Ctrl+O) and pick it under <strong>Generators</strong>. It is
         the first thing to run on an unfamiliar sheet, and the honest answer to every question that
         starts &ldquo;what power should I use for…&rdquo;.
       </P>
@@ -809,8 +809,8 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           cells worth reading.
         </Step>
         <Step title="It replaces what is on the canvas">
-          The grid is a job of its own, not an addition to yours — save the open document first if
-          you want it back. It keeps that document's stock size, material and thickness, since a
+          The grid is a job of its own, not an addition to yours — save the open design first if
+          you want it back. It keeps that design's stock size, material and thickness, since a
           test cut for the wrong material tests nothing you can use.
         </Step>
         <Step title="Check it fits">
@@ -1003,7 +1003,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       <Card>
         <Step title="MCP bridge (development only)">
           Running the app from the dev server exposes a WebSocket bridge at <code>/mcp</code> that an
-          external agent can drive: read the document, import an SVG, add elements, load a preset, or
+          external agent can drive: read the design, import an SVG, add elements, load an example, or
           generate G-code. The hosted build has no bridge — there is no server behind it to run one.
         </Step>
         <Step title="Commands">

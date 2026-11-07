@@ -3584,7 +3584,7 @@ function generateSlateCharcuterieElements(): EtchElement[] {
 export const PRESET_ETCHINGS: EtchPreset[] = [
   {
     id: 'blank',
-    name: 'Blank Document',
+    name: 'Blank Design',
     category: 'Start Here',
     description: 'An empty 300x200mm sheet with a cut and an etch layer, ready to draw on.',
     doc: {
@@ -3598,7 +3598,7 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       origin: 'top-left',
       material: 'plywood',
       stockThickness: 3,
-      notecard: `### Blank Document
+      notecard: `### Blank Design
 - Empty 300x200mm sheet on 3mm plywood.
 - **Cut Layer (Red)**: through-cut contours.
 - **Etch Layer (Blue)**: surface engraving.`,

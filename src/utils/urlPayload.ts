@@ -44,7 +44,7 @@ const ignore = () => {};
 
 export async function gzip(text: string): Promise<Uint8Array> {
   if (typeof CompressionStream === 'undefined') {
-    throw new Error('This browser cannot compress a document into a link.');
+    throw new Error('This browser cannot compress a design into a link.');
   }
   const gz = new CompressionStream('gzip');
   const writer = gz.writable.getWriter();

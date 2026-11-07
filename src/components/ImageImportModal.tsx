@@ -371,7 +371,7 @@ export const ImageImportModal: React.FC = () => {
         ? targetLayerId
         : doc.layers[0]?.id;
       if (!layerId) {
-        alert('This document has no layers to import onto. Add a layer first.');
+        alert('This design has no layers to import onto. Add a layer first.');
         return;
       }
 
@@ -584,7 +584,7 @@ export const ImageImportModal: React.FC = () => {
                         : 'Reading the backdrop…'}{' '}
                       Outline goes on{' '}
                       {cutLayerForOutline.isNew
-                        ? `a new cut layer, ${laserMode ? '' : `${cutLayerForOutline.layer.zDepth} mm deep, `}since this document has none`
+                        ? `a new cut layer, ${laserMode ? '' : `${cutLayerForOutline.layer.zDepth} mm deep, `}since this design has none`
                         : `“${cutLayerForOutline.layer.name}”`}
                       .
                     </p>
@@ -1022,7 +1022,7 @@ export const ImageImportModal: React.FC = () => {
                     </select>
                     {options.mode === 'shade' && shadeLayers.length === 0 && (
                       <p className="mt-1 text-[10px] text-slate-400 leading-snug">
-                        This document has no shade layer, so the import makes one. Its power
+                        This design has no shade layer, so the import makes one. Its power
                         {laserMode ? '' : ' and depth'} {laserMode ? 'is' : 'are'} what black comes
                         out at — change {laserMode ? 'it' : 'them'} in the layer inspector.
                       </p>

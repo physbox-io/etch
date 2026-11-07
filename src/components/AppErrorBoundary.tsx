@@ -51,7 +51,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, { error
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
               Your drawing is still here. Save a copy before reloading — every sheet goes in the file, and Open file…
-              in the document browser opens it again.
+              in the design browser opens it again.
             </p>
             <pre className="text-xs whitespace-pre-wrap break-words max-h-32 overflow-auto rounded-lg bg-slate-100 dark:bg-slate-800 p-2 mb-4 text-slate-700 dark:text-slate-300">
               {error.message || String(error)}

@@ -233,5 +233,5 @@ function aciFor(hex: string): number {
 
 /** Suggests what to call the downloaded file. */
 export function dxfFilename(doc: EtchDocument): string {
-  return `${(doc.name || 'etch_document').toLowerCase().replace(/\s+/g, '_')}.dxf`;
+  return `${(doc.name || 'etch_design').toLowerCase().replace(/\s+/g, '_')}.dxf`;
 }

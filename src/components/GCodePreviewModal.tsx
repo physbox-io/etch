@@ -511,7 +511,7 @@ export const GCodePreviewModal: React.FC = () => {
                     shows up on asymmetric geometry like text. */}
                 <div>
                   <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">
-                    Work Origin (machine X0 Y0) <InfoTooltip text="Maps document vector coordinates to machine zero position. Select Front-Left or Centre to match stock setup." />
+                    Work Origin (machine X0 Y0) <InfoTooltip text="Maps design vector coordinates to machine zero position. Select Front-Left or Centre to match stock setup." />
                   </label>
                   <select
                     value={document.origin}
