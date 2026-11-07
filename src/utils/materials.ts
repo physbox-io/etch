@@ -14,6 +14,7 @@
  * can do correctly, and picking a chipload is not.
  */
 
+import { cuttingMaterial, type CuttingMaterial } from '@physbox-io/machining';
 import type { MachineKind } from './tooling';
 
 export type MaterialId =
@@ -30,33 +31,9 @@ export type MaterialId =
   | 'cardstock'
   | 'foam';
 
-export interface MaterialProfile {
+export interface MaterialProfile extends CuttingMaterial {
   id: MaterialId;
   name: string;
-  /**
-   * Chip thickness per tooth, in mm, for a 3.175 mm (1/8") cutter.
-   *
-   * This is the quantity that actually keeps a cutter alive. Too small and the
-   * flutes rub instead of cutting, which heats the tool and work-hardens or
-   * melts them together; too large and the cutter is levered sideways until it
-   * snaps. Feed rate is derived from it rather than being a number the user
-   * guesses.
-   */
-  chiploadAt3mm: number;
-  /**
-   * Spindle speed, in RPM, for a 3.175 mm cutter. Scaled down for wider tools
-   * by `deriveFeeds`, because a wider cutter reaches the same surface speed at
-   * fewer revolutions.
-   */
-  rpmAt3mm: number;
-  /**
-   * The deepest single pass, as a multiple of cutter diameter.
-   *
-   * A slot cut at full width engages the whole cutter, so this is the limiting
-   * case rather than the typical one. Soft, crumbly material clears chips well
-   * and takes a full diameter; hardwood grabs, and metal does not forgive.
-   */
-  stepdownRatio: number;
   /** One line for the operator on a router, shown next to the picker. */
   note: string;
   /** What this stock does under a beam, which is a different subject entirely. */
@@ -172,13 +149,10 @@ export interface LaserMaterial {
  */
 export const THROUGH_CUT_OVERCUT_MM = 0.3;
 
-const MATERIALS: MaterialProfile[] = [
+const PROFILES: (Omit<MaterialProfile, keyof CuttingMaterial> & { id: MaterialId })[] = [
   {
     id: 'mdf',
     name: 'MDF',
-    chiploadAt3mm: 0.1,
-    rpmAt3mm: 18000,
-    stepdownRatio: 1.0,
     note: 'Cuts easily and clears chips well. Abrasive — it blunts cutters faster than wood.',
     laser: {
       note: 'Engraves evenly and dark, with no grain to fight. The charred edge wipes off; the smoke needs extraction.',
@@ -192,9 +166,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'plywood',
     name: 'Plywood',
-    chiploadAt3mm: 0.08,
-    rpmAt3mm: 18000,
-    stepdownRatio: 0.8,
     note: 'Glue lines are harder than the plies. Steady feed matters more than speed.',
     laser: {
       note: 'Fine for line work. Glue lines take the beam differently, so a large fill can band where a ply changes.',
@@ -210,9 +181,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'softwood',
     name: 'Softwood (pine, cedar)',
-    chiploadAt3mm: 0.1,
-    rpmAt3mm: 18000,
-    stepdownRatio: 1.0,
     note: 'Forgiving. Resin can pack the flutes on deep cuts, so it still likes a brisk feed.',
     laser: {
       note: 'High contrast for little power. Soft early grain burns deeper than the hard bands, so a photo fill comes out striped.',
@@ -226,9 +194,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'hardwood',
     name: 'Hardwood (oak, maple)',
-    chiploadAt3mm: 0.07,
-    rpmAt3mm: 16000,
-    stepdownRatio: 0.5,
     note: 'Grabs on deep passes and burns if the feed is too slow. Half-diameter steps.',
     laser: {
       note: 'The best wood here for detail and photo fills — dense, even grain and a clean dark mark.',
@@ -242,9 +207,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'acrylic',
     name: 'Acrylic',
-    chiploadAt3mm: 0.08,
-    rpmAt3mm: 14000,
-    stepdownRatio: 0.5,
     note: 'Melts and re-welds behind the cutter if fed too slowly. Lower RPM, keep moving.',
     laser: {
       note: 'Cast acrylic frosts white and engraves beautifully; extruded goes shallow and patchy. Leave the masking on for cuts.',
@@ -267,9 +229,6 @@ const MATERIALS: MaterialProfile[] = [
     name: 'Plastic film (stencil stock)',
     // A router cannot hold film at all, so these exist only because every
     // profile has them. See the note.
-    chiploadAt3mm: 0.02,
-    rpmAt3mm: 16000,
-    stepdownRatio: 0.5,
     note:
       'Not routable. A tenth of a millimetre of film cannot be clamped flat enough for a cutter ' +
       'to shear it — it lifts into the tool and tears. This is laser stock.',
@@ -298,9 +257,6 @@ const MATERIALS: MaterialProfile[] = [
     name: 'Cardstock (paper)',
     // As with film, a router cannot hold paper; these exist because every
     // profile has them, and the note says so.
-    chiploadAt3mm: 0.02,
-    rpmAt3mm: 16000,
-    stepdownRatio: 0.5,
     note:
       'Not routable. A cutter lifts a sheet of card and tears it rather than shearing it. ' +
       'This is laser stock.',
@@ -329,9 +285,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'aluminium',
     name: 'Aluminium',
-    chiploadAt3mm: 0.025,
-    rpmAt3mm: 12000,
-    stepdownRatio: 0.15,
     note: 'Shallow steps only, and it needs lubricant. A hobby router is at its limit here — pockets go deeper than this, because clearing them takes a narrower bite than a slot.',
     laser: {
       note: 'Ablates the anodised layer to expose the metal under it, so the mark is white and permanent. Bare mill-finish stock needs a marking spray instead.',
@@ -388,9 +341,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'foam',
     name: 'Modelling foam / wax',
-    chiploadAt3mm: 0.16,
-    rpmAt3mm: 18000,
-    stepdownRatio: 1.0,
     note: 'Almost no cutting load. The limit is the machine, so feed it as fast as the gantry holds.',
     laser: {
       note: 'Melts rather than marks, and the fumes are not ones to breathe. Route it.',
@@ -405,10 +355,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'glass',
     name: 'Glass',
-    chiploadAt3mm: 0.008,
-    rpmAt3mm: 16000,
-    // 0.16 mm a pass with a 1/8" tool — the floor this app will emit anyway.
-    stepdownRatio: 0.05,
     surfaceOnly: true,
     note: 'Frosted surface engraving only, with a diamond burr and water. Dry, deep or fast, it cracks.',
     laser: {
@@ -435,9 +381,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'stone',
     name: 'Stone (slate, marble)',
-    chiploadAt3mm: 0.02,
-    rpmAt3mm: 14000,
-    stepdownRatio: 0.1,
     surfaceOnly: true,
     note: 'Slate engraves cleanly; marble is softer and chips at the edges. Diamond tooling, and expect dust.',
     laser: {
@@ -454,9 +397,6 @@ const MATERIALS: MaterialProfile[] = [
   {
     id: 'ceramic',
     name: 'Ceramic tile',
-    chiploadAt3mm: 0.012,
-    rpmAt3mm: 14000,
-    stepdownRatio: 0.07,
     surfaceOnly: true,
     note: 'The glaze is the hard part and it spalls. Score it in shallow passes; never enter mid-glaze at speed.',
     laser: {
@@ -474,6 +414,12 @@ const MATERIALS: MaterialProfile[] = [
     },
   },
 ];
+
+/** The cutting figures are the shared catalogue's, so one job gets one feed in every app. */
+const MATERIALS: MaterialProfile[] = PROFILES.map((profile) => ({
+  ...cuttingMaterial(profile.id),
+  ...profile,
+}));
 
 /** The material assumed when a document does not say. */
 export const DEFAULT_MATERIAL: MaterialId = 'plywood';

@@ -4,6 +4,7 @@ import {
   cuttingFeedCeiling,
   type MotionProfile,
 } from './motionProfile';
+import { idealCut } from '@physbox-io/machining';
 import { describeLaserSource, type LaserSource } from './machineSettings';
 import { DEFAULT_HATCH_SPACING } from './hatchFill';
 import { defaultFeedDiameter, type ToolProfile } from './tooling';
@@ -153,16 +154,8 @@ export function deriveFeeds(
    * as if the tip were the whole cutter.
    */
   const engaged = spec.feedDiameter ?? defaultFeedDiameter(tool) ?? REFERENCE_DIAMETER_MM;
-  const ratio = engaged / REFERENCE_DIAMETER_MM;
 
-  // Chipload rises with diameter, but sub-linearly: a cutter twice as wide is
-  // not twice as strong in bending, which is the mode that actually fails.
-  const chipload = mat.chiploadAt3mm * Math.pow(ratio, 0.8);
-  const feedPerRev = spec.flutes * chipload;
-
-  // Surface speed is what heats an edge, and it rises with diameter at a given
-  // RPM — so a wider cutter is turned slower to stay in the same band.
-  const targetRpm = mat.rpmAt3mm / Math.sqrt(ratio);
+  const { feedPerRevMm: feedPerRev, rpm: targetRpm } = idealCut(mat, engaged, spec.flutes);
 
   /**
    * The speed that keeps chipload right at a feed the gantry can hold.

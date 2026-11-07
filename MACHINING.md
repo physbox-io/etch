@@ -38,6 +38,7 @@ to prevent.
 
 | Value | Where | Basis | Source |
 |---|---|---|---|
+| Chipload, RPM and stepdown per material live in one table | `@physbox-io/machining` `tools/materials.ts`, read through `materials.ts` | Etch and Mesh gave one job two feeds. Every row below that cites `materials.ts` for these figures is that table, which Mesh and Etch both read. | **Derived** |
 | `feed = rpm × flutes × chipload` | `deriveFeeds` | The definition of chip load: each flute takes one bite per revolution. | **Derived** |
 | Chipload scales with tool diameter from the 3.175 mm reference | `deriveFeeds`, `chiploadAt3mm` | A wider cutter is stiffer and takes a bigger bite; a narrower one deflects. | **Published** — chip-load tables are published per diameter and material class by router-tool manufacturers (Onsrud, Amana, Vortex). Our scaling is a smooth interpolation of that shape, not a copy of a table. |
 | Chipload 0.07–0.10 mm at 1/8" in wood/MDF/ply | `materials.ts` | The mid of the published hobby range for 1/8" two-flute in wood. Erring low costs a slower job; erring high snaps the cutter. | **Published** (range), **Judgement** (exact value) |
