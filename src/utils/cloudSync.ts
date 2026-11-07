@@ -9,18 +9,13 @@
  * and merges it into the same localStorage the app already reads.
  *
  * It deliberately does not import the store: the store saves and deletes
- * presets through here, so a dependency the other way would be a cycle. Pulled
- * presets are handed back to the caller, which passes them to a store action.
+ * presets through here, and connects itself to `presetSync`, which keeps the two
+ * level.
  */
 
 import type { EtchDocument } from '../types/etch';
-import {
-  fetchCloudParameters,
-  fetchCloudPresets,
-  syncCloudPreset,
-  deleteCloudPreset,
-  type CloudPresetRow,
-} from './apiClient';
+import { fetchCloudParameters } from './apiClient';
+import { PresetSync, type PresetSyncResult } from './presetSync';
 import { CNC_BED_PARAMETER, TOOL_RACK_PARAMETER } from '@physbox-io/machining';
 import { machineBedStore } from './machineBed';
 import {
@@ -34,58 +29,17 @@ import {
 import { SYNCED_MACHINE_PARAMETER_KEYS } from './machineSettings';
 import { SYNCED_LLM_PARAMETER_KEYS } from './llmSettings';
 
-/**
- * Maps a preset's name to the id the server gave it.
- *
- * Needed because deleting used to guess: the store saved a preset, the server
- * generated `pst_<random>` for it, and the store then tried to delete
- * `user:<name>` — an id that never existed, so every cloud delete silently
- * matched nothing and the preset stayed in the account forever, ready to be
- * pulled back down.
- */
-const PRESET_ID_MAP_KEY = 'etch_cloud_preset_ids';
+export const presetSync = new PresetSync('etch', 'etch_cloud_preset_ids');
 
-function readPresetIdMap(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(PRESET_ID_MAP_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+/** Records a save as owed to the account and uploads it. If that fails it goes again at the next pull. */
+export function saveCloudPreset(name: string, doc: EtchDocument): Promise<boolean> {
+  presetSync.noteSaved(name);
+  return presetSync.upload(name, doc);
 }
 
-function writePresetIdMap(map: Record<string, string>): void {
-  try {
-    localStorage.setItem(PRESET_ID_MAP_KEY, JSON.stringify(map));
-  } catch {
-    // Non-fatal: deletes fall back to leaving the cloud copy in place.
-  }
-}
-
-function rememberPresetId(name: string, id: string): void {
-  const map = readPresetIdMap();
-  if (map[name] === id) return;
-  map[name] = id;
-  writePresetIdMap(map);
-}
-
-/** Uploads a saved preset and records the id the server assigned it. */
-export async function saveCloudPreset(name: string, doc: EtchDocument): Promise<void> {
-  const existingId = readPresetIdMap()[name];
-  const id = await syncCloudPreset('etch', name, doc, existingId);
-  if (id) rememberPresetId(name, id);
-}
-
-/** Deletes the cloud copy of a preset, by its real server id. */
-export async function removeCloudPreset(name: string): Promise<void> {
-  const map = readPresetIdMap();
-  const id = map[name];
-  if (!id) return;
-  const deleted = await deleteCloudPreset(id);
-  if (deleted) {
-    delete map[name];
-    writePresetIdMap(map);
-  }
+/** Deletes the cloud copy of a preset, now if the account can be reached and at the next pull if not. */
+export function removeCloudPreset(name: string): Promise<void> {
+  return presetSync.remove(name);
 }
 
 /**
@@ -110,8 +64,8 @@ function applyParameter(key: string, value: unknown): boolean {
 export interface CloudPullResult {
   /** Number of settings restored from the account. */
   parameters: number;
-  /** Presets the account holds that this browser lacks, or holds an older save of. */
-  presets: Record<string, EtchDocument>;
+  /** What moved between this browser's presets and the account's. */
+  presets: PresetSyncResult;
   /** The account's tool rack, when it was newer than this browser's and replaced it. */
   cncTools: ToolProfile[] | null;
 }
@@ -133,60 +87,35 @@ function settleCncTools(globalValue: unknown, legacyValue: unknown): ToolProfile
   return toolRackStore.adoptRemote(remote) ? readCncTools() : null;
 }
 
-/** When a saved copy was written. A copy from before `savedAt` existed reads as oldest. */
-export function presetSavedAt(doc: unknown): number {
-  const savedAt = (doc as { savedAt?: unknown } | null | undefined)?.savedAt;
-  return typeof savedAt === 'number' ? savedAt : 0;
-}
-
 /**
- * Pulls the signed-in account's settings and presets.
- *
- * For a name saved on both sides, the later save wins. That carries a re-save
- * from another machine down, and leaves alone edits made offline, which are
- * newer than what the account holds. The server does not keep names unique, so
- * the latest row of a name is the one that counts, for its data and its id.
+ * Pulls the signed-in account's settings and brings its presets level. Throws
+ * if the presets cannot be listed, so the caller can say so.
  */
-export async function pullCloudState(localPresets: Record<string, EtchDocument>): Promise<CloudPullResult> {
-  const result: CloudPullResult = { parameters: 0, presets: {}, cncTools: null };
+export async function pullCloudState(): Promise<CloudPullResult> {
+  let parameters = 0;
 
-  const [etchParams, globalParams, presets] = await Promise.all([
+  const [etchParams, globalParams] = await Promise.all([
     fetchCloudParameters('etch'),
     fetchCloudParameters('global'),
-    fetchCloudPresets('etch'),
   ]);
 
   for (const key of SYNCED_MACHINE_PARAMETER_KEYS) {
-    if (key in etchParams && applyParameter(key, etchParams[key])) result.parameters += 1;
+    if (key in etchParams && applyParameter(key, etchParams[key])) parameters += 1;
   }
   for (const key of SYNCED_LLM_PARAMETER_KEYS) {
     // The `etch` query also returns `global` rows, so check both responses.
     const value = key in globalParams ? globalParams[key] : etchParams[key];
-    if (value !== undefined && applyParameter(key, value)) result.parameters += 1;
+    if (value !== undefined && applyParameter(key, value)) parameters += 1;
   }
 
   // The machine's envelope is shared with Volt and Mesh, like the rack.
   machineBedStore.adoptRemote(globalParams[CNC_BED_PARAMETER] ?? etchParams[CNC_BED_PARAMETER]);
 
-  result.cncTools = settleCncTools(
+  const cncTools = settleCncTools(
     globalParams[TOOL_RACK_PARAMETER] ?? etchParams[TOOL_RACK_PARAMETER],
     etchParams[CNC_TOOLS_KEY]
   );
-  if (result.cncTools) result.parameters += 1;
+  if (cncTools) parameters += 1;
 
-  const latest = new Map<string, CloudPresetRow>();
-  for (const preset of presets) {
-    if (!preset?.name || !preset?.data) continue;
-    const held = latest.get(preset.name);
-    if (!held || presetSavedAt(preset.data) > presetSavedAt(held.data)) latest.set(preset.name, preset);
-  }
-
-  for (const [name, preset] of latest) {
-    if (preset.id) rememberPresetId(name, preset.id);
-    const local = Object.hasOwn(localPresets, name) ? localPresets[name] : undefined;
-    if (local && presetSavedAt(preset.data) <= presetSavedAt(local)) continue;
-    result.presets[name] = preset.data as EtchDocument;
-  }
-
-  return result;
+  return { parameters, presets: await presetSync.pull(), cncTools };
 }

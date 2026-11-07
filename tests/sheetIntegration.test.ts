@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { handleMCPCommand } from '../src/hooks/useMCPBridge';
 import { readUserPresets, useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
@@ -314,15 +314,22 @@ describe('saving a job of several sheets', () => {
       expect(readUserPresets().rheo.notecard).toBe('saved elsewhere');
       expect(useStore.getState().document.notecard).toBe(before);
     });
+  });
 
-    it('ignores a copy no newer than the one held', () => {
-      job(['bg', 'top']);
-      useStore.getState().saveUserPresetByName('rheo');
-      const stale = { ...readUserPresets().rheo, notecard: 'stale' };
-
-      expect(useStore.getState().mergeCloudPresets({ rheo: stale }, true)).toBe(0);
-      expect(readUserPresets().rheo.notecard).not.toBe('stale');
+  it('leaves a job with the account when this browser is full, listed for the session', () => {
+    useStore.getState().addElement(rect('big'));
+    localStorage.setItem('physbox_auth_token', 'token');
+    const refused = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
     });
+
+    expect(useStore.getState().saveUserPresetByName('big job')).toBeNull();
+
+    refused.mockRestore();
+    localStorage.removeItem('physbox_auth_token');
+    expect(useStore.getState().userPresetNames).toContain('big job');
+    expect(readUserPresets()['big job']).toBeDefined();
+    useStore.getState().deleteUserPreset('big job');
   });
 
   it('never leaves the strip inside the live document', () => {

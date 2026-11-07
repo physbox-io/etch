@@ -13,7 +13,8 @@ import type {
   BrushSettings,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
-import { saveCloudPreset, removeCloudPreset, presetSavedAt } from '../utils/cloudSync';
+import { presetSync, saveCloudPreset, removeCloudPreset } from '../utils/cloudSync';
+import { getStoredAuthToken } from '../utils/apiClient';
 import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
 import {
   readLaserSource,
@@ -73,7 +74,7 @@ import {
   type Part,
 } from '../utils/packParts';
 import { cloudAutosave } from '../utils/cloudDocuments';
-import { markJobClean, markSheetClean, unsavedWork } from '../utils/unsavedWork';
+import { markJobClean, markSheetClean, markSheetUnsaved, unsavedWork } from '../utils/unsavedWork';
 import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
 import { copyName } from '../utils/documentCatalog';
 import { readDarkMode, applyDarkMode } from '../utils/darkModePref';
@@ -81,16 +82,46 @@ import { readDarkMode, applyDarkMode } from '../utils/darkModePref';
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
 
+/**
+ * Jobs the account holds that this browser had no room for, for the session.
+ * Listed and opened with the rest; every read and write below goes round them.
+ */
+const accountOnly: Record<string, EtchDocument> = {};
+
 export function readUserPresets(): Record<string, EtchDocument> {
   try {
-    return JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    return { ...accountOnly, ...JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}') };
   } catch {
-    return {};
+    return { ...accountOnly };
   }
 }
 
 function writeUserPresets(presets: Record<string, EtchDocument>) {
-  localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(presets));
+  const stored = { ...presets };
+  for (const name of Object.keys(accountOnly)) {
+    if (!Object.hasOwn(presets, name)) {
+      delete accountOnly[name];
+    } else {
+      accountOnly[name] = presets[name];
+      delete stored[name];
+    }
+  }
+  localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(stored));
+}
+
+/**
+ * Writes the presets, leaving `name` to the account alone when this browser is
+ * full and there is an account to leave it with. True if that is where it went.
+ */
+function writeOrLeaveWithAccount(presets: Record<string, EtchDocument>, name: string): boolean {
+  try {
+    writeUserPresets(presets);
+    return false;
+  } catch (e) {
+    if (!getStoredAuthToken() || !(e instanceof DOMException)) throw e;
+    accountOnly[name] = presets[name];
+    return true;
+  }
 }
 
 /** Deep clone so edits never mutate the module-level preset objects. */
@@ -493,7 +524,7 @@ interface EtchStore {
   documentBrowser: DocumentBrowserTab | null;
   openDocumentBrowser: (tab?: DocumentBrowserTab) => void;
   closeDocumentBrowser: () => void;
-  /** Adds presets pulled from the signed-in account. Existing names win. */
+  /** Takes presets from the signed-in account, in place of any held under those names. */
   mergeCloudPresets: (incoming: Record<string, EtchDocument>, canReplaceOpenJob?: boolean) => number;
 
   /** Text outline vectorization (so text can actually be machined). */
@@ -1288,8 +1319,8 @@ export const useStore = create<EtchStore>((set, get) => ({
       const single = state.tabs.length <= 1;
       const newDoc = { ...(single ? { ...job, name: trimmed } : job), savedAt: Date.now() };
       presets[trimmed] = newDoc;
-      writeUserPresets(presets);
-      saveCloudPreset(trimmed, newDoc);
+      const accountAlone = writeOrLeaveWithAccount(presets, trimmed);
+      const uploaded = saveCloudPreset(trimmed, newDoc);
       // A deliberate save is also a revision worth keeping by name, so it survives
       // the pruning that automatic checkpoints are subject to.
       void cloudAutosave.saveExplicit(trimmed, newDoc, `Saved as “${trimmed}”`);
@@ -1302,7 +1333,9 @@ export const useStore = create<EtchStore>((set, get) => ({
         // any of them saves the job rather than asking for a name again.
         tabs: state.tabs.map((t) => ({ ...t, activePreset: `user:${trimmed}` })),
       });
-      markJobClean(get());
+      // Held for this session only, so it is not safe until the account has it.
+      if (accountAlone) void uploaded.then((inAccount) => inAccount && markJobClean(get()));
+      else markJobClean(get());
       return null;
     } catch (e) {
       console.error('Failed to save user preset', e);
@@ -1390,7 +1423,6 @@ export const useStore = create<EtchStore>((set, get) => ({
       let openJobMoved = false;
       for (const name of names) {
         const held = presets[name];
-        if (held && presetSavedAt(incoming[name]) <= presetSavedAt(held)) continue;
         if (held && name === openName) openJobMoved = true;
         const saved = incoming[name];
         // The preset's name is the *job's* name, and only a one-sheet job is
@@ -1401,8 +1433,7 @@ export const useStore = create<EtchStore>((set, get) => ({
         presets[name] = cloneSavedDoc(single ? { ...saved, name } : saved);
         added += 1;
       }
-      if (added === 0) return 0;
-      writeUserPresets(presets);
+      for (const name of names) writeOrLeaveWithAccount(presets, name);
       set({ userPresetNames: Object.keys(presets).sort() });
       // The drawing on screen is that job's old save. Edits made here stay on
       // screen, and so does anything a running job is being cut from.
@@ -3384,3 +3415,52 @@ useStore.subscribe((state, previous) => {
   const { document } = useStore.getState();
   cloudAutosave.schedule(document.name || 'Untitled', document);
 });
+
+/** Set from outside the store, which a running job's module imports. */
+let machineJobRunning = () => false;
+export function setMachineJobProbe(probe: () => boolean): void {
+  machineJobRunning = probe;
+}
+
+presetSync.connect({
+  held: readUserPresets,
+  read: async (name) => readUserPresets()[name] ?? null,
+  write: (name, data) => useStore.getState().mergeCloudPresets({ [name]: data as EtchDocument }, !machineJobRunning()) > 0,
+  remove: (name) => {
+    const presets = readUserPresets();
+    if (!Object.hasOwn(presets, name)) return;
+    delete presets[name];
+    writeUserPresets(presets);
+    forgetRecent(`user:${name}`);
+    const state = useStore.getState();
+    useStore.setState({ userPresetNames: Object.keys(presets).sort() });
+    // Deleted on another machine: the job stays, as work nothing holds any more.
+    if (state.activePreset === `user:${name}`) {
+      useStore.setState({
+        activePreset: '',
+        tabs: state.tabs.map((t) => (t.activePreset === `user:${name}` ? { ...t, activePreset: '' } : t)),
+      });
+      markSheetUnsaved(useStore.getState());
+    }
+  },
+  renamed: (data, name) => {
+    const doc = data as EtchDocument;
+    return doc.sheets?.length ? doc : { ...doc, name };
+  },
+  changed: () => {},
+});
+
+cloudAutosave.connectDocument(
+  () => {
+    const { open, others } = unsavedWork(useStore.getState());
+    return open || others;
+  },
+  // Unsaved work from the last session comes back as it was left: unsaved, and
+  // on the job it was an edit of. Autosave holds one sheet, so a job of several
+  // is not taken for that job: a save would put the one sheet over all of them.
+  (draft, name) => {
+    const held = readUserPresets()[name];
+    useStore.getState().openJob(draft as EtchDocument, held && !held.sheets?.length ? `user:${name}` : '');
+    markSheetUnsaved(useStore.getState());
+  }
+);

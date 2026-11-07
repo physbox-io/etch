@@ -5,14 +5,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
  * cross the boundary and which preset id a delete is aimed at, not fetch.
  */
 const fetchCloudParameters = vi.fn();
-const fetchCloudPresets = vi.fn();
+const fetchCloudPresetList = vi.fn();
 const syncCloudPreset = vi.fn();
 const deleteCloudPreset = vi.fn();
 const syncCloudParameters = vi.fn();
 
 vi.mock('../src/utils/apiClient', () => ({
   fetchCloudParameters: (...args: unknown[]) => fetchCloudParameters(...args),
-  fetchCloudPresets: (...args: unknown[]) => fetchCloudPresets(...args),
+  fetchCloudPresetList: (...args: unknown[]) => fetchCloudPresetList(...args),
+  getStoredUser: () => ({ id: 'me' }),
   syncCloudPreset: (...args: unknown[]) => syncCloudPreset(...args),
   deleteCloudPreset: (...args: unknown[]) => deleteCloudPreset(...args),
   syncCloudParameters: (...args: unknown[]) => syncCloudParameters(...args),
@@ -28,8 +29,8 @@ beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
   fetchCloudParameters.mockResolvedValue({});
-  fetchCloudPresets.mockResolvedValue([]);
-  syncCloudPreset.mockResolvedValue('pst_generated_1');
+  fetchCloudPresetList.mockResolvedValue([]);
+  syncCloudPreset.mockResolvedValue({ id: 'pst_generated_1', revision: 1 });
   deleteCloudPreset.mockResolvedValue(true);
 });
 
@@ -82,7 +83,7 @@ describe('pulling account state', () => {
       etch_laser_source: '40w-co2',
     });
 
-    const result = await pullCloudState({});
+    const result = await pullCloudState();
 
     expect(localStorage.getItem('etch_touch_sensor_height_mm')).toBe('15.2');
     expect(localStorage.getItem('etch_laser_source')).toBe('40w-co2');
@@ -92,7 +93,7 @@ describe('pulling account state', () => {
   it('restores the copilot keys the account carries', async () => {
     fetchCloudParameters.mockResolvedValue({ anthropic_api_key: 'sk-ant-test', gemini_model: 'claude-opus-5' });
 
-    await pullCloudState({});
+    await pullCloudState();
 
     expect(localStorage.getItem('anthropic_api_key')).toBe('sk-ant-test');
     expect(localStorage.getItem('gemini_model')).toBe('claude-opus-5');
@@ -104,82 +105,11 @@ describe('pulling account state', () => {
       physbox_auth_token: 'someone-elses-token',
     });
 
-    await pullCloudState({});
+    await pullCloudState();
 
     // A response must never be able to overwrite saved documents or the session.
     expect(localStorage.getItem('etch_user_presets')).toBeNull();
     expect(localStorage.getItem('physbox_auth_token')).toBeNull();
-  });
-
-  it('returns cloud presets that are not saved locally', async () => {
-    fetchCloudPresets.mockResolvedValue([
-      { id: 'pst_a', name: 'From Laptop', data: doc },
-      { id: 'pst_b', name: 'Already Here', data: doc },
-    ]);
-
-    const result = await pullCloudState({ 'Already Here': doc });
-
-    expect(Object.keys(result.presets)).toEqual(['From Laptop']);
-  });
-
-  it('takes a later save of a name this browser already holds', async () => {
-    const older = { ...(doc as object), savedAt: 1000 } as never;
-    const newer = { ...(doc as object), savedAt: 2000 } as never;
-    fetchCloudPresets.mockResolvedValue([{ id: 'pst_a', name: 'Job', data: newer }]);
-
-    const result = await pullCloudState({ Job: older });
-
-    expect(result.presets.Job).toBe(newer);
-  });
-
-  it('keeps a local save newer than the account, as offline edits are', async () => {
-    const older = { ...(doc as object), savedAt: 1000 } as never;
-    const newer = { ...(doc as object), savedAt: 2000 } as never;
-    fetchCloudPresets.mockResolvedValue([{ id: 'pst_a', name: 'Job', data: older }]);
-
-    const result = await pullCloudState({ Job: newer });
-
-    expect(result.presets).toEqual({});
-  });
-
-  it('keeps a local copy when the account copy carries no save time', async () => {
-    fetchCloudPresets.mockResolvedValue([{ id: 'pst_a', name: 'Job', data: doc }]);
-
-    const result = await pullCloudState({ Job: { ...(doc as object), savedAt: 1000 } as never });
-
-    expect(result.presets).toEqual({});
-  });
-
-  it('reads the latest row of a name the server holds twice, for data and id', async () => {
-    const older = { ...(doc as object), savedAt: 1000 } as never;
-    const newer = { ...(doc as object), savedAt: 2000 } as never;
-    fetchCloudPresets.mockResolvedValue([
-      { id: 'pst_new', name: 'Job', data: newer },
-      { id: 'pst_old', name: 'Job', data: older },
-    ]);
-
-    const result = await pullCloudState({});
-    await removeCloudPreset('Job');
-
-    expect(result.presets.Job).toBe(newer);
-    expect(deleteCloudPreset).toHaveBeenCalledWith('pst_new');
-  });
-
-  it('records ids for locally-present names so they can still be deleted', async () => {
-    fetchCloudPresets.mockResolvedValue([{ id: 'pst_b', name: 'Already Here', data: doc }]);
-
-    await pullCloudState({ 'Already Here': doc });
-    await removeCloudPreset('Already Here');
-
-    expect(deleteCloudPreset).toHaveBeenCalledWith('pst_b');
-  });
-
-  it('skips malformed preset rows rather than throwing', async () => {
-    fetchCloudPresets.mockResolvedValue([{ id: 'pst_c' }, { name: 'No Data' }, null]);
-
-    const result = await pullCloudState({});
-
-    expect(result.presets).toEqual({});
   });
 });
 
@@ -193,14 +123,14 @@ describe('the tool rack', () => {
     fetchCloudParameters.mockResolvedValue({
       [TOOL_RACK_PARAMETER]: { savedAt: 2000, tools: DEFAULT_TOOL_RACK },
     });
-    const result = await pullCloudState({});
+    const result = await pullCloudState();
     expect(result.cncTools?.find((t) => t.id === 2)?.name).toBe('1.5 mm flat end mill');
     expect(readCncTools().find((t) => t.id === 2)?.name).toBe('1.5 mm flat end mill');
   });
 
   it('uploads this browser’s rack, shared, when the account has none', async () => {
     store(laptop);
-    const result = await pullCloudState({});
+    const result = await pullCloudState();
     expect(result.cncTools).toBeNull();
     expect(syncCloudParameters).toHaveBeenCalledWith('global', {
       [TOOL_RACK_PARAMETER]: expect.objectContaining({ savedAt: 1000 }),
@@ -210,7 +140,7 @@ describe('the tool rack', () => {
   it('keeps and re-uploads this browser’s rack when it is the newer one', async () => {
     store({ ...laptop, savedAt: 3000 });
     fetchCloudParameters.mockResolvedValue({ [TOOL_RACK_PARAMETER]: { savedAt: 2000, tools: DEFAULT_TOOL_RACK } });
-    const result = await pullCloudState({});
+    const result = await pullCloudState();
     expect(result.cncTools).toBeNull();
     expect(readCncTools().map((t) => t.id)).toEqual([1, 2]);
     expect(syncCloudParameters).toHaveBeenCalled();
@@ -220,7 +150,7 @@ describe('the tool rack', () => {
     fetchCloudParameters.mockResolvedValue({
       [CNC_TOOLS_KEY]: { version: CNC_TOOLS_VERSION, tools: [{ ...DEFAULT_CNC_TOOLS[0], name: 'Mine' }], savedAt: 4000 },
     });
-    const result = await pullCloudState({});
+    const result = await pullCloudState();
     expect(result.cncTools?.map((t) => t.name)).toEqual(['Mine']);
   });
 });

@@ -4,7 +4,7 @@ import { User, LogOut, Radio, Sparkles, ShieldCheck, CheckCircle, History } from
 import { getStoredUser, clearStoredAuth, loginWithGoogle, PhysBoxUser, fetchCurrentUser, getStoredAuthToken } from '../utils/apiClient';
 import { renderGoogleSignInButton, isGoogleSignInConfigured, disableGoogleAutoSelect } from '../utils/googleAuth';
 import { pullCloudState } from '../utils/cloudSync';
-import { readUserPresets, useStore } from '../store/useStore';
+import { setMachineJobProbe, useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
 import { RemoteMachiningModal } from './RemoteMachiningModal';
 import { JobHistoryModal } from './JobHistoryModal';
@@ -29,6 +29,8 @@ export const SIGN_IN_REQUESTED_EVENT = 'physbox:sign-in-requested';
  * instead of making them press the same button a second time.
  */
 export const SIGNED_IN_EVENT = 'physbox:signed-in';
+
+setMachineJobProbe(() => webSerialManager.isRunning());
 
 /** Tab focus fires far more often than the account's presets can change. */
 const CLOUD_RESYNC_INTERVAL_MS = 30_000;
@@ -65,7 +67,6 @@ export const UserProfileButton: React.FC = () => {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const googleButtonRef = useRef<HTMLDivElement>(null);
 
-  const mergeCloudPresets = useStore((s) => s.mergeCloudPresets);
 
   useEffect(() => {
     fetchCurrentUser().then((u) => {
@@ -84,9 +85,9 @@ export const UserProfileButton: React.FC = () => {
   const pullAccountState = React.useCallback(async () => {
     if (!getStoredAuthToken()) return;
     try {
-      const { parameters, presets, cncTools } = await pullCloudState(readUserPresets());
+      const { parameters, presets, cncTools } = await pullCloudState();
       if (cncTools) useStore.getState().adoptCncTools(cncTools);
-      const added = mergeCloudPresets(presets, !webSerialManager.isRunning());
+      const added = presets.received + presets.sent;
       setSyncSummary(
         parameters === 0 && added === 0
           ? 'Account is up to date'
@@ -97,7 +98,7 @@ export const UserProfileButton: React.FC = () => {
       console.warn('[PhysBox Cloud] Could not pull account state:', e);
       setSyncSummary('Could not reach the sync service');
     }
-  }, [mergeCloudPresets]);
+  }, []);
 
   const handleCredential = React.useCallback(
     async (credential: string) => {
@@ -160,9 +161,11 @@ export const UserProfileButton: React.FC = () => {
     };
     document.addEventListener('visibilitychange', resync);
     window.addEventListener('focus', resync);
+    window.addEventListener('online', resync);
     return () => {
       document.removeEventListener('visibilitychange', resync);
       window.removeEventListener('focus', resync);
+      window.removeEventListener('online', resync);
     };
   }, [pullAccountState]);
 

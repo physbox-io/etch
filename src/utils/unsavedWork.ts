@@ -57,6 +57,11 @@ export function markSheetClean(state: JobState): void {
   clean.set(state.activeTabId, state.document);
 }
 
+/** The open sheet was restored unsaved, so it stays unsaved until someone saves it. */
+export function markSheetUnsaved(state: JobState): void {
+  clean.delete(state.activeTabId);
+}
+
 /**
  * Which parts of the job have changed since their clean point: the open sheet,
  * and the rest (another sheet edited, or a sheet added or closed).
