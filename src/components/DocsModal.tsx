@@ -275,7 +275,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
         <Step title="Origin and snapping">
           The canvas is drawn the way SVG is, with Y increasing <em>downward</em> from the top of the
           bed. A machine's work coordinates run the other way — Y increases away from you from the
-          front-left corner. <strong>Work Origin</strong> in the Run panel is what converts between
+          front-left corner. <strong>Work Origin</strong> in the Make panel is what converts between
           the two, and a wrong setting mirrors the whole job about the X axis. Symmetric shapes
           survive that unnoticed; engraved text comes out backwards, which is the symptom to watch
           for. Snap-to-grid quantizes new geometry to the grid pitch, which keeps joints and slots
@@ -296,7 +296,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
       <Card>
         <Step title="Why text can go missing from a job">
           If the font file could not be downloaded, the outlines do not exist and the text is left
-          out of the toolpath. The Run panel says so and offers to convert; it does not silently
+          out of the toolpath. The Make panel says so and offers to convert; it does not silently
           ship a file with a hole in it.
         </Step>
         <Step title="Fonts come from the network">
@@ -661,7 +661,7 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           straight at it — feeding straight at the line leaves a dwell mark you
           can see on a finished edge and measure on a fitted one. None of it is
           asked for: it applies where the depth makes it worth having, and is
-          skipped where it is not. The switches are in the Run panel's advanced
+          skipped where it is not. The switches are in the Make panel's advanced
           options.
         </Step>
         <Step title="Holes the size of the cutter are drilled">
@@ -695,11 +695,11 @@ const DOCS_BODIES: Record<DocsTabId, React.ReactNode> = {
           down a slot that is already air. Shared edges are cut once by default, and the plan notes
           how much doubled line it removed. Fills, shading, tabbed cuts and lines shared between
           two different layers are left alone — there the repetition is either the job itself or a
-          choice the planner is in no position to make. There is a switch in the Run panel's
+          choice the planner is in no position to make. There is a switch in the Make panel's
           advanced options if a doubled line was genuinely intended.
         </Step>
         <Step title="Reading the preview">
-          The Run panel draws the real toolpath: cutting moves in their layer colours, rapids as
+          The Make panel draws the real toolpath: cutting moves in their layer colours, rapids as
           faint dashed lines, and an estimate of cutting distance and time. Long dashed lines
           criss-crossing the job mean the tool is spending its time travelling — usually a sign of
           geometry split across layers that could share one.

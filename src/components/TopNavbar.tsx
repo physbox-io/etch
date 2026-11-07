@@ -36,8 +36,7 @@ import {
   Sparkles,
   Download,
   Upload,
-  Cpu,
-  Play,
+  Hammer,
   RotateCcw,
   RotateCw,
   Sun,
@@ -71,7 +70,6 @@ export const TopNavbar: React.FC = () => {
     openJob,
     toggleAiPanel,
     toggleGCodeModal,
-    toggleMachineModal,
     toggleSettings,
     isSettingsOpen,
     undo,
@@ -95,7 +93,6 @@ export const TopNavbar: React.FC = () => {
       openJob: s.openJob,
       toggleAiPanel: s.toggleAiPanel,
       toggleGCodeModal: s.toggleGCodeModal,
-      toggleMachineModal: s.toggleMachineModal,
       toggleSettings: s.toggleSettings,
       isSettingsOpen: s.isSettingsOpen,
       undo: s.undo,
@@ -758,23 +755,15 @@ export const TopNavbar: React.FC = () => {
         being a demo of the app rather than the app.
       */}
       <div className="flex items-center gap-2 md:gap-3 min-w-0 max-lg:w-full max-lg:flex-wrap max-lg:justify-between max-lg:gap-y-1.5">
-        {/* Machine Control Island */}
+        {/* Make: the same control, in the same place, in every PhysBox app. */}
         <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <button
             onClick={toggleGCodeModal}
             className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-100 transition-all cursor-pointer"
-            title="Preview and cut G-code"
+            title="Preview the toolpath and cut this design"
           >
-            <Play className="w-3 h-3 text-emerald-500 dark:text-emerald-400 fill-current" />
-            <span className="hidden md:inline">Run</span>
-          </button>
-          <button
-            onClick={toggleMachineModal}
-            className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
-            title="Direct Machine Connect (Web Serial)"
-          >
-            <Cpu className="w-3 h-3 text-amber-500 dark:text-amber-400" />
-            <span className="hidden md:inline">Connect</span>
+            <Hammer className="w-3 h-3 text-amber-500 dark:text-amber-400" />
+            <span className="hidden md:inline">Make</span>
           </button>
         </div>
 
