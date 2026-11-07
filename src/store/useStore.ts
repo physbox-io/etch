@@ -13,7 +13,7 @@ import type {
   BrushSettings,
 } from '../types/etch';
 import type { DocsTabId } from '../docs/docsContent';
-import { saveCloudPreset, removeCloudPreset } from '../utils/cloudSync';
+import { saveCloudPreset, removeCloudPreset, presetSavedAt } from '../utils/cloudSync';
 import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
 import {
   readLaserSource,
@@ -73,7 +73,7 @@ import {
   type Part,
 } from '../utils/packParts';
 import { cloudAutosave } from '../utils/cloudDocuments';
-import { markJobClean, markSheetClean } from '../utils/unsavedWork';
+import { markJobClean, markSheetClean, unsavedWork } from '../utils/unsavedWork';
 import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
 import { copyName } from '../utils/documentCatalog';
 import { readDarkMode, applyDarkMode } from '../utils/darkModePref';
@@ -494,7 +494,7 @@ interface EtchStore {
   openDocumentBrowser: (tab?: DocumentBrowserTab) => void;
   closeDocumentBrowser: () => void;
   /** Adds presets pulled from the signed-in account. Existing names win. */
-  mergeCloudPresets: (incoming: Record<string, EtchDocument>) => number;
+  mergeCloudPresets: (incoming: Record<string, EtchDocument>, canReplaceOpenJob?: boolean) => number;
 
   /** Text outline vectorization (so text can actually be machined). */
   vectorizeText: (ids?: string[]) => Promise<{ done: number; failed: string[] }>;
@@ -1380,14 +1380,18 @@ export const useStore = create<EtchStore>((set, get) => ({
    * for any signed-in session, so this is the whole of what a job saved in one
    * browser looks like when it is opened in another.
    */
-  mergeCloudPresets: (incoming) => {
+  mergeCloudPresets: (incoming, canReplaceOpenJob = false) => {
     const names = Object.keys(incoming);
     if (names.length === 0) return 0;
     try {
       const presets = readUserPresets();
       let added = 0;
+      const openName = get().activePreset.startsWith('user:') ? get().activePreset.slice('user:'.length) : null;
+      let openJobMoved = false;
       for (const name of names) {
-        if (presets[name]) continue;
+        const held = presets[name];
+        if (held && presetSavedAt(incoming[name]) <= presetSavedAt(held)) continue;
+        if (held && name === openName) openJobMoved = true;
         const saved = incoming[name];
         // The preset's name is the *job's* name, and only a one-sheet job is
         // also a sheet by that name. Renaming the open sheet of a four-sheet
@@ -1400,6 +1404,12 @@ export const useStore = create<EtchStore>((set, get) => ({
       if (added === 0) return 0;
       writeUserPresets(presets);
       set({ userPresetNames: Object.keys(presets).sort() });
+      // The drawing on screen is that job's old save. Edits made here stay on
+      // screen, and so does anything a running job is being cut from.
+      if (openJobMoved && canReplaceOpenJob) {
+        const { open, others } = unsavedWork(get());
+        if (!open && !others) get().openJob(presets[openName!], `user:${openName}`);
+      }
       return added;
     } catch (e) {
       console.error('Failed to merge cloud presets', e);

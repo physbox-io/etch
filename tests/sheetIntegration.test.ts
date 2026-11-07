@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleMCPCommand } from '../src/hooks/useMCPBridge';
-import { useStore } from '../src/store/useStore';
+import { readUserPresets, useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
 
@@ -271,6 +271,58 @@ describe('saving a job of several sheets', () => {
     useStore.getState().mergeCloudPresets({ 'renamed in the cloud': uploaded });
     useStore.getState().loadPreset('user:renamed in the cloud');
     expect(useStore.getState().document.name).toBe('renamed in the cloud');
+  });
+
+  describe('a later save of the open job arrives from another machine', () => {
+    const laterSave = (name: string) => {
+      const saved = readUserPresets()[name];
+      return { ...saved, notecard: 'saved elsewhere', savedAt: (saved.savedAt ?? 0) + 1000 };
+    };
+
+    it('replaces the stored copy and the drawing on screen', () => {
+      job(['bg', 'top']);
+      useStore.getState().saveUserPresetByName('rheo');
+      useStore.getState().loadPreset('user:rheo');
+
+      expect(useStore.getState().mergeCloudPresets({ rheo: laterSave('rheo') }, true)).toBe(1);
+
+      expect(readUserPresets().rheo.notecard).toBe('saved elsewhere');
+      expect(useStore.getState().document.notecard).toBe('saved elsewhere');
+      expect(useStore.getState().activePreset).toBe('user:rheo');
+    });
+
+    it('leaves the drawing on screen when it has edits in it', () => {
+      job(['bg', 'top']);
+      useStore.getState().saveUserPresetByName('rheo');
+      useStore.getState().loadPreset('user:rheo');
+      useStore.getState().setNotecard('edited here');
+
+      useStore.getState().mergeCloudPresets({ rheo: laterSave('rheo') }, true);
+
+      expect(readUserPresets().rheo.notecard).toBe('saved elsewhere');
+      expect(useStore.getState().document.notecard).toBe('edited here');
+    });
+
+    it('leaves the drawing on screen while a job is running', () => {
+      job(['bg', 'top']);
+      useStore.getState().saveUserPresetByName('rheo');
+      useStore.getState().loadPreset('user:rheo');
+      const before = useStore.getState().document.notecard;
+
+      useStore.getState().mergeCloudPresets({ rheo: laterSave('rheo') }, false);
+
+      expect(readUserPresets().rheo.notecard).toBe('saved elsewhere');
+      expect(useStore.getState().document.notecard).toBe(before);
+    });
+
+    it('ignores a copy no newer than the one held', () => {
+      job(['bg', 'top']);
+      useStore.getState().saveUserPresetByName('rheo');
+      const stale = { ...readUserPresets().rheo, notecard: 'stale' };
+
+      expect(useStore.getState().mergeCloudPresets({ rheo: stale }, true)).toBe(0);
+      expect(readUserPresets().rheo.notecard).not.toBe('stale');
+    });
   });
 
   it('never leaves the strip inside the live document', () => {

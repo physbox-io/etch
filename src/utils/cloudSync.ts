@@ -19,6 +19,7 @@ import {
   fetchCloudPresets,
   syncCloudPreset,
   deleteCloudPreset,
+  type CloudPresetRow,
 } from './apiClient';
 import { CNC_BED_PARAMETER, TOOL_RACK_PARAMETER } from '@physbox-io/machining';
 import { machineBedStore } from './machineBed';
@@ -109,7 +110,7 @@ function applyParameter(key: string, value: unknown): boolean {
 export interface CloudPullResult {
   /** Number of settings restored from the account. */
   parameters: number;
-  /** Presets found in the account that were not already saved locally. */
+  /** Presets the account holds that this browser lacks, or holds an older save of. */
   presets: Record<string, EtchDocument>;
   /** The account's tool rack, when it was newer than this browser's and replaced it. */
   cncTools: ToolProfile[] | null;
@@ -132,17 +133,21 @@ function settleCncTools(globalValue: unknown, legacyValue: unknown): ToolProfile
   return toolRackStore.adoptRemote(remote) ? readCncTools() : null;
 }
 
+/** When a saved copy was written. A copy from before `savedAt` existed reads as oldest. */
+export function presetSavedAt(doc: unknown): number {
+  const savedAt = (doc as { savedAt?: unknown } | null | undefined)?.savedAt;
+  return typeof savedAt === 'number' ? savedAt : 0;
+}
+
 /**
  * Pulls the signed-in account's settings and presets.
  *
- * Presets are merged additively: a name already saved in this browser is left
- * alone. Taking the cloud copy instead would be the wrong call for the case
- * that actually happens — edits made while offline are newer than what the
- * account holds, and overwriting them would lose work to restore a stale copy.
- * Ids for the skipped names are still recorded, so deleting them later removes
- * the cloud copy too.
+ * For a name saved on both sides, the later save wins. That carries a re-save
+ * from another machine down, and leaves alone edits made offline, which are
+ * newer than what the account holds. The server does not keep names unique, so
+ * the latest row of a name is the one that counts, for its data and its id.
  */
-export async function pullCloudState(localPresetNames: string[]): Promise<CloudPullResult> {
+export async function pullCloudState(localPresets: Record<string, EtchDocument>): Promise<CloudPullResult> {
   const result: CloudPullResult = { parameters: 0, presets: {}, cncTools: null };
 
   const [etchParams, globalParams, presets] = await Promise.all([
@@ -169,12 +174,18 @@ export async function pullCloudState(localPresetNames: string[]): Promise<CloudP
   );
   if (result.cncTools) result.parameters += 1;
 
-  const known = new Set(localPresetNames);
+  const latest = new Map<string, CloudPresetRow>();
   for (const preset of presets) {
     if (!preset?.name || !preset?.data) continue;
-    if (preset.id) rememberPresetId(preset.name, preset.id);
-    if (known.has(preset.name)) continue;
-    result.presets[preset.name] = preset.data as EtchDocument;
+    const held = latest.get(preset.name);
+    if (!held || presetSavedAt(preset.data) > presetSavedAt(held.data)) latest.set(preset.name, preset);
+  }
+
+  for (const [name, preset] of latest) {
+    if (preset.id) rememberPresetId(name, preset.id);
+    const local = Object.hasOwn(localPresets, name) ? localPresets[name] : undefined;
+    if (local && presetSavedAt(preset.data) <= presetSavedAt(local)) continue;
+    result.presets[name] = preset.data as EtchDocument;
   }
 
   return result;

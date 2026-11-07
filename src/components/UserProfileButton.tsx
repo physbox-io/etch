@@ -4,7 +4,8 @@ import { User, LogOut, Radio, Sparkles, ShieldCheck, CheckCircle, History } from
 import { getStoredUser, clearStoredAuth, loginWithGoogle, PhysBoxUser, fetchCurrentUser, getStoredAuthToken } from '../utils/apiClient';
 import { renderGoogleSignInButton, isGoogleSignInConfigured, disableGoogleAutoSelect } from '../utils/googleAuth';
 import { pullCloudState } from '../utils/cloudSync';
-import { useStore } from '../store/useStore';
+import { readUserPresets, useStore } from '../store/useStore';
+import { webSerialManager } from '../utils/webSerialManager';
 import { RemoteMachiningModal } from './RemoteMachiningModal';
 import { JobHistoryModal } from './JobHistoryModal';
 import { CloudSaveStatus } from './CloudSaveStatus';
@@ -28,6 +29,9 @@ export const SIGN_IN_REQUESTED_EVENT = 'physbox:sign-in-requested';
  * instead of making them press the same button a second time.
  */
 export const SIGNED_IN_EVENT = 'physbox:signed-in';
+
+/** Tab focus fires far more often than the account's presets can change. */
+const CLOUD_RESYNC_INTERVAL_MS = 30_000;
 
 export const UserProfileButton: React.FC = () => {
   const [user, setUser] = useState<PhysBoxUser | null>(getStoredUser());
@@ -80,10 +84,9 @@ export const UserProfileButton: React.FC = () => {
   const pullAccountState = React.useCallback(async () => {
     if (!getStoredAuthToken()) return;
     try {
-      const localNames = useStore.getState().userPresetNames;
-      const { parameters, presets, cncTools } = await pullCloudState(localNames);
+      const { parameters, presets, cncTools } = await pullCloudState(readUserPresets());
       if (cncTools) useStore.getState().adoptCncTools(cncTools);
-      const added = mergeCloudPresets(presets);
+      const added = mergeCloudPresets(presets, !webSerialManager.isRunning());
       setSyncSummary(
         parameters === 0 && added === 0
           ? 'Account is up to date'
@@ -140,6 +143,27 @@ export const UserProfileButton: React.FC = () => {
     // to an external system, not derived state computed during render.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void pullAccountState();
+  }, [pullAccountState]);
+
+  /**
+   * Coming back to the tab pulls again, so a job saved on another machine is
+   * here without a reload. `visibilitychange` covers a backgrounded tab, `focus`
+   * a window that was merely behind another one.
+   */
+  useEffect(() => {
+    let lastPull = Date.now();
+    const resync = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastPull < CLOUD_RESYNC_INTERVAL_MS) return;
+      lastPull = Date.now();
+      void pullAccountState();
+    };
+    document.addEventListener('visibilitychange', resync);
+    window.addEventListener('focus', resync);
+    return () => {
+      document.removeEventListener('visibilitychange', resync);
+      window.removeEventListener('focus', resync);
+    };
   }, [pullAccountState]);
 
   /**
