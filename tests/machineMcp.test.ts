@@ -153,7 +153,7 @@ describe('picking a stopped job back up', () => {
   });
 
   it('is refused while disarmed', async () => {
-    machineArming.disarm('test');
+    machineArming.disarm('operator');
     await expect(handlers.MACHINE_RESUME_FROM_LINE({ fromLine: 10 })).rejects.toThrow(/not armed/);
     await expect(handlers.MACHINE_ZERO_ALL({})).rejects.toThrow(/not armed/);
     expect(machine.runFrom).not.toHaveBeenCalled();
