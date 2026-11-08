@@ -2,6 +2,7 @@ import {
   ArmingGate,
   createMachineHandlers,
   describeMachine,
+  refuseWhileJobHoldsMachine,
   type ArmingState,
   type MachineControl,
   requireNumber,
@@ -227,6 +228,41 @@ export function createEtchMachineHandlers(): Record<
         message: result.message,
         machineZ: result.machineZ,
       };
+    },
+
+    /**
+     * Sets X, Y and Z all at once, where the tool is standing — the router's
+     * touch-off in one call, with the same shim allowance as zero_z. On a laser
+     * the Z zero changes nothing, since there is no Z in the toolpath.
+     */
+    MACHINE_ZERO_ALL: async (args: McpArgs) => {
+      machineArming.requireArmed('zero_all');
+      refuseWhileJobHoldsMachine(machine, 'zero the axes');
+      const shim = num(args, 'shimThicknessMm', 0);
+      machineArming.noteAgentCommand('zero_all', `shim=${shim}`);
+      await webSerialManager.zeroXY();
+      const result = await webSerialManager.zeroZHere(shim);
+      if (!result.success) throw new Error(result.message);
+      await webSerialManager.refreshPosition();
+      return { ...describeMachine(machine, machineArming), message: result.message };
+    },
+
+    /**
+     * Starts a job that stopped short again from a line: the Run From button on
+     * the stopped-job dialog. `status.job.interruption` says where it stopped
+     * and suggests a line a little before that.
+     */
+    MACHINE_RESUME_FROM_LINE: async (args: McpArgs) => {
+      machineArming.requireArmed('resume_from_line');
+      refuseWhileJobHoldsMachine(machine, 'resume from a line');
+      const fromLine = requireNumber(args, 'fromLine', { min: 0 });
+      if (fromLine === undefined || !Number.isInteger(fromLine)) {
+        throw new Error('Give fromLine: the whole program line to pick the job back up at.');
+      }
+      machineArming.noteAgentCommand('resume_from_line', `line=${fromLine}`);
+      const result = await webSerialManager.runFrom(fromLine);
+      if (!result.started) throw new Error(result.message);
+      return { ...describeMachine(machine, machineArming), message: result.message };
     },
 
     /**

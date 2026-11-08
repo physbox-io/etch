@@ -21,6 +21,11 @@ const machine = {
   cancelJob: vi.fn(),
   addStopListener: vi.fn(() => () => {}),
   expectAgentJob: vi.fn(),
+  jobOrigin: () => null,
+  runFrom: vi.fn().mockResolvedValue({ started: true, message: 'Running from line 1180.' }),
+  zeroXY: vi.fn().mockResolvedValue(undefined),
+  zeroZHere: vi.fn().mockResolvedValue({ success: true, message: 'Work Z0 set.' }),
+  refreshPosition: vi.fn().mockResolvedValue(undefined),
 };
 vi.mock('../src/utils/webSerialManager', () => ({ webSerialManager: machine }));
 vi.mock('../src/utils/apiClient', () => ({ fetchMachineDevices: vi.fn().mockResolvedValue([]) }));
@@ -129,5 +134,37 @@ describe('the framing bounds', () => {
     setCurrentDocument(doc('laser', 'center'), undefined);
     await handlers.MACHINE_FRAME_JOB({});
     expect(machine.frameJob.mock.calls[0][0]).toEqual({ minX: -50, minY: -30, maxX: 50, maxY: 30 });
+  });
+});
+
+describe('picking a stopped job back up', () => {
+  it('runs from a whole line, and passes the refusal back', async () => {
+    await handlers.MACHINE_RESUME_FROM_LINE({ fromLine: 1180 });
+    expect(machine.runFrom).toHaveBeenCalledWith(1180);
+    machine.runFrom.mockResolvedValueOnce({ started: false, message: 'Zero Z first.' });
+    await expect(handlers.MACHINE_RESUME_FROM_LINE({ fromLine: 1180 })).rejects.toThrow(/Zero Z first/);
+  });
+
+  it('refuses a line that is missing, negative or fractional, before anything runs', async () => {
+    for (const fromLine of [undefined, -5, 12.5, 'abc']) {
+      await expect(handlers.MACHINE_RESUME_FROM_LINE({ fromLine })).rejects.toThrow();
+    }
+    expect(machine.runFrom).not.toHaveBeenCalled();
+  });
+
+  it('is refused while disarmed', async () => {
+    machineArming.disarm('test');
+    await expect(handlers.MACHINE_RESUME_FROM_LINE({ fromLine: 10 })).rejects.toThrow(/not armed/);
+    await expect(handlers.MACHINE_ZERO_ALL({})).rejects.toThrow(/not armed/);
+    expect(machine.runFrom).not.toHaveBeenCalled();
+    expect(machine.zeroXY).not.toHaveBeenCalled();
+  });
+});
+
+describe('zeroing all three axes', () => {
+  it('zeroes XY, then Z on the shim', async () => {
+    await handlers.MACHINE_ZERO_ALL({ shimThicknessMm: 0.1 });
+    expect(machine.zeroXY).toHaveBeenCalled();
+    expect(machine.zeroZHere).toHaveBeenCalledWith(0.1);
   });
 });
