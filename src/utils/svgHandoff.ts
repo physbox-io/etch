@@ -68,6 +68,22 @@ export async function readSvgHandoff(): Promise<SvgHandoff | null> {
   };
 }
 
+/** A sheet's drawing, as compared between handoffs. */
+export type SheetDrawing = { elements: readonly unknown[]; layers: readonly unknown[] };
+
+/**
+ * Whether a handoff may replace the open sheet, or should go onto a new one.
+ *
+ * It replaces an empty sheet, and the sheet the last handoff landed on if
+ * nobody has drawn on it since: a re-send is the same part revised. Anything
+ * else would lose work, so it gets a sheet of its own rather than a question.
+ * Compared by reference — an edit makes new arrays; selecting does not.
+ */
+export function handoffReplacesSheet(open: SheetDrawing, last: SheetDrawing | null): boolean {
+  if (open.elements.length === 0) return true;
+  return !!last && open.elements === last.elements && open.layers === last.layers;
+}
+
 /**
  * Moves imported artwork onto the bed without resizing it.
  *

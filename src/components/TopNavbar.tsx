@@ -8,7 +8,7 @@ import { importSVG, fitToBed, nameFromImport, type SvgImportResult } from '../ut
 import { importDXF } from '../utils/dxfImport';
 import { analyseSheetedSvg, splitIntoSheets } from '../utils/sheetedSvg';
 import { exportToDXFString, dxfFilename } from '../utils/dxfExport';
-import { readSvgHandoff, placeUnscaled, type SvgHandoff } from '../utils/svgHandoff';
+import { readSvgHandoff, placeUnscaled, handoffReplacesSheet, type SheetDrawing, type SvgHandoff } from '../utils/svgHandoff';
 import { cutTopologyProblems } from '../utils/cutTopology';
 import {
   buildShareLink,
@@ -643,32 +643,40 @@ export const TopNavbar: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /*
+   * Artwork sent from Mesh or Volt, on load and again whenever the sender
+   * re-sends into this same tab (a fragment change, so no reload). A re-send
+   * is usually the same part, revised: it replaces the sheet the last one
+   * landed on if nobody has touched that sheet since, and goes onto a sheet of
+   * its own otherwise. Nothing asks, and nothing drawn here is lost.
+   */
+  const applyImportedVectorRef = React.useRef(applyImportedVector);
+  React.useLayoutEffect(() => {
+    applyImportedVectorRef.current = applyImportedVector;
+  });
+  // The sheet's drawing as the last handoff left it.
+  const lastHandoff = React.useRef<SheetDrawing | null>(null);
   useEffect(() => {
-    readSvgHandoff()
-      .then((handoff) => {
-        if (!handoff) return;
-        const { document: open, tabs } = useStore.getState();
-        // What it replaces is the sheet you are on, not the job: `setDocument`
-        // writes the live document and leaves the parked sheets alone. Saying
-        // "document" to someone with six sheets open reads as all six.
-        const what = tabs.length > 1 ? `the sheet "${open.name}"` : `"${open.name}"`;
-        const replace =
-          open.elements.length === 0 ||
-          window.confirm(
-            `Replace ${what} with ${handoff.name || 'the imported artwork'}?\n\n` +
-              'OK replaces it — that sheet is not recoverable afterwards, and the other sheets are untouched.\n' +
-              'Cancel keeps it and brings the artwork in alongside.'
-          );
-        applyImportedVector(importSVG(handoff.svg), { mayScale: false, handoff, replace });
-      })
-      .catch((err) => {
-        setImportReport({
-          headline: 'Nothing could be opened',
-          notes: [err?.message || 'That link could not be read.'],
+    const take = () =>
+      readSvgHandoff()
+        .then((handoff) => {
+          if (!handoff) return;
+          const store = useStore.getState();
+          const open = store.document;
+          if (!handoffReplacesSheet(open, lastHandoff.current)) store.newTab();
+          applyImportedVectorRef.current(importSVG(handoff.svg), { mayScale: false, handoff, replace: true });
+          const now = useStore.getState().document;
+          lastHandoff.current = { elements: now.elements, layers: now.layers };
+        })
+        .catch((err) => {
+          setImportReport({
+            headline: 'Nothing could be opened',
+            notes: [err?.message || 'That link could not be read.'],
+          });
         });
-      });
-    // Once, on mount: the fragment is consumed by the first read.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void take();
+    window.addEventListener('hashchange', take);
+    return () => window.removeEventListener('hashchange', take);
   }, []);
 
   return (

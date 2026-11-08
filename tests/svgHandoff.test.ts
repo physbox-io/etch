@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { gzipSync } from 'node:zlib';
-import { readSvgHandoff, placeUnscaled } from '../src/utils/svgHandoff';
+import { readSvgHandoff, placeUnscaled, handoffReplacesSheet } from '../src/utils/svgHandoff';
 import { importSVG } from '../src/utils/svgImporter';
 import type { EtchElement } from '../src/types/etch';
 
@@ -178,5 +178,23 @@ describe('layer names from the file', () => {
 
   it('still names a layer when the file says nothing', () => {
     expect(importSVG(g('')).layers[0].name).toBe('Imported #00ff00');
+  });
+});
+
+describe('handoffReplacesSheet', () => {
+  const sent = { elements: [{ id: 'a' }], layers: [{ id: 'cut' }] };
+
+  it('replaces an empty sheet', () => {
+    expect(handoffReplacesSheet({ elements: [], layers: [] }, null)).toBe(true);
+  });
+
+  it('replaces the last send when nothing has been drawn since', () => {
+    expect(handoffReplacesSheet({ ...sent }, sent)).toBe(true);
+  });
+
+  it('keeps an edited sheet, or one that never came from a send', () => {
+    expect(handoffReplacesSheet({ ...sent, elements: [...sent.elements] }, sent)).toBe(false);
+    expect(handoffReplacesSheet({ ...sent, layers: [...sent.layers] }, sent)).toBe(false);
+    expect(handoffReplacesSheet(sent, null)).toBe(false);
   });
 });
