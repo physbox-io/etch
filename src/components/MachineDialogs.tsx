@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { JobCompleteDialog, NumberInput, ToolChangeDialog } from '@physbox-io/ui';
+import { JobCompleteDialog, NumberInput, ToolChangeDialog, jobStopKey } from '@physbox-io/ui';
+import { jobPause } from '../utils/jobPause';
 import { Play } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { machineKind } from '../utils/tooling';
@@ -20,7 +21,8 @@ function useMachineStatus(): MachineStatus {
  *
  * It used to be the same banner as any other stop, with a button that opened
  * the work origin panel to re-zero and another back in the banner to resume.
- * Hidden per stop, by the line it parked at, so the next change opens again.
+ * Hide is per stop (`jobPause`): the status bar's button brings it back, and
+ * the next change opens on its own.
  */
 export const ToolChangeNotice: React.FC = () => {
   const status = useMachineStatus();
@@ -28,13 +30,11 @@ export const ToolChangeNotice: React.FC = () => {
   const plateMm = useStore((s) => s.touchPlateThickness);
   const setPlateMm = useStore((s) => s.setTouchPlateThickness);
   const [shimMm, setShimMm] = useState(readShimThickness);
-  const [hiddenLine, setHiddenLine] = useState<number | null>(null);
+  const hiddenKey = jobPause.useHiddenKey();
 
   const open = status.jobRunning && status.jobPaused && status.toolChange;
-  // Reset during render, not in an effect: an effect would let one frame of a
-  // *new* change render as already hidden.
-  if (!open && hiddenLine !== null) setHiddenLine(null);
-  if (!open || hiddenLine === status.currentLine) return null;
+  const key = jobStopKey('PAUSED_TOOL', status.currentLine, status.pauseMessage);
+  if (!open || hiddenKey === key) return null;
 
   return (
     <ToolChangeDialog
@@ -65,7 +65,7 @@ export const ToolChangeNotice: React.FC = () => {
         useStore.setState({ isMachineModalOpen: false, isGCodeModalOpen: true });
       }}
       onStop={() => webSerialManager.cancelJob()}
-      onHide={() => setHiddenLine(status.currentLine)}
+      onHide={() => jobPause.hide(key)}
     >
       {status.lastError && (
         <p className="text-[11px] leading-snug text-red-600 dark:text-red-400">{status.lastError}</p>

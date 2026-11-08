@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
-import { NumberInput } from '@physbox-io/ui';
+import { JobWaitingButton, NumberInput, jobPauseKind } from '@physbox-io/ui';
+import { jobPause } from '../utils/jobPause';
 import {
   LASER_SOURCES,
   describeLaserSource,
@@ -11,7 +12,7 @@ import {
 } from '../utils/machineSettings';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
-import { Grid3x3, Magnet, Cpu, Play, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
+import { Grid3x3, Magnet, Cpu, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
 import {
   materialCatalog,
   findMaterial,
@@ -425,20 +426,26 @@ export const BottomStatusBar: React.FC = () => {
                 {machineStatus.pauseMessage}
               </span>
             )}
-            <button
-              disabled={machineStatus.jobPaused && !!machineStatus.resumeBlocked}
-              onClick={() =>
-                machineStatus.jobPaused
-                  ? webSerialManager.resumeJob().catch(() => {})
-                  : webSerialManager.pauseJob()
-              }
-              title={
-                machineStatus.jobPaused ? (machineStatus.resumeBlocked ?? 'Resume job') : 'Pause job'
-              }
-              className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {machineStatus.jobPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-            </button>
+            {/* Paused, the way back to the dialog — Resume and the re-zero are
+                there, and Hide only ever tucked them away. */}
+            {machineStatus.jobPaused ? (
+              <JobWaitingButton
+                kind={machineStatus.toolChange ? 'tool' : (jobPauseKind(webSerialManager.getState().status) ?? 'hold')}
+                needsZero={!!machineStatus.resumeBlocked}
+                onOpen={() => {
+                  useStore.setState({ isMachineModalOpen: false });
+                  jobPause.show();
+                }}
+              />
+            ) : (
+              <button
+                onClick={() => webSerialManager.pauseJob()}
+                title="Pause job"
+                className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              >
+                <Pause className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               onClick={() => webSerialManager.cancelJob()}
               title="Stop the job"

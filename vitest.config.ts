@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 // DOMParser, so those tests run in jsdom; everything else is plain maths.
 export default defineConfig({
   test: {
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.{ts,tsx}'],
     environment: 'jsdom',
   },
 });
