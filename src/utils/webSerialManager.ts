@@ -31,8 +31,8 @@ import { machineSocketUrl, postMachineTelemetry, submitMachineJob,
 import { rereferenceGrid } from './bedLeveler';
 import { setJobWakeLock } from './jobWakeLock';
 import { machineBedStore } from './machineBed';
+import { DEFAULT_TOUCH_PLATE_MM } from '@physbox-io/ui/suite';
 import {
-  DEFAULT_PLATE_THICKNESS_MM,
   DEFAULT_SPINDLE_PWM_MAX,
   clampGuidePower,
   guidePowerToS,
@@ -1424,7 +1424,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * contact means no datum, and the caller is told why.
    */
   public async zeroZ(
-    touchPlateThicknessMm = DEFAULT_PLATE_THICKNESS_MM,
+    touchPlateThicknessMm = DEFAULT_TOUCH_PLATE_MM,
     searchDepthMm = ZERO_SEARCH_MM,
     feedRate = 50
   ): Promise<{ success: boolean; message: string; machineZ?: number }> {

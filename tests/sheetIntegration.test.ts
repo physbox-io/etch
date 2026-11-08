@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { clearSession, setSession } from '@physbox-io/ui';
 import { handleMCPCommand } from '../src/hooks/useMCPBridge';
 import { readUserPresets, useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
@@ -318,7 +319,7 @@ describe('saving a job of several sheets', () => {
 
   it('leaves a job with the account when this browser is full, listed for the session', () => {
     useStore.getState().addElement(rect('big'));
-    localStorage.setItem('physbox_auth_token', 'token');
+    setSession('token', { email: 'me@example.com' });
     const refused = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('full', 'QuotaExceededError');
     });
@@ -326,7 +327,7 @@ describe('saving a job of several sheets', () => {
     expect(useStore.getState().saveUserPresetByName('big job')).toBeNull();
 
     refused.mockRestore();
-    localStorage.removeItem('physbox_auth_token');
+    clearSession();
     expect(useStore.getState().userPresetNames).toContain('big job');
     expect(readUserPresets()['big job']).toBeDefined();
     useStore.getState().deleteUserPreset('big job');

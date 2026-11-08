@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useStore, jobDocument } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
+import { useSuiteDarkMode } from '@physbox-io/ui';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed, nameFromImport, type SvgImportResult } from '../utils/svgImporter';
@@ -62,10 +63,9 @@ const GithubIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' })
 );
 
 export const TopNavbar: React.FC = () => {
+  const [darkMode, toggleDarkMode] = useSuiteDarkMode('etch_dark_mode');
   const {
     document,
-    darkMode,
-    toggleDarkMode,
     setDocument,
     openJob,
     toggleAiPanel,
@@ -87,8 +87,6 @@ export const TopNavbar: React.FC = () => {
   } = useStore(
     useShallow((s) => ({
       document: s.document,
-      darkMode: s.darkMode,
-      toggleDarkMode: s.toggleDarkMode,
       setDocument: s.setDocument,
       openJob: s.openJob,
       toggleAiPanel: s.toggleAiPanel,

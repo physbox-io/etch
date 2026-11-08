@@ -1,11 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { JobCompleteDialog, NumberInput, ToolChangeDialog, jobStopKey } from '@physbox-io/ui';
+import {
+  JobCompleteDialog,
+  NumberInput,
+  ToolChangeDialog,
+  jobStopKey,
+  setShimMm,
+  setTouchPlateMm,
+  useShimMm,
+  useTouchPlateMm,
+} from '@physbox-io/ui';
 import { jobPause } from '../utils/jobPause';
 import { Play } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { machineKind } from '../utils/tooling';
 import { webSerialManager } from '../utils/webSerialManager';
-import { readShimThickness, writeShimThickness } from '../utils/machineSettings';
 import type { MachineStatus } from '../types/etch';
 
 function useMachineStatus(): MachineStatus {
@@ -27,9 +35,8 @@ function useMachineStatus(): MachineStatus {
 export const ToolChangeNotice: React.FC = () => {
   const status = useMachineStatus();
   const isLaser = useStore((s) => machineKind(s.document) === 'laser');
-  const plateMm = useStore((s) => s.touchPlateThickness);
-  const setPlateMm = useStore((s) => s.setTouchPlateThickness);
-  const [shimMm, setShimMm] = useState(readShimThickness);
+  const plateMm = useTouchPlateMm();
+  const shimMm = useShimMm();
   const hiddenKey = jobPause.useHiddenKey();
 
   const open = status.jobRunning && status.jobPaused && status.toolChange;
@@ -50,11 +57,11 @@ export const ToolChangeNotice: React.FC = () => {
           ? undefined
           : {
               zeroed: status.zDatumTrusted && !status.resumeBlocked,
-              plate: { mm: plateMm, onMmChange: setPlateMm, onProbe: (mm) => webSerialManager.zeroZ(mm) },
+              plate: { mm: plateMm, onMmChange: setTouchPlateMm, onProbe: (mm) => webSerialManager.zeroZ(mm) },
               byHand: {
                 onZeroHere: (mm) => webSerialManager.zeroZHere(mm),
                 shimMm,
-                onShimMmChange: (mm) => setShimMm(writeShimThickness(mm)),
+                onShimMmChange: setShimMm,
               },
               probeCircuit: { active: status.probePinActive, seen: status.probeCircuitSeen },
             }

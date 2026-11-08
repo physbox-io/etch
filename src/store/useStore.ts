@@ -19,10 +19,6 @@ import { THROUGH_CUT_OVERCUT_MM, type MaterialId } from '../utils/materials';
 import {
   readLaserSource,
   writeLaserSource,
-  readPlateThickness,
-  writePlateThickness,
-  readShimThickness,
-  writeShimThickness,
   type LaserSource,
 } from '../utils/machineSettings';
 import {
@@ -77,7 +73,6 @@ import { cloudAutosave } from '../utils/cloudDocuments';
 import { markJobClean, markSheetClean, markSheetUnsaved, unsavedWork } from '../utils/unsavedWork';
 import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
 import { copyName } from '../utils/documentCatalog';
-import { readDarkMode, applyDarkMode } from '../utils/darkModePref';
 
 /** localStorage key for user-saved documents (mirrors physics_user_presets). */
 export const USER_PRESETS_KEY = 'etch_user_presets';
@@ -351,7 +346,6 @@ interface EtchStore {
    * drawn at in its own `strokeWidth`, editable afterwards in the inspector.
    */
   eraserWidth: number;
-  darkMode: boolean;
   activePreset: string;
   isAiPanelOpen: boolean;
   isGCodeModalOpen: boolean;
@@ -426,7 +420,6 @@ interface EtchStore {
    */
   brushSettings: BrushSettings;
   setBrushSettings: (patch: Partial<BrushSettings>) => void;
-  toggleDarkMode: () => void;
   toggleAiPanel: () => void;
   toggleGCodeModal: () => void;
   toggleMachineModal: () => void;
@@ -492,18 +485,6 @@ interface EtchStore {
    */
   laserSource: LaserSource;
   setLaserSource: (id: string) => void;
-  /**
-   * Touch plate thickness (probe height), in mm.
-   * Saved in localStorage and remembered across sessions.
-   */
-  touchPlateThickness: number;
-  setTouchPlateThickness: (mm: number) => void;
-  /**
-   * Manual Z zeroing shim thickness (paper / feeler gauge), in mm.
-   * Saved in localStorage and remembered across sessions.
-   */
-  shimThickness: number;
-  setShimThickness: (mm: number) => void;
   setStockThickness: (mm: number, transient?: boolean) => void;
   setThickTabs: (on: boolean) => void;
   setShallowEtch: (on: boolean) => void;
@@ -945,10 +926,6 @@ export function numberedName(name: string, elements: readonly { name: string }[]
   return highest === 0 ? name : `${name} ${highest + 1}`;
 }
 
-// Before the first paint, so a dark page does not flash light while it loads.
-const initialDarkMode = readDarkMode();
-applyDarkMode(initialDarkMode, false);
-
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
   tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, DEFAULT_PRESET_ID)],
@@ -999,7 +976,6 @@ export const useStore = create<EtchStore>((set, get) => ({
     dy: 20,
   },
   eraserWidth: DEFAULT_ERASER_WIDTH_MM,
-  darkMode: initialDarkMode,
   isAiPanelOpen: false,
   isGCodeModalOpen: false,
   isMachineModalOpen: false,
@@ -1047,13 +1023,6 @@ export const useStore = create<EtchStore>((set, get) => ({
   },
 
   adoptCncTools: (tools) => set({ cncTools: tools }),
-
-  toggleDarkMode: () =>
-    set((state) => {
-      const nextMode = !state.darkMode;
-      applyDarkMode(nextMode);
-      return { darkMode: nextMode };
-    }),
 
   setDocument: (doc) => {
     // Imported JSON and MCP-supplied documents come through here too, so the
@@ -1664,12 +1633,6 @@ export const useStore = create<EtchStore>((set, get) => ({
   // Written through to the machine settings, so an export driven from a script
   // — which reads them directly — agrees with what the UI is showing.
   setLaserSource: (id) => set({ laserSource: writeLaserSource(id) }),
-
-  touchPlateThickness: readPlateThickness(),
-  setTouchPlateThickness: (mm) => set({ touchPlateThickness: writePlateThickness(mm) }),
-
-  shimThickness: readShimThickness(),
-  setShimThickness: (mm) => set({ shimThickness: writeShimThickness(mm) }),
 
   /**
    * The stock on the bed. Not a view setting: feed, spindle speed and depth per

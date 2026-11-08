@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { useStore } from '../store/useStore';
+import { readDarkMode } from '@physbox-io/ui';
 import { downloadJobFile } from '../utils/jobFile';
 
 /**
@@ -36,9 +36,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, { error
   render() {
     const { error, saveFailed } = this.state;
     if (!error) return this.props.children;
-    // Dark mode is not persisted; it lives in the store and on <html>, both of
-    // which outlive the tree that threw.
-    const dark = useStore.getState().darkMode;
+    const dark = readDarkMode('etch_dark_mode');
     return (
       <div className={`${dark ? 'dark' : ''} h-dvh w-screen`}>
         <div className="h-full w-full flex items-center justify-center p-4 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans">

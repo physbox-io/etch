@@ -22,11 +22,14 @@ vi.mock('../src/utils/apiClient', () => ({
 const { pullCloudState, saveCloudPreset, removeCloudPreset } = await import('../src/utils/cloudSync');
 const { CNC_TOOLS_KEY, CNC_TOOLS_VERSION, DEFAULT_CNC_TOOLS, readCncTools } = await import('../src/utils/tooling');
 const { DEFAULT_TOOL_RACK, TOOL_RACK_PARAMETER, TOOL_RACK_STORAGE_KEY } = await import('@physbox-io/machining');
+const { SUITE_KEYS, readTouchPlateMm, readShimMm, writeSuiteCookie } = await import('@physbox-io/ui');
 
 const doc = { name: 'Brass Badge', width: 100, height: 60, elements: [] } as never;
 
 beforeEach(() => {
   localStorage.clear();
+  // jsdom keeps cookies for the whole file.
+  for (const name of Object.values(SUITE_KEYS)) writeSuiteCookie(name, null);
   vi.clearAllMocks();
   fetchCloudParameters.mockResolvedValue({});
   fetchCloudPresetList.mockResolvedValue([]);
@@ -78,16 +81,27 @@ describe('cloud preset identity', () => {
 
 describe('pulling account state', () => {
   it('restores known machine settings into localStorage', async () => {
-    fetchCloudParameters.mockResolvedValue({
-      etch_touch_sensor_height_mm: 15.2,
-      etch_laser_source: '40w-co2',
-    });
+    fetchCloudParameters.mockResolvedValue({ etch_laser_source: '40w-co2' });
 
     const result = await pullCloudState();
 
-    expect(localStorage.getItem('etch_touch_sensor_height_mm')).toBe('15.2');
     expect(localStorage.getItem('etch_laser_source')).toBe('40w-co2');
-    expect(result.parameters).toBeGreaterThanOrEqual(2);
+    expect(result.parameters).toBeGreaterThanOrEqual(1);
+  });
+
+  it('adopts the suite-wide plate and shim from the global scope, and no longer the etch-only ones', async () => {
+    fetchCloudParameters.mockImplementation(async (scope: string) =>
+      scope === 'global'
+        ? { [SUITE_KEYS.touchPlateMm]: 15.2, [SUITE_KEYS.shimMm]: 0.08 }
+        : { etch_touch_sensor_height_mm: 9, etch_manual_z_shim_thickness_mm: 0.5 }
+    );
+
+    const result = await pullCloudState();
+
+    expect(readTouchPlateMm()).toBe(15.2);
+    expect(readShimMm()).toBe(0.08);
+    expect(localStorage.getItem('etch_touch_sensor_height_mm')).toBeNull();
+    expect(result.parameters).toBe(2);
   });
 
   it('restores the copilot keys the account carries', async () => {

@@ -3,7 +3,6 @@ import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { TransportMode } from '../utils/webSerialManager';
-import { TeknoBoxPicker } from './TeknoBoxPicker';
 import { getBedBBox } from '../utils/geom';
 import { boundsToMachine } from '../utils/machineCoords';
 import { machineKind, machineWords } from '../utils/tooling';
@@ -13,7 +12,20 @@ import { X, Cpu, AlertTriangle, Unlock, Scan } from 'lucide-react';
 import { DocsInfoButton } from './DocsModal';
 import { MachineWorkOriginPanel } from './MachineWorkOriginPanel';
 import { JobOverridePanel } from './JobOverridePanel';
-import { MachineBedFields } from '@physbox-io/ui';
+import {
+  MachineBedFields,
+  TeknoBoxPicker,
+  readMachineLink,
+  setMachineLink,
+  useSafetyGate,
+  type TeknoBoxApi,
+} from '@physbox-io/ui';
+import {
+  claimMachineDevice,
+  fetchMachineDevices,
+  forgetMachineDevice,
+  getStoredAuthToken,
+} from '../utils/apiClient';
 import { machineBedStore } from '../utils/machineBed';
 
 /** Bounds of everything visible, in bed mm — what framing traces and probing covers. */
@@ -44,9 +56,6 @@ function useJobBounds() {
   }, [document]);
 }
 
-/** Shown once per browser before the first connect; never again after acknowledged. */
-const SAFETY_ACK_KEY = 'etchSafetyAck';
-
 export const MachineControlModal: React.FC = () => {
   const { isMachineModalOpen, toggleMachineModal, openDocs, bedProbeGrid, setBedProbeGrid, document } = useStore(
     useShallow((s) => ({
@@ -71,12 +80,19 @@ export const MachineControlModal: React.FC = () => {
     webSerialManager.setMachineKind(isLaser ? 'laser' : 'cnc');
   }, [isLaser]);
 
-  // How the machine is reached, remembered between sessions.
-  const [transportMode, setTransportMode] = useState<TransportMode>(
-    () => (localStorage.getItem('etchTransport') as TransportMode) || 'usb'
+  /*
+   * How the machine is reached, shared with the other PhysBox apps (Etch calls
+   * the cloud link 'wifi'). Saved only on connect: every app reconnects to it at
+   * launch, so a tab merely looked at must not become what they all dial.
+   */
+  const [transportMode, setTransportMode] = useState<TransportMode>(() =>
+    readMachineLink().kind === 'cloud' ? 'wifi' : 'usb'
   );
-  const [cloudDeviceId, setCloudDeviceId] = useState(
-    () => localStorage.getItem('etchCloudDeviceId') || ''
+  const [cloudDeviceId, setCloudDeviceId] = useState(() => readMachineLink().deviceId ?? '');
+  const signedIn = Boolean(getStoredAuthToken());
+  const teknoBoxApi = useMemo<TeknoBoxApi>(
+    () => ({ signedIn, list: fetchMachineDevices, claim: claimMachineDevice, forget: forgetMachineDevice }),
+    [signedIn]
   );
   /** What to write into the controller with `$I=`, before it is written. */
   const [machineNameDraft, setMachineNameDraft] = useState('');
@@ -90,15 +106,11 @@ export const MachineControlModal: React.FC = () => {
   // Gate on the first real connect attempt only. The auto-resume effect below
   // never reaches this — it only fires for a device already connected once
   // before, which means the warning already ran.
-  const [showSafetyWarning, setShowSafetyWarning] = useState(false);
-  const pendingConnectRef = useRef<(() => void) | null>(null);
+  const safety = useSafetyGate('etchSafetyAck', { laser: isLaser, onOpenLicense: () => openDocs('license') });
   const requestConnect = (action: () => void) => {
-    if (localStorage.getItem(SAFETY_ACK_KEY)) {
-      action();
-      return;
-    }
-    pendingConnectRef.current = action;
-    setShowSafetyWarning(true);
+    void safety.request().then((ack) => {
+      if (ack) action();
+    });
   };
 
   // The log is appended from the subscription itself rather than from an effect
@@ -128,9 +140,8 @@ export const MachineControlModal: React.FC = () => {
    * teaches people to ignore errors.
    */
   useEffect(() => {
-    const savedMode = localStorage.getItem('etchTransport');
-    const savedDevice = localStorage.getItem('etchCloudDeviceId');
-    if (savedMode !== 'wifi') {
+    const { kind, deviceId: savedDevice } = readMachineLink();
+    if (kind !== 'cloud') {
       void webSerialManager.autoConnect(115200).catch(() => {});
       return;
     }
@@ -204,6 +215,9 @@ export const MachineControlModal: React.FC = () => {
                 <button
                   onClick={() =>
                     requestConnect(() => {
+                      setMachineLink(
+                        transportMode === 'wifi' ? { kind: 'cloud', deviceId: cloudDeviceId || null } : { kind: 'usb' }
+                      );
                       webSerialManager.setTransport(transportMode, cloudDeviceId);
                       void webSerialManager.connect(115200);
                     })
@@ -301,10 +315,7 @@ export const MachineControlModal: React.FC = () => {
                   {(['usb', 'wifi'] as const).map((mode) => (
                     <button
                       key={mode}
-                      onClick={() => {
-                        setTransportMode(mode);
-                        localStorage.setItem('etchTransport', mode);
-                      }}
+                      onClick={() => setTransportMode(mode)}
                       className={`py-1.5 rounded text-[11px] font-semibold border cursor-pointer ${
                         transportMode === mode
                           ? 'bg-amber-100 dark:bg-amber-600/30 border-amber-500 text-amber-700 dark:text-amber-300'
@@ -318,17 +329,16 @@ export const MachineControlModal: React.FC = () => {
 
                 {transportMode === 'wifi' && (
                   <TeknoBoxPicker
+                    api={teknoBoxApi}
                     value={cloudDeviceId}
-                    onChange={(deviceId) => {
-                      setCloudDeviceId(deviceId);
-                      localStorage.setItem('etchCloudDeviceId', deviceId);
-                    }}
+                    onChange={(deviceId) => setCloudDeviceId(deviceId)}
                     onPaired={(deviceId) => {
                       // Straight on to the machine: having just proved you are
                       // standing in front of it, being asked to press Connect
                       // is a step with nothing behind it.
-                      localStorage.setItem('etchCloudDeviceId', deviceId);
+                      setCloudDeviceId(deviceId);
                       requestConnect(() => {
+                        setMachineLink({ kind: 'cloud', deviceId });
                         webSerialManager.setTransport('wifi', deviceId);
                         void webSerialManager.connect(115200);
                       });
@@ -451,60 +461,7 @@ export const MachineControlModal: React.FC = () => {
         </div>
       </div>
 
-      {showSafetyWarning && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4">
-          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-5 space-y-4">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-amber-500" />
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
-                Before you connect a machine
-              </h3>
-            </div>
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              This connects to a real machine that moves and cuts under its own power. Keep clear of
-              moving parts, wear eye protection{isLaser ? ' rated for the beam' : ''}, and never leave
-              a running job unattended. Use your own judgment — you are responsible for the
-              machine&apos;s safe operation.
-            </p>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              Provided with no warranty and no liability for injury, loss, or damage of any kind. Full
-              terms:{' '}
-              <button
-                onClick={() => {
-                  setShowSafetyWarning(false);
-                  openDocs('license');
-                }}
-                className="underline hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer"
-              >
-                PhysBox Permissive Public License (PPPL-1.0)
-              </button>
-              .
-            </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                onClick={() => {
-                  pendingConnectRef.current = null;
-                  setShowSafetyWarning(false);
-                }}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
-              >
-                No Machine Control
-              </button>
-              <button
-                onClick={() => {
-                  localStorage.setItem(SAFETY_ACK_KEY, '1');
-                  setShowSafetyWarning(false);
-                  pendingConnectRef.current?.();
-                  pendingConnectRef.current = null;
-                }}
-                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg cursor-pointer"
-              >
-                Acknowledged
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {safety.dialog}
     </div>
   );
 };

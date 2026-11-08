@@ -20,9 +20,6 @@ import { webSerialManager } from '../utils/webSerialManager';
 import { InfoTooltip } from './InfoTooltip';
 import { getGridStats, suggestGridCounts } from '../utils/bedLeveler';
 import {
-  readShimThickness,
-  writeShimThickness,
-  MAX_SHIM_THICKNESS_MM,
   readGuidePower,
   writeGuidePower,
   readGuideJiggle,
@@ -32,7 +29,16 @@ import {
 import { jobToolIds, machineWords, type MachineKind } from '../utils/tooling';
 import type { AssistedProbeAction, AssistedProbePoint } from '../utils/webSerialManager';
 import type { MachineStatus, BedProbeGrid } from '../types/etch';
-import { JogPad, NumberInput } from '@physbox-io/ui';
+import {
+  JogPad,
+  MAX_SHIM_MM,
+  MAX_TOUCH_PLATE_MM,
+  NumberInput,
+  setShimMm,
+  setTouchPlateMm,
+  useShimMm,
+  useTouchPlateMm,
+} from '@physbox-io/ui';
 import { ProbeCircuitStatus } from './ProbeCircuitStatus';
 import {
   planResurface,
@@ -71,10 +77,10 @@ export const MachineWorkOriginPanel: React.FC<{
   /** Deep-links to the zeroing walkthrough in the Reference Guide. */
   onOpenDocs?: () => void;
 }> = ({ status, showZProbe = true, machine = 'cnc', bedBounds, probeGrid, onProbeGrid, onOpenDocs }) => {
-  const { touchPlateThickness, setTouchPlateThickness, document, cncTools } = useStore(
+  const touchPlateThickness = useTouchPlateMm();
+  const shimThickness = useShimMm();
+  const { document, cncTools } = useStore(
     useShallow((s) => ({
-      touchPlateThickness: s.touchPlateThickness,
-      setTouchPlateThickness: s.setTouchPlateThickness,
       document: s.document,
       cncTools: s.cncTools,
     })),
@@ -116,7 +122,6 @@ export const MachineWorkOriginPanel: React.FC<{
     shim?: number;
     pausedLine: number | null;
   } | null>(null);
-  const [shimThickness, setShimThickness] = useState(readShimThickness);
   const [guidePower, setGuidePower] = useState(readGuidePower);
   const [guideJiggle, setGuideJiggle] = useState(readGuideJiggle);
   // Homing is the real first step: until the machine has found its limit
@@ -639,10 +644,10 @@ export const MachineWorkOriginPanel: React.FC<{
                     </span>
                     <NumberInput
                       min={0}
-                      max={100}
+                      max={MAX_TOUCH_PLATE_MM}
                       step={0.1}
                       value={touchPlateThickness}
-                      onChange={v => setTouchPlateThickness(v ?? 0)
+                      onChange={v => setTouchPlateMm(v ?? 0)
                       } title="Touch plate thickness — work Z 0 ends up this far below the plate's top face. Remembered between sessions."
                       className={`w-20 ${numInput}`}
                     />
@@ -666,10 +671,10 @@ export const MachineWorkOriginPanel: React.FC<{
                     <span className={`${fieldLabel} mb-1`}>Shim (mm)</span>
                     <NumberInput
                       min={0}
-                      max={MAX_SHIM_THICKNESS_MM}
+                      max={MAX_SHIM_MM}
                       step={0.01}
                       value={shimThickness}
-                      onChange={v => setShimThickness(writeShimThickness(v ?? 0))
+                      onChange={v => setShimMm(v ?? 0)
                       } title="Thickness of whatever is under the tool — copier paper is about 0.1 mm. Set 0 if the tool touches the work itself."
                       className={`w-20 ${numInput}`}
                     />

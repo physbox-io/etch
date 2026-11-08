@@ -1,7 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import ReactDOM from 'react-dom';
-import { User, LogOut, Radio, Sparkles, ShieldCheck, CheckCircle, History } from 'lucide-react';
-import { getStoredUser, clearStoredAuth, loginWithGoogle, PhysBoxUser, fetchCurrentUser, getStoredAuthToken } from '../utils/apiClient';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { AccountMenu, useAccountSession, type AccountSignIn } from '@physbox-io/ui';
+import { getStoredUser, clearStoredAuth, loginWithGoogle, fetchCurrentUser, type PhysBoxUser } from '../utils/apiClient';
 import { renderGoogleSignInButton, isGoogleSignInConfigured, disableGoogleAutoSelect } from '../utils/googleAuth';
 import { pullCloudState } from '../utils/cloudSync';
 import { setMachineJobProbe, useStore } from '../store/useStore';
@@ -11,417 +10,77 @@ import { JobHistoryModal } from './JobHistoryModal';
 import { CloudSaveStatus } from './CloudSaveStatus';
 import { GuestListModal } from './GuestListModal';
 
-/**
- * Asks for the sign-in window from somewhere else in the app.
- *
- * The share panel needs it: the one thing to do about a job too big for a link
- * is to leave it with an account, and sending somebody hunting for the avatar
- * in the corner is how that offer goes unaccepted. The modal's state lives in
- * here, so the request arrives as an event rather than as a prop threaded
- * through everything in between.
- */
-export const SIGN_IN_REQUESTED_EVENT = 'physbox:sign-in-requested';
-
-/**
- * Fired when a sign-in that somebody *asked for* has completed.
- *
- * Carries the reason back, so whatever sent them here can finish the job
- * instead of making them press the same button a second time.
- */
-export const SIGNED_IN_EVENT = 'physbox:signed-in';
+export { SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from '@physbox-io/ui';
 
 setMachineJobProbe(() => webSerialManager.isRunning());
 
-/** Tab focus fires far more often than the account's presets can change. */
-const CLOUD_RESYNC_INTERVAL_MS = 30_000;
+async function pullAccount(): Promise<{ parameters: number; items: number }> {
+  const { parameters, presets, cncTools } = await pullCloudState();
+  if (cncTools) useStore.getState().adoptCncTools(cncTools);
+  return { parameters, items: presets.received + presets.sent };
+}
 
 export const UserProfileButton: React.FC = () => {
-  const [user, setUser] = useState<PhysBoxUser | null>(getStoredUser());
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [showLoginModal, setShowLoginModal] = useState(false);
-
-  /**
-   * Why the sign-in window was opened, when something else opened it.
-   *
-   * A ref rather than state: nothing renders differently for it, and it has to
-   * survive the re-renders between the request and the sign-in completing.
-   */
-  const signInReason = useRef<string | null>(null);
-
-  useEffect(() => {
-    const open = (e: Event) => {
-      signInReason.current = (e as CustomEvent<{ reason?: string }>).detail?.reason ?? 'unspecified';
-      setShowLoginModal(true);
-    };
-    window.addEventListener(SIGN_IN_REQUESTED_EVENT, open);
-    return () => window.removeEventListener(SIGN_IN_REQUESTED_EVENT, open);
-  }, []);
+  const { user, sync, refresh } = useAccountSession<PhysBoxUser>({
+    storedUser: getStoredUser,
+    fetchUser: fetchCurrentUser,
+    pull: pullAccount,
+    workNoun: 'designs',
+  });
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showGuestModal, setShowGuestModal] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
-  /** What the last pull actually restored, so the menu can stop guessing. */
-  const [syncSummary, setSyncSummary] = useState<string | null>(null);
+  /** Set by the exchange, read once the menu reports the sign-in. */
+  const lastSignInWasAdmin = useRef(false);
 
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const googleButtonRef = useRef<HTMLDivElement>(null);
-
-
-  useEffect(() => {
-    fetchCurrentUser().then((u) => {
-      if (u) setUser(u);
-    });
-  }, []);
-
-  /**
-   * Pulls the account's settings and presets down.
-   *
-   * Runs on mount for an already-signed-in session as well as immediately after
-   * signing in, because the sync only ever ran upwards before: a browser that
-   * had never saved anything locally would show empty settings next to a menu
-   * claiming sync was active.
-   */
-  const pullAccountState = React.useCallback(async () => {
-    if (!getStoredAuthToken()) return;
-    try {
-      const { parameters, presets, cncTools } = await pullCloudState();
-      if (cncTools) useStore.getState().adoptCncTools(cncTools);
-      const added = presets.received + presets.sent;
-      setSyncSummary(
-        parameters === 0 && added === 0
-          ? 'Account is up to date'
-          : `Restored ${parameters} setting${parameters === 1 ? '' : 's'}` +
-              (added > 0 ? ` and ${added} design${added === 1 ? '' : 's'}` : '')
-      );
-    } catch (e) {
-      console.warn('[PhysBox Cloud] Could not pull account state:', e);
-      setSyncSummary('Could not reach the sync service');
-    }
-  }, []);
-
-  const handleCredential = React.useCallback(
-    async (credential: string) => {
-      setIsLoading(true);
-      setLoginError(null);
-      try {
+  const signIn = useMemo<AccountSignIn>(
+    () => ({
+      kind: 'google-button',
+      configured: isGoogleSignInConfigured(),
+      render: renderGoogleSignInButton,
+      exchange: async (credential) => {
         const res = await loginWithGoogle(credential);
-        setUser(res.user);
-        setShowLoginModal(false);
-        setDropdownOpen(false);
-        await pullAccountState();
-
-        /*
-         * The guest-list window is skipped for somebody who was sent here to do
-         * something, and the thing they came for is done instead.
-         *
-         * It says access is being activated in batches, which is true of the
-         * Pro cloud layer and the exact opposite of what has just happened to
-         * somebody who signed in to share: the account exists, it works, and
-         * sharing is open to it immediately. Showing it there told a new user
-         * they had not got in, seconds after they had.
-         */
-        const asked = signInReason.current;
-        signInReason.current = null;
-        if (asked) {
-          window.dispatchEvent(new CustomEvent(SIGNED_IN_EVENT, { detail: { reason: asked } }));
-        } else if (!res.is_admin) {
-          setShowGuestModal(true);
-        }
-      } catch (err) {
-        console.error('Sign in failed:', err);
-        setLoginError(err instanceof Error ? err.message : 'Sign in failed. Please try again.');
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [pullAccountState]
+        lastSignInWasAdmin.current = res.is_admin;
+      },
+    }),
+    []
   );
 
-  useEffect(() => {
-    // The rule sees a setState reachable from an effect body, but every one of
-    // them is behind an await on a network round-trip — this is a subscription
-    // to an external system, not derived state computed during render.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void pullAccountState();
-  }, [pullAccountState]);
+  const onSignedIn = useCallback(
+    async (reason: string | null) => {
+      // Somebody sent here to do something (sharing) has it done instead of being
+      // told that access is still being activated.
+      if (!reason && !lastSignInWasAdmin.current) setShowGuestModal(true);
+      await refresh();
+    },
+    [refresh]
+  );
 
-  /**
-   * Coming back to the tab pulls again, so a job saved on another machine is
-   * here without a reload. `visibilitychange` covers a backgrounded tab, `focus`
-   * a window that was merely behind another one.
-   */
-  useEffect(() => {
-    let lastPull = Date.now();
-    const resync = () => {
-      if (document.visibilityState !== 'visible') return;
-      if (Date.now() - lastPull < CLOUD_RESYNC_INTERVAL_MS) return;
-      lastPull = Date.now();
-      void pullAccountState();
-    };
-    document.addEventListener('visibilitychange', resync);
-    window.addEventListener('focus', resync);
-    window.addEventListener('online', resync);
-    return () => {
-      document.removeEventListener('visibilitychange', resync);
-      window.removeEventListener('focus', resync);
-      window.removeEventListener('online', resync);
-    };
-  }, [pullAccountState]);
-
-  /**
-   * Google renders its own button, so it can only be drawn once the modal's
-   * container is actually mounted.
-   */
-  useEffect(() => {
-    if (!showLoginModal || !googleButtonRef.current) return;
-    let cancelled = false;
-
-    renderGoogleSignInButton(
-      googleButtonRef.current,
-      (credential) => {
-        if (!cancelled) void handleCredential(credential);
-      },
-      (message) => {
-        if (!cancelled) setLoginError(message);
-      }
-    ).catch((err) => {
-      if (!cancelled) setLoginError(err instanceof Error ? err.message : 'Could not load Google sign-in.');
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [showLoginModal, handleCredential]);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdownOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleLogout = () => {
+  const onSignOut = useCallback(() => {
     clearStoredAuth();
-    // Otherwise Google can hand the same account straight back on the next
-    // visit, and signing out looks like it did nothing.
+    // Otherwise Google hands the same account straight back on the next visit.
     disableGoogleAutoSelect();
-    setUser(null);
-    setSyncSummary(null);
-    setDropdownOpen(false);
-  };
-
-  const isActiveSub = user?.subscription_tier === 'active';
+    void refresh();
+  }, [refresh]);
 
   return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={() => setDropdownOpen(!dropdownOpen)}
-        className="relative flex items-center justify-center w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors focus:outline-none flex-shrink-0 cursor-pointer shadow-xs"
-        title={user ? `Account (${user.email})` : 'Sign In / Early Access'}
-      >
-        {user?.picture ? (
-          <img src={user.picture} alt="Avatar" className="absolute inset-0 h-full w-full rounded-full object-cover" />
-        ) : (
-          <User className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-        )}
-        <span
-          className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${
-            user ? (isActiveSub ? 'bg-emerald-400' : 'bg-amber-400') : 'bg-slate-400'
-          }`}
-        />
-      </button>
-
-      {/* Dropdown Menu */}
-      {dropdownOpen && (
-        /*
-          Anchored to the avatar on desktop. Below `lg` the top bar wraps, so
-          the avatar can end up anywhere along a row — and `right-0` on a 18rem
-          panel then hangs it off the left edge of the screen. There is nothing
-          to measure against reliably, so on a narrow screen it stops being a
-          dropdown and becomes a centred sheet, like the settings popover.
-        */
-        <div className="absolute right-0 mt-2 w-72 max-lg:fixed max-lg:inset-x-2 max-lg:top-1/2 max-lg:mt-0 max-lg:-translate-y-1/2 max-lg:w-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 p-3 space-y-3 text-slate-800 dark:text-slate-100">
-          {user ? (
-            <>
-              {/* Logged-In Profile Header */}
-              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
-                <div className="flex items-center gap-3">
-                  {user.picture ? (
-                    <img src={user.picture} alt="Avatar" className="w-8 h-8 rounded-full border border-indigo-500/30" />
-                  ) : (
-                    <div className="p-2 bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 rounded-lg">
-                      <User className="w-4 h-4" />
-                    </div>
-                  )}
-                  <div className="overflow-hidden">
-                    <p className="font-bold text-slate-800 dark:text-slate-100 text-xs truncate">{user.name || 'PhysBox Member'}</p>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{user.email}</p>
-                  </div>
-                </div>
-
-                <div className="mt-2.5 pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400">Subscription Status</span>
-                  {isActiveSub ? (
-                    <span
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30"
-                    >
-                      <ShieldCheck className="w-3 h-3" /> Active Subscription
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setDropdownOpen(false);
-                        setShowGuestModal(true);
-                      }}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition cursor-pointer"
-                    >
-                      <Sparkles className="w-3 h-3" /> On the Guest List 🎉
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Navigation Options */}
-              <div className="space-y-1">
-                <button
-                  onClick={() => {
-                    setDropdownOpen(false);
-                    setShowRemoteModal(true);
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                >
-                  <Radio className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                  <span>View Remote Machining Telemetry</span>
-                </button>
-
-                {/* The live view above is what a machine is doing now; this is what
-                    it has already done. Available to every signed-in account —
-                    what a free account sees inside is the offer, not an error. */}
-                <button
-                  onClick={() => {
-                    setDropdownOpen(false);
-                    setShowHistoryModal(true);
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                >
-                  <History className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                  <span>Job History</span>
-                </button>
-
-                <div className="px-3 py-1.5 text-[10px] text-slate-500 flex items-center gap-1.5">
-                  <CheckCircle className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
-                  <span>{syncSummary ?? 'Syncing parameters & designs…'}</span>
-                </div>
-              </div>
-
-              {/* Logout Button */}
-              <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4" />
-                  <span>Sign Out</span>
-                </button>
-              </div>
-            </>
-          ) : (
-            /* Logged-Out Menu */
-            <div className="space-y-3 p-1">
-              <div className="text-center">
-                <p className="font-bold text-slate-800 dark:text-slate-100 text-xs">PhysBox Account Sign In</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Sign in to synchronize parameters, saved designs, and remote telemetry.</p>
-              </div>
-
-              <button
-                onClick={() => {
-                  setDropdownOpen(false);
-                  setShowLoginModal(true);
-                }}
-                className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition shadow-md shadow-indigo-600/20 cursor-pointer"
-              >
-                <User className="w-4 h-4" />
-                <span>Sign In / Early Access</span>
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Login Modal */}
-      {showLoginModal &&
-        ReactDOM.createPortal(
-          <div
-            className="fixed inset-0 z-[99999] bg-slate-900/50 dark:bg-black/75 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto"
-            onClick={() => setShowLoginModal(false)}
-          >
-            <div
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl relative max-h-[90vh] overflow-y-auto my-auto text-slate-800 dark:text-slate-100"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button
-                onClick={() => setShowLoginModal(false)}
-                className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-                title="Close (Esc)"
-              >
-                ✕
-              </button>
-              <div className="text-center space-y-1">
-                <h3 className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100">PhysBox Account Sign In</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Sign in with your Google account to synchronize parameters, saved presets and remote telemetry.
-                </p>
-              </div>
-              {loginError && (
-                <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs text-center">
-                  {loginError}
-                </div>
-              )}
-
-              {isGoogleSignInConfigured() ? (
-                <div className="pt-1 space-y-3">
-                  {/* Google draws its own button in here — the credential it
-                      returns is the only thing the API accepts as identity. */}
-                  <div ref={googleButtonRef} className="flex justify-center min-h-[44px]" />
-                  {isLoading && (
-                    <p className="text-[11px] text-center text-slate-500 dark:text-slate-400">Signing in…</p>
-                  )}
-                </div>
-              ) : (
-                <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] space-y-1">
-                  <p className="font-semibold">Google sign-in is not configured for this build.</p>
-                  <p>
-                    Set <code className="font-mono">VITE_GOOGLE_CLIENT_ID</code> to the OAuth Web client id and rebuild.
-                    It must match the <code className="font-mono">GOOGLE_CLIENT_ID</code> the API runs with.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>,
-          document.body
-        )}
-
-      {/* Remote Machining Modal */}
+    <AccountMenu
+      user={user}
+      accent="indigo"
+      workNoun="designs"
+      sync={sync}
+      signIn={signIn}
+      onSignedIn={onSignedIn}
+      onSignOut={onSignOut}
+      onOpenRemote={() => setShowRemoteModal(true)}
+      onOpenHistory={() => setShowHistoryModal(true)}
+      onOpenGuestList={() => setShowGuestModal(true)}
+    >
       <RemoteMachiningModal isOpen={showRemoteModal} onClose={() => setShowRemoteModal(false)} />
-
-      {/* Job History Modal */}
       <JobHistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} />
-
-      {/* Cloud auto-save status. Renders nothing unless there is something to say,
-          and mounted here only because this component is always on screen — it
-          paints itself into a corner through a portal. */}
+      {/* Mounted here only because this component is always on screen; it portals itself. */}
       <CloudSaveStatus />
-
-      {/* Guest List Modal */}
-      <GuestListModal
-        isOpen={showGuestModal}
-        onClose={() => setShowGuestModal(false)}
-        userEmail={user?.email || ''}
-      />
-    </div>
+      <GuestListModal isOpen={showGuestModal} onClose={() => setShowGuestModal(false)} userEmail={user?.email || ''} />
+    </AccountMenu>
   );
 };

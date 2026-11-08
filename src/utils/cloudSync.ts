@@ -17,6 +17,7 @@ import type { EtchDocument } from '../types/etch';
 import { fetchCloudParameters } from './apiClient';
 import { PresetSync, type PresetSyncResult } from './presetSync';
 import { CNC_BED_PARAMETER, TOOL_RACK_PARAMETER } from '@physbox-io/machining';
+import { adoptSuiteParameters } from '@physbox-io/ui/suite';
 import { machineBedStore } from './machineBed';
 import {
   CNC_TOOLS_KEY,
@@ -107,6 +108,9 @@ export async function pullCloudState(): Promise<CloudPullResult> {
     const value = key in globalParams ? globalParams[key] : etchParams[key];
     if (value !== undefined && applyParameter(key, value)) parameters += 1;
   }
+
+  // Dark mode, touch plate and shim, shared with every PhysBox app.
+  parameters += adoptSuiteParameters(globalParams);
 
   // The machine's envelope is shared with Volt and Mesh, like the rack.
   machineBedStore.adoptRemote(globalParams[CNC_BED_PARAMETER] ?? etchParams[CNC_BED_PARAMETER]);
