@@ -885,11 +885,11 @@ export const TopNavbar: React.FC = () => {
             <Settings className="w-4 h-4" />
           </button>
 
-          {/* Sparkles AI Sidebar Toggle */}
+          {/* AI Copilot sidebar toggle */}
           <button
             onClick={toggleAiPanel}
             className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 transition-colors cursor-pointer shadow-xs"
-            title="Sparkles AI Copilot"
+            title="AI Copilot"
           >
             <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-300 animate-pulse" />
           </button>

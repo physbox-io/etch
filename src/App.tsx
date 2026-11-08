@@ -288,7 +288,7 @@ export const App: React.FC = () => {
         {/* Right Properties Inspector & Layer Manager */}
         <PropertiesSidebar />
 
-        {/* Sparkles AI Copilot Sidebar */}
+        {/* AI Copilot sidebar */}
         <AICopilotPanel />
       </div>
 

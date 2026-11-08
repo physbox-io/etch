@@ -393,7 +393,7 @@ export const AICopilotPanel: React.FC = () => {
       <div className="p-4 border-b border-purple-200 dark:border-purple-500/20 flex items-center justify-between bg-gradient-to-r from-purple-50 dark:from-purple-950/40 to-white dark:to-slate-900">
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-          <h2 className="text-sm font-bold text-slate-800 dark:text-white tracking-wide">Sparkles AI Copilot</h2>
+          <h2 className="text-sm font-bold text-slate-800 dark:text-white tracking-wide">Etch Copilot</h2>
         </div>
         <div className="flex items-center gap-1">
           <button
