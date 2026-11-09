@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
-import { JobWaitingButton, NumberInput, jobPauseKind } from '@physbox-io/ui';
+import { FloatingStop, JobWaitingButton, NumberInput, jobPauseKind, stopControl } from '@physbox-io/ui';
 import { jobPause } from '../utils/jobPause';
 import {
   LASER_SOURCES,
@@ -12,7 +12,7 @@ import {
 } from '../utils/machineSettings';
 import { webSerialManager } from '../utils/webSerialManager';
 import type { MachineStatus } from '../types/etch';
-import { Grid3x3, Magnet, Cpu, Pause, Square, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
+import { Grid3x3, Magnet, Cpu, Pause, RectangleHorizontal, Layers2, Wrench } from 'lucide-react';
 import {
   materialCatalog,
   findMaterial,
@@ -446,15 +446,16 @@ export const BottomStatusBar: React.FC = () => {
                 <Pause className="w-3.5 h-3.5" />
               </button>
             )}
-            <button
-              onClick={() => webSerialManager.cancelJob()}
-              title="Stop the job"
-              className="p-0.5 text-red-500 hover:text-red-600 cursor-pointer"
-            >
-              <Square className="w-3.5 h-3.5" />
-            </button>
           </div>
         )}
+
+        {/* The stop lives above every dialog, not in this bar: a modal's
+            backdrop covers the bar, and a frame or a probe starts from one. */}
+        <FloatingStop
+          stop={stopControl(webSerialManager.getState())}
+          onCancelJob={() => void webSerialManager.cancelJob()}
+          onEStop={() => void webSerialManager.eStop()}
+        />
 
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
 
