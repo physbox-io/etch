@@ -25,6 +25,7 @@ const machine = {
   getStatus: () => status,
   getState: () => ({ status: machineStatus }),
   subscribe: (l: Listener) => { listeners.add(l); return () => listeners.delete(l); },
+  getCheckpoint: () => null,
   resumeJob: vi.fn().mockResolvedValue(undefined),
   cancelJob: vi.fn(),
   pauseJob: vi.fn(),

@@ -9,6 +9,7 @@
  * there is nothing to find, and a no-op once a job is restored.
  */
 
+import type { RemoteJobChipProps } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
 import { webSerialManager } from './webSerialManager';
 
@@ -27,3 +28,11 @@ export function watchForInterruptedJob(): void {
   document.addEventListener('visibilitychange', onBack);
   window.addEventListener('focus', onBack);
 }
+
+/**
+ * A job another tab or computer is cutting, for `RemoteJobChip`. Stable
+ * functions, so the chip subscribes once.
+ */
+export const subscribeRemoteJob: RemoteJobChipProps['subscribe'] = (fn) =>
+  webSerialManager.getCheckpoint()?.subscribeRemoteJob(fn) ?? (() => {});
+export const recheckInterruptedJob = (): void => void restoreInterruptedJob();

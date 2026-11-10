@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
-import { FloatingStop, JobWaitingButton, NumberInput, jobPauseKind, stopControl } from '@physbox-io/ui';
+import { FloatingStop, JobWaitingButton, NumberInput, RemoteJobChip, jobPauseKind, stopControl } from '@physbox-io/ui';
+import { recheckInterruptedJob, subscribeRemoteJob } from '../utils/jobRestore';
 import { jobPause } from '../utils/jobPause';
 import {
   LASER_SOURCES,
@@ -448,6 +449,8 @@ export const BottomStatusBar: React.FC = () => {
             )}
           </div>
         )}
+        {/* A job another tab or computer is cutting: not offered here, but not hidden either. */}
+        <RemoteJobChip subscribe={subscribeRemoteJob} recheck={recheckInterruptedJob} />
 
         {/* The stop lives above every dialog, not in this bar: a modal's
             backdrop covers the bar, and a frame or a probe starts from one. */}
