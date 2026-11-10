@@ -730,6 +730,13 @@ export interface MachineStatus {
     suggestedLine: number;
     reason: string;
     at: number;
+    /** Put back from before the page reloaded, rather than stopped on this one. */
+    restored?: {
+      source: 'local' | 'cloud';
+      approximate: boolean;
+      jobName: string | null;
+      startedAt: number;
+    };
   } | null;
   /** What the last job run was called, if anything. */
   lastJobName?: string;

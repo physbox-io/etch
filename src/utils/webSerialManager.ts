@@ -6,6 +6,7 @@ import {
   SPINDLE_OVERRIDE_BYTES,
   TelemetryThrottle,
   classifyPauseLine,
+  createJobCheckpoint,
   describeGrblFault,
   stripGcodeComment,
   type FrameJobOptions,
@@ -15,6 +16,7 @@ import {
   type MachineStatus as SharedMachineStatus,
   type OverrideStep,
   type ParsedJob,
+  type RestorableCheckpoint,
   type StatusReport,
   type TransportMode,
   type Vec3,
@@ -25,11 +27,18 @@ import {
   type MotionProfile,
 } from './motionProfile';
 import { machineSocketUrl, postMachineTelemetry, submitMachineJob,
+  deleteCloudDocument,
+  fetchCloudDocument,
+  fetchCloudDocuments,
+  getStoredAuthToken,
+  isProAccount,
+  putCloudDocument,
   type MachiningTelemetry,
   type RemoteCommand,
 } from './apiClient';
 import { rereferenceGrid } from './bedLeveler';
 import { setJobWakeLock } from './jobWakeLock';
+import { tabSession } from './tabSession';
 import { machineBedStore } from './machineBed';
 import { DEFAULT_TOUCH_PLATE_MM } from '@physbox-io/ui/suite';
 import {
@@ -357,6 +366,42 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
 
   constructor() {
     super({ endpoints: { machineSocketUrl, submitMachineJob } });
+    // Every job is written down as it runs, so a reload, a sleep or a power cut
+    // leaves it to be picked up from where it got to (`restoreInterruptedJob`).
+    this.attachCheckpoint(
+      createJobCheckpoint({
+        storagePrefix: 'etch',
+        docPrefix: 'etch',
+        appId: 'etch-job',
+        runProgramAppId: 'etch-run-program',
+        tabId: () => tabSession().id,
+        cloud: {
+          available: () => !!getStoredAuthToken() && isProAccount(),
+          put: (doc) => putCloudDocument(doc),
+          fetch: (id) => fetchCloudDocument(id),
+          list: (appId) => fetchCloudDocuments(appId),
+          remove: (id) => deleteCloudDocument(id),
+        },
+      }),
+      () => ({
+        jobName: this.jobContext.name ?? null,
+        settings: { ...(this.jobContext.settings ?? {}), machine: this.jobMachine },
+        documentId: this.jobContext.documentId ?? null,
+      })
+    );
+  }
+
+  /** A job from before a reload is back: its name, and laser or router, with it. */
+  protected onCheckpointRestored(cp: RestorableCheckpoint): Partial<EtchMachineState> {
+    const { machine, ...settings } = cp.program.settings ?? {};
+    if (machine === 'laser' || machine === 'cnc') this.jobMachine = machine;
+    this.jobContext = {
+      name: cp.program.jobName ?? undefined,
+      documentId: cp.program.documentId,
+      settings,
+    };
+    this.lastJobName = this.jobContext.name;
+    return {};
   }
 
   protected createInitialState(): EtchMachineState {
@@ -1142,6 +1187,11 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * Refusals come back as a result for the same reason `runProgram`'s do: a
    * button that does nothing has to say why.
    */
+  /** What `runFrom(line)` would send before the program picks up. See `previewRunFrom`. */
+  public previewRunFromLine(line: number) {
+    return this.previewRunFrom(line, { isLaser: this.jobMachine === 'laser' });
+  }
+
   public async runFrom(line: number): Promise<{ started: boolean; message: string }> {
     const refused = this.startBlockedReason([]);
     if (refused) {
@@ -1263,6 +1313,9 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
         documentId: withJob ? this.jobContext.documentId ?? null : null,
         documentRevision: withJob ? this.jobContext.documentRevision ?? null : null,
         settings: withJob ? this.jobContext.settings ?? null : null,
+        // The program itself, stored as its own document for a Pro account, so
+        // the archive can say what was cut and not only how it went.
+        programDocumentId: withJob ? this.getCheckpoint()?.runProgramDocumentId() ?? null : null,
       },
       state.status,
       this.isJobRunning

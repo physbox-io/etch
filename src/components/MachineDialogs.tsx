@@ -137,7 +137,10 @@ export const RunFromPanel: React.FC<{ status: MachineStatus; onStarted?: (messag
         {status.lastJobName ? `“${status.lastJobName}” stopped` : 'The last job stopped'} at line{' '}
         {stop.stoppedAtLine.toLocaleString()}.
       </p>
-      <p className="text-red-700 dark:text-red-300/90 leading-snug">{stop.reason}</p>
+      <p className="text-red-700 dark:text-red-300/90 leading-snug">
+        {stop.reason}
+        {stop.restored?.approximate && ' Saved to your account once a minute: start a little earlier if unsure.'}
+      </p>
       <p className="text-slate-600 dark:text-slate-300 leading-snug">
         Suggested restart: line <span className="font-mono font-semibold">{stop.suggestedLine.toLocaleString()}</span>
         {' '}— a little before the stop, at the start of the cut it was in, so nothing is left uncut.
@@ -166,6 +169,14 @@ export const RunFromPanel: React.FC<{ status: MachineStatus; onStarted?: (messag
         </button>
       </div>
       {note && <p className="text-slate-600 dark:text-slate-300 leading-snug">{note}</p>}
+      <button
+        type="button"
+        onClick={() => webSerialManager.dismissInterruption()}
+        title="This job is over: stop offering to run it from a line"
+        className="text-slate-500 dark:text-slate-400 hover:underline cursor-pointer"
+      >
+        Discard
+      </button>
     </div>
   );
 };

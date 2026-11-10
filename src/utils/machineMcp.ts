@@ -2,6 +2,7 @@ import {
   ArmingGate,
   createMachineHandlers,
   describeMachine,
+  describeResumePreview,
   refuseWhileJobHoldsMachine,
   type ArmingState,
   type MachineControl,
@@ -263,6 +264,15 @@ export function createEtchMachineHandlers(): Record<
       const result = await webSerialManager.runFrom(fromLine);
       if (!result.started) throw new Error(result.message);
       return { ...describeMachine(machine, machineArming), message: result.message };
+    },
+
+    /** What a run from a line would send before the program picks up. Read-only, so never gated. */
+    MACHINE_PREVIEW_RESUME: async (args: McpArgs) => {
+      const fromLine = requireNumber(args, 'fromLine', { min: 0 });
+      if (fromLine === undefined || !Number.isInteger(fromLine)) {
+        throw new Error('Give fromLine: the whole program line a run from would pick up at.');
+      }
+      return describeResumePreview(webSerialManager.previewRunFromLine(fromLine));
     },
 
     /**
