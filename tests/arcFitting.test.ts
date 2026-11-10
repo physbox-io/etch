@@ -120,7 +120,7 @@ describe('fitArcsToPolyline', () => {
 
 describe('arcToMachineGCode coordinate mapping', () => {
   const baseDoc: EtchDocument = {
-    version: 1,
+    id: 'arc-test',
     name: 'Arc Test',
     width: 300,
     height: 200,
@@ -128,9 +128,11 @@ describe('arcToMachineGCode coordinate mapping', () => {
     gridSize: 10,
     snapToGrid: false,
     machine: 'cnc',
-    material: 'plywood-3mm',
+    material: 'plywood',
+    units: 'mm',
     layers: [],
     elements: [],
+    selectedIds: [],
   };
 
   /**

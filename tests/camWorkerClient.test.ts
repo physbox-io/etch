@@ -30,7 +30,7 @@ beforeEach(() => {
       worker = new SilentWorker();
       return worker;
     }
-  };
+  } as new () => SilentWorker;
 });
 
 afterEach(() => {

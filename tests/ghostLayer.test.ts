@@ -16,7 +16,7 @@ describe('Ghost layer functionality', () => {
     snapToGrid: false,
     units: 'mm',
     machine: 'laser',
-    material: 'plywood-3mm',
+    material: 'plywood',
     layers: [
       {
         id: 'layer-etch',

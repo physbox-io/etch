@@ -5,14 +5,14 @@ import {
   clearShareFragment,
   ShareTooLargeError,
 } from '../src/utils/shareLink';
-import { jobDocument, jobSheets } from '../src/store/useStore';
-import type { EtchDocument, EtchLayer, EtchElement, SheetTab } from '../src/types/etch';
+import { jobDocument, jobSheets, type SheetTab } from '../src/store/useStore';
+import type { EtchDocument, EtchLayer, EtchElement } from '../src/types/etch';
 
 const layer = (id: string): EtchLayer =>
   ({ id, name: id, color: '#ff0000', visible: true, operation: 'cut' } as EtchLayer);
 
 const rect = (id: string, x: number): EtchElement =>
-  ({ id, type: 'rect', layerId: 'cut', x, y: 10, width: 20, height: 20 } as EtchElement);
+  ({ id, type: 'rect', layerId: 'cut', x, y: 10, width: 20, height: 20 } as unknown as EtchElement);
 
 const doc = (name: string, els: EtchElement[] = [rect('a', 10)]): EtchDocument =>
   ({
@@ -57,7 +57,7 @@ const photo = (name: string, pixels: number): EtchDocument => {
 };
 
 const tab = (id: string, d: EtchDocument): SheetTab =>
-  ({ id, document: d, history: [d], historyIndex: 0, selectedIds: [], activeLayerId: 'cut', presetId: '' } as SheetTab);
+  ({ id, document: d, history: [d], historyIndex: 0, selectedIds: [], activeLayerId: 'cut', presetId: '' } as unknown as SheetTab);
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');

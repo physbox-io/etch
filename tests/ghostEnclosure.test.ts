@@ -15,7 +15,8 @@ import type { EtchDocument, EtchElement, LayerOperation } from '../src/types/etc
  * entirely. Ghost has to mean "do not cut this", not "this is not here".
  */
 
-const tool = DEFAULT_CNC_TOOLS[0];
+/** T1 is an end mill, so it has a diameter. */
+const tool = DEFAULT_CNC_TOOLS[0] as (typeof DEFAULT_CNC_TOOLS)[number] & { diameter: number };
 const R = tool.diameter / 2;
 
 function doc(outlineOp: LayerOperation): EtchDocument {

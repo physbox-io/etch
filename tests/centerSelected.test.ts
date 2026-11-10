@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore } from '../src/store/useStore';
-import type { EtchElement } from '../src/types/etch';
+import type { EtchDocument, EtchElement } from '../src/types/etch';
 import { getBedBBox } from '../src/utils/geom';
 
 function rect(id: string, x: number, y: number, w: number, h: number, rotation = 0): EtchElement {
@@ -24,13 +24,16 @@ function rect(id: string, x: number, y: number, w: number, h: number, rotation =
 }
 
 function load(elements: EtchElement[]) {
-  const document = {
+  const document: EtchDocument = {
     id: 'doc1',
     name: 'Test Doc',
     width: 300,
     height: 200,
     gridSize: 10,
     snapToGrid: true,
+    units: 'mm',
+    origin: 'top-left',
+    selectedIds: [],
     layers: [
       { id: 'cut', name: 'Cut', color: '#f00', operation: 'cut' as const, visible: true, locked: false, speed: 500, power: 100, passes: 1, zDepth: 3 },
     ],

@@ -9,9 +9,9 @@ import { findMaterial, materialCatalog } from '../src/utils/materials';
 import type { LaserSource } from '../src/utils/machineSettings';
 
 /** The K40-class machine the app's presets were always implicitly written for. */
-const CO2_40W: LaserSource = { kind: 'co2', watts: 40 };
+const CO2_40W: LaserSource = { id: '40w-co2', kind: 'co2', watts: 40 };
 /** A typical desktop diode — an eighth of the power and a different colour. */
-const DIODE_10W: LaserSource = { kind: 'diode', watts: 10 };
+const DIODE_10W: LaserSource = { id: '10w-diode', kind: 'diode', watts: 10 };
 
 const derive = (
   material: Parameters<typeof findMaterial>[0],
@@ -27,8 +27,8 @@ describe('dose is what is actually being held constant', () => {
    * on any given millimetre of the line is unchanged.
    */
   it('doubles the speed when the tube doubles, at the same power', () => {
-    const small = derive('plywood', 'cut', { kind: 'co2', watts: 20 }, 6)!;
-    const big = derive('plywood', 'cut', { kind: 'co2', watts: 40 }, 6)!;
+    const small = derive('plywood', 'cut', { id: '20w-co2', kind: 'co2', watts: 20 }, 6)!;
+    const big = derive('plywood', 'cut', { id: '40w-co2', kind: 'co2', watts: 40 }, 6)!;
     expect(big.speed).toBeCloseTo(small.speed * 2, 0);
     expect(big.power).toBe(small.power);
   });
@@ -60,7 +60,7 @@ describe('when the machine runs out of speed', () => {
    * the beam rather than by a constant. It takes a big tube on light work now.
    */
   it('turns the power down rather than outrunning the gantry', () => {
-    const r = derive('softwood', 'etch', { kind: 'co2', watts: 80 })!;
+    const r = derive('softwood', 'etch', { id: '80w-co2', kind: 'co2', watts: 80 })!;
     expect(r.speed).toBe(MAX_LASER_SPEED_MM_MIN);
     expect(r.power).toBeLessThan(100);
     expect(r.notes.join(' ')).toMatch(/turned down/);
@@ -72,7 +72,7 @@ describe('when the machine runs out of speed', () => {
    * once in one place, which is how a laser starts a fire rather than a cut.
    */
   it('adds passes rather than crawling', () => {
-    const r = derive('hardwood', 'cut', { kind: 'diode', watts: 5 }, 6)!;
+    const r = derive('hardwood', 'cut', { id: '5w-diode', kind: 'diode', watts: 5 }, 6)!;
     expect(r.passes).toBeGreaterThan(1);
     expect(r.speed).toBeGreaterThanOrEqual(MIN_LASER_SPEED_MM_MIN);
     expect(r.notes.join(' ')).toMatch(/passes/);
@@ -96,7 +96,7 @@ describe('when the machine runs out of speed', () => {
    * again as long doing it.
    */
   it('splits into passes without over-dosing the material', () => {
-    const source = { kind: 'diode' as const, watts: 5 };
+    const source = { id: '5w-diode', kind: 'diode' as const, watts: 5 };
     const r = derive('hardwood', 'cut', source, 6)!;
     expect(r.passes).toBeGreaterThan(1);
 
@@ -110,7 +110,7 @@ describe('when the machine runs out of speed', () => {
 
   it('never emits a speed outside what the machine will hold', () => {
     for (const material of materialCatalog()) {
-      for (const source of [CO2_40W, DIODE_10W, { kind: 'co2' as const, watts: 150 }]) {
+      for (const source of [CO2_40W, DIODE_10W, { id: '150w-co2', kind: 'co2' as const, watts: 150 }]) {
         for (const operation of ['cut', 'etch', 'fill'] as const) {
           const r = deriveLaserFeeds(material, operation, source, 6);
           if (!r) continue;
@@ -196,8 +196,8 @@ describe('wavelength, not wattage', () => {
   });
 
   it('makes a diode slower than a CO2 of the same power on wood', () => {
-    const co2 = derive('hardwood', 'cut', { kind: 'co2', watts: 10 }, 6)!;
-    const diode = derive('hardwood', 'cut', { kind: 'diode', watts: 10 }, 6)!;
+    const co2 = derive('hardwood', 'cut', { id: '10w-co2', kind: 'co2', watts: 10 }, 6)!;
+    const diode = derive('hardwood', 'cut', { id: '10w-diode', kind: 'diode', watts: 10 }, 6)!;
     expect(diode.speed * diode.passes).toBeLessThanOrEqual(co2.speed * co2.passes);
   });
 });

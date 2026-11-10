@@ -13,8 +13,12 @@ import { sanitizePathCommands } from '../src/utils/textVectorizer';
  * then fails validation and is dropped on its own, silently, while every other
  * letter of the word machines correctly.
  */
-function pathWith(commands: opentype.OTPathCommand[]): opentype.Path {
-  const p = new opentype.Path();
+// The app's ambient opentype.js types (src/types/fonts.d.ts) leave out the
+// Path constructor, which only this test builds directly.
+const { Path } = opentype as unknown as { Path: new () => opentype.OTPath };
+
+function pathWith(commands: opentype.OTPathCommand[]): opentype.OTPath {
+  const p = new Path();
   p.commands = commands;
   return p;
 }

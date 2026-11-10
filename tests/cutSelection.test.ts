@@ -16,7 +16,8 @@ import type { EtchDocument, EtchElement } from '../src/types/etch';
  * exists to prevent.
  */
 
-const tool = DEFAULT_CNC_TOOLS[0];
+/** T1 is an end mill, so it has a diameter. */
+const tool = DEFAULT_CNC_TOOLS[0] as (typeof DEFAULT_CNC_TOOLS)[number] & { diameter: number };
 
 function doc(opts: { plateVisible?: boolean } = {}): EtchDocument {
   return {

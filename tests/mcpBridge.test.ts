@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
-import { handleMCPCommand, SWITCH_COMMANDS, tabIdentity } from '../src/hooks/useMCPBridge';
+import { handleMCPCommand, SWITCH_COMMANDS, tabIdentity, type MCPResult } from '../src/hooks/useMCPBridge';
 import { useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
@@ -45,7 +45,7 @@ describe('MCP: etch_combine', () => {
   beforeEach(() => load([rect('a', 0, 0, 20, 20), rect('b', 10, 10, 20, 20)]));
 
   it('combines by id and consumes the inputs', async () => {
-    const r = await handleMCPCommand('etch_combine', { elementIds: ['a', 'b'], op: 'union' });
+    const r = (await handleMCPCommand('etch_combine', { elementIds: ['a', 'b'], op: 'union' })) as MCPResult & { consumed: string[] };
     expect(r.ok).toBe(true);
     expect(r.consumed.sort()).toEqual(['a', 'b']);
     const els = useStore.getState().document.elements;
@@ -94,7 +94,7 @@ describe('MCP: etch_combine', () => {
 describe('MCP: etch_combine join / unjoin', () => {
   it('joins shapes that do not touch, and unjoins them back', async () => {
     load([rect('a', 0, 0, 10, 10), rect('b', 13, 0, 10, 10)]);
-    const r = await handleMCPCommand('etch_combine', { elementIds: ['a', 'b'], op: 'join' });
+    const r = (await handleMCPCommand('etch_combine', { elementIds: ['a', 'b'], op: 'join' })) as MCPResult & { consumed: string[] };
     expect(r.ok).toBe(true);
     expect(r.consumed.sort()).toEqual(['a', 'b']);
     expect(r.note).toMatch(/2 pieces with 1 bridge/);
@@ -218,7 +218,7 @@ describe('MCP: etch_get_summary', () => {
     // A 40x10 bar turned 90° occupies 10x40 on the sheet. The summary is what an
     // agent lays out from, so it has to be the space the part actually takes.
     load([{ ...rect('bar', 10, 10, 40, 10), rotation: 90 } as EtchElement]);
-    const r = await handleMCPCommand('etch_get_summary', {});
+    const r = (await handleMCPCommand('etch_get_summary', {})) as MCPResult & { elements: { width: number; height: number }[] };
     expect(r.ok).toBe(true);
     expect(r.elements).toHaveLength(1);
     expect(r.elements[0].width).toBeCloseTo(10, 3);
@@ -227,7 +227,7 @@ describe('MCP: etch_get_summary', () => {
 
   it('counts elements per layer and names the stock', async () => {
     load([rect('a', 0, 0, 10, 10), rect('b', 20, 0, 10, 10)]);
-    const r = await handleMCPCommand('etch_get_summary', {});
+    const r = (await handleMCPCommand('etch_get_summary', {})) as MCPResult & { document: { stock: unknown }; layers: unknown[] };
     expect(r.document.stock).toEqual({ width: 300, height: 200, units: 'mm' });
     expect(r.layers[0]).toMatchObject({ id: 'cut', elementCount: 2 });
     expect(r.extent).toMatchObject({ x: 0, y: 0, width: 30, height: 10 });
@@ -243,7 +243,7 @@ describe('MCP: etch_get_summary', () => {
 describe('MCP: etch_validate_document', () => {
   it('fails a document whose geometry hangs off the stock', async () => {
     load([rect('over', 290, 10, 40, 10)]);
-    const r = await handleMCPCommand('etch_validate_document', {});
+    const r = (await handleMCPCommand('etch_validate_document', {})) as MCPResult & { problems: { elementId: string }[] };
     expect(r.ok).toBe(false);
     expect(r.errorCount).toBe(1);
     expect(r.problems[0].elementId).toBe('over');
@@ -251,7 +251,7 @@ describe('MCP: etch_validate_document', () => {
 
   it('fails an element pointing at a layer that does not exist', async () => {
     load([{ ...rect('orphan', 10, 10, 10, 10), layerId: 'nope' } as EtchElement]);
-    const r = await handleMCPCommand('etch_validate_document', {});
+    const r = (await handleMCPCommand('etch_validate_document', {})) as MCPResult & { problems: { message: string }[] };
     expect(r.ok).toBe(false);
     expect(r.problems.some((p: { message: string }) => p.message.includes('does not exist'))).toBe(true);
   });
@@ -306,7 +306,7 @@ describe('MCP: user presets', () => {
     await handleMCPCommand('etch_set_note_card', { markdown: '### Saved piece' });
 
     expect((await handleMCPCommand('etch_save_preset', { name: 'my-jig' })).ok).toBe(true);
-    const listed = await handleMCPCommand('etch_list_presets', {});
+    const listed = (await handleMCPCommand('etch_list_presets', {})) as MCPResult & { userPresets: { id: string }[] };
     expect(listed.userPresets.map((p: { id: string }) => p.id)).toContain('user:my-jig');
 
     // Wipe the canvas, then bring it back by id.
@@ -534,9 +534,9 @@ describe('MCP: etch_combine fretwork, fill and repeat', () => {
 
   it('repeats: a radial ring, then nothing more when pressed again on the ring', async () => {
     load([rect('p', 140, 20, 10, 20)]);
-    const r = await handleMCPCommand('etch_combine', {
+    const r = (await handleMCPCommand('etch_combine', {
       elementIds: ['p'], op: 'repeat', repeat: { kind: 'radial', copies: 6, centre: 'stock' },
-    });
+    })) as MCPResult & { addedIds: string[] };
     expect(r.ok).toBe(true);
     expect(r.addedIds).toHaveLength(5);
     const ring = ['p', ...r.addedIds];
@@ -645,7 +645,7 @@ describe('MCP: etch_combine offset, inset, outset and sweep', () => {
     const sweptId = swept.addedId as string;
 
     // Summary reports the sweep profile
-    const summary = await handleMCPCommand('etch_get_summary', {});
+    const summary = (await handleMCPCommand('etch_get_summary', {})) as MCPResult & { elements: { sweep?: unknown }[] };
     expect(summary.elements[0].sweep).toEqual({ widths: [6, 12, 5, 9, 0], cap: 'round' });
 
     // Inset the swept snake body inward by 1.5 mm for an outline-style drawing

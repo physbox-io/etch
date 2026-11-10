@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { clearSession, setSession } from '@physbox-io/ui';
-import { handleMCPCommand } from '../src/hooks/useMCPBridge';
+import { handleMCPCommand, type MCPResult } from '../src/hooks/useMCPBridge';
 import { readUserPresets, useStore } from '../src/store/useStore';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
@@ -370,14 +370,16 @@ describe('the agent bridge with several sheets open', () => {
     const second = useStore.getState().newTab();
     useStore.getState().addElement(rect('two'));
 
-    const res = await handleMCPCommand('etch_list_sheets', {});
+    const res = (await handleMCPCommand('etch_list_sheets', {})) as MCPResult & {
+      sheets: { active: boolean; elementCount: number }[];
+    };
     expect(res.ok).toBe(true);
     expect(res.activeSheetId).toBe(second);
     expect(res.sheets).toHaveLength(2);
     // The open sheet reports what is on it now, not what was parked when it was
     // last left — an agent that read the stale copy would think its own last
     // call did nothing.
-    expect(res.sheets.find((s: { active: boolean }) => s.active).elementCount).toBe(1);
+    expect(res.sheets.find((s: { active: boolean }) => s.active)!.elementCount).toBe(1);
     expect(res.sheets[0].elementCount).toBe(1);
   });
 
@@ -402,7 +404,9 @@ describe('the agent bridge with several sheets open', () => {
     useStore.getState().newTab();
     useStore.getState().renameTab(useStore.getState().activeTabId, 'Second');
 
-    const state = await handleMCPCommand('etch_get_state', {});
+    const state = (await handleMCPCommand('etch_get_state', {})) as MCPResult & {
+      document: { name: string; elements: EtchElement[] };
+    };
     expect(state.document.name).toBe('Second');
     expect(state.document.elements).toHaveLength(0);
 
@@ -441,7 +445,9 @@ describe('the agent bridge with several sheets open', () => {
       element: { type: 'rect', id: 'plain', w: 10, h: 10, x: 5, y: 5, layerId: 'cut' },
     });
     expect(added.ok).toBe(true);
-    const state = await handleMCPCommand('etch_get_state', {});
+    const state = (await handleMCPCommand('etch_get_state', {})) as MCPResult & {
+      document: { name: string; elements: EtchElement[] };
+    };
     expect(state.document.elements.map((e: EtchElement) => e.id)).toEqual(['plain']);
     expect(useStore.getState().tabs).toHaveLength(1);
   });

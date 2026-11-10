@@ -4,7 +4,7 @@ import { booleanElements, isBooleanFailure } from '../src/utils/booleanOps';
 import { clearGeomBBoxCache, getBedBBox } from '../src/utils/geom';
 import { extractElementContours } from '../src/utils/elementContours';
 import { contourArea } from '../src/utils/contourOffset';
-import type { EtchElement } from '../src/types/etch';
+import type { EtchDocument, EtchElement } from '../src/types/etch';
 
 /**
  * Boolean combining, and the two things about it that reach material:
@@ -51,13 +51,16 @@ function areaOfD(d: string, x: number, y: number): number {
 
 function load(elements: EtchElement[]) {
   clearGeomBBoxCache();
-  const document = {
+  const document: EtchDocument = {
     id: 'doc1',
     name: 'Test Doc',
     width: 300,
     height: 200,
     gridSize: 10,
     snapToGrid: false,
+    units: 'mm',
+    origin: 'top-left',
+    selectedIds: [],
     layers: [
       { id: 'cut', name: 'Cut', color: '#f00', operation: 'cut' as const, visible: true, locked: false, speed: 500, power: 100, passes: 1, zDepth: 3 },
     ],

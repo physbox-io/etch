@@ -447,22 +447,22 @@ describe('laser speed and power come from the material', () => {
    * 40 W tube.
    */
   it('ignores the speed the layer happened to be initialised with', () => {
-    const { segments } = planToolpath(laserDoc(), { laser: { kind: 'co2', watts: 40 } });
+    const { segments } = planToolpath(laserDoc(), { laser: { id: '40w-co2', kind: 'co2', watts: 40 } });
     expect(segments[0].speed).not.toBe(600);
     expect(segments[0].speed).toBeGreaterThan(300);
     expect(segments[0].speed).toBeLessThan(900);
   });
 
   it('gives a smaller tube a slower job on the same drawing', () => {
-    const big = planToolpath(laserDoc(), { laser: { kind: 'co2', watts: 60 } }).segments[0];
-    const small = planToolpath(laserDoc(), { laser: { kind: 'co2', watts: 20 } }).segments[0];
+    const big = planToolpath(laserDoc(), { laser: { id: '60w-co2', kind: 'co2', watts: 60 } }).segments[0];
+    const small = planToolpath(laserDoc(), { laser: { id: '20w-co2', kind: 'co2', watts: 20 } }).segments[0];
     expect(small.speed * small.passes).toBeLessThan(big.speed * big.passes);
   });
 
   it('obeys an override exactly, including a hopeless one', () => {
     const { segments } = planToolpath(
       laserDoc({}, { speedOverride: 9999, powerOverride: 3 }),
-      { laser: { kind: 'co2', watts: 40 } }
+      { laser: { id: '40w-co2', kind: 'co2', watts: 40 } }
     );
     expect(segments[0].speed).toBe(9999);
     expect(segments[0].power).toBe(3);
@@ -473,19 +473,19 @@ describe('laser speed and power come from the material', () => {
     // the job says why rather than inventing a speed.
     const { segments, notes } = planToolpath(
       laserDoc({ material: 'glass' }, { operation: 'etch', zDepth: 0 }),
-      { laser: { kind: 'diode', watts: 10 } }
+      { laser: { id: '10w-diode', kind: 'diode', watts: 10 } }
     );
     expect(segments[0].speed).toBe(600);
     expect(notes.join(' ')).toMatch(/wavelength/);
   });
 
   it('writes the tube into the header, since the numbers came from it', () => {
-    const gcode = generateGCode(laserDoc(), { laser: { kind: 'diode', watts: 10 } });
+    const gcode = generateGCode(laserDoc(), { laser: { id: '10w-diode', kind: 'diode', watts: 10 } });
     expect(gcode).toMatch(/; Laser: 10 W diode/);
   });
 
   it('still emits a real S-word for the derived power', () => {
-    const gcode = generateGCode(laserDoc(), { laser: { kind: 'co2', watts: 40 } });
+    const gcode = generateGCode(laserDoc(), { laser: { id: '40w-co2', kind: 'co2', watts: 40 } });
     const s = Number(/M3 S(\d+)/.exec(gcode)![1]);
     // Scaled onto the controller's PWM ceiling, which defaults to 1000.
     expect(s).toBeGreaterThan(0);

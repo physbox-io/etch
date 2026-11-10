@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import ClipperLib from 'clipper-lib';
 import type { EtchElement } from '../src/types/etch';
-import { papercut, MIN_STRAND_MM } from '../src/utils/papercut';
-import { isBooleanFailure, resolveElementOf } from '../src/utils/booleanOps';
+import { papercut, MIN_STRAND_MM, type PapercutOutcome } from '../src/utils/papercut';
+import { isBooleanFailure, resolveElementOf, type BooleanFailure, type BooleanOutcome } from '../src/utils/booleanOps';
 import { piecesOf } from '../src/utils/joinPieces';
 
 const base = { rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#000', fillColor: 'none', visible: true, locked: false, layerId: 'cut' };
@@ -10,8 +10,12 @@ const rect = (id: string, x: number, y: number, w: number, h: number): EtchEleme
 const circle = (id: string, x: number, y: number, r: number): EtchElement => ({ ...base, id, name: id, type: 'circle', x, y, r });
 const line = (id: string, d: string, strokeWidth = 0.3): EtchElement => ({ ...base, id, name: id, type: 'path', x: 0, y: 0, d, strokeWidth });
 
+/** `isBooleanFailure`, typed for papercut's outcome (it only looks for `error`). */
+const failed = (r: PapercutOutcome | BooleanFailure): r is BooleanFailure =>
+  isBooleanFailure(r as BooleanOutcome | BooleanFailure);
+
 function ok(r: ReturnType<typeof papercut>) {
-  if (isBooleanFailure(r)) throw new Error(r.error);
+  if (failed(r)) throw new Error(r.error);
   return r;
 }
 
@@ -81,6 +85,6 @@ describe('papercut', () => {
 
   it('refuses when there is nothing to cut', () => {
     const r = papercut(win, [rect('all', -5, -5, 110, 110)]);
-    expect(isBooleanFailure(r)).toBe(true);
+    expect(failed(r)).toBe(true);
   });
 });

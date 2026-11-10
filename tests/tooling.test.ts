@@ -192,7 +192,9 @@ describe('tool change G-code', () => {
     const lines = generateGCode(multi()).split('\n');
     const changes = lines.flatMap((l, i) => (/^M6 T/.test(l) ? [i] : []));
     expect(changes.length).toBe(2);
-    const lastCut = lines.slice(0, changes[1]).findLastIndex((l) => /^G[123]\b/.test(l));
+    // findLastIndex is ES2023; the app's lib is ES2022, Node has it.
+    type WithFindLast = string[] & { findLastIndex(pred: (l: string) => boolean): number };
+    const lastCut = (lines.slice(0, changes[1]) as WithFindLast).findLastIndex((l) => /^G[123]\b/.test(l));
     expect(lines.slice(lastCut, changes[1]).filter((l) => /^M3\b/.test(l))).toEqual([]);
   });
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { clusterParts, packParts, applyPlacement, partGapMm, PART_CLEARANCE_MM } from '../src/utils/packParts';
 import { getBedBBox, clearGeomBBoxCache } from '../src/utils/geom';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
+import type { ToolProfile } from '../src/utils/tooling';
 
 /**
  * The unit is the part, not the element. Everything here is really one
@@ -217,7 +218,7 @@ describe('the gap between parts', () => {
   const doc = (machine: 'laser' | 'cnc') =>
     ({
       id: 'd', name: 'd', width: 300, height: 200, gridSize: 10, snapToGrid: false,
-      machine, origin: 'top-left',
+      machine, origin: 'top-left', units: 'mm', selectedIds: [],
       layers: [{
         id: 'cut', name: 'Cut', color: '#f00', operation: 'cut', tool: 1,
         visible: true, locked: false, speed: 600, power: 80, passes: 1, zDepth: 3,
@@ -234,7 +235,8 @@ describe('the gap between parts', () => {
 
   it('is a whole cutter plus the clearance on a router', () => {
     const gap = partGapMm(doc('cnc'), [
-      { id: 1, name: '6mm end mill', diameter: 6 },
+      // Only the diameter matters to the gap; the rest of the profile is left out.
+      { id: 1, name: '6mm end mill', diameter: 6 } as ToolProfile,
     ]);
     expect(gap).toBeCloseTo(6 + PART_CLEARANCE_MM, 6);
   });

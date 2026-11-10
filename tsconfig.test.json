@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "composite": false,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["node", "react", "react-dom", "ws", "vite/client"]
+  },
+  "include": ["tests", "vitest.config.ts", "src/**/*.d.ts"],
+  "exclude": []
+}
