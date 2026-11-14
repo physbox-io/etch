@@ -6,6 +6,7 @@ import { useStore, type RepeatRequest } from '../store/useStore';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG } from '../utils/svgImporter';
 import { placeUnscaled } from '../utils/svgHandoff';
+import { resolveSheetedSvg, splitIntoSheets, type DeclaredSheetSpec } from '../utils/sheetedSvg';
 import { generateGCode } from '../utils/gcodeExporter';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { CLIP_ART_INDEX, buildSymbolElement, loadClipArtItem } from '../utils/clipArtLibrary';
@@ -432,18 +433,51 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       const svgContent = msg.svg || msg.svgContent;
       if (!svgContent) return { ok: false, error: 'svg is required' };
 
+      const doc = store.document;
+      const trueSize = msg.trueSize === true;
+      const thickness = typeof msg.thicknessMm === 'number' && msg.thicknessMm > 0 ? msg.thicknessMm : null;
+      const machine = msg.machine === 'laser' || msg.machine === 'cnc' ? msg.machine : null;
+      const material = materialCatalog().find((m) => m.id === msg.material)?.id ?? null;
+
+      if (trueSize) {
+        const declaredSheets = Array.isArray(msg.sheets) ? (msg.sheets as DeclaredSheetSpec[]) : null;
+        const stacked = resolveSheetedSvg(svgContent, declaredSheets, thickness);
+        if (stacked) {
+          const imported = importSVG(stacked.cleanedSvg);
+          const split = splitIntoSheets(
+            imported,
+            stacked.bands,
+            (typeof msg.name === 'string' && msg.name) || doc.name || 'Sheet',
+            {
+              gridSize: doc.gridSize,
+              snapToGrid: doc.snapToGrid,
+              origin: doc.origin,
+              machine: machine ?? doc.machine,
+              material: material ?? doc.material,
+            },
+          );
+          store.openJob(split.document);
+          const resolvedThickness = thickness ?? stacked.bands.thicknessMm;
+          return {
+            ok: true,
+            importedCount: imported.elements.length,
+            sheetCount: stacked.bands.count,
+            perSheet: split.perSheet,
+            ...(resolvedThickness ? { stockThicknessMm: resolvedThickness } : {}),
+            ...(machine ? { machine } : {}),
+            ...(material ? { material } : {}),
+            warnings: imported.warnings,
+          };
+        }
+      }
+
       const result = importSVG(svgContent);
       const existingIds = new Set(store.document.layers.map((l) => l.id));
-      const doc = store.document;
       // A part sent from a sibling app (Mesh's physics_export_cut) comes at
       // true size, named, with the stock it was laid out for, as the link
       // hand-off does it (svgHandoff.ts): its size is the point, and the
       // feeds come from the material and thickness.
-      const trueSize = msg.trueSize === true;
       const placed = trueSize ? placeUnscaled(result.elements, result.bounds, doc.width, doc.height) : null;
-      const thickness = typeof msg.thicknessMm === 'number' && msg.thicknessMm > 0 ? msg.thicknessMm : null;
-      const machine = msg.machine === 'laser' || msg.machine === 'cnc' ? msg.machine : null;
-      const material = materialCatalog().find((m) => m.id === msg.material)?.id ?? null;
       store.setDocument({
         ...doc,
         ...(typeof msg.name === 'string' && msg.name ? { name: msg.name } : {}),
@@ -456,6 +490,7 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       return {
         ok: true,
         importedCount: result.elements.length,
+        sheetCount: 1,
         ...(thickness ? { stockThicknessMm: thickness } : {}),
         ...(machine ? { machine } : {}),
         ...(material ? { material } : {}),

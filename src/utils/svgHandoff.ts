@@ -19,6 +19,12 @@ import type { Matrix } from './matrix';
 /** The only fragment format understood so far. */
 const HANDOFF_VERSION = '1';
 
+export interface HandoffSheetSpec {
+  widthMm: number;
+  heightMm: number;
+  thicknessMm: number | null;
+}
+
 export interface SvgHandoff {
   svg: string;
   /** What the sender called it — the document's name, not just a note. */
@@ -34,6 +40,21 @@ export interface SvgHandoff {
    */
   material: string | null;
   thicknessMm: number | null;
+  machine: 'laser' | 'cnc' | null;
+  /** Per-sheet stock dimensions when a multi-sheet job was handed over. */
+  sheets: HandoffSheetSpec[] | null;
+}
+
+function parseSheetsParam(raw: string | null): HandoffSheetSpec[] | null {
+  if (!raw) return null;
+  const out: HandoffSheetSpec[] = [];
+  for (const entry of raw.split(',')) {
+    const parts = entry.trim().split('x').map(Number);
+    if (parts.length < 2 || !(parts[0] > 0) || !(parts[1] > 0)) return null;
+    const t = parts.length >= 3 && Number.isFinite(parts[2]) && parts[2] > 0 ? parts[2] : null;
+    out.push({ widthMm: parts[0], heightMm: parts[1], thicknessMm: t });
+  }
+  return out.length > 0 ? out : null;
 }
 
 /**
@@ -60,11 +81,15 @@ export async function readSvgHandoff(): Promise<SvgHandoff | null> {
 
   const bytes = fromBase64Url(data);
   const thickness = Number(params.get('thickness'));
+  const rawMachine = params.get('machine');
+  const machine = rawMachine === 'laser' || rawMachine === 'cnc' ? rawMachine : null;
   return {
     svg: params.get('gz') === '1' ? await gunzip(bytes) : new TextDecoder().decode(bytes),
     name: params.get('name'),
     material: params.get('material'),
     thicknessMm: Number.isFinite(thickness) && thickness > 0 ? thickness : null,
+    machine,
+    sheets: parseSheetsParam(params.get('sheets')),
   };
 }
 

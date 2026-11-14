@@ -62,6 +62,12 @@ export interface SheetedSvg {
   cleanedSvg: string;
 }
 
+export interface DeclaredSheetSpec {
+  widthMm: number;
+  heightMm: number;
+  thicknessMm?: number | null;
+}
+
 /** Tolerance for calling two measurements the same sheet, in mm. */
 const SAME_MM = 0.5;
 
@@ -185,6 +191,66 @@ export function analyseSheetedSvg(svgText: string): SheetedSvg | null {
       ...declared,
     },
     cleanedSvg: new XMLSerializer().serializeToString(svg),
+  };
+}
+
+/**
+ * Resolves a stacked multi-sheet SVG either from its dashed sheet frames
+ * (`analyseSheetedSvg`) or, when the sender hid sheet frames (`Annotations:
+ * None`) yet explicitly handed over per-sheet dimensions (`specs`), from those
+ * explicit bands. Single-sheet jobs return `null` so they take the ordinary
+ * single-sheet import path.
+ */
+export function resolveSheetedSvg(
+  svgText: string,
+  specs?: readonly DeclaredSheetSpec[] | null,
+  fallbackThicknessMm?: number | null,
+): SheetedSvg | null {
+  const analysed = analyseSheetedSvg(svgText);
+  if (analysed) {
+    const bands = analysed.bands.bands.map((b, i) => ({
+      ...b,
+      thicknessMm:
+        (specs?.[i]?.thicknessMm && specs[i].thicknessMm! > 0 ? specs[i].thicknessMm! : null) ??
+        b.thicknessMm ??
+        (fallbackThicknessMm && fallbackThicknessMm > 0 ? fallbackThicknessMm : null),
+    }));
+    return {
+      cleanedSvg: analysed.cleanedSvg,
+      bands: {
+        ...analysed.bands,
+        bands,
+        thicknessMm:
+          analysed.bands.thicknessMm ??
+          (fallbackThicknessMm && fallbackThicknessMm > 0 ? fallbackThicknessMm : null),
+      },
+    };
+  }
+  if (!specs || specs.length < 2) return null;
+  if (specs.some((s) => !(s.widthMm > 0) || !(s.heightMm > 0))) return null;
+  const declared = readDeclaredStock(svgText);
+  const fallback =
+    declared.thicknessMm ??
+    (fallbackThicknessMm && fallbackThicknessMm > 0 ? fallbackThicknessMm : null);
+  let top = 0;
+  const bands: SheetBand[] = specs.map((s) => {
+    const band: SheetBand = {
+      top,
+      width: s.widthMm,
+      height: s.heightMm,
+      thicknessMm: s.thicknessMm && s.thicknessMm > 0 ? s.thicknessMm : fallback,
+    };
+    top += s.heightMm;
+    return band;
+  });
+  return {
+    cleanedSvg: svgText,
+    bands: {
+      bands,
+      count: bands.length,
+      thicknessMm: fallback,
+      kerfMm: declared.kerfMm,
+    },
   };
 }
 

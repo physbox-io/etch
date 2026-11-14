@@ -24,7 +24,7 @@ function toBase64Url(bytes: Uint8Array): string {
 /** The fragment Volt builds, as `encodeSvgHandoff` builds it. */
 function fragment(
   svg: string,
-  opts: { gz?: boolean; v?: string; name?: string; material?: string; thickness?: string } = {}
+  opts: { gz?: boolean; v?: string; name?: string; material?: string; thickness?: string; machine?: string; sheets?: string } = {}
 ): string {
   const gz = opts.gz ?? true;
   const params = new URLSearchParams({
@@ -33,6 +33,8 @@ function fragment(
     gz: gz ? '1' : '0',
     ...(opts.material ? { material: opts.material } : {}),
     ...(opts.thickness ? { thickness: opts.thickness } : {}),
+    ...(opts.machine ? { machine: opts.machine } : {}),
+    ...(opts.sheets ? { sheets: opts.sheets } : {}),
     data: toBase64Url(gz ? gzipSync(Buffer.from(svg)) : Buffer.from(svg)),
   });
   return params.toString();
@@ -92,6 +94,23 @@ describe('readSvgHandoff', () => {
   it('ignores a thickness that is not one', async () => {
     setHash(fragment(STENCIL_SVG, { material: 'film', thickness: 'thick' }));
     expect((await readSvgHandoff())?.thicknessMm).toBeNull();
+  });
+
+  it('carries the machine and multi-sheet stock specs from Mesh', async () => {
+    setHash(fragment(STENCIL_SVG, { machine: 'cnc', sheets: '600x400x18,300x200x6' }));
+    const handoff = await readSvgHandoff();
+    expect(handoff?.machine).toBe('cnc');
+    expect(handoff?.sheets).toEqual([
+      { widthMm: 600, heightMm: 400, thicknessMm: 18 },
+      { widthMm: 300, heightMm: 200, thicknessMm: 6 },
+    ]);
+  });
+
+  it('ignores an unknown machine or malformed sheet specs', async () => {
+    setHash(fragment(STENCIL_SVG, { machine: 'plasma', sheets: 'bad' }));
+    const handoff = await readSvgHandoff();
+    expect(handoff?.machine).toBeNull();
+    expect(handoff?.sheets).toBeNull();
   });
 
   it('refuses a version it does not know', async () => {

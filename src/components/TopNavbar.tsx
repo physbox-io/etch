@@ -7,7 +7,7 @@ import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed, nameFromImport, type SvgImportResult } from '../utils/svgImporter';
 import { importDXF } from '../utils/dxfImport';
-import { analyseSheetedSvg, splitIntoSheets } from '../utils/sheetedSvg';
+import { analyseSheetedSvg, resolveSheetedSvg, splitIntoSheets } from '../utils/sheetedSvg';
 import { exportToDXFString, dxfFilename } from '../utils/dxfExport';
 import { readSvgHandoff, placeUnscaled, handoffReplacesSheet, type SheetDrawing, type SvgHandoff } from '../utils/svgHandoff';
 import { cutTopologyProblems } from '../utils/cutTopology';
@@ -389,6 +389,7 @@ export const TopNavbar: React.FC = () => {
     const stock = {
       ...(known ? { material: known.id } : {}),
       ...(opts.handoff?.thicknessMm ? { stockThickness: opts.handoff.thicknessMm } : {}),
+      ...(opts.handoff?.machine ? { machine: opts.handoff.machine } : {}),
     };
     if (known) {
       notes.push(
@@ -652,8 +653,9 @@ export const TopNavbar: React.FC = () => {
   React.useLayoutEffect(() => {
     applyImportedVectorRef.current = applyImportedVector;
   });
-  // The sheet's drawing as the last handoff left it.
+  // The sheet's drawing (or strip of sheets) as the last handoff left it.
   const lastHandoff = React.useRef<SheetDrawing | null>(null);
+  const lastHandoffStrip = React.useRef<SheetDrawing[] | null>(null);
   useEffect(() => {
     const take = () =>
       readSvgHandoff()
@@ -661,6 +663,83 @@ export const TopNavbar: React.FC = () => {
           if (!handoff) return;
           const store = useStore.getState();
           const open = store.document;
+          const stacked = resolveSheetedSvg(handoff.svg, handoff.sheets, handoff.thicknessMm);
+          if (stacked) {
+            const known = handoff.material
+              ? materialCatalog().find((m) => m.id === handoff.material)
+              : undefined;
+            const imported = importSVG(stacked.cleanedSvg);
+            const split = splitIntoSheets(imported, stacked.bands, handoff.name || 'Sheet', {
+              gridSize: open.gridSize,
+              snapToGrid: open.snapToGrid,
+              origin: open.origin,
+              machine: handoff.machine ?? open.machine,
+              material: known ? known.id : open.material,
+            });
+            const stripUnedited =
+              lastHandoffStrip.current !== null &&
+              store.tabs.length === lastHandoffStrip.current.length &&
+              store.tabs.every((t, idx) => {
+                const d = t.id === store.activeTabId ? store.document : t.document;
+                return handoffReplacesSheet(d, lastHandoffStrip.current![idx]);
+              });
+            const canReplaceJob =
+              (store.tabs.length === 1 && handoffReplacesSheet(open, lastHandoff.current)) ||
+              stripUnedited;
+            if (canReplaceJob) {
+              store.openJob(split.document);
+              const next = useStore.getState();
+              lastHandoffStrip.current = next.tabs.map((t) => {
+                const d = t.id === next.activeTabId ? next.document : t.document;
+                return { elements: d.elements, layers: d.layers };
+              });
+              lastHandoff.current = { elements: next.document.elements, layers: next.document.layers };
+            } else {
+              const allDocs = [split.document, ...(split.document.sheets ?? [])];
+              let firstId: string | null = null;
+              for (const sheetDoc of allDocs) {
+                const tabId = useStore.getState().newTab();
+                if (!firstId) firstId = tabId;
+                useStore.getState().setDocument({
+                  ...sheetDoc,
+                  id: tabId,
+                  sheets: undefined,
+                  sheetIndex: undefined,
+                });
+              }
+              if (firstId) useStore.getState().switchTab(firstId);
+              const now = useStore.getState().document;
+              lastHandoff.current = { elements: now.elements, layers: now.layers };
+              lastHandoffStrip.current = null;
+            }
+            const notes = [...imported.warnings];
+            if (handoff.material && !known) {
+              notes.push(`Ignored an unknown material "${handoff.material}" — set the stock yourself before cutting.`);
+            }
+            if (known) {
+              notes.push(
+                `Stock set to ${known.name}` +
+                  (stacked.bands.thicknessMm ? ` at ${stacked.bands.thicknessMm}mm` : '') +
+                  ' — check it matches what is on the bed.'
+              );
+            } else if (stacked.bands.thicknessMm) {
+              notes.push(
+                `Stock set to ${stacked.bands.thicknessMm} mm on every sheet — check it matches what is on the bed.`
+              );
+            }
+            if (split.strays) {
+              notes.push(
+                `${split.strays} shape${split.strays === 1 ? '' : 's'} sat outside every sheet frame and ` +
+                  `${split.strays === 1 ? 'was' : 'were'} put on the nearest one.`
+              );
+            }
+            setImportReport({
+              headline: `Opened ${stacked.bands.count} sheets · ${split.perSheet.join(' + ')} shapes`,
+              notes,
+            });
+            return;
+          }
+          lastHandoffStrip.current = null;
           if (!handoffReplacesSheet(open, lastHandoff.current)) store.newTab();
           applyImportedVectorRef.current(importSVG(handoff.svg), { mayScale: false, handoff, replace: true });
           const now = useStore.getState().document;

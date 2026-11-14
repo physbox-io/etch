@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { analyseSheetedSvg, splitIntoSheets } from '../src/utils/sheetedSvg';
+import { analyseSheetedSvg, resolveSheetedSvg, splitIntoSheets } from '../src/utils/sheetedSvg';
 import { importSVG } from '../src/utils/svgImporter';
 import { clearGeomBBoxCache } from '../src/utils/geom';
 
@@ -210,5 +210,19 @@ describe('a mixed rack', () => {
     // 400 and put it on the document as 400 mm stock.
     const found = analyseSheetedSvg(meshSvg(2))!;
     expect(found.bands.bands.every((b) => b.thicknessMm === 3)).toBe(true);
+  });
+
+  it('splits an unframed multi-sheet handoff when explicit sheet specs accompany it', () => {
+    clearGeomBBoxCache();
+    const unframed = meshSvg(2, { frames: false, thickness: 6 });
+    const resolved = resolveSheetedSvg(unframed, [
+      { widthMm: 600, heightMm: 400, thicknessMm: 6 },
+      { widthMm: 600, heightMm: 400, thicknessMm: 4 },
+    ]);
+    expect(resolved).not.toBeNull();
+    const split = splitIntoSheets(importSVG(resolved!.cleanedSvg), resolved!.bands, 'Cut', base);
+    expect(split.perSheet).toEqual([1, 1]);
+    expect(split.document.stockThickness).toBe(6);
+    expect(split.document.sheets![0].stockThickness).toBe(4);
   });
 });
