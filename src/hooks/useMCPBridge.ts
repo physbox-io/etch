@@ -1730,6 +1730,13 @@ export function useMCPBridge() {
         // the canvas would otherwise just sit there looking idle.
         useStore.getState().incrementMcpActive();
 
+        // Still on it, every 2 s: the hub waits as long as these keep coming,
+        // so a long command (a toolpath plan, an image trace) is not reported
+        // as timed out while it runs, and a tab that has died still is.
+        const working = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event: 'WORKING', cmd, id }));
+        }, 2000);
+
         // The hub keys pending requests off `id` and reads the payload out of
         // `data`, so the reply has to be wrapped rather than spread flat.
         try {
@@ -1743,6 +1750,7 @@ export function useMCPBridge() {
             ws.send(JSON.stringify({ event: 'ERROR', cmd, id, error: String(err) }));
           }
         } finally {
+          clearInterval(working);
           useStore.getState().decrementMcpActive();
         }
       };
