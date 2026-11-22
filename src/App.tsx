@@ -25,6 +25,8 @@ import { DocsModal } from './components/DocsModal';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ToolConfigModal } from './components/ToolConfigModal';
 import { ImageImportModal } from './components/ImageImportModal';
+import { WelcomeTourOverlay } from './components/WelcomeTourOverlay';
+import { parseEtchDeepLink, stripEtchDeepLinkSearch, START_TOUR_EVENT } from './utils/deepLink';
 import { prefetchClipArt } from './utils/clipArtLibrary';
 import type { ToolMode } from './types/etch';
 import { Zap } from 'lucide-react';
@@ -83,6 +85,39 @@ export const App: React.FC = () => {
       mcpActiveCount: s.mcpActiveCount,
     })),
   );
+
+  // Apply deep-link URL query parameters (`?preset=...&machine=...&open=...`) once on mount.
+  useEffect(() => {
+    const link = parseEtchDeepLink(window.location.search);
+    if (!link) return;
+    const store = useStore.getState();
+    if (link.preset) store.loadPreset(link.preset);
+    if (link.machine) store.setMachineTarget(link.machine);
+    if (link.tour) window.dispatchEvent(new CustomEvent(START_TOUR_EVENT));
+    if (link.open) {
+      setTimeout(() => {
+        const s = useStore.getState();
+        switch (link.open) {
+          case 'make':
+            s.toggleGCodeModal();
+            break;
+          case 'test-grid':
+            s.toggleTestGridModal();
+            break;
+          case 'living-hinge':
+            s.toggleLivingHingeModal();
+            break;
+          case 'perforation':
+            s.togglePerforationModal();
+            break;
+          case 'ornament':
+            s.openOrnament('vine');
+            break;
+        }
+      }, 60);
+    }
+    window.history.replaceState(null, '', stripEtchDeepLinkSearch(window.location.href));
+  }, []);
 
   /**
    * Pull the clip-art geometry in while the tab is idle.
@@ -317,6 +352,7 @@ export const App: React.FC = () => {
 
       {/* Rendered last so the Reference Guide sits above the modal that opened it */}
       <DocsModal />
+      <WelcomeTourOverlay />
     </div>
   );
 };

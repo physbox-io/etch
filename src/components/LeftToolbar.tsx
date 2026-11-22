@@ -73,7 +73,7 @@ export const LeftToolbar: React.FC = () => {
       Written as `max-lg:` overrides on top of the original classes, so the
       desktop column is untouched rather than reconstructed.
     */
-    <aside className="absolute left-4 top-20 z-20 flex flex-col gap-1.5 p-1.5 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800/80 rounded-xl shadow-xl transition-colors max-lg:left-2 max-lg:right-2 max-lg:top-auto max-lg:bottom-2 max-lg:flex-row max-lg:flex-wrap max-lg:justify-center">
+    <aside data-tour="left-tools" className="absolute left-4 top-20 z-20 flex flex-col gap-1.5 p-1.5 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800/80 rounded-xl shadow-xl transition-colors max-lg:left-2 max-lg:right-2 max-lg:top-auto max-lg:bottom-2 max-lg:flex-row max-lg:flex-wrap max-lg:justify-center">
       {tools.map((t) => {
         const Icon = t.icon;
         const isActive = activeTool === t.id;
