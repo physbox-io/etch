@@ -782,7 +782,7 @@ export const TopNavbar: React.FC = () => {
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block"></div>
 
         {/* Document Picker Pill */}
-        <div className="flex items-center min-w-0 max-lg:flex-1 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+        <div data-tour="preset-picker" className="flex items-center min-w-0 max-lg:flex-1 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           {/* The open document's name, and the way to every other one. A button
               rather than the <select> it replaced: the select held templates,
               generators and saved documents in one list, and could not search. */}
@@ -841,7 +841,7 @@ export const TopNavbar: React.FC = () => {
       */}
       <div className="flex items-center gap-2 md:gap-3 min-w-0 max-lg:w-full max-lg:flex-wrap max-lg:justify-between max-lg:gap-y-1.5">
         {/* Make: the same control, in the same place, in every PhysBox app. */}
-        <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+        <div data-tour="make-btn" className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <button
             onClick={toggleGCodeModal}
             className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-100 transition-all cursor-pointer"
@@ -938,7 +938,7 @@ export const TopNavbar: React.FC = () => {
         </div>
 
         {/* Right Utilities (Dark Mode, Docs, Settings, Copilot, User Profile, GitHub) matching ~/physics */}
-        <div className="flex items-center gap-1.5 max-lg:shrink-0">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 max-w-full">
           {/* Dark Mode Toggle */}
           <button
             onClick={toggleDarkMode}

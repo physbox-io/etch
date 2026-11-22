@@ -120,7 +120,7 @@ export const ClipArtModal: React.FC = () => {
               <div className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
                 {category}
               </div>
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
                 {CLIP_ART_INDEX.map((symbol, i) => ({ symbol, i }))
                   .filter(({ symbol }) => symbol.category === category)
                   .map(({ symbol, i }) => {

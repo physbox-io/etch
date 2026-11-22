@@ -1093,18 +1093,18 @@ export const DocsModal: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex flex-1 overflow-hidden min-h-0">
-          <div className="w-52 bg-slate-50 dark:bg-slate-900/60 border-r border-slate-200 dark:border-slate-800 p-3 flex flex-col gap-1 shrink-0 overflow-y-auto">
+        <div className="flex flex-col sm:flex-row flex-1 overflow-hidden min-h-0">
+          <div className="w-full sm:w-52 bg-slate-50 dark:bg-slate-900/60 border-b sm:border-b-0 sm:border-r border-slate-200 dark:border-slate-800 p-2.5 sm:p-3 flex flex-row sm:flex-col gap-1.5 sm:gap-1 shrink-0 overflow-x-auto sm:overflow-y-auto">
             {DOCS_TABS.map(({ group, items }) => (
-              <div key={group} className="flex flex-col gap-1 mb-1.5">
-                <span className="px-1 pt-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+              <div key={group} className="flex flex-row sm:flex-col gap-1 sm:mb-1.5 shrink-0">
+                <span className="hidden sm:block px-1 pt-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
                   {group}
                 </span>
                 {items.map(({ id, label }) => (
                   <button
                     key={id}
                     onClick={() => setDocsTab(id)}
-                    className={`px-3 py-1.5 text-left rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    className={`px-3 py-1.5 text-left rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap sm:whitespace-normal shrink-0 ${
                       docsTab === id
                         ? 'bg-amber-500 text-white shadow'
                         : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800'
@@ -1117,7 +1117,7 @@ export const DocsModal: React.FC = () => {
             ))}
           </div>
 
-          <div className="flex-1 p-6 overflow-y-auto">{DOCS_BODIES[docsTab]}</div>
+          <div className="flex-1 p-4 sm:p-6 overflow-y-auto min-w-0">{DOCS_BODIES[docsTab]}</div>
         </div>
       </div>
     </div>

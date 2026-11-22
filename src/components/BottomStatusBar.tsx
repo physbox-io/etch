@@ -166,8 +166,8 @@ export const BottomStatusBar: React.FC = () => {
     */
     <footer className="h-8 shrink-0 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1 max-lg:gap-x-3 max-lg:gap-y-1">
       {/* Stock Size, Material Type & Live Cursor Position */}
-      <div className="flex items-center gap-4 lg:flex-1 lg:min-w-0 max-lg:shrink-0">
-        <div data-tour="bench-bar" className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 lg:flex-1 lg:min-w-0 max-w-full">
+        <div data-tour="bench-bar" className="flex flex-wrap items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 max-w-full">
           <RectangleHorizontal className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
           <label htmlFor="stock-width" className="text-slate-500 dark:text-slate-400">
             Stock
@@ -315,7 +315,7 @@ export const BottomStatusBar: React.FC = () => {
       </div>
 
       {/* Machine Type, Status & Zoom */}
-      <div className="flex items-center gap-4 lg:flex-1 lg:min-w-0 lg:justify-end max-lg:shrink-0">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 lg:flex-1 lg:min-w-0 lg:justify-end max-w-full">
         {/* Target machine dropdowns */}
         <div className="flex items-center gap-1.5">
           <Cpu className="w-3.5 h-3.5 text-amber-500" />

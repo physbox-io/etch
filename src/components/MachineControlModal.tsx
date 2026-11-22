@@ -193,9 +193,9 @@ export const MachineControlModal: React.FC = () => {
         </div>
 
         {/* Content */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 p-6 gap-6 overflow-hidden">
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 p-4 sm:p-6 gap-4 sm:gap-6 overflow-y-auto lg:overflow-hidden">
           {/* Left: connection, work origin, probing */}
-          <div className="lg:col-span-3 flex flex-col gap-4 overflow-y-auto pr-1">
+          <div className="lg:col-span-3 flex flex-col gap-4 min-h-0 lg:overflow-y-auto pr-1">
             <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-xl flex items-center justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">

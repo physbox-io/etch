@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Info } from 'lucide-react';
 
 interface InfoTooltipProps {
@@ -8,7 +8,7 @@ interface InfoTooltipProps {
 }
 
 /**
- * A small (i) icon with a hover tooltip for explaining complex CNC / laser terms
+ * A small (i) icon with a hover/tap tooltip for explaining complex CNC / laser terms
  * ("black magic" parameters) to users.
  */
 export const InfoTooltip: React.FC<InfoTooltipProps> = ({
@@ -16,16 +16,37 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
   className = '',
   iconSize = 'w-3 h-3',
 }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [open]);
+
   return (
-    <span
+    <button
+      ref={ref}
+      type="button"
+      aria-label="More information"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen((o) => !o);
+      }}
+      onBlur={() => setOpen(false)}
       className={`inline-flex items-center group relative cursor-help align-middle text-slate-400 dark:text-slate-500 hover:text-amber-500 dark:hover:text-amber-400 transition-colors ${className}`}
       title={text}
     >
       <Info className={`${iconSize} shrink-0`} />
-      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block w-48 p-1.5 bg-slate-900 dark:bg-slate-800 text-slate-100 text-[10px] leading-tight rounded-md shadow-xl border border-slate-700 z-50 normal-case font-normal font-sans text-center tracking-normal">
+      <span className={`pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 ${open ? 'block' : 'hidden group-hover:block'} w-48 max-w-[75vw] p-1.5 bg-slate-900 dark:bg-slate-800 text-slate-100 text-[10px] leading-tight rounded-md shadow-xl border border-slate-700 z-50 normal-case font-normal font-sans text-center tracking-normal`}>
         {text}
         <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-900 dark:border-t-slate-800" />
       </span>
-    </span>
+    </button>
   );
 };

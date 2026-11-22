@@ -880,8 +880,8 @@ export const ToolpathPreview: React.FC<{
 
       {/* What the drawing cannot tell you */}
       <div
-        className={`grid ${
-          timeline.toolChanges.length ? 'grid-cols-6' : 'grid-cols-5'
+        className={`grid grid-cols-2 sm:grid-cols-3 ${
+          timeline.toolChanges.length ? 'md:grid-cols-6' : 'md:grid-cols-5'
         } gap-px bg-slate-200 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-800 text-center`}
       >
         {[

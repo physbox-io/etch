@@ -400,11 +400,11 @@ export const GCodePreviewModal: React.FC = () => {
         </div>
 
         {/* Modal Content Grid */}
-        <div className="flex-1 grid grid-cols-3 overflow-hidden">
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 overflow-y-auto md:overflow-hidden">
           {/* Controls sidebar. The options scroll; the run controls are pinned
               to the bottom of the column, because a long options list used to
               push the one button this panel exists for off the modal. */}
-          <div className="flex flex-col min-h-0 border-r border-slate-200 dark:border-slate-800 text-xs">
+          <div className="flex flex-col min-h-0 border-b md:border-b-0 md:border-r border-slate-200 dark:border-slate-800 text-xs">
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
             <h3 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
               <Settings className="w-3.5 h-3.5 text-slate-500" />

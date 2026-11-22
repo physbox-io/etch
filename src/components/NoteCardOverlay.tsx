@@ -80,11 +80,11 @@ export function NoteCardOverlay({ card, isEditing, onToggleEdit, onToggleMinimiz
         One value for both widths: the reasoning is the same on a phone, where
         every panel is full-width and the card covered whatever was opened last.
       */
-      className="z-[45] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-2xl rounded-2xl overflow-hidden"
+      className="z-[25] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-2xl rounded-2xl overflow-hidden"
     >
       {/* Title bar */}
       <div
-        className="flex items-center justify-between px-3 py-2 bg-slate-50/80 dark:bg-slate-950/40 border-b border-slate-100 dark:border-slate-800 cursor-move select-none"
+        className="flex items-center justify-between px-3 py-2 bg-slate-50/80 dark:bg-slate-950/40 border-b border-slate-100 dark:border-slate-800 cursor-move select-none touch-none"
         onPointerDown={handleTitleMouseDown}
       >
         <div className="flex items-center gap-1.5">
