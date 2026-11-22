@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { NumberInput } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -335,7 +336,8 @@ export const ImageImportModal: React.FC = () => {
 
   if (!isImageImportOpen) return null;
 
-  const handleWidthChange = (val: number) => {
+  const handleWidthChange = (val: number | undefined) => {
+    if (val === undefined) return;
     const w = Math.max(1, val);
     if (lockAspect && aspectRatio) {
       setOptions({ ...options, targetWidth: w, targetHeight: Math.round(w / aspectRatio) });
@@ -344,7 +346,8 @@ export const ImageImportModal: React.FC = () => {
     }
   };
 
-  const handleHeightChange = (val: number) => {
+  const handleHeightChange = (val: number | undefined) => {
+    if (val === undefined) return;
     const h = Math.max(1, val);
     if (lockAspect && aspectRatio) {
       setOptions({ ...options, targetHeight: h, targetWidth: Math.round(h * aspectRatio) });
@@ -433,7 +436,7 @@ export const ImageImportModal: React.FC = () => {
           works — and the preview underneath is still the previous trace until
           it comes back. */}
       <BusyToast show={tracing} label="Tracing image…" />
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden text-slate-800 dark:text-slate-100">
+      <div role="dialog" aria-modal="true" aria-label="Import and Vectorize Image" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden text-slate-800 dark:text-slate-100">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/50">
           <div className="flex items-center gap-3">
@@ -452,6 +455,8 @@ export const ImageImportModal: React.FC = () => {
           </div>
           <button
             onClick={close}
+            aria-label="Close"
+            title="Close"
             className="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -469,7 +474,7 @@ export const ImageImportModal: React.FC = () => {
             {!loadedImg ? (
               <div
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-cyan-500 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors text-center bg-slate-50/50 dark:bg-slate-850/50"
+                className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-cyan-500 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors text-center bg-slate-50/50 dark:bg-slate-800/50"
               >
                 <Upload className="w-10 h-10 text-slate-400 mb-3" />
                 <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
@@ -556,7 +561,7 @@ export const ImageImportModal: React.FC = () => {
                   className={`space-y-2 p-4 rounded-xl border ${
                     options.cutout
                       ? 'bg-rose-50/60 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800'
-                      : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-800'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-800'
                   }`}
                 >
                   <label className="flex items-center gap-2 text-xs font-bold cursor-pointer text-slate-700 dark:text-slate-300">
@@ -603,7 +608,7 @@ export const ImageImportModal: React.FC = () => {
                 </div>
 
                 {/* Adjustments: Threshold, Contrast, Brightness */}
-                <div className="space-y-4 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                <div className="space-y-4 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
                       Threshold / Binarization
@@ -689,7 +694,7 @@ export const ImageImportModal: React.FC = () => {
 
                 {/* Mode Specific Options */}
                 {options.mode === 'halftone' && (
-                  <div className="space-y-3 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                  <div className="space-y-3 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
                         Dot Spacing (mm)
@@ -713,7 +718,7 @@ export const ImageImportModal: React.FC = () => {
                 )}
 
                 {options.mode === 'scanline' && (
-                  <div className="space-y-3 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                  <div className="space-y-3 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
                         Line Pitch / Spacing (mm)
@@ -751,7 +756,7 @@ export const ImageImportModal: React.FC = () => {
                     </button>
 
                     {showAdvanced && (
-                      <div className="space-y-3 mt-2 bg-slate-50 dark:bg-slate-850 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
+                      <div className="space-y-3 mt-2 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
                         {options.cutout && (
                           <>
                             <div>
@@ -889,26 +894,30 @@ export const ImageImportModal: React.FC = () => {
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-xs font-semibold text-slate-500 block mb-1">
+                      <label htmlFor="img-import-width" className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
                         Width (mm)
                       </label>
-                      <input
-                        type="number"
-                        min="1"
+                      <NumberInput
+                        id="img-import-width"
+                        min={1}
+                        integer
+                        fallbackOnBlur={options.targetWidth}
                         value={options.targetWidth}
-                        onChange={(e) => handleWidthChange(Number(e.target.value))}
+                        onChange={handleWidthChange}
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-semibold text-slate-500 block mb-1">
+                      <label htmlFor="img-import-height" className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
                         Height (mm)
                       </label>
-                      <input
-                        type="number"
-                        min="1"
+                      <NumberInput
+                        id="img-import-height"
+                        min={1}
+                        integer
+                        fallbackOnBlur={options.targetHeight}
                         value={options.targetHeight}
-                        onChange={(e) => handleHeightChange(Number(e.target.value))}
+                        onChange={handleHeightChange}
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                       />
                     </div>

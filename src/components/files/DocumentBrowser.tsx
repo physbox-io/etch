@@ -311,7 +311,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
       className="fixed inset-0 z-50 flex items-center justify-center sm:p-4 bg-slate-900/60 backdrop-blur-xs"
       onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
     >
-      <div className="w-full max-w-5xl h-full sm:h-[85dvh] bg-white dark:bg-slate-900 sm:rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+      <div role="dialog" aria-modal="true" aria-label="Open Design" className="w-full max-w-5xl h-full sm:h-[85dvh] bg-white dark:bg-slate-900 sm:rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 focus-within:ring-2 ring-red-400">
             <Search className="w-4 h-4 text-slate-400 shrink-0" />

@@ -711,29 +711,33 @@ export const MachineWorkOriginPanel: React.FC<{
               </span>
             </button>
             <div className="flex items-center gap-1.5">
-              <input
-                type="number"
+              <NumberInput
+                integer
                 min={2}
                 max={10}
                 step={1}
+                fallbackOnBlur={gridX}
                 value={gridX}
+                aria-label="Probe points across X"
                 title="Probe points across X"
-                onChange={(e) =>
-                  setGridOverride({ gridX: clampCount(e.target.value, gridX), gridY })
-                }
+                onChange={(v) => {
+                  if (v !== undefined) setGridOverride({ gridX: clampCount(String(v), gridX), gridY });
+                }}
                 className={`w-14 ${numInput}`}
               />
               <span className="text-[10px] text-slate-400 dark:text-slate-500">×</span>
-              <input
-                type="number"
+              <NumberInput
+                integer
                 min={2}
                 max={10}
                 step={1}
+                fallbackOnBlur={gridY}
                 value={gridY}
+                aria-label="Probe points along Y"
                 title="Probe points along Y"
-                onChange={(e) =>
-                  setGridOverride({ gridX, gridY: clampCount(e.target.value, gridY) })
-                }
+                onChange={(v) => {
+                  if (v !== undefined) setGridOverride({ gridX, gridY: clampCount(String(v), gridY) });
+                }}
                 className={`w-14 ${numInput}`}
               />
               <span className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">

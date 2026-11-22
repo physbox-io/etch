@@ -785,6 +785,7 @@ export const PropertiesSidebar: React.FC = () => {
       a preset name got longer.
     */
     <aside
+      data-tour="right-layers"
       className={`w-72 h-full min-h-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-hidden transition-colors max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:h-auto max-lg:w-80 max-lg:max-w-[85vw] max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200 ${
         isPropertiesOpen ? 'max-lg:translate-x-0' : 'max-lg:translate-x-full max-lg:pointer-events-none'
       }`}
@@ -1554,6 +1555,7 @@ export const PropertiesSidebar: React.FC = () => {
                       type="text"
                       value={sweepWidthsText}
                       onChange={(e) => setSweepWidthsText(e.target.value)}
+                      onBlur={() => sweepSelected(sweepWidthsText, currentCap, brushSettings.smoothingMm)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') sweepSelected(sweepWidthsText, currentCap, brushSettings.smoothingMm);
                       }}
@@ -1761,17 +1763,18 @@ export const PropertiesSidebar: React.FC = () => {
                     min={0.5}
                     fallbackOnBlur={20}
                     value={round1(shapeRadius * 2)}
-                    onChange={(val) =>
+                    onChange={(val) => {
+                      const nextOuter = Math.max(0.25, (val ?? 40) / 2);
                       updateElement(selectedElement.id, {
                         d: undefined,
                         shape: shapeKind,
-                        outerRadius: Math.max(0.25, (val ?? 40) / 2),
+                        outerRadius: nextOuter,
                         innerRadius:
                           selectedElement.innerRadius !== undefined
-                            ? selectedElement.innerRadius * ((val ?? 40) / 2 / shapeRadius)
+                            ? selectedElement.innerRadius * (nextOuter / shapeRadius)
                             : undefined,
-                      })
-                    }
+                      });
+                    }}
                     className={NUM_INPUT}
                   />
                 </div>
@@ -2293,7 +2296,7 @@ export const PropertiesSidebar: React.FC = () => {
                   just picked a material.
                 */}
                 {!isMachinedLayer(layer) ? (
-                  <div className="p-2 rounded bg-slate-100 dark:bg-slate-850 border border-slate-200 dark:border-slate-700/60 text-[10px] text-slate-600 dark:text-slate-300 space-y-1">
+                  <div className="p-2 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 text-[10px] text-slate-600 dark:text-slate-300 space-y-1">
                     <div className="font-semibold flex items-center gap-1 text-slate-700 dark:text-slate-200">
                       <span>👻 Ghost Layer (Guide / Reference)</span>
                     </div>

@@ -1,8 +1,9 @@
 import React from 'react';
-import { Info, X } from 'lucide-react';
+import { Info, Sparkles, X } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { DOCS_TABS, type DocsTabId } from '../docs/docsContent';
+import { START_TOUR_EVENT } from '../utils/deepLink';
 
 /**
  * Small (i) affordance that deep-links a panel to its explainer. Anywhere a
@@ -1060,7 +1061,7 @@ export const DocsModal: React.FC = () => {
     // Above the export and machine modals (z-50), which would otherwise paint
     // over the docs they just opened.
     <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label="Physbox Etch Reference Guide" className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/80">
           <div className="flex items-center gap-2">
             <Info className="w-5 h-5 text-amber-500" />
@@ -1068,12 +1069,28 @@ export const DocsModal: React.FC = () => {
               Physbox Etch Reference Guide
             </h2>
           </div>
-          <button
-            onClick={closeDocs}
-            className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                closeDocs();
+                window.dispatchEvent(new CustomEvent(START_TOUR_EVENT));
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-xs font-semibold transition-colors cursor-pointer"
+              title="Replay the 5-step interactive workspace tour"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Quick Tour</span>
+            </button>
+            <button
+              onClick={closeDocs}
+              aria-label="Close"
+              title="Close"
+              className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-1 overflow-hidden min-h-0">

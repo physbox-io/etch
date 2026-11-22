@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { FloatingStop, JobWaitingButton, NumberInput, RemoteJobChip, jobPauseKind, stopControl } from '@physbox-io/ui';
@@ -46,6 +46,7 @@ const KerfField: React.FC<{ machineId?: string; machineName?: string }> = ({
   // keys this component on the machine id, so connecting a different laser
   // mounts a fresh field holding that laser's figure.
   const [kerf, setKerf] = useState(() => readLaserKerf(machineId ?? null));
+  const kerfRef = useRef(kerf);
 
   const scope = machineId
     ? `Saved for ${machineName || 'this machine'} and synced to your account.`
@@ -54,6 +55,9 @@ const KerfField: React.FC<{ machineId?: string; machineName?: string }> = ({
   return (
     <div
       className="flex items-center gap-1"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLElement).blur();
+      }}
       title={
         'Width of the slot the beam burns. Cuts are offset half of it to the waste side, so parts ' +
         'come out the size they were drawn — without it every part is a kerf undersized and every ' +
@@ -63,13 +67,22 @@ const KerfField: React.FC<{ machineId?: string; machineName?: string }> = ({
     >
       <span className="text-slate-500 dark:text-slate-400">kerf</span>
       <NumberInput
+        aria-label="Laser kerf (mm)"
         value={kerf}
         min={0}
         max={MAX_LASER_KERF_MM}
         step={0.01}
         fallbackOnBlur={kerf}
-        onChange={(v) => setKerf(v ?? 0)}
-        onCommit={() => setKerf(writeLaserKerf(kerf, machineId ?? null))}
+        onChange={(v) => {
+          const next = v ?? 0;
+          kerfRef.current = next;
+          setKerf(next);
+        }}
+        onCommit={() => {
+          const saved = writeLaserKerf(kerfRef.current, machineId ?? null);
+          kerfRef.current = saved;
+          setKerf(saved);
+        }}
         className="w-12 bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none border-none"
       />
       <span className="text-slate-500 dark:text-slate-400">mm</span>
@@ -154,7 +167,7 @@ export const BottomStatusBar: React.FC = () => {
     <footer className="h-8 shrink-0 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1 max-lg:gap-x-3 max-lg:gap-y-1">
       {/* Stock Size, Material Type & Live Cursor Position */}
       <div className="flex items-center gap-4 lg:flex-1 lg:min-w-0 max-lg:shrink-0">
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+        <div data-tour="bench-bar" className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
           <RectangleHorizontal className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
           <label htmlFor="stock-width" className="text-slate-500 dark:text-slate-400">
             Stock
@@ -256,16 +269,15 @@ export const BottomStatusBar: React.FC = () => {
           <label htmlFor="grid-size" className="text-slate-500 dark:text-slate-400">
             Grid
           </label>
-          <input
+          <NumberInput
             id="grid-size"
-            type="number"
             min={0.1}
             max={100}
             step={0.5}
+            fallbackOnBlur={10}
             value={gridSize}
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              if (Number.isFinite(v)) setGridSize(v);
+            onChange={(v) => {
+              if (v !== undefined) setGridSize(v);
             }}
             className="w-14 px-1 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 text-right"
             title="Grid spacing in millimetres"
@@ -371,6 +383,7 @@ export const BottomStatusBar: React.FC = () => {
                 onClick={openToolConfigModal}
                 className="p-1 rounded text-amber-600 dark:text-amber-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                 title="Configure CNC tool rack"
+                aria-label="Configure CNC tool rack"
               >
                 <Wrench className="w-3.5 h-3.5" />
               </button>
@@ -397,6 +410,7 @@ export const BottomStatusBar: React.FC = () => {
             onClick={toggleMachineModal}
             className="p-1 rounded text-amber-600 dark:text-amber-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer"
             title="Connect the machine, home it, and set the work origin"
+            aria-label="Connect machine and set work origin"
           >
             <Wrench className="w-3.5 h-3.5" />
           </button>
@@ -442,6 +456,7 @@ export const BottomStatusBar: React.FC = () => {
               <button
                 onClick={() => webSerialManager.pauseJob()}
                 title="Pause job"
+                aria-label="Pause job"
                 className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <Pause className="w-3.5 h-3.5" />
