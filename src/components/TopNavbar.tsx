@@ -853,7 +853,7 @@ export const TopNavbar: React.FC = () => {
         </div>
 
         {/* Files & Actions Segmented Group */}
-        <div className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
+        <div className="flex items-center max-md:flex-1 max-md:min-w-0 max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden [&>*]:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           {/* Always Save As: the disk icon beside the document name above is the one
               that overwrites the selected document in place with no prompt. */}
           <button
@@ -938,7 +938,7 @@ export const TopNavbar: React.FC = () => {
         </div>
 
         {/* Right Utilities (Dark Mode, Docs, Settings, Copilot, User Profile, GitHub) matching ~/physics */}
-        <div className="flex flex-wrap items-center justify-end gap-1.5 max-w-full">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 max-sm:gap-1 max-w-full">
           {/* Dark Mode Toggle */}
           <button
             onClick={toggleDarkMode}
