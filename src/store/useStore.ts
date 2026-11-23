@@ -36,6 +36,7 @@ import {
 } from '../utils/tooling';
 import type { RackTool } from '@physbox-io/machining';
 import { PRESET_ETCHINGS, DEFAULT_PRESET, DEFAULT_PRESET_ID } from '../presets/presetEtchings';
+import { parseEtchDeepLink } from '../utils/deepLink';
 import { MAX_REPEAT_ADDED, repeatCount, repeatElements, selectionCentre, type RepeatSpec } from '../utils/repeatPattern';
 import { TEXTURES, autoTextureSize, textureCut, textureEngrave, textureLimits } from '../utils/textureFill';
 import { replanField } from '../utils/generatedField';
@@ -688,7 +689,13 @@ export type RepeatRequest = Partial<Omit<RepeatSettings, 'centre'>> & {
   mirror?: boolean;
 };
 
-const defaultDoc: EtchDocument = cloneDoc(DEFAULT_PRESET.doc);
+const initialDeepLinkPreset = (() => {
+  if (typeof window === 'undefined') return null;
+  const p = parseEtchDeepLink(window.location.search)?.preset;
+  return p ? PRESET_ETCHINGS.find((entry) => entry.id === p) ?? null : null;
+})();
+const initialPresetId = initialDeepLinkPreset?.id ?? DEFAULT_PRESET_ID;
+const defaultDoc: EtchDocument = cloneDoc((initialDeepLinkPreset ?? DEFAULT_PRESET).doc);
 
 /**
  * What to tell the operator after a combine, or nothing.
@@ -928,7 +935,7 @@ export function numberedName(name: string, elements: readonly { name: string }[]
 
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
-  tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, DEFAULT_PRESET_ID)],
+  tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, initialPresetId)],
   activeTabId: FIRST_TAB_ID,
   mcpActiveCount: 0,
   activeTool: 'select',
@@ -946,7 +953,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   zoom: 1.0,
   pan: { x: 0, y: 0 },
   cursor: { x: 0, y: 0 },
-  activePreset: DEFAULT_PRESET_ID,
+  activePreset: initialPresetId,
   userPresetNames: Object.keys(readUserPresets()).sort(),
   documentBrowser: null,
   shapeSettings: { kind: 'star' as ShapeKind, pointsCount: 5, innerRatio: 0.4 },
