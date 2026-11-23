@@ -64,6 +64,89 @@ export interface EtchPreset {
   doc: EtchDocument;
 }
 
+function generateMandalaCoasterElements(cx: number = 150, cy: number = 100): EtchElement[] {
+  const sampleRosePath = (maxR: number, k: number, phase: number, steps: number): string => {
+    const pts: string[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * Math.PI * 2;
+      const r = maxR * Math.cos(k * (t + phase));
+      const x = cx + r * Math.cos(t);
+      const y = cy + r * Math.sin(t);
+      pts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`);
+    }
+    pts.push('Z');
+    return pts.join(' ');
+  };
+
+  return [
+    // 1. Outer Coaster Cut Boundary (96mm diameter)
+    {
+      id: 'coaster_cut',
+      name: 'Coaster Outer Cut',
+      type: 'circle',
+      layerId: 'cut',
+      x: cx, y: cy, r: 48,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1,
+      strokeWidth: 0.2, strokeColor: '#ef4444', fillColor: 'none',
+      visible: true, locked: false,
+    },
+    // 2. Outer Etch Frame Rings
+    {
+      id: 'coaster_ring1',
+      name: 'Outer Etch Ring',
+      type: 'circle',
+      layerId: 'etch',
+      x: cx, y: cy, r: 44,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1,
+      strokeWidth: 0.4, strokeColor: '#3b82f6', fillColor: 'none',
+      visible: true, locked: false,
+    },
+    {
+      id: 'coaster_ring_dashed',
+      name: 'Dashed Trim Ring',
+      type: 'circle',
+      layerId: 'etch',
+      x: cx, y: cy, r: 41.5,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1,
+      strokeWidth: 0.3, strokeDash: 'dashed', strokeColor: '#3b82f6', fillColor: 'none',
+      visible: true, locked: false,
+    },
+    // 3. Primary 12-Petal Rose Curve (r = 39 * cos(6θ) — matches PhysBox Hero Stage)
+    {
+      id: 'coaster_rose_primary',
+      name: '12-Petal Rose Mandala',
+      type: 'path',
+      layerId: 'etch',
+      x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1,
+      strokeWidth: 0.4, strokeColor: '#3b82f6', fillColor: 'none',
+      d: sampleRosePath(39, 6, 0, 360),
+      visible: true, locked: false,
+    },
+    // 4. Interleaved Inner 12-Petal Filigree (rotated 15°)
+    {
+      id: 'coaster_rose_inner',
+      name: 'Inner 12-Petal Filigree',
+      type: 'path',
+      layerId: 'etch',
+      x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1,
+      strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none',
+      d: sampleRosePath(23, 6, Math.PI / 12, 288),
+      visible: true, locked: false,
+    },
+    // 5. Center Medallion Ring
+    {
+      id: 'coaster_ring2',
+      name: 'Center Medallion Ring',
+      type: 'circle',
+      layerId: 'etch',
+      x: cx, y: cy, r: 6.5,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1,
+      strokeWidth: 0.4, strokeColor: '#3b82f6', fillColor: 'none',
+      visible: true, locked: false,
+    },
+  ];
+}
+
 function generateIntricateMandalaElements(cx: number = 150, cy: number = 100): EtchElement[] {
   const elements: EtchElement[] = [];
 
@@ -3691,7 +3774,7 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
     id: 'mandala-coaster',
     name: 'Sacred Geometry Mandala Coaster',
     category: 'Coasters & Art',
-    description: '100mm circular coaster with intricate 8-fold lotus geometry, concentric etch rings, and cut boundary.',
+    description: '96mm circular coaster featuring a 12-petal rose mandala curve, interleaved inner filigree, concentric rings, and outer cut boundary.',
     doc: {
       id: 'doc_mandala_coaster',
       name: 'Sacred Mandala Coaster',
@@ -3704,24 +3787,15 @@ export const PRESET_ETCHINGS: EtchPreset[] = [
       material: 'plywood',
       stockThickness: 3,
       notecard: `### Sacred Mandala Coaster Preset
-- **Cut Layer**: 100mm outer coaster boundary.
-- **Etch Layer**: Concentric sacred geometry rings and 8-fold lotus petal array.
-- **Mandala Tools**: Double click or use Mandala Tool sidebar to generate customized radial symmetry!`,
+- **Cut Layer**: 96mm outer coaster boundary.
+- **Etch Layer**: 12-petal rose mandala (\`r = R·cos(6θ)\`), interleaved inner filigree, and concentric border rings.
+- **Mandala Tools**: Use the Symmetry / Mandala tool in the left toolbar to sketch custom radial geometry!`,
       layers: [
         { id: 'cut', name: 'Vector Cut', color: '#ef4444', operation: 'cut', visible: true, locked: false, speed: 500, power: 90, passes: 1, zDepth: 3.3 },
         { id: 'etch', name: 'Vector Etch', color: '#3b82f6', operation: 'etch', visible: true, locked: false, speed: 2000, power: 30, passes: 1, zDepth: 0.5 },
       ],
       selectedIds: [],
-      elements: [
-        // Outer Coaster Cut Circle
-        { id: 'coaster_cut', name: 'Coaster Outer Cut', type: 'circle', layerId: 'cut', x: 150, y: 100, r: 48, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.2, strokeColor: '#ef4444', fillColor: 'none', visible: true, locked: false },
-        // Outer Etch Ring
-        { id: 'coaster_ring1', name: 'Outer Etch Ring', type: 'circle', layerId: 'etch', x: 150, y: 100, r: 44, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.4, strokeColor: '#3b82f6', fillColor: 'none', visible: true, locked: false },
-        // Inner Etch Ring
-        { id: 'coaster_ring2', name: 'Inner Etch Ring', type: 'circle', layerId: 'etch', x: 150, y: 100, r: 20, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.4, strokeColor: '#3b82f6', fillColor: 'none', visible: true, locked: false },
-        // Center Star / Mandala petals
-        { id: 'center_star', name: 'Center Star', type: 'polygon', layerId: 'etch', x: 150, y: 100, sides: 8, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, strokeColor: '#3b82f6', fillColor: 'none', visible: true, locked: false },
-      ]
+      elements: generateMandalaCoasterElements(150, 100),
     }
   },
   {
