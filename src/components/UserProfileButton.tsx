@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { AccountMenu, useAccountSession, type AccountSignIn } from '@physbox-io/ui';
+import { AccountMenu, CloudSaveStatus, useAccountSession, type AccountSignIn } from '@physbox-io/ui';
 import { getStoredUser, clearStoredAuth, loginWithGoogle, fetchCurrentUser, type PhysBoxUser } from '../utils/apiClient';
 import { renderGoogleSignInButton, isGoogleSignInConfigured, disableGoogleAutoSelect } from '../utils/googleAuth';
 import { pullCloudState } from '../utils/cloudSync';
@@ -7,7 +7,7 @@ import { setMachineJobProbe, useStore } from '../store/useStore';
 import { webSerialManager } from '../utils/webSerialManager';
 import { RemoteMachiningModal } from './RemoteMachiningModal';
 import { JobHistoryModal } from './JobHistoryModal';
-import { CloudSaveStatus } from './CloudSaveStatus';
+import { cloudAutosave } from '../utils/cloudDocuments';
 import { GuestListModal } from './GuestListModal';
 
 export { SIGN_IN_REQUESTED_EVENT, SIGNED_IN_EVENT } from '@physbox-io/ui';
@@ -79,7 +79,7 @@ export const UserProfileButton: React.FC = () => {
       <RemoteMachiningModal isOpen={showRemoteModal} onClose={() => setShowRemoteModal(false)} />
       <JobHistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} />
       {/* Mounted here only because this component is always on screen; it portals itself. */}
-      <CloudSaveStatus />
+      <CloudSaveStatus autosave={cloudAutosave} />
       <GuestListModal isOpen={showGuestModal} onClose={() => setShowGuestModal(false)} userEmail={user?.email || ''} />
     </AccountMenu>
   );
