@@ -9,7 +9,8 @@ import {
   tabHoldingMm,
   type ToolpathPlan,
 } from '../utils/gcodeExporter';
-import { camWorker, type ProgramResult } from '../utils/camWorkerClient';
+import { camWorker, isAbortError, type ProgramResult } from '../utils/camWorkerClient';
+import { warpTimeline } from '../utils/toolpathTimeline';
 import { machineToDoc } from '../utils/machineCoords';
 import { jobTools, describeTool, machineKind, machineWords } from '../utils/tooling';
 import { ToolpathPreview } from './ToolpathPreview';
@@ -238,15 +239,17 @@ export const GCodePreviewModal: React.FC = () => {
     plannedInput.exportOpts !== exportOpts ||
     plannedInput.travelSpeed !== travelSpeed ||
     plannedInput.laserMode !== laserMode;
-  const isPlanningNow = planning || isPlanStale;
+  const isPlanningNow = !planError && (planning || isPlanStale);
 
   useEffect(() => {
     if (!isGCodeModalOpen) return;
     let live = true;
+    const controller = new AbortController();
     const t = setTimeout(() => {
       setPlanning(true);
+      setPlanError(null);
       camWorker
-        .planProgram(document, exportOpts, { travelSpeed, laserMode })
+        .planProgram(document, exportOpts, { travelSpeed, laserMode }, controller.signal)
         .then((result) => {
           if (!live) return;
           setProgram(result);
@@ -254,8 +257,9 @@ export const GCodePreviewModal: React.FC = () => {
           setPlanError(null);
         })
         .catch((err: unknown) => {
-          if (!live) return;
+          if (!live || isAbortError(err)) return;
           setProgram(null);
+          setPlannedInput(null);
           setPlanError(err instanceof Error ? err.message : String(err));
         })
         .finally(() => {
@@ -265,6 +269,7 @@ export const GCodePreviewModal: React.FC = () => {
     return () => {
       live = false;
       clearTimeout(t);
+      controller.abort();
     };
   }, [isGCodeModalOpen, document, exportOpts, travelSpeed, laserMode]);
 
@@ -281,6 +286,7 @@ export const GCodePreviewModal: React.FC = () => {
     if (!isGCodeModalOpen) return;
     return () => {
       setProgram(null);
+      setPlannedInput(null);
       setPlanError(null);
       setPlanning(false);
     };
@@ -344,6 +350,11 @@ export const GCodePreviewModal: React.FC = () => {
     if (!program) return '';
     return levelling ? warpGcode(program.gcode, levelling) : program.gcode;
   }, [program, levelling]);
+
+  const previewTimeline = useMemo(() => {
+    if (!program?.timeline) return null;
+    return levelling ? warpTimeline(program.timeline, levelling, document) : program.timeline;
+  }, [program, levelling, document]);
 
   /**
    * The outlines a dry run traces, shown while one is being considered or run.
@@ -503,8 +514,7 @@ export const GCodePreviewModal: React.FC = () => {
                   </p>
                 ) : (
                   <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                    No heightmap. Probe the bed from the machine panel to make cut depth follow a bed
-                    that is not flat.
+                    No heightmap — probe bed in Machine panel.
                   </p>
                 )}
               </div>
@@ -987,23 +997,15 @@ export const GCodePreviewModal: React.FC = () => {
                     </div>
                   </div>
                   <p className="text-[10px] text-sky-800 dark:text-sky-300/90 leading-snug">
-                    Traces the outline of each shape once
+                    Traces {airCutBoundaries ? `${airCutBoundaries.length} ` : ''}outline
+                    {airCutBoundaries?.length === 1 ? '' : 's'}
                     {laserMode
-                      ? ', with the beam off throughout (M5, S0)'
-                      : `, ${airCutZOffset} mm above the work in thin air`}
-                    {' '}— the paths highlighted in blue on the right
-                    {airCutBoundaries ? ` (${airCutBoundaries.length})` : ''}. Fills, extra passes
-                    and cut depth are not run: this checks the origin, the extents, the travel and
-                    the clamps, not the cut.
+                      ? ' with beam off (M5)'
+                      : ` ${airCutZOffset} mm above stock`}.
                   </p>
-                  {!machine.connected && (
-                    <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
-                      <Usb className="w-3 h-3 shrink-0" />
-                      <span>Machine is not connected. Starting will open the port selector.</span>
-                    </p>
-                  )}
                   <div className="flex gap-2 pt-1">
                     <button
+                      disabled={!program || isPlanningNow}
                       onClick={async () => {
                         if (!machine.connected) {
                           toggleMachineModal();
@@ -1023,7 +1025,7 @@ export const GCodePreviewModal: React.FC = () => {
                         setRunNote(`[Air Cut] ${result.message}`);
                         setConfirmAirCut(false);
                       }}
-                      className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold cursor-pointer text-xs flex items-center justify-center gap-1.5 shadow-sm"
+                      className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold cursor-pointer text-xs flex items-center justify-center gap-1.5 shadow-sm"
                     >
                       {machine.connected ? <Play className="w-3.5 h-3.5" /> : <Usb className="w-3.5 h-3.5" />}
                       <span>{machine.connected ? 'Start Air Cut' : 'Connect & Start Air Cut'}</span>
@@ -1039,14 +1041,8 @@ export const GCodePreviewModal: React.FC = () => {
               ) : confirmRun ? (
                 <div className="p-2.5 rounded-lg border border-amber-400/70 bg-amber-50 dark:bg-amber-950/40 space-y-2">
                   <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                    Is the work origin set and the stock {laserMode ? 'squared up' : 'clamped'}? This starts cutting immediately.
+                    Origin set and stock {laserMode ? 'squared' : 'clamped'}? Starts immediately.
                   </p>
-                  {!machine.connected && (
-                    <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
-                      <Usb className="w-3 h-3 shrink-0" />
-                      <span>Machine is not connected. Starting will open the port selector.</span>
-                    </p>
-                  )}
                   {/* Which tools to have to hand, before the machine is holding
                       a half-cut part waiting for one that is still in a drawer. */}
                   {toolChanges.length > 0 && (
@@ -1061,6 +1057,7 @@ export const GCodePreviewModal: React.FC = () => {
                   )}
                   <div className="flex gap-2">
                     <button
+                      disabled={!gcodeStr || isPlanningNow}
                       onClick={async () => {
                         if (!machine.connected) {
                           toggleMachineModal();
@@ -1074,7 +1071,7 @@ export const GCodePreviewModal: React.FC = () => {
                         setRunNote(result.message);
                         setConfirmRun(false);
                       }}
-                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold cursor-pointer text-xs flex items-center justify-center gap-1.5"
+                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold cursor-pointer text-xs flex items-center justify-center gap-1.5"
                     >
                       {machine.connected ? <Play className="w-3.5 h-3.5" /> : <Usb className="w-3.5 h-3.5" />}
                       <span>{machine.connected ? 'Start cutting' : 'Connect & Start cutting'}</span>
@@ -1108,31 +1105,36 @@ export const GCodePreviewModal: React.FC = () => {
                       disabled={!gcodeStr || isPlanningNow}
                       className="flex-1 py-2 rounded-lg font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white shadow-md shadow-emerald-500/20 transition-all cursor-pointer text-xs"
                     >
-                      {!gcodeStr || isPlanningNow ? (
+                      {isPlanningNow ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : machine.connected ? (
                         <Play className="w-4 h-4" />
                       ) : (
                         <Usb className="w-4 h-4" />
                       )}
-                      <span>{gcodeStr && !isPlanningNow ? 'Run on Machine' : 'Planning\u2026'}</span>
+                      <span>
+                        {isPlanningNow
+                          ? 'Planning\u2026'
+                          : planError
+                            ? 'Plan failed'
+                            : 'Run on Machine'}
+                      </span>
                     </button>
                     <button
+                      disabled={!program || isPlanningNow}
                       onClick={() => {
                         setConfirmRun(false);
                         setConfirmAirCut(true);
                       }}
-                      className="py-2 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 transition-all cursor-pointer text-xs shrink-0"
+                      className="py-2 px-3 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 transition-all cursor-pointer text-xs shrink-0"
                       title="Trace the job's outlines in thin air, clear of the stock"
                     >
                       <Wind className="w-4 h-4" />
                       <span>Air Cut</span>
                     </button>
                   </div>
-                  {!machine.connected && (
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 text-center">
-                      No machine connected — clicking either button prompts connection.
-                    </p>
+                  {planError && (
+                    <p className="text-[10px] text-red-600 dark:text-red-400 leading-snug">{planError}</p>
                   )}
                 </div>
               )}
@@ -1180,10 +1182,12 @@ export const GCodePreviewModal: React.FC = () => {
               <ToolpathPreview
                 doc={document}
                 segments={plan.segments}
-                timeline={program?.timeline ?? null}
+                timeline={previewTimeline}
                 travelSpeed={travelSpeed}
                 showTravel={showTravel}
                 laserMode={laserMode}
+                passOrder={passOrder}
+                overscan={overscan}
                 live={live}
                 boundaries={airCutBoundaries}
               />

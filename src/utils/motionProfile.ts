@@ -175,7 +175,13 @@ export function motionProfileFromSettings(settings: Map<number, number>): Motion
     junctionDeviation: read(SETTING.junctionDeviation, d.junctionDeviation),
     spindle:
       spindleMax !== undefined && spindleMax > 0
-        ? { min: spindleMin !== undefined && spindleMin > 0 ? spindleMin : 0, max: spindleMax }
+        ? {
+            min:
+              spindleMin !== undefined && spindleMin > 0
+                ? Math.min(spindleMin, spindleMax)
+                : 0,
+            max: spindleMax,
+          }
         : null,
     // All three axes or none: a travel figure for X with nothing for Y is far
     // more likely to be a controller that numbers its settings differently than
@@ -201,7 +207,7 @@ export function motionProfileFromSettings(settings: Map<number, number>): Motion
  * job is full of both.
  */
 export function accelAlong(profile: MotionProfile, dx: number, dy: number, dz: number): number {
-  return alongAxes(dx, dy, dz, profile.accel);
+  return alongAxes(dx, dy, dz, profile.accel, DEFAULT_MOTION_PROFILE.accel);
 }
 
 /**
@@ -215,22 +221,33 @@ export function accelAlong(profile: MotionProfile, dx: number, dy: number, dz: n
  * move, and an engraved photograph is made of them.
  */
 export function maxRateAlong(profile: MotionProfile, dx: number, dy: number, dz: number): number {
-  return alongAxes(dx, dy, dz, profile.maxRate);
+  return alongAxes(dx, dy, dz, profile.maxRate, DEFAULT_MOTION_PROFILE.maxRate);
 }
 
-function alongAxes(dx: number, dy: number, dz: number, limits: AxisTriple): number {
+function alongAxes(
+  dx: number,
+  dy: number,
+  dz: number,
+  limits: AxisTriple,
+  fallback: AxisTriple
+): number {
+  const safe = (v: number, fb: number) => (Number.isFinite(v) && v > 0 ? v : fb);
+  const lx = safe(limits.x, fallback.x);
+  const ly = safe(limits.y, fallback.y);
+  const lz = safe(limits.z, fallback.z);
+
   const len = Math.hypot(dx, dy, dz);
-  if (len < 1e-12) return limits.x;
+  if (len < 1e-12) return lx;
 
   let limit = Infinity;
   const axis = (component: number, available: number) => {
     const share = Math.abs(component) / len;
     if (share > 1e-9) limit = Math.min(limit, available / share);
   };
-  axis(dx, limits.x);
-  axis(dy, limits.y);
-  axis(dz, limits.z);
-  return Number.isFinite(limit) ? limit : limits.x;
+  axis(dx, lx);
+  axis(dy, ly);
+  axis(dz, lz);
+  return Number.isFinite(limit) ? limit : lx;
 }
 
 /**

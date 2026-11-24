@@ -6,7 +6,9 @@ import {
   maxRateAlong,
   type MotionProfile,
 } from './motionProfile';
-import type { Pt } from './pathFlatten';
+import { interpolateGridZ } from './bedLeveler';
+import { docToMachine } from './machineCoords';
+import type { BedProbeGrid, EtchDocument } from '../types/etch';
 
 /**
  * One move of the tool, with the clock time it occupies.
@@ -120,22 +122,28 @@ export interface Timeline {
  */
 const BLOCKS_PER_SECOND = 450;
 
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
 /**
  * The speed the machine can carry through the corner between two moves.
  *
  * Straight through, it keeps everything; into a right angle it keeps almost
- * nothing. This is GRBL's own centripetal rule rather than a guess, so the
- * estimate slows down in the places the machine actually slows down — which on
- * a traced outline is every single point.
+ * nothing. This is GRBL's own 3D centripetal rule rather than a guess, so the
+ * estimate slows down in the places the machine actually slows down — including
+ * Z-ramps and relief crests as well as XY corners.
  */
 function junctionSpeed(
-  prev: Pt | null,
-  next: Pt | null,
+  prev: Vec3 | null,
+  next: Vec3 | null,
   accel: number,
   junctionDeviationMm: number
 ): number {
   if (!prev || !next) return 0;
-  const cosTheta = prev.x * next.x + prev.y * next.y;
+  const cosTheta = prev.x * next.x + prev.y * next.y + prev.z * next.z;
   // Doubling back: a full stop, and the formula below would divide by zero.
   if (cosTheta <= -0.999999) return 0;
   if (cosTheta >= 0.999999) return Infinity;
@@ -159,6 +167,7 @@ function moveSeconds(
   a: number
 ): number {
   if (distance <= 0) return 0;
+  if (!(a > 0) || !Number.isFinite(a)) return vMax > 1e-9 ? distance / vMax : 0;
 
   // Peak reachable inside the distance, accelerating from one end and
   // decelerating to the other.
@@ -196,14 +205,15 @@ function planSpeeds(
   const dist: number[] = new Array(n);
   const vLimit: number[] = new Array(n);
   const accel: number[] = new Array(n);
-  const dir: Array<Pt | null> = new Array(n);
+  const dir: Array<Vec3 | null> = new Array(n);
 
   for (let i = 0; i < n; i++) {
     const m = moves[i];
     const dx = m.x2 - m.x1;
     const dy = m.y2 - m.y1;
     const dz = m.z2 - m.z1;
-    dist[i] = Math.hypot(dx, dy, dz);
+    const d3 = Math.hypot(dx, dy, dz);
+    dist[i] = d3;
     /*
      * The axes decide as much as the feed does. A plunge is governed by Z alone
      * and a retract runs at `$112`, not at the rapid rate — and on a hatch fill
@@ -212,8 +222,10 @@ function planSpeeds(
      */
     vLimit[i] = Math.min(Math.max(1, m.feed), maxRateAlong(profile, dx, dy, dz)) / 60;
     accel[i] = accelAlong(profile, dx, dy, dz);
-    const len = Math.hypot(dx, dy);
-    dir[i] = len < 1e-9 ? null : { x: dx / len, y: dy / len };
+    // Pure vertical plunges/retracts come to a full stop at their endpoints;
+    // XY and 3D moves (ramps, CNC reliefs) carry their full 3D direction.
+    const xyLen = Math.hypot(dx, dy);
+    dir[i] = xyLen < 1e-9 || d3 < 1e-9 ? null : { x: dx / d3, y: dy / d3, z: dz / d3 };
   }
 
   // The speed each junction can hold, capped by both neighbours' feeds.
@@ -353,9 +365,12 @@ export function buildTimeline(
     ) / 60;
 
     if (m.z2 < deepestZ) deepestZ = m.z2;
-    if (m.kind === 'cut' && m.power > maxPower) maxPower = m.power;
-    if (m.kind === 'cut' || m.kind === 'ramp') cutLength += Math.hypot(m.x2 - m.x1, m.y2 - m.y1);
-    else if (m.kind === 'travel') travelLength += Math.hypot(m.x2 - m.x1, m.y2 - m.y1);
+    if (m.kind === 'cut' && !m.dark && m.power > maxPower) maxPower = m.power;
+    if ((m.kind === 'cut' && !m.dark) || m.kind === 'ramp') {
+      cutLength += Math.hypot(m.x2 - m.x1, m.y2 - m.y1);
+    } else if (m.kind === 'travel' || m.dark) {
+      travelLength += Math.hypot(m.x2 - m.x1, m.y2 - m.y1);
+    }
 
     moves.push({
       x1: m.x1,
@@ -383,6 +398,31 @@ export function buildTimeline(
   return { moves, minutes: t, cutLength, travelLength, deepestZ, maxPower, toolChanges };
 }
 
+
+/**
+ * Applies a probed bed-levelling heightmap to a timeline's Z coordinates so
+ * the preview depth readout, depth strip, and deepest-Z stat match the warped
+ * G-code emitted by `warpGcode`.
+ */
+export function warpTimeline(
+  timeline: Timeline,
+  grid: BedProbeGrid,
+  doc: Pick<EtchDocument, 'origin' | 'width' | 'height'>
+): Timeline {
+  if (!grid?.points?.length || !timeline.moves.length) return timeline;
+  const docRef = doc as EtchDocument;
+  let deepestZ = 0;
+  const moves = timeline.moves.map((m) => {
+    const p1 = docToMachine(docRef, m.x1, m.y1);
+    const p2 = docToMachine(docRef, m.x2, m.y2);
+    const z0 = m.z0 + interpolateGridZ(grid, p1.x, p1.y);
+    const z1 = m.z1 + interpolateGridZ(grid, p2.x, p2.y);
+    if (z1 < deepestZ) deepestZ = z1;
+    if (z0 < deepestZ) deepestZ = z0;
+    return { ...m, z0, z1 };
+  });
+  return { ...timeline, moves, deepestZ };
+}
 
 /** The move in progress at time `t`, by binary search over the cumulative clock. */
 export function moveIndexAt(moves: ToolMove[], t: number): number {
