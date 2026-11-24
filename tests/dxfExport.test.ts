@@ -110,6 +110,27 @@ describe('DXF export', () => {
     );
     expect(text).toContain('Cut_ outside_');
   });
+
+  it('does not flip Y when the document origin is already bottom-left', () => {
+    clearGeomBBoxCache();
+    const blDoc = { ...doc([path('M 10 30 L 20 30')]), origin: 'bottom-left' as const };
+    const { text } = exportToDXFString(blDoc);
+    const ys = pairs(text).filter(([c]) => c === 20).map(([, v]) => parseFloat(v));
+    expect(ys).toContain(30);
+    expect(ys).not.toContain(170);
+  });
+
+  it('skips zero-radius circles and never writes NaN coordinates', () => {
+    clearGeomBBoxCache();
+    const zeroCircle = {
+      id: 'c0', name: 'Zero', type: 'circle', layerId: 'cut', x: 50, y: 50, r: 0,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true, locked: false,
+    } as EtchElement;
+    const { text, count } = exportToDXFString(doc([zeroCircle]));
+    expect(count).toBe(0);
+    expect(text).not.toContain('CIRCLE');
+    expect(text).not.toContain('NaN');
+  });
 });
 
 describe('DXF round trip', () => {

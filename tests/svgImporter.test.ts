@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { importSVG, fitToBed, nameFromImport } from '../src/utils/svgImporter';
+import { exportToSVGString } from '../src/utils/svgParser';
 import { pathPoints } from '../src/utils/pathFlatten';
 import { transformPathD } from '../src/utils/pathTransform';
 import { parseTransform } from '../src/utils/matrix';
+import type { EtchDocument } from '../src/types/etch';
 
 /** Axis-aligned bounds of every element in an import result, in mm. */
 function bounds(elements: Array<{ d?: string }>) {
@@ -215,5 +217,126 @@ describe('nameFromImport', () => {
     expect(nameFromImport({ name: 'Coasters', elements: [] }, 'bracket')).toBeUndefined();
     expect(nameFromImport({ name: 'Untitled', elements: [{}] }, 'bracket')).toBeUndefined();
     expect(nameFromImport({ name: 'Untitled', elements: [] }, '  ')).toBeUndefined();
+  });
+});
+
+describe('SVG edge cases, security, and export round-trip', () => {
+  it('scales uniformly when viewBox and only width (or percentage height) are given', () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100%" viewBox="0 0 200 100">
+      <rect x="0" y="0" width="200" height="100"/>
+    </svg>`;
+    const b = bounds(importSVG(svg).elements);
+    expect(b.width).toBeCloseTo(100, 3);
+    expect(b.height).toBeCloseTo(50, 3);
+  });
+
+  it('ignores non-positive width and overflow viewBox values instead of collapsing to 0', () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="0mm" height="0mm" viewBox="0 0 1e500 100">
+      <rect x="0" y="0" width="96" height="96"/>
+    </svg>`;
+    const { elements } = importSVG(svg);
+    expect(elements).toHaveLength(1);
+    expect(bounds(elements).width).toBeCloseTo(25.4, 2);
+  });
+
+  it('honours nested <svg> x/y offset and viewBox scaling', () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+      <svg x="10" y="20" width="20" height="20" viewBox="0 0 100 100">
+        <rect x="0" y="0" width="50" height="50"/>
+      </svg>
+    </svg>`;
+    const b = bounds(importSVG(svg).elements);
+    expect(b.minX).toBeCloseTo(10, 3);
+    expect(b.minY).toBeCloseTo(20, 3);
+    expect(b.width).toBeCloseTo(10, 3);
+    expect(b.height).toBeCloseTo(10, 3);
+  });
+
+  it('strips !important in inline styles and skips visibility:hidden shapes', () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+      <rect x="0" y="0" width="10" height="10" style="stroke:#00ff00 !important"/>
+      <rect x="20" y="0" width="10" height="10" style="visibility:hidden"/>
+    </svg>`;
+    const { elements } = importSVG(svg);
+    expect(elements).toHaveLength(1);
+    expect(elements[0].strokeColor).toBe('#00ff00');
+  });
+
+  it('strips script/foreignObject and rejects unsafe colour strings', () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+      <script>alert(1)</script>
+      <foreignObject><div xmlns="http://www.w3.org/1999/xhtml">hi</div></foreignObject>
+      <rect x="0" y="0" width="10" height="10" stroke="javascript:alert(1)"/>
+    </svg>`;
+    const { elements } = importSVG(svg);
+    expect(elements).toHaveLength(1);
+    expect(elements[0].strokeColor).toBe('#ef4444');
+  });
+
+  it('deduplicates repeated raster <image> warnings', () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+      <image href="a.png"/><image href="b.png"/><image href="c.png"/>
+      <rect x="0" y="0" width="10" height="10"/>
+    </svg>`;
+    const { warnings } = importSVG(svg);
+    expect(warnings.filter((w) => w.includes('<image>'))).toHaveLength(1);
+  });
+
+  it('exports vertical lines (x2=0), escapes layer ids, and round-trips layer names', () => {
+    const doc = {
+      id: 'd',
+      name: 'Test',
+      width: 100,
+      height: 100,
+      gridSize: 10,
+      snapToGrid: false,
+      origin: 'top-left',
+      machine: 'laser',
+      layers: [
+        {
+          id: 'l"1',
+          name: 'Score Lines',
+          color: '#3b82f6',
+          operation: 'etch',
+          visible: true,
+          locked: false,
+          speed: 600,
+          power: 50,
+          passes: 1,
+          zDepth: 1,
+        },
+      ],
+      elements: [
+        {
+          id: 'ln',
+          name: 'Vert',
+          type: 'line',
+          layerId: 'l"1',
+          x: 20,
+          y: 10,
+          x2: 0,
+          y2: 50,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          opacity: 1,
+          strokeWidth: 0.3,
+          visible: true,
+          locked: false,
+        },
+      ],
+    } as unknown as EtchDocument;
+
+    const svg = exportToSVGString(doc);
+    expect(svg).toContain('id="layer-l&quot;1"');
+    expect(svg).toContain('x2="0" y2="50"');
+
+    const imported = importSVG(svg);
+    expect(imported.elements).toHaveLength(1);
+    expect(imported.layers[0].name).toBe('Score Lines');
+    expect(imported.layers[0].operation).toBe('etch');
+    const b = bounds(imported.elements);
+    expect(b.width).toBeCloseTo(0, 3);
+    expect(b.height).toBeCloseTo(50, 3);
   });
 });

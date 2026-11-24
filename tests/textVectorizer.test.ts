@@ -75,4 +75,18 @@ describe('sanitizePathCommands', () => {
     expect(commands.filter((c) => c.type === 'Z')).toHaveLength(2);
     expect(commands[commands.length - 1].type).toBe('Z');
   });
+
+  it('clamps non-finite Infinity/-Infinity coordinates to 0', () => {
+    const commands = sanitizePathCommands([
+      { type: 'M', x: Infinity, y: -Infinity },
+      { type: 'L', x: NaN, y: 5 },
+    ] as opentype.OTPathCommand[]);
+    expect(commands[0].x).toBe(0);
+    expect(commands[0].y).toBe(0);
+    expect(commands[1].x).toBe(0);
+    expect(commands[1].y).toBe(5);
+    const d = pathWith(commands).toPathData(4);
+    expect(d).not.toContain('Infinity');
+    expect(d).not.toContain('NaN');
+  });
 });

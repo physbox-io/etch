@@ -225,4 +225,21 @@ describe('a mixed rack', () => {
     expect(split.document.stockThickness).toBe(6);
     expect(split.document.sheets![0].stockThickness).toBe(4);
   });
+
+  it('strips script tags and event handlers from cleanedSvg and rejects non-finite specs', () => {
+    const dirty = meshSvg(2).replace(
+      '<g id="cut-paths"',
+      '<script>alert(1)</script><g id="cut-paths" onload="alert(2)"'
+    );
+    const found = analyseSheetedSvg(dirty)!;
+    expect(found.cleanedSvg).not.toContain('<script');
+    expect(found.cleanedSvg).not.toContain('onload');
+
+    expect(
+      resolveSheetedSvg(meshSvg(2, { frames: false }), [
+        { widthMm: Infinity, heightMm: 400 },
+        { widthMm: 600, heightMm: 400 },
+      ])
+    ).toBeNull();
+  });
 });

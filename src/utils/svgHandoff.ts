@@ -50,8 +50,17 @@ function parseSheetsParam(raw: string | null): HandoffSheetSpec[] | null {
   const out: HandoffSheetSpec[] = [];
   for (const entry of raw.split(',')) {
     const parts = entry.trim().split('x').map(Number);
-    if (parts.length < 2 || !(parts[0] > 0) || !(parts[1] > 0)) return null;
-    const t = parts.length >= 3 && Number.isFinite(parts[2]) && parts[2] > 0 ? parts[2] : null;
+    if (
+      parts.length < 2 ||
+      parts.length > 3 ||
+      !Number.isFinite(parts[0]) ||
+      parts[0] <= 0 ||
+      !Number.isFinite(parts[1]) ||
+      parts[1] <= 0
+    ) {
+      return null;
+    }
+    const t = parts.length === 3 && Number.isFinite(parts[2]) && parts[2] > 0 ? parts[2] : null;
     out.push({ widthMm: parts[0], heightMm: parts[1], thicknessMm: t });
   }
   return out.length > 0 ? out : null;
@@ -80,13 +89,16 @@ export async function readSvgHandoff(): Promise<SvgHandoff | null> {
   }
 
   const bytes = fromBase64Url(data);
-  const thickness = Number(params.get('thickness'));
-  const rawMachine = params.get('machine');
+  const rawThickness = params.get('thickness');
+  const thickness = rawThickness !== null && rawThickness.trim() !== '' ? Number(rawThickness) : NaN;
+  const rawMachine = params.get('machine')?.trim().toLowerCase();
   const machine = rawMachine === 'laser' || rawMachine === 'cnc' ? rawMachine : null;
+  const name = params.get('name')?.trim() || null;
+  const material = params.get('material')?.trim() || null;
   return {
     svg: params.get('gz') === '1' ? await gunzip(bytes) : new TextDecoder().decode(bytes),
-    name: params.get('name'),
-    material: params.get('material'),
+    name,
+    material,
     thicknessMm: Number.isFinite(thickness) && thickness > 0 ? thickness : null,
     machine,
     sheets: parseSheetsParam(params.get('sheets')),
@@ -124,7 +136,17 @@ export function placeUnscaled(
   bedW: number,
   bedH: number
 ): { elements: EtchElement[]; note: string | null } {
-  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return { elements, note: null };
+  if (
+    !bounds ||
+    !(bounds.width > 0) ||
+    !(bounds.height > 0) ||
+    !Number.isFinite(bedW) ||
+    !Number.isFinite(bedH) ||
+    bedW <= 0 ||
+    bedH <= 0
+  ) {
+    return { elements, note: null };
+  }
 
   const oversize = bounds.width > bedW || bounds.height > bedH;
   const offsetX = oversize ? -bounds.minX : (bedW - bounds.width) / 2 - bounds.minX;
@@ -140,9 +162,7 @@ export function placeUnscaled(
   return {
     elements: moved,
     note: oversize
-      ? `Artwork is ${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)} mm and the bed is ` +
-        `${bedW} × ${bedH} mm. It has been placed at true size and left overhanging rather than ` +
-        `scaled down — a stencil only works at 1:1.`
+      ? `Artwork (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)} mm) exceeds the ${bedW} × ${bedH} mm bed — placed at true size.`
       : null,
   };
 }

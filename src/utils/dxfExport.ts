@@ -23,6 +23,7 @@
 import type { EtchDocument } from '../types/etch';
 import { extractElementContours } from './elementContours';
 import { getBedBBox } from './geom';
+import { originFlipsY } from './machineCoords';
 
 export interface DxfExportResult {
   text: string;
@@ -35,7 +36,7 @@ export interface DxfExportResult {
 /** One group-code/value pair per two lines, which is the whole format. */
 const pair = (code: number, value: string | number) => `${code}\n${value}\n`;
 
-const n = (v: number) => (Math.abs(v) < 1e-9 ? '0.0' : v.toFixed(6));
+const n = (v: number) => (!Number.isFinite(v) || Math.abs(v) < 1e-9 ? '0.0' : v.toFixed(6));
 
 /**
  * DXF layer names may not contain the characters a table entry uses as
@@ -68,8 +69,8 @@ function isClosed(pts: { x: number; y: number }[]): boolean {
  */
 export function exportToDXFString(doc: EtchDocument): DxfExportResult {
   const notes: string[] = [];
-  /** Document Y down, DXF Y up, measured from the bottom of the stock. */
-  const flip = (y: number) => doc.height - y;
+  /** Document Y down → DXF Y up, measured from the bottom of the stock (pass-through when already bottom-left). */
+  const flip = originFlipsY(doc) ? (y: number) => doc.height - y : (y: number) => y;
 
   const visibleLayers = doc.layers.filter((l) => l.visible);
   const names = new Map<string, string>();
@@ -96,27 +97,31 @@ export function exportToDXFString(doc: EtchDocument): DxfExportResult {
   };
 
   const track = (x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     minX = Math.min(minX, x);
     minY = Math.min(minY, y);
     maxX = Math.max(maxX, x);
     maxY = Math.max(maxY, y);
   };
 
-  const writeCircle = (layer: string, cx: number, cy: number, r: number) => {
+  const writeCircle = (layer: string, cx: number, cy: number, r: number): boolean => {
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(r) || r <= 0) return false;
     entities +=
       pair(0, 'CIRCLE') + pair(8, layer) + pair(10, n(cx)) + pair(20, n(flip(cy))) + pair(30, '0.0') +
       pair(40, n(r));
     track(cx - r, flip(cy) - r);
     track(cx + r, flip(cy) + r);
+    return true;
   };
 
-  const writePolyline = (layer: string, pts: { x: number; y: number }[]) => {
-    const closed = isClosed(pts);
+  const writePolyline = (layer: string, pts: { x: number; y: number }[]): boolean => {
+    const clean = pts.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    const closed = isClosed(clean);
     // A closed polyline states its closure with the flag; repeating the first
     // point as the last as well makes a zero-length segment, which some readers
     // draw as a stray node and some CAM treats as a retract.
-    const verts = closed ? pts.slice(0, -1) : pts;
-    if (verts.length < 2) return;
+    const verts = closed ? clean.slice(0, -1) : clean;
+    if (verts.length < 2) return false;
     entities +=
       pair(0, 'POLYLINE') + pair(8, layer) + pair(66, 1) + pair(70, closed ? 1 : 0) +
       pair(10, '0.0') + pair(20, '0.0') + pair(30, '0.0');
@@ -126,6 +131,7 @@ export function exportToDXFString(doc: EtchDocument): DxfExportResult {
       track(p.x, y);
     }
     entities += pair(0, 'SEQEND') + pair(8, layer);
+    return true;
   };
 
   for (const el of doc.elements) {
@@ -151,16 +157,21 @@ export function exportToDXFString(doc: EtchDocument): DxfExportResult {
      * a non-uniform scale makes an ellipse, which R12 has no entity for.
      */
     if (el.type === 'circle' && Math.abs((el.scaleX ?? 1) - (el.scaleY ?? 1)) < 1e-9) {
+      if ((el.r !== undefined && (!Number.isFinite(el.r) || el.r <= 0)) || el.scaleX === 0 || el.scaleY === 0) {
+        continue;
+      }
       const box = getBedBBox(el);
-      writeCircle(layer, box.centerX, box.centerY, box.width / 2);
-      count++;
+      if (writeCircle(layer, box.centerX, box.centerY, box.width / 2)) count++;
       continue;
     }
 
     const contours = extractElementContours(el);
     if (!contours.length) continue;
-    for (const pts of contours) writePolyline(layer, pts);
-    count++;
+    let wrote = false;
+    for (const pts of contours) {
+      if (writePolyline(layer, pts)) wrote = true;
+    }
+    if (wrote) count++;
   }
 
   if (!Number.isFinite(minX)) {

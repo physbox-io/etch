@@ -7,7 +7,7 @@ import {
   grayFromImageData,
   type ImageProcessOptions,
 } from './imageProcessor';
-import { encodeGray } from './rasterImage';
+import { encodeGray, DEFAULT_SHADE_PITCH_MM } from './rasterImage';
 import { machineKind, suggestTool, type ToolProfile } from './tooling';
 
 /**
@@ -134,6 +134,18 @@ export function planImageImport(
   cncTools?: ToolProfile[],
   timestamp = Date.now()
 ): ImageImportPlan {
+  if (
+    !imageData ||
+    !(imageData.width > 0) ||
+    !(imageData.height > 0) ||
+    !Number.isFinite(options.targetWidth) ||
+    !Number.isFinite(options.targetHeight) ||
+    options.targetWidth <= 0 ||
+    options.targetHeight <= 0
+  ) {
+    return { element: null, newShadeLayer: null, outline: null, newCutLayer: null };
+  }
+
   const scaleX = options.targetWidth / imageData.width;
   const scaleY = options.targetHeight / imageData.height;
 
@@ -207,7 +219,7 @@ export function planImageImport(
         imageGray: encodeGray(grayFromImageData(imageData)),
         imgW: imageData.width,
         imgH: imageData.height,
-        hatchSpacing: options.shadePitch,
+        hatchSpacing: Number.isFinite(options.shadePitch) && options.shadePitch > 0 ? options.shadePitch : DEFAULT_SHADE_PITCH_MM,
         hatchAngle: 0,
         strokeWidth: 0,
       },

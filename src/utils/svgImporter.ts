@@ -18,6 +18,9 @@ interface InheritedStyle {
   strokeWidth?: number;
   opacity?: number;
   display?: string;
+  visibility?: string;
+  fontSize?: number;
+  fontFamily?: string;
   /**
    * What the sender says this artwork is for, from `data-operation` on it or
    * a group around it. A file that says nothing is cut, as it always was.
@@ -27,16 +30,33 @@ interface InheritedStyle {
 
 const OPERATIONS: readonly LayerOperation[] = ['cut', 'etch', 'fill', 'shade', 'ghost'];
 
+const SKIP_TAGS = new Set([
+  'defs',
+  'style',
+  'title',
+  'desc',
+  'metadata',
+  'script',
+  'foreignobject',
+  'clippath',
+  'mask',
+  'pattern',
+  'marker',
+  'filter',
+  'lineargradient',
+  'radialgradient',
+]);
+
 const MM_PER_INCH = 25.4;
 const CSS_DPI = 96;
 
-/** Absolute CSS length → mm. Percentages and em/ex are not resolvable here. */
+/** Absolute positive CSS length → mm. Percentages and em/ex are not resolvable here. */
 function lengthToMm(value: string | null): number | null {
   if (!value) return null;
   const m = value.trim().match(/^([-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?)\s*([a-z%]*)$/i);
   if (!m) return null;
   const n = parseFloat(m[1]);
-  if (!Number.isFinite(n)) return null;
+  if (!Number.isFinite(n) || n <= 0) return null;
   switch (m[2].toLowerCase()) {
     case 'mm': return n;
     case 'cm': return n * 10;
@@ -51,7 +71,9 @@ function lengthToMm(value: string | null): number | null {
 
 function parseNumberList(s: string | null): number[] {
   if (!s) return [];
-  return (s.match(/[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g) || []).map(Number);
+  return (s.match(/[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g) || [])
+    .map(Number)
+    .filter(Number.isFinite);
 }
 
 /** Presentation attributes, with the `style` attribute taking precedence. */
@@ -64,7 +86,10 @@ function readStyle(node: Element, inherited: InheritedStyle): InheritedStyle {
   if (styleAttr) {
     for (const decl of styleAttr.split(';')) {
       const idx = decl.indexOf(':');
-      if (idx > 0) styleMap.set(decl.slice(0, idx).trim().toLowerCase(), decl.slice(idx + 1).trim());
+      if (idx > 0) {
+        const val = decl.slice(idx + 1).replace(/\s*!important\s*$/i, '').trim();
+        styleMap.set(decl.slice(0, idx).trim().toLowerCase(), val);
+      }
     }
   }
   const prop = (name: string) => styleMap.get(name) ?? attr(name);
@@ -76,15 +101,24 @@ function readStyle(node: Element, inherited: InheritedStyle): InheritedStyle {
   const sw = prop('stroke-width');
   if (sw) {
     const n = parseFloat(sw);
-    if (Number.isFinite(n)) out.strokeWidth = n;
+    if (Number.isFinite(n) && n >= 0) out.strokeWidth = n;
   }
   const op = prop('opacity');
   if (op) {
     const n = parseFloat(op);
-    if (Number.isFinite(n)) out.opacity = n;
+    if (Number.isFinite(n)) out.opacity = Math.min(Math.max(n, 0), 1);
   }
   const display = prop('display');
-  if (display) out.display = display;
+  if (display) out.display = display.toLowerCase();
+  const visibility = prop('visibility');
+  if (visibility) out.visibility = visibility.toLowerCase();
+  const fs = prop('font-size');
+  if (fs) {
+    const n = parseFloat(fs);
+    if (Number.isFinite(n) && n > 0) out.fontSize = n;
+  }
+  const ff = prop('font-family');
+  if (ff) out.fontFamily = ff;
   const operation = attr('data-operation')?.trim().toLowerCase();
   if (operation && (OPERATIONS as readonly string[]).includes(operation)) out.operation = operation as LayerOperation;
 
@@ -179,6 +213,9 @@ function shapeToPathD(node: Element, warnings: string[]): string | null {
  */
 export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } = {}): SvgImportResult {
   const warnings: string[] = [];
+  const warn = (msg: string) => {
+    if (!warnings.includes(msg)) warnings.push(msg);
+  };
   const elements: EtchElement[] = [];
 
   const parsed = new DOMParser().parseFromString(svgContent, 'image/svg+xml');
@@ -203,15 +240,22 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     // Physical size declared: viewBox units map onto it.
     unitScaleX = widthMm / viewBox[2];
     unitScaleY = heightMm / viewBox[3];
+  } else if (hasViewBox && widthMm !== null) {
+    unitScaleX = unitScaleY = widthMm / viewBox[2];
+  } else if (hasViewBox && heightMm !== null) {
+    unitScaleX = unitScaleY = heightMm / viewBox[3];
   } else if (widthMm !== null && heightMm !== null && !hasViewBox) {
-    unitScaleX = unitScaleY = widthMm / (parseFloat(svg.getAttribute('width') || '1') || 1);
+    const rawW = parseFloat(svg.getAttribute('width') || '');
+    const rawH = parseFloat(svg.getAttribute('height') || '');
+    unitScaleX = Number.isFinite(rawW) && rawW > 0 ? widthMm / rawW : MM_PER_INCH / CSS_DPI;
+    unitScaleY = Number.isFinite(rawH) && rawH > 0 ? heightMm / rawH : unitScaleX;
   } else {
     // No physical size — treat user units as CSS px at 96dpi, the SVG default.
     unitScaleX = unitScaleY = MM_PER_INCH / CSS_DPI;
-    warnings.push('No physical size on the <svg>; assumed 96 dpi (1 px = 0.265 mm).');
+    warn('No physical size on the <svg>; assumed 96 dpi (1 px = 0.265 mm).');
   }
   if (Math.abs(unitScaleX - unitScaleY) > 1e-6) {
-    warnings.push('Non-uniform viewBox scaling — artwork will be stretched to match the declared size.');
+    warn('Non-uniform viewBox scaling — artwork will be stretched to match the declared size.');
   }
 
   // viewBox min-x/min-y shift the origin before scaling.
@@ -260,10 +304,10 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
   /**
    * What a container calls itself, if anything worth repeating.
    *
-   * `<title>` is the standard way an SVG names a group, `inkscape:label` is
-   * what the drawing program most people export from writes, and an `id` is a
-   * fair third — except that Illustrator and friends emit ids like "g4721",
-   * which is worse than no name at all.
+   * `<title>` is the standard way an SVG names a group, `data-layer-name` is
+   * what Etch writes on export, `inkscape:label` is what Inkscape writes, and
+   * an `id` is a fair fallback — except that Illustrator and friends emit ids
+   * like "g4721", which is worse than no name at all.
    */
   const labelOf = (node: Element): string | undefined => {
     for (const child of Array.from(node.children)) {
@@ -272,6 +316,8 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
         if (text) return text;
       }
     }
+    const etchName = node.getAttribute('data-layer-name');
+    if (etchName?.trim()) return etchName.trim();
     const inkscape = node.getAttribute('inkscape:label');
     if (inkscape?.trim()) return inkscape.trim();
     const id = node.getAttribute('id')?.trim();
@@ -287,18 +333,36 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     label?: string
   ) => {
     if (depth > 64) {
-      warnings.push('Stopped at 64 levels of nesting (possible cyclic <use>).');
+      warn('Stopped at 64 levels of nesting (possible cyclic <use>).');
       return;
     }
     const tag = node.tagName.toLowerCase();
-    if (tag === 'defs' || tag === 'style' || tag === 'title' || tag === 'desc' || tag === 'metadata') {
+    if (SKIP_TAGS.has(tag)) {
       return;
     }
 
     const style = readStyle(node, inherited);
     if (style.display === 'none') return;
 
-    const matrix = multiply(parentMatrix, parseTransform(node.getAttribute('transform')));
+    const rawMatrix = multiply(parentMatrix, parseTransform(node.getAttribute('transform')));
+    let matrix: Matrix = rawMatrix.every(Number.isFinite) ? rawMatrix : parentMatrix;
+
+    // Nested <svg> elements can declare their own x/y offset and viewBox.
+    if (tag === 'svg' && depth > 0) {
+      const nx = parseFloat(node.getAttribute('x') || '0');
+      const ny = parseFloat(node.getAttribute('y') || '0');
+      if (Number.isFinite(nx) && Number.isFinite(ny) && (nx !== 0 || ny !== 0)) {
+        matrix = multiply(matrix, [1, 0, 0, 1, nx, ny]);
+      }
+      const nvb = parseNumberList(node.getAttribute('viewBox'));
+      if (nvb.length === 4 && nvb[2] > 0 && nvb[3] > 0) {
+        const nw = parseFloat(node.getAttribute('width') || '');
+        const nh = parseFloat(node.getAttribute('height') || '');
+        const sx = Number.isFinite(nw) && nw > 0 ? nw / nvb[2] : 1;
+        const sy = Number.isFinite(nh) && nh > 0 ? nh / nvb[3] : sx;
+        matrix = multiply(matrix, multiply([sx, 0, 0, sy, 0, 0], [1, 0, 0, 1, -nvb[0], -nvb[1]]));
+      }
+    }
 
     // `symbol` counts as a container because that is what a <use> in a sprite
     // sheet resolves to — without it the whole referenced subtree fell through
@@ -315,58 +379,70 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
       const href = node.getAttribute('href') || node.getAttribute('xlink:href');
       const target = href?.startsWith('#') ? parsed.getElementById(href.slice(1)) : null;
       if (!target) {
-        warnings.push('A <use> element referenced a missing symbol and was skipped.');
+        warn('A <use> element referenced a missing symbol and was skipped.');
         return;
       }
       if (seenUse.has(target)) return; // guards self-referencing symbols
       seenUse.add(target);
-      const ux = parseFloat(node.getAttribute('x') || '0') || 0;
-      const uy = parseFloat(node.getAttribute('y') || '0') || 0;
-      walk(target, multiply(matrix, [1, 0, 0, 1, ux, uy]), style, depth + 1, label);
+      const ux = parseFloat(node.getAttribute('x') || '0');
+      const uy = parseFloat(node.getAttribute('y') || '0');
+      const offsetM: Matrix = [1, 0, 0, 1, Number.isFinite(ux) ? ux : 0, Number.isFinite(uy) ? uy : 0];
+      walk(target, multiply(matrix, offsetM), style, depth + 1, label);
       seenUse.delete(target);
       return;
     }
 
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return;
+
     if (tag === 'text' || tag === 'tspan') {
       const content = (node.textContent || '').trim();
       if (content) {
-        warnings.push(
+        warn(
           `Text "${content.slice(0, 24)}" imported as editable text — use Convert to Outlines to machine it.`
         );
-        const fontSizeUser = parseFloat(node.getAttribute('font-size') || '16') || 16;
-        const origin = { x: parseFloat(node.getAttribute('x') || '0') || 0, y: parseFloat(node.getAttribute('y') || '0') || 0 };
+        const rawFs = style.fontSize ?? parseFloat(node.getAttribute('font-size') || '16');
+        const fontSizeUser = Number.isFinite(rawFs) && rawFs > 0 ? rawFs : 16;
+        const ox = parseFloat(node.getAttribute('x') || '0');
+        const oy = parseFloat(node.getAttribute('y') || '0');
+        const origin = { x: Number.isFinite(ox) ? ox : 0, y: Number.isFinite(oy) ? oy : 0 };
         const scale = matrixScale(matrix);
         const stroke = normaliseColour(style.stroke) || normaliseColour(style.fill) || '#ef4444';
-        elements.push({
-          id: `imported_text_${++count}_${Date.now()}`,
-          name: `Imported Text ${count}`,
-          type: 'text',
-          layerId: layerFor(stroke, label, style.operation),
-          x: matrix[0] * origin.x + matrix[2] * origin.y + matrix[4],
-          y: matrix[1] * origin.x + matrix[3] * origin.y + matrix[5],
-          text: content,
-          fontFamily: (node.getAttribute('font-family') || 'Outfit').split(',')[0].replace(/['"]/g, '').trim(),
-          fontSize: fontSizeUser * scale,
-          fontWeight: node.getAttribute('font-weight') || '600',
-          rotation: 0,
-          scaleX: 1,
-          scaleY: 1,
-          opacity: style.opacity ?? 1,
-          strokeWidth: 0.3,
-          strokeColor: stroke,
-          fillColor: 'none',
-          visible: true,
-          locked: false,
-        });
+        const tx = matrix[0] * origin.x + matrix[2] * origin.y + matrix[4];
+        const ty = matrix[1] * origin.x + matrix[3] * origin.y + matrix[5];
+        if (Number.isFinite(tx) && Number.isFinite(ty)) {
+          elements.push({
+            id: `imported_text_${++count}_${Date.now()}`,
+            name: `Imported Text ${count}`,
+            type: 'text',
+            layerId: layerFor(stroke, label, style.operation),
+            x: tx,
+            y: ty,
+            text: content,
+            fontFamily: (style.fontFamily || node.getAttribute('font-family') || 'Outfit').split(',')[0].replace(/['"]/g, '').trim(),
+            fontSize: fontSizeUser * scale,
+            fontWeight: node.getAttribute('font-weight') || '600',
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            opacity: style.opacity ?? 1,
+            strokeWidth: 0.3,
+            strokeColor: stroke,
+            fillColor: 'none',
+            visible: true,
+            locked: false,
+          });
+        }
       }
       return;
     }
 
-    const d = shapeToPathD(node, warnings);
+    const shapeWarnings: string[] = [];
+    const d = shapeToPathD(node, shapeWarnings);
+    for (const w of shapeWarnings) warn(w);
     if (!d) return;
 
     const bakedD = transformPathD(d, matrix);
-    if (!bakedD) return;
+    if (!bakedD || bakedD.includes('NaN') || bakedD.includes('Infinity')) return;
 
     const stroke = normaliseColour(style.stroke) || normaliseColour(style.fill) || '#ef4444';
     const strokeWidthMm = (style.strokeWidth ?? 1) * matrixScale(matrix);
@@ -403,6 +479,7 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
       ? pathPoints(el.d)
       : [{ x: el.x, y: el.y }, { x: el.x + (el.fontSize ?? 0) * (el.text?.length ?? 0) * 0.6, y: el.y + (el.fontSize ?? 0) }];
     for (const p of pts) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y;
@@ -413,23 +490,30 @@ export function importSVG(svgContent: string, opts: { layerIdPrefix?: string } =
     ? { minX, minY, width: maxX - minX, height: maxY - minY }
     : null;
 
-  if (elements.length === 0) warnings.push('No drawable geometry found in that SVG.');
+  if (elements.length === 0) warn('No drawable geometry found in that SVG.');
   if (!declared && layers.length > 1) {
-    warnings.push(
-      `All ${layers.length} colours came in as cut layers. If any are fold lines, engraving or ` +
-        'reference outlines, set their layer to etch or ghost before cutting, or they will be cut through.'
-    );
+    warn(`${layers.length} colours imported as cut layers — set any etch or ghost layers before cutting.`);
   }
 
   return { elements, layers, warnings, bounds };
 }
 
-/** Drops paint servers and keywords Etch cannot represent as a stroke colour. */
+/** Drops paint servers, keywords, and unsafe strings Etch cannot represent as a stroke colour. */
 function normaliseColour(value: string | undefined): string | null {
   if (!value) return null;
-  const v = value.trim().toLowerCase();
-  if (v === 'none' || v === 'transparent' || v === 'currentcolor' || v.startsWith('url(')) return null;
-  return value.trim();
+  const trimmed = value.trim();
+  const v = trimmed.toLowerCase();
+  if (
+    v === 'none' ||
+    v === 'transparent' ||
+    v === 'currentcolor' ||
+    v.startsWith('url(') ||
+    v.includes('javascript:') ||
+    /[<>"';]/.test(trimmed)
+  ) {
+    return null;
+  }
+  return trimmed;
 }
 
 /**
@@ -442,7 +526,17 @@ export function fitToBed(
   bedW: number,
   bedH: number
 ): { elements: EtchElement[]; note: string | null } {
-  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return { elements, note: null };
+  if (
+    !bounds ||
+    !(bounds.width > 0) ||
+    !(bounds.height > 0) ||
+    !Number.isFinite(bedW) ||
+    !Number.isFinite(bedH) ||
+    bedW <= 0 ||
+    bedH <= 0
+  ) {
+    return { elements, note: null };
+  }
 
   const fits = bounds.width <= bedW && bounds.height <= bedH;
   const inside =

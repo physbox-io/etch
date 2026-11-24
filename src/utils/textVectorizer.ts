@@ -196,7 +196,7 @@ export function sanitizePathCommands(
     for (const key of ['x', 'y', 'x1', 'y1', 'x2', 'y2'] as const) {
       const value = cmd[key];
       if (typeof value !== 'number') continue;
-      if (Number.isNaN(value) || Math.abs(value) < threshold) {
+      if (!Number.isFinite(value) || Math.abs(value) < threshold) {
         cmd[key] = 0;
         continue;
       }
@@ -227,9 +227,9 @@ export function sanitizePathCommands(
   return newCommands;
 }
 
-/** Validates that an SVG path string contains no NaNs or malformed commands. */
+/** Validates that an SVG path string contains no NaNs, Infinities, or malformed commands. */
 function isPathDataValid(d: string): boolean {
-  if (!d || d.includes('NaN')) return false;
+  if (!d || d.includes('NaN') || d.includes('Infinity')) return false;
   const cmdMatches = d.match(/([MLCQZ])([^MLCQZ]*)/g) || [];
   for (const m of cmdMatches) {
     const type = m[0].toUpperCase();
@@ -255,8 +255,7 @@ function isPathDataValid(d: string): boolean {
 function getElementPathD(targetPathEl: EtchElement): string {
   if (targetPathEl.d) return targetPathEl.d;
   if (targetPathEl.bezierNodes && targetPathEl.bezierNodes.length > 1) {
-    const closed = /z\s*$/i.test((targetPathEl.d || '').trim());
-    return nodesToPath(targetPathEl.bezierNodes, closed);
+    return nodesToPath(targetPathEl.bezierNodes, false);
   }
   return '';
 }
@@ -265,17 +264,18 @@ export async function textToOutlineD(el: EtchElement, targetPathEl?: EtchElement
   const text = el.text ?? '';
   if (!text.trim()) return '';
 
-  const size = el.fontSize || 14;
+  const size = typeof el.fontSize === 'number' && Number.isFinite(el.fontSize) && el.fontSize > 0 ? el.fontSize : 14;
   const font = await loadFont(el.fontFamily || 'Outfit', el.fontWeight || '400');
+  if (!font.unitsPerEm || !Number.isFinite(font.unitsPerEm) || font.unitsPerEm <= 0) return '';
 
   const scale = size / font.unitsPerEm;
   const baselineY = font.ascender * scale;
-  const tracking = el.letterSpacing || 0;
+  const tracking = typeof el.letterSpacing === 'number' && Number.isFinite(el.letterSpacing) ? el.letterSpacing : 0;
 
   const targetD = targetPathEl ? getElementPathD(targetPathEl) : '';
   if (el.textPathId && targetD) {
     const pathLookup = new PathArcLookup(targetD);
-    if (pathLookup.totalLength > 0) {
+    if (Number.isFinite(pathLookup.totalLength) && pathLookup.totalLength > 1e-4) {
       return layoutGlyphsOnPath(font, text, size, baselineY, scale, tracking, pathLookup, el, targetPathEl);
     }
   }
@@ -323,14 +323,15 @@ function layoutGlyphs(
     const d = gPath.toPathData(4);
     if (d && isPathDataValid(d)) parts.push(d);
 
-    x += glyph.advanceWidth * scale + tracking;
+    const adv = typeof glyph.advanceWidth === 'number' && Number.isFinite(glyph.advanceWidth) ? glyph.advanceWidth : 0;
+    x += adv * scale + tracking;
 
     // Kerning pairs still apply — without them "AV" and "To" sit visibly wrong.
     const next = chars[i + 1];
     if (next && typeof font.getKerningValue === 'function') {
       try {
         const kern = font.getKerningValue(glyph, font.charToGlyph(next));
-        if (typeof kern === 'number' && !Number.isNaN(kern)) {
+        if (typeof kern === 'number' && Number.isFinite(kern)) {
           x += kern * scale;
         }
       } catch {
@@ -357,12 +358,13 @@ function layoutGlyphsOnPath(
   let totalTextWidth = 0;
   for (let i = 0; i < chars.length; i++) {
     const glyph = font.charToGlyph(chars[i]);
-    totalTextWidth += glyph.advanceWidth * scale + tracking;
+    const adv = typeof glyph.advanceWidth === 'number' && Number.isFinite(glyph.advanceWidth) ? glyph.advanceWidth : 0;
+    totalTextWidth += adv * scale + tracking;
     const next = chars[i + 1];
     if (next && typeof font.getKerningValue === 'function') {
       try {
         const kern = font.getKerningValue(glyph, font.charToGlyph(next));
-        if (typeof kern === 'number' && !Number.isNaN(kern)) {
+        if (typeof kern === 'number' && Number.isFinite(kern)) {
           totalTextWidth += kern * scale;
         }
       } catch {
@@ -381,7 +383,8 @@ function layoutGlyphsOnPath(
     alignOffset = pathLookup.totalLength - totalTextWidth;
   }
 
-  const startDistance = (el.textPathOffset || 0) + alignOffset;
+  const rawOffset = typeof el.textPathOffset === 'number' && Number.isFinite(el.textPathOffset) ? el.textPathOffset : 0;
+  const startDistance = rawOffset + alignOffset;
   const parts: string[] = [];
   let currentAdvance = 0;
 
@@ -412,12 +415,13 @@ function layoutGlyphsOnPath(
     const d = gPath.toPathData(4);
     if (d && isPathDataValid(d)) parts.push(d);
 
-    currentAdvance += glyph.advanceWidth * scale + tracking;
+    const adv = typeof glyph.advanceWidth === 'number' && Number.isFinite(glyph.advanceWidth) ? glyph.advanceWidth : 0;
+    currentAdvance += adv * scale + tracking;
     const next = chars[i + 1];
     if (next && typeof font.getKerningValue === 'function') {
       try {
         const kern = font.getKerningValue(glyph, font.charToGlyph(next));
-        if (typeof kern === 'number' && !Number.isNaN(kern)) {
+        if (typeof kern === 'number' && Number.isFinite(kern)) {
           currentAdvance += kern * scale;
         }
       } catch {
@@ -452,6 +456,9 @@ function warpPoint(
   }
 
   const bedPt = localToBed(targetPathEl, targetLocalX, targetLocalY);
+  if (!el.scaleX || !el.scaleY) {
+    return { x: targetLocalX, y: targetLocalY };
+  }
   return bedToLocal(el, bedPt.x, bedPt.y);
 }
 

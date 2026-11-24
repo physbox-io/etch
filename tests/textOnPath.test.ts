@@ -108,4 +108,12 @@ describe('Text on Path Vectorizer', () => {
     expect(d).toContain('M');
     expect(d).not.toContain('NaN');
   });
+
+  it('falls back cleanly when target path is degenerate (zero length)', async () => {
+    const degeneratePath: EtchElement = { ...targetPath, d: 'M 10 10 L 10 10' };
+    const d = await textToOutlineD(textElement, degeneratePath);
+    expect(d).toBeTruthy();
+    expect(d).not.toContain('NaN');
+    expect(d).not.toContain('Infinity');
+  });
 });
