@@ -137,10 +137,11 @@ export function leafShape(base: LacePt, deg: number, L: number): LacePt[] {
 }
 
 export function circleShape(cx: number, cy: number, r: number): LacePt[] {
-  const n = Math.max(16, Math.round(r * 10));
+  const safeR = Number.isFinite(r) && r > 0 ? r : 0;
+  const n = Math.max(16, Math.min(2000, Math.round(safeR * 10)));
   return Array.from({ length: n }, (_, i) => {
     const a = (i / n) * Math.PI * 2;
-    return [cx + r * Math.cos(a), cy + r * Math.sin(a)] as LacePt;
+    return [cx + safeR * Math.cos(a), cy + safeR * Math.sin(a)] as LacePt;
   });
 }
 
@@ -165,6 +166,16 @@ export function starShape(cx: number, cy: number, R: number, deg: number): LaceP
 }
 
 export function growLace(region: LaceRegion, opts: LaceOptions): LaceResult {
+  if (
+    !Number.isFinite(region.minX) || !Number.isFinite(region.minY) ||
+    !Number.isFinite(region.maxX) || !Number.isFinite(region.maxY) ||
+    region.maxX <= region.minX || region.maxY <= region.minY ||
+    !Number.isFinite(opts.strand) || !(opts.strand > 0) ||
+    !Number.isFinite(opts.gap) || !(opts.gap > 0) ||
+    !Number.isFinite(opts.maxScroll) || !(opts.maxScroll > 0)
+  ) {
+    return { strands: [], solids: [], details: [] };
+  }
   const rnd = mulberry32(opts.seed);
   const W = Math.ceil((region.maxX - region.minX) / CELL) + 1;
   const H = Math.ceil((region.maxY - region.minY) / CELL) + 1;
@@ -229,6 +240,7 @@ export function growLace(region: LaceRegion, opts: LaceOptions): LaceResult {
   const roots: LacePt[][] = [];
 
   const commitStrand = (raw: LacePt[], images = opts.symmetry) => {
+    if (raw.length === 0) return;
     // Every half millimetre at least: scrolls start from a strand's points, and
     // a vine drawn as one straight segment has only its two ends to offer.
     const pts: LacePt[] = [raw[0]];

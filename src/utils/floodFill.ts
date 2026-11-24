@@ -116,6 +116,42 @@ interface Grid {
   pitch: number;
 }
 
+/** Clips a segment in grid coordinates to [0, w-1] x [0, h-1] via Liang-Barsky. */
+function clipSegmentToGrid(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  w: number,
+  h: number
+): [number, number, number, number] | null {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+  if (
+    !clip(-dx, ax + 1) ||
+    !clip(dx, w - ax) ||
+    !clip(-dy, ay + 1) ||
+    !clip(dy, h - ay)
+  ) {
+    return null;
+  }
+  return [ax + t0 * dx, ay + t0 * dy, ax + t1 * dx, ay + t1 * dy];
+}
+
 /**
  * Draws the walls onto a grid. Bresenham, which gives an 8-connected line:
  * two wall cells touching only at a corner are still a wall to a fill that
@@ -128,14 +164,22 @@ function rasterise(walls: Pt[][], originX: number, originY: number, pitch: numbe
   };
   for (const poly of walls) {
     for (let i = 1; i < poly.length; i++) {
-      let x0 = Math.floor((poly[i - 1].x - originX) / pitch);
-      let y0 = Math.floor((poly[i - 1].y - originY) / pitch);
-      const x1 = Math.floor((poly[i].x - originX) / pitch);
-      const y1 = Math.floor((poly[i].y - originY) / pitch);
-      // Segments wholly outside the grid are skipped rather than walked: a
-      // sheet-sized contour walked cell by cell across a petal-sized fine
-      // grid would be almost all wasted steps.
-      if (Math.max(x0, x1) < 0 || Math.max(y0, y1) < 0 || Math.min(x0, x1) >= w || Math.min(y0, y1) >= h) continue;
+      const gx0 = (poly[i - 1].x - originX) / pitch;
+      const gy0 = (poly[i - 1].y - originY) / pitch;
+      const gx1 = (poly[i].x - originX) / pitch;
+      const gy1 = (poly[i].y - originY) / pitch;
+      if (
+        !Number.isFinite(gx0) || !Number.isFinite(gy0) ||
+        !Number.isFinite(gx1) || !Number.isFinite(gy1)
+      ) {
+        continue;
+      }
+      const clipped = clipSegmentToGrid(gx0, gy0, gx1, gy1, w, h);
+      if (!clipped) continue;
+      let x0 = Math.floor(clipped[0]);
+      let y0 = Math.floor(clipped[1]);
+      const x1 = Math.floor(clipped[2]);
+      const y1 = Math.floor(clipped[3]);
       const dx = Math.abs(x1 - x0);
       const dy = -Math.abs(y1 - y0);
       const sx = x0 < x1 ? 1 : -1;
@@ -220,11 +264,27 @@ export function floodFillRegion(
   seed: Pt,
   opts: { pitchMm?: number; coarsePitchMm?: number; sealGapMm?: number } = {}
 ): FloodFillResult | FloodFillFailure {
-  const pitch = opts.pitchMm ?? FILL_PITCH_MM;
-  const coarsePitch = Math.max(pitch, opts.coarsePitchMm ?? FILL_COARSE_PITCH_MM);
-  const sealGap = opts.sealGapMm ?? FILL_SEAL_GAP_MM;
+  const pitch =
+    opts.pitchMm !== undefined && Number.isFinite(opts.pitchMm) && opts.pitchMm > 0
+      ? opts.pitchMm
+      : FILL_PITCH_MM;
+  let coarsePitch = Math.max(
+    pitch,
+    opts.coarsePitchMm !== undefined && Number.isFinite(opts.coarsePitchMm) && opts.coarsePitchMm > 0
+      ? opts.coarsePitchMm
+      : FILL_COARSE_PITCH_MM
+  );
+  const sealGap =
+    opts.sealGapMm !== undefined && Number.isFinite(opts.sealGapMm) && opts.sealGapMm >= 0
+      ? opts.sealGapMm
+      : FILL_SEAL_GAP_MM;
 
-  if (seed.x < 0 || seed.y < 0 || seed.x >= doc.width || seed.y >= doc.height) {
+  if (
+    !Number.isFinite(doc.width) || !Number.isFinite(doc.height) ||
+    doc.width <= 0 || doc.height <= 0 ||
+    !Number.isFinite(seed.x) || !Number.isFinite(seed.y) ||
+    seed.x < 0 || seed.y < 0 || seed.x >= doc.width || seed.y >= doc.height
+  ) {
     return { error: 'Click inside the stock to fill a region.' };
   }
   const walls = wallContours(doc);
@@ -237,6 +297,9 @@ export function floodFillRegion(
    * the fine walls below are thicker still. So the coarse region's box is a
    * safe place to run the fine pass, and nowhere else needs looking at.
    */
+  while ((Math.ceil(doc.width / coarsePitch) + 1) * (Math.ceil(doc.height / coarsePitch) + 1) > FILL_MAX_CELLS) {
+    coarsePitch *= 1.5;
+  }
   const cw = Math.ceil(doc.width / coarsePitch) + 1;
   const ch = Math.ceil(doc.height / coarsePitch) + 1;
   const coarse = rasterise(walls, 0, 0, coarsePitch, cw, ch);
@@ -330,7 +393,7 @@ export function floodFillRegion(
           const ny = y + dy;
           if (nx >= 0 && ny >= 0 && nx < fw && ny < fh && mask[ny * fw + nx]) {
             grown[i] = 1;
-            if (nx === 0 || ny === 0 || nx === fw - 1 || ny === fh - 1) touchedEdge = true;
+            if (x === 0 || y === 0 || x === fw - 1 || y === fh - 1) touchedEdge = true;
             break;
           }
         }

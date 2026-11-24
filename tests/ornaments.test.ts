@@ -299,3 +299,30 @@ describe('planOrnament', () => {
     }
   });
 });
+
+describe('ornaments robustness', () => {
+  it('keeps spirograph finite and inside the region when turns > lobes (a + dd ≈ 0)', () => {
+    const spec = ornamentById('guilloche')!;
+    const box: OrnamentRegion = { x: 0, y: 0, width: 100, height: 100 };
+    // lobes=2, turns=4 -> petals=0.5, r=2, a=-1, dd=2*(0.35+0.08*1.9)≈1.004 -> a+dd≈0
+    const d = spec.build(box, { ...spec.defaults, figure: 'spiro', lobes: 2, turns: 4, depth: 0.08 });
+    expect(d.length).toBeGreaterThan(0);
+    expect(d).not.toContain('NaN');
+    expect(d).not.toContain('Infinity');
+    for (const m of d.matchAll(/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g)) {
+      const px = Number(m[1]);
+      const py = Number(m[2]);
+      expect(px).toBeGreaterThanOrEqual(-1e-2);
+      expect(px).toBeLessThanOrEqual(100.01);
+      expect(py).toBeGreaterThanOrEqual(-1e-2);
+      expect(py).toBeLessThanOrEqual(100.01);
+    }
+  });
+
+  it('returns empty string for zero or non-finite regions across all ornaments', () => {
+    for (const spec of ORNAMENTS) {
+      expect(spec.build({ x: 0, y: 0, width: 0, height: 50 }, spec.defaults)).toBe('');
+      expect(spec.build({ x: 0, y: 0, width: NaN, height: 50 }, spec.defaults)).toBe('');
+    }
+  });
+});

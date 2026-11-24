@@ -99,7 +99,7 @@ function stripClosingPoint(c: Pt[]): Pt[] {
 /** The closed contours an element contributes, or none. */
 export function regionsOf(el: EtchElement): Pt[][] {
   return extractElementContours(el)
-    .filter(isClosedRegion)
+    .filter((c) => isClosedRegion(c) && c.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)))
     .map(stripClosingPoint)
     .filter((c) => c.length >= 3);
 }
@@ -192,10 +192,12 @@ export function contoursToPathD(contours: Pt[][], ox = 0, oy = 0): string {
   return contours
     .map((c) => {
       const pts = stripClosingPoint(c);
+      if (pts.length < 2) return '';
       const head = `M ${n(pts[0].x - ox)} ${n(pts[0].y - oy)}`;
       const rest = pts.slice(1).map((p) => `L ${n(p.x - ox)} ${n(p.y - oy)}`);
       return [head, ...rest, 'Z'].join(' ');
     })
+    .filter(Boolean)
     .join(' ');
 }
 
@@ -249,11 +251,14 @@ export function booleanElements(
 
   const contours = fromClipperPaths(kept).filter((c) => c.length >= 3);
   const fragments = contours.filter((c) => {
-    const xs = c.map((p) => p.x);
-    const ys = c.map((p) => p.y);
-    return (
-      Math.max(...xs) - Math.min(...xs) < SPECK_MM && Math.max(...ys) - Math.min(...ys) < SPECK_MM
-    );
+    let cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
+    for (const p of c) {
+      if (p.x < cMinX) cMinX = p.x;
+      if (p.x > cMaxX) cMaxX = p.x;
+      if (p.y < cMinY) cMinY = p.y;
+      if (p.y > cMaxY) cMaxY = p.y;
+    }
+    return cMaxX - cMinX < SPECK_MM && cMaxY - cMinY < SPECK_MM;
   }).length;
   if (contours.length === 0) {
     // Intersecting shapes that do not overlap, or subtracting a shape that

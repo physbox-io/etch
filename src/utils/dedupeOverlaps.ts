@@ -115,6 +115,7 @@ export function removeOverlapLines(
   segments: GCodeSegment[],
   tol: number = OVERLAP_TOLERANCE_MM
 ): OverlapResult {
+  const safeTol = Number.isFinite(tol) && tol > 0 ? tol : OVERLAP_TOLERANCE_MM;
   const seen = new Map<string, Set<string>>();
   const out: GCodeSegment[] = [];
   let removedMm = 0;
@@ -146,8 +147,16 @@ export function removeOverlapLines(
     for (let i = 0; i < seg.points.length - 1; i++) {
       const a = seg.points[i];
       const b = seg.points[i + 1];
-      const ka = quantise(a, tol);
-      const kb = quantise(b, tol);
+      if (
+        !Number.isFinite(a.x) || !Number.isFinite(a.y) ||
+        !Number.isFinite(b.x) || !Number.isFinite(b.y)
+      ) {
+        if (current.length > 1) runs.push(current);
+        current = [];
+        continue;
+      }
+      const ka = quantise(a, safeTol);
+      const kb = quantise(b, safeTol);
 
       // A zero-length edge — two flattened points landing on the same grid
       // square — is not a duplicate of anything and must not claim a key.

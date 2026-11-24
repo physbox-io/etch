@@ -47,6 +47,12 @@ export interface OffsetOutcome {
 export const MIN_OFFSET_MM = 1 / CLIPPER_SCALE;
 
 
+const AREA_TOL = CLIPPER_SCALE * CLIPPER_SCALE * 0.01;
+
+function netArea(paths: ClipperLib.Paths): number {
+  return Math.abs(paths.reduce((a, p) => a + ClipperLib.Clipper.Area(p), 0));
+}
+
 /** True when everything in `inner` lies inside `outer`. */
 function isInside(inner: ClipperLib.Paths, outer: ClipperLib.Paths): boolean {
   const clipper = new ClipperLib.Clipper();
@@ -62,7 +68,7 @@ function isInside(inner: ClipperLib.Paths, outer: ClipperLib.Paths): boolean {
   // Nothing of `inner` sticking out. A few square microns of clipper rounding
   // along a shared edge is not sticking out, so tiny remainders do not count.
   const strayArea = outside.reduce((a, p) => a + Math.abs(ClipperLib.Clipper.Area(p)), 0);
-  return strayArea < CLIPPER_SCALE * CLIPPER_SCALE * 0.01;
+  return strayArea < AREA_TOL;
 }
 
 function unionAll(groups: ClipperLib.Paths[]): ClipperLib.Paths {
@@ -101,9 +107,14 @@ function unionAll(groups: ClipperLib.Paths[]): ClipperLib.Paths {
  * of the answer.
  */
 export function assembleRegion(perElement: ClipperLib.Paths[]): ClipperLib.Paths {
+  if (perElement.length === 0) return [];
+  const areas = perElement.map(netArea);
+  // Strict containment: coincident shapes have equal area and must share the
+  // same nesting depth so unionAll merges them instead of cancelling both out.
   const depth = perElement.map((mine, i) =>
     perElement.reduce(
-      (count, other, j) => (i !== j && isInside(mine, other) ? count + 1 : count),
+      (count, other, j) =>
+        i !== j && areas[j] > areas[i] + AREA_TOL && isInside(mine, other) ? count + 1 : count,
       0
     )
   );
@@ -115,7 +126,7 @@ export function assembleRegion(perElement: ClipperLib.Paths[]): ClipperLib.Paths
    * the island with it — the boss disappears into the pocket it sits in.
    */
   let region: ClipperLib.Paths = [];
-  const deepest = Math.max(...depth);
+  const deepest = depth.reduce((a, b) => Math.max(a, b), 0);
   for (let level = 0; level <= deepest; level++) {
     const atLevel = unionAll(perElement.filter((_, i) => depth[i] === level));
     if (atLevel.length === 0) continue;
@@ -160,7 +171,7 @@ export function offsetElements(
   elements: EtchElement[],
   deltaMm: number
 ): OffsetOutcome | BooleanFailure {
-  if (Math.abs(deltaMm) < MIN_OFFSET_MM) {
+  if (!Number.isFinite(deltaMm) || Math.abs(deltaMm) < MIN_OFFSET_MM) {
     return { error: `An offset of ${deltaMm} mm would not move anything.` };
   }
 

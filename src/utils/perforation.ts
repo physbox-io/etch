@@ -104,6 +104,8 @@ export function perforationField(
   // worse, on a loop that compares rather than counts, endless. Nothing here
   // runs off the main thread.
   const floored = (v: number, min: number) => (Number.isFinite(v) ? Math.max(min, v) : min);
+  const wRegion = floored(width, 0);
+  const hRegion = floored(height, 0);
   const pitch = floored(spec.pitchMm, 0.2);
   const size = floored(spec.sizeMm, 0.1);
   const slotLen = floored(spec.slotLengthMm, size);
@@ -117,21 +119,21 @@ export function perforationField(
   const spanAlong = isSlot ? slotLen : size;
   const spanAcross = size;
 
-  const cols = Math.max(0, Math.floor((width - spanAlong) / pitch) + 1);
-  const rows = Math.max(0, Math.floor((height - spanAcross) / rowStep) + 1);
+  const cols = Math.max(0, Math.floor((wRegion - spanAlong) / pitch) + 1);
+  const rows = Math.max(0, Math.floor((hRegion - spanAcross) / rowStep) + 1);
 
   const usedW = cols > 0 ? (cols - 1) * pitch + spanAlong : 0;
   const usedH = rows > 0 ? (rows - 1) * rowStep + spanAcross : 0;
-  const originX = (width - usedW) / 2 + spanAlong / 2;
-  const originY = (height - usedH) / 2 + spanAcross / 2;
+  const originX = (wRegion - usedW) / 2 + spanAlong / 2;
+  const originY = (hRegion - usedH) / 2 + spanAcross / 2;
 
-  const cxMid = width / 2;
-  const cyMid = height / 2;
+  const cxMid = wRegion / 2;
+  const cyMid = hRegion / 2;
   const maxR = Math.hypot(cxMid, cyMid) || 1;
 
   /** How big this hole is, 0..1 of nominal, after the ramp. */
   const scaleAt = (cx: number, cy: number): number => {
-    if (spec.ramp === 'linear') return 1 - 0.85 * (cx / Math.max(1e-6, width));
+    if (spec.ramp === 'linear') return 1 - 0.85 * (cx / Math.max(1e-6, wRegion));
     if (spec.ramp === 'radial') return 1 - 0.85 * (Math.hypot(cx - cxMid, cy - cyMid) / maxR);
     return 1;
   };
@@ -147,7 +149,7 @@ export function perforationField(
     for (let c = 0; c < cols; c++) {
       const cx = originX + c * pitch + offset;
       // A hex row that has been shifted can push its last hole past the edge.
-      if (cx + spanAlong / 2 > width || cx - spanAlong / 2 < 0) continue;
+      if (cx + spanAlong / 2 > wRegion || cx - spanAlong / 2 < 0) continue;
 
       const k = Math.max(0, Math.min(1, scaleAt(cx, cy)));
       const w = size * k;
@@ -187,7 +189,7 @@ export function perforationField(
     }
   }
 
-  const regionArea = Math.max(1e-6, width * height);
+  const regionArea = Math.max(1e-6, wRegion * hRegion);
   return {
     d: d.trim(),
     holes,
@@ -203,17 +205,22 @@ export function planPerforation(
   timestamp = Date.now()
 ): PerforationPlan {
   const notes: string[] = [];
+  const floored = (v: number, min: number) => (Number.isFinite(v) ? Math.max(min, v) : min);
+  const width = floored(opts.width, 0);
+  const height = floored(opts.height, 0);
+  const x = Number.isFinite(opts.x) ? opts.x : 0;
+  const y = Number.isFinite(opts.y) ? opts.y : 0;
+  const size = floored(opts.sizeMm, 0.1);
+  const pitch = floored(opts.pitchMm, 0.2);
   const spec: PerforationSpec = {
     lattice: opts.lattice,
     shape: opts.shape,
-    sizeMm: Math.max(0.1, opts.sizeMm),
-    slotLengthMm: Math.max(Math.max(0.1, opts.sizeMm), opts.slotLengthMm),
-    pitchMm: Math.max(0.2, opts.pitchMm),
+    sizeMm: size,
+    slotLengthMm: floored(opts.slotLengthMm, size),
+    pitchMm: pitch,
     ramp: opts.ramp,
   };
-  const { d, holes, minWebMm: minWeb, openArea } = perforationField(opts.width, opts.height, spec);
-  const size = spec.sizeMm;
-  const pitch = spec.pitchMm;
+  const { d, holes, minWebMm: minWeb, openArea } = perforationField(width, height, spec);
 
   const fits = holes > 0 && minWeb > 0;
   if (holes === 0) {
@@ -255,10 +262,10 @@ export function planPerforation(
     if (el.visible === false || el.type === 'erase') continue;
     const b = getBedBBox(el);
     if (
-      opts.x + opts.width > b.minX &&
-      opts.x < b.minX + b.width &&
-      opts.y + opts.height > b.minY &&
-      opts.y < b.minY + b.height
+      x + width > b.minX &&
+      x < b.minX + b.width &&
+      y + height > b.minY &&
+      y < b.minY + b.height
     ) {
       clashes.add(el.name);
     }
@@ -286,11 +293,11 @@ export function planPerforation(
          * stretched. The outermost holes sit a little inside the region, so
          * their own extent would put the handles somewhere nobody drew.
          */
-        w: opts.width,
-        h: opts.height,
+        w: width,
+        h: height,
         perforation: spec,
-        x: opts.x,
-        y: opts.y,
+        x,
+        y,
         rotation: 0,
         scaleX: 1,
         scaleY: 1,

@@ -165,3 +165,16 @@ describe('planToolpath and doubled lines', () => {
     expect(segments.every((s) => s.isClosed)).toBe(true);
   });
 });
+
+describe('dedupeOverlaps robustness', () => {
+  it('falls back cleanly when tolerance is zero, negative, or NaN and ignores NaN points', () => {
+    const a = seg([{ x: 0, y: 0 }, { x: 10, y: 0 }]);
+    const b = seg([{ x: 10, y: 0 }, { x: 0, y: 0 }]);
+    expect(removeOverlapLines([a, b], 0).removedMm).toBeCloseTo(10, 6);
+    expect(removeOverlapLines([a, b], NaN).removedMm).toBeCloseTo(10, 6);
+
+    const bad = seg([{ x: NaN, y: 0 }, { x: 10, y: 0 }]);
+    const res = removeOverlapLines([a, bad]);
+    expect(Number.isFinite(res.removedMm)).toBe(true);
+  });
+});

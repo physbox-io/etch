@@ -301,6 +301,7 @@ function openLoop(pts: Pt[]): Pt[] {
  */
 function centroidOf(pts: Pt[], closed: boolean): Pt {
   const p = openLoop(pts);
+  if (p.length === 0) return { x: 0, y: 0 };
   if (closed && p.length >= 3) {
     let a2 = 0, cx = 0, cy = 0;
     for (let i = 0; i < p.length; i++) {
@@ -436,6 +437,7 @@ function segsToD(start: Pt, segs: FittedSeg[], closed: boolean, ox: number, oy: 
 /** Straight-sided path data, relative to (ox, oy). */
 function polylineToD(pts: Pt[], closed: boolean, ox: number, oy: number): string {
   const p = closed ? openLoop(pts) : pts;
+  if (p.length === 0) return '';
   const head = `M ${num(p[0].x - ox)} ${num(p[0].y - oy)}`;
   const rest = p.slice(1).map((q) => `L ${num(q.x - ox)} ${num(q.y - oy)}`);
   return [head, ...rest, ...(closed ? ['Z'] : [])].join(' ');
@@ -797,13 +799,14 @@ function fitSpiralRange(pts: Pt[], tol: number): SpiralFit | null {
       lin && { a: lin.a, b: lin.b, log: false },
       lg && { a: Math.exp(lg.a), b: lg.b, log: true },
     ]) {
-      if (!cand) continue;
+      if (!cand || !Number.isFinite(cand.a) || !Number.isFinite(cand.b)) continue;
       let sum = 0;
       for (let i = 0; i < p.length; i++) {
         const model = cand.log ? cand.a * Math.exp(cand.b * theta[i]) : cand.a + cand.b * theta[i];
         sum += (radius[i] - model) ** 2;
       }
       const rms = Math.sqrt(sum / p.length);
+      if (!Number.isFinite(rms)) continue;
       if (!best || rms < best.rms) {
         best = {
           centre, from: theta[0], to: theta[theta.length - 1],
@@ -840,6 +843,7 @@ function fitSpiralRange(pts: Pt[], tol: number): SpiralFit | null {
   const meanRadius = best.log
     ? (best.a * Math.exp(best.b * best.from) + best.a * Math.exp(best.b * best.to)) / 2
     : best.a + (best.b * (best.from + best.to)) / 2;
+  if (!Number.isFinite(meanRadius)) return null;
   const limit = Math.max(tol, Math.abs(meanRadius) * SPIRAL_RMS_FRACTION);
   if (!(best.rms <= limit)) return null;
   // A spiral has to actually go somewhere: one that neither grows nor shrinks
@@ -1399,7 +1403,9 @@ interface Sample {
 }
 
 function sampleElement(el: EtchElement): Sample | null {
-  const contours = extractElementContours(el).filter((c) => c.length >= 2);
+  const contours = extractElementContours(el).filter(
+    (c) => c.length >= 2 && c.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+  );
   if (contours.length === 0) return null;
   // The biggest contour is the shape; a compound path's holes describe the same
   // object and would only dilute the comparison.
@@ -1638,17 +1644,22 @@ function squareUpLines(els: EtchElement[]): {
 
   // Baked into bed space: a line may arrive carrying a rotation or a scale, and
   // its direction is the composition of all three.
-  const geometry = idx.map((i) => {
-    const el = els[i];
-    const a = localToBed(el, 0, 0);
-    const b = localToBed(el, el.x2 ?? 0, el.y2 ?? 0);
-    return {
-      mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
-      length: Math.hypot(b.x - a.x, b.y - a.y),
-      // Modulo a half turn: a line has no front and no back.
-      dir: ((deg(Math.atan2(b.y - a.y, b.x - a.x)) % 180) + 180) % 180,
-    };
-  });
+  const geometry = idx
+    .map((i) => {
+      const el = els[i];
+      const a = localToBed(el, 0, 0);
+      const b = localToBed(el, el.x2 ?? 0, el.y2 ?? 0);
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      return {
+        i,
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        length,
+        // Modulo a half turn: a line has no front and no back.
+        dir: ((deg(Math.atan2(b.y - a.y, b.x - a.x)) % 180) + 180) % 180,
+      };
+    })
+    .filter((g) => Number.isFinite(g.length) && g.length > 1e-6 && Number.isFinite(g.dir));
+  if (geometry.length === 0) return { elements: els, parallel: 0, squared: 0, lengths: 0 };
 
   // Cluster on direction, wrapping round the half turn so 179° and 1° meet.
   const order = geometry.map((_, k) => k).sort((a, b) => geometry[a].dir - geometry[b].dir);
@@ -1694,8 +1705,8 @@ function squareUpLines(els: EtchElement[]): {
       const rad = (target * Math.PI) / 180;
       const hx = (Math.cos(rad) * len) / 2;
       const hy = (Math.sin(rad) * len) / 2;
-      out[idx[k]] = {
-        ...els[idx[k]],
+      out[g.i] = {
+        ...els[g.i],
         x: g.mid.x - hx,
         y: g.mid.y - hy,
         x2: hx * 2,
@@ -1908,7 +1919,7 @@ function snapSizes(sizes: number[]): { targets: number[]; equalised: number; rat
     if (c.length < 2) continue;
     const lo = sizes[c[0]];
     const hi = sizes[c[c.length - 1]];
-    if ((hi - lo) / hi <= MAX_SIZE_CLUSTER_SPREAD) continue;
+    if (!(hi > 0) || (hi - lo) / hi <= MAX_SIZE_CLUSTER_SPREAD) continue;
     let cut = 1;
     let widest = -1;
     for (let n = 1; n < c.length; n++) {
@@ -1927,6 +1938,9 @@ function snapSizes(sizes: number[]): { targets: number[]; equalised: number; rat
   const equalised = clusters.filter((c) => c.length > 1).reduce((s, c) => s + c.length, 0);
 
   const largest = Math.max(...clusterSize);
+  if (!(largest > 0) || !Number.isFinite(largest)) {
+    return { targets: sizes.slice(), equalised: 0, ratioSnapped: 0 };
+  }
   let ratioSnapped = 0;
   const snappedCluster = clusterSize.map((v) => {
     const ratio = v / largest;
@@ -2214,7 +2228,10 @@ function alignElements(
    */
   const all = [...els, ...context];
   const boxes = all.map(boxOf);
-  const idx = els.map((_, i) => i).filter((i) => !skip.has(i) && canAlign(els[i]));
+  const validBox = (b: Box) =>
+    Number.isFinite(b.minX) && Number.isFinite(b.minY) &&
+    Number.isFinite(b.maxX) && Number.isFinite(b.maxY);
+  const idx = els.map((_, i) => i).filter((i) => !skip.has(i) && canAlign(els[i]) && validBox(boxes[i]));
   if (idx.length < 1 || boxes.length < 2) {
     return { elements: els, framed: 0, aligned: 0, frameName: null };
   }

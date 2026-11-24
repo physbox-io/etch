@@ -268,3 +268,17 @@ describe('resizing a hinge', () => {
     expect(len(after.d!)).toBeCloseTo(len(before.d!), 6);
   });
 });
+
+describe('livingHinge robustness', () => {
+  it('sanitizes NaN dimensions and spec values in planLivingHinge without storing NaN', () => {
+    const plan = planLivingHinge(base(), opts({ x: NaN, y: Infinity, width: 100, height: 40, slitLengthMm: NaN, bridgeMm: NaN, pitchMm: NaN }));
+    expect(Number.isFinite(plan.minBendRadiusMm)).toBe(true);
+    expect(plan.elements).toHaveLength(1);
+    const el = plan.elements[0];
+    expect(Number.isFinite(el.x)).toBe(true);
+    expect(Number.isFinite(el.y)).toBe(true);
+    expect(Number.isFinite(el.hinge!.slitLengthMm)).toBe(true);
+    expect(Number.isFinite(el.hinge!.bridgeMm)).toBe(true);
+    expect(Number.isFinite(el.hinge!.pitchMm)).toBe(true);
+  });
+});

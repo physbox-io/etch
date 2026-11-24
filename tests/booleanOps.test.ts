@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore } from '../src/store/useStore';
-import { booleanElements, isBooleanFailure } from '../src/utils/booleanOps';
+import { booleanElements, contoursToPathD, isBooleanFailure } from '../src/utils/booleanOps';
 import { clearGeomBBoxCache, getBedBBox } from '../src/utils/geom';
 import { extractElementContours } from '../src/utils/elementContours';
 import { contourArea } from '../src/utils/contourOffset';
@@ -222,5 +222,34 @@ describe('combineSelected', () => {
 
     const els = useStore.getState().document.elements;
     expect(els.map((e) => e.id)).toEqual(['z', els[1].id]);
+  });
+});
+
+describe('booleanOps robustness', () => {
+  it('skips degenerate contours in contoursToPathD without throwing', () => {
+    expect(contoursToPathD([[], [{ x: 1, y: 2 }]])).toBe('');
+    expect(
+      contoursToPathD([
+        [],
+        [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+          { x: 10, y: 10 },
+        ],
+      ])
+    ).toBe('M 0 0 L 10 0 L 10 10 Z');
+  });
+
+  it('skips elements carrying NaN coordinates cleanly', () => {
+    const good = {
+      id: 'g', name: 'Good', type: 'rect', layerId: 'cut', x: 0, y: 0, w: 20, h: 20,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true, locked: false,
+    } as EtchElement;
+    const bad = {
+      id: 'b', name: 'Bad', type: 'rect', layerId: 'cut', x: NaN, y: 0, w: 20, h: 20,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true, locked: false,
+    } as EtchElement;
+    const r = booleanElements(good, [bad], 'union');
+    expect(isBooleanFailure(r)).toBe(true);
   });
 });

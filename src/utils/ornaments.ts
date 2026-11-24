@@ -129,7 +129,7 @@ function polylineLength(pts: Pt2[]): number {
  */
 function resampleEvenly(pts: Pt2[], count: number): Pt2[] {
   const total = polylineLength(pts);
-  if (!(total > 0)) return pts.slice();
+  if (count < 2 || !(total > 0)) return pts.slice();
   const step = total / (count - 1);
   const out: Pt2[] = [pts[0]];
   let i = 1;
@@ -207,6 +207,12 @@ const guilloche: OrnamentSpec = {
     { kind: 'number', key: 'spacing', label: 'Ring spacing', min: 0.5, max: 60, step: 0.5, unit: 'mm' },
   ],
   build(region, opts) {
+    if (
+      !Number.isFinite(region.width) || !Number.isFinite(region.height) ||
+      !(region.width > 0) || !(region.height > 0)
+    ) {
+      return '';
+    }
     const figure = str(opts, 'figure', 'rosette');
     const rings = Math.max(1, Math.round(num(opts, 'rings', 3)));
     const lobes = Math.max(2, Math.round(num(opts, 'lobes', 7)));
@@ -292,7 +298,8 @@ function spiroPoint(
   const x = a * Math.cos(t) + dd * Math.cos(ang);
   const y = a * Math.sin(t) - dd * Math.sin(ang);
   // Normalised on the figure's own reach, which is |a| + |dd| by construction.
-  const k = (R / (a + dd)) * rippleAt(petals * t + phase);
+  const reach = Math.abs(a) + Math.abs(dd);
+  const k = (R / Math.max(1e-9, reach)) * rippleAt(petals * t + phase);
   return [x * k, y * k];
 }
 
@@ -354,6 +361,12 @@ const maze: OrnamentSpec = {
     seedField(),
   ],
   build(region, opts) {
+    if (
+      !Number.isFinite(region.width) || !Number.isFinite(region.height) ||
+      !(region.width > 0) || !(region.height > 0)
+    ) {
+      return '';
+    }
     const cell = Math.max(0.5, num(opts, 'cellMm', 8));
     const seed = Math.round(num(opts, 'seed', 1));
     const openEnds = str(opts, 'border', 'closed') === 'open';
@@ -455,6 +468,12 @@ const animalPrint: OrnamentSpec = {
     seedField(),
   ],
   build(region, opts) {
+    if (
+      !Number.isFinite(region.width) || !Number.isFinite(region.height) ||
+      !(region.width > 0) || !(region.height > 0)
+    ) {
+      return '';
+    }
     const coat = str(opts, 'coat', 'tiger');
     const scale = Math.max(1, num(opts, 'scaleMm', 22));
     const boldness = Math.min(0.95, Math.max(0.05, num(opts, 'boldness', 0.45)));
@@ -462,8 +481,12 @@ const animalPrint: OrnamentSpec = {
     const seed = Math.round(num(opts, 'seed', 7));
 
     // Half a millimetre a cell: finer than a laser's spot and far finer than
-    // any cutter, so tracing it is not what limits the edge.
-    const step = 0.5;
+    // any cutter, so tracing it is not what limits the edge. Coarsened on
+    // huge regions so the grid stays bounded.
+    let step = 0.5;
+    while (Math.round(region.width / step) * Math.round(region.height / step) > 4_000_000) {
+      step *= 1.5;
+    }
     const w = Math.max(4, Math.round(region.width / step));
     const h = Math.max(4, Math.round(region.height / step));
     const grid = new Uint8Array(w * h);
@@ -602,7 +625,12 @@ const foliage: OrnamentSpec = {
     const seed = Math.round(num(opts, 'seed', 1));
     const rnd = mulberry32(seed);
 
-    if (region.width < 4 || region.height < 4) return '';
+    if (
+      !Number.isFinite(region.width) || !Number.isFinite(region.height) ||
+      region.width < 4 || region.height < 4
+    ) {
+      return '';
+    }
 
     /*
      * Everything is built in its own space and fitted to the region at the end.
@@ -1090,6 +1118,7 @@ const foliage: OrnamentSpec = {
       pts: Pt2[], g0: number, g1: number, side: number, scale: number, phase: number
     ): Pt2[][] => {
       const n = pts.length;
+      if (n < 2) return [];
       const gapAt = (i: number): number => {
         const t = i / (n - 1);
         return (g0 + (g1 - g0) * t) * scale * (1 + 0.16 * Math.sin(phase * 6.283 + t * 9));
@@ -1314,7 +1343,11 @@ export function planOrnament(
     }
   }
 
-  const built = region.width > 0 && region.height > 0 ? spec.build(region, opts, ctx) : '';
+  const built =
+    Number.isFinite(region.width) && Number.isFinite(region.height) &&
+    region.width > 0 && region.height > 0
+      ? spec.build(region, opts, ctx)
+      : '';
   const tightened = ctx ? tightenToDrawing(region, built) : { region, d: built };
   region = tightened.region;
   const d = tightened.d;

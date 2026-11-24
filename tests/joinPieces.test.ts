@@ -240,3 +240,24 @@ describe('joinSelected', () => {
     expect(s.selectedIds).toEqual(['a', 'b']);
   });
 });
+
+describe('joinPieces robustness', () => {
+  it('handles non-finite scale in joinOutlineD and coincident shapes in joinElements', () => {
+    const d = 'M 0 0 L 10 0 L 10 10 L 0 10 Z M 20 0 L 30 0 L 30 10 L 20 10 Z';
+    expect(joinOutlineD(d, Infinity)).not.toContain('NaN');
+    expect(joinOutlineD(d, 0)).not.toContain('NaN');
+
+    const a = {
+      id: 'a', name: 'A', type: 'rect', layerId: 'cut', x: 0, y: 0, w: 10, h: 10,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true, locked: false,
+    } as EtchElement;
+    const aDup = { ...a, id: 'a2', name: 'A2' };
+    const b = { ...a, id: 'b', name: 'B', x: 20 };
+    const res = joinElements([a, aDup, b]);
+    expect('error' in res).toBe(false);
+    if (!('error' in res)) {
+      expect(res.pieces).toBe(2);
+      expect(res.bridges).toBe(1);
+    }
+  });
+});

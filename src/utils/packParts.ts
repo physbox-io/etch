@@ -143,7 +143,12 @@ export function clusterParts(elements: EtchElement[], slack = 0.5): Part[] {
         el,
         box: { minX: b.minX, minY: b.minY, maxX: b.minX + b.width, maxY: b.minY + b.height },
       };
-    });
+    })
+    .filter(
+      ({ box }) =>
+        Number.isFinite(box.minX) && Number.isFinite(box.minY) &&
+        Number.isFinite(box.maxX) && Number.isFinite(box.maxY)
+    );
 
   const parent = items.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
@@ -206,12 +211,15 @@ export function clusterParts(elements: EtchElement[], slack = 0.5): Part[] {
   }
 
   return [...groups.values()].map((idx) => {
-    const box: PartBox = {
-      minX: Math.min(...idx.map((i) => items[i].box.minX)),
-      minY: Math.min(...idx.map((i) => items[i].box.minY)),
-      maxX: Math.max(...idx.map((i) => items[i].box.maxX)),
-      maxY: Math.max(...idx.map((i) => items[i].box.maxY)),
-    };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const i of idx) {
+      const b = items[i].box;
+      if (b.minX < minX) minX = b.minX;
+      if (b.minY < minY) minY = b.minY;
+      if (b.maxX > maxX) maxX = b.maxX;
+      if (b.maxY > maxY) maxY = b.maxY;
+    }
+    const box: PartBox = { minX, minY, maxX, maxY };
     return {
       ids: idx.map((i) => items[i].el.id),
       box,
@@ -260,12 +268,25 @@ export function packParts(
   stock: { width: number; height: number },
   gap: number
 ): PackResult {
-  const usableW = stock.width - gap * 2;
-  const usableH = stock.height - gap * 2;
+  const safeGap = Number.isFinite(gap) ? Math.max(0, gap) : 0;
+  if (
+    !Number.isFinite(stock.width) || !Number.isFinite(stock.height) ||
+    stock.width <= 0 || stock.height <= 0
+  ) {
+    return { placements: [], leftovers: parts.filter((p) => !p.fixed) };
+  }
+  const usableW = stock.width - safeGap * 2;
+  const usableH = stock.height - safeGap * 2;
+  if (usableW < 0 || usableH < 0) {
+    return { placements: [], leftovers: parts.filter((p) => !p.fixed) };
+  }
 
-  let skyline: Span[] = [{ x: gap, width: Math.max(usableW, 0), y: gap }];
+  let skyline: Span[] = [{ x: safeGap, width: Math.max(usableW, 0), y: safeGap }];
 
   const raise = (x: number, width: number, top: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(width) || !Number.isFinite(top) || !(width > 0)) {
+      return;
+    }
     const next: Span[] = [];
     for (const s of skyline) {
       const overlapStart = Math.max(s.x, x);
@@ -295,7 +316,13 @@ export function packParts(
 
   /** The lowest y a box of this width can rest at, starting at x. */
   const restAt = (x: number, width: number): number | null => {
-    if (x + width > gap + usableW + 1e-9) return null;
+    if (x + width > safeGap + usableW + 1e-9) return null;
+    if (width <= 1e-9) {
+      for (const s of skyline) {
+        if (x >= s.x - 1e-9 && x <= s.x + s.width + 1e-9) return s.y;
+      }
+      return null;
+    }
     let top = -Infinity;
     let covered = 0;
     for (const s of skyline) {
@@ -310,7 +337,9 @@ export function packParts(
 
   const fixed = parts.filter((p) => p.fixed);
   const movable = parts.filter((p) => !p.fixed);
-  for (const p of fixed) raise(p.box.minX - gap, p.box.maxX - p.box.minX + gap * 2, p.box.maxY + gap);
+  for (const p of fixed) {
+    raise(p.box.minX - safeGap, p.box.maxX - p.box.minX + safeGap * 2, p.box.maxY + safeGap);
+  }
 
   /*
    * Tallest first. A skyline fills from the bottom, so placing the big pieces
@@ -330,6 +359,10 @@ export function packParts(
   for (const part of order) {
     const w = part.box.maxX - part.box.minX;
     const h = part.box.maxY - part.box.minY;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 0 || h < 0) {
+      leftovers.push(part);
+      continue;
+    }
     const options: Array<{ w: number; h: number; rotated: boolean }> = [{ w, h, rotated: false }];
     if (part.mayRotate && Math.abs(w - h) > 1e-9) options.push({ w: h, h: w, rotated: true });
 
@@ -339,9 +372,9 @@ export function packParts(
     const candidates = skyline.map((s) => s.x);
     for (const opt of options) {
       for (const x of candidates) {
-        const y = restAt(x, opt.w + gap);
+        const y = restAt(x, opt.w + safeGap);
         if (y === null) continue;
-        if (y + opt.h > gap + usableH + 1e-9) continue;
+        if (y + opt.h > safeGap + usableH + 1e-9) continue;
         if (!best || y < best.y - 1e-9 || (Math.abs(y - best.y) < 1e-9 && x < best.x)) {
           best = { x, y, w: opt.w, h: opt.h, rotated: opt.rotated };
         }
@@ -353,7 +386,7 @@ export function packParts(
       continue;
     }
     placements.push({ part, x: best.x, y: best.y, rotated: best.rotated });
-    raise(best.x, best.w + gap, best.y + best.h + gap);
+    raise(best.x, best.w + safeGap, best.y + best.h + safeGap);
   }
 
   return { placements, leftovers };
