@@ -917,7 +917,8 @@ export const MachineWorkOriginPanel: React.FC<{
               {confirmResurface && !('error' in resurface) && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 space-y-2">
                   <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                    Fit <strong>{resurface.tool.name}</strong>. X0 Y0 must be the corner of the area to
+                    Fit <strong>{resurface.tool.name}</strong>. X0 Y0 must be the{' '}
+                    {document.origin === 'center' ? 'centre' : 'corner'} of the area to
                     face and Z0 the top of the spoilboard
                     {zZeroed ? '' : ' — Z has not been zeroed in this session'}. Clear the bed of
                     clamps and stock.

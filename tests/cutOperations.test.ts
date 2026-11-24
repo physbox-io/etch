@@ -54,7 +54,7 @@ describe('data-operation on import', () => {
     const plain = faceplate.replace(/ data-operation="[a-z]+"/g, '');
     const r = importSVG(plain);
     expect(r.layers.every((l) => l.operation === 'cut')).toBe(true);
-    expect(r.warnings.join(' ')).toMatch(/came in as cut layers/);
+    expect(r.warnings.join(' ')).toMatch(/imported as cut layers/);
   });
 });
 
