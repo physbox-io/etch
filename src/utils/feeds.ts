@@ -185,10 +185,17 @@ export function deriveFeeds(
         `below ${formatRpm(spindle.min)}. Feed is calculated for the speed it can actually hold.`
     ));
   } else if (rpm < targetRpm * 0.95) {
-    notes.push(routine(
-      `Spindle turned down from ${formatRpm(targetRpm)} to ${formatRpm(rpm)} RPM so the feed ` +
-        `stays within ${Math.round(maxFeed)} mm/min at the right chip thickness.`
-    ));
+    if (rpmForMaxFeed < spindle.max) {
+      notes.push(routine(
+        `Spindle turned down from ${formatRpm(targetRpm)} to ${formatRpm(rpm)} RPM so the feed ` +
+          `stays within ${Math.round(maxFeed)} mm/min at the right chip thickness.`
+      ));
+    } else {
+      notes.push(routine(
+        `Spindle capped at ${formatRpm(rpm)} RPM (ideal ${formatRpm(targetRpm)} RPM); feed ` +
+          `matched to hold chip thickness.`
+      ));
+    }
   }
 
   let feed = rpm * feedPerRev;
@@ -200,7 +207,7 @@ export function deriveFeeds(
   feed = Math.round(Math.max(MIN_CUTTING_FEED_MM_MIN, feed));
 
   const plungeRate = Math.round(
-    Math.max(MIN_CUTTING_FEED_MM_MIN / 2, Math.min(feed * PLUNGE_FEED_FRACTION, spec.maxPlungeRate))
+    Math.max(1, Math.min(spec.maxPlungeRate, Math.max(MIN_CUTTING_FEED_MM_MIN / 2, feed * PLUNGE_FEED_FRACTION)))
   );
 
   // The tool's rigidity and the material's grip both cap the depth of a pass;
@@ -413,14 +420,16 @@ export function deriveLaserFeeds(
   const spec = material.laser;
   const notes: string[] = [];
 
+  if (!(source.watts > 0)) return null;
   if (source.kind === 'diode' && spec.diodeFactor === null) {
     return null;
   }
+  const thickness = Number.isFinite(stockThicknessMm) ? Math.max(0.1, stockThicknessMm) : 0.1;
   const cutting = operation === 'cut';
   const baseDose = cutting
     ? spec.cutDoseJPerMm2 === null
       ? null
-      : spec.cutDoseJPerMm2 * Math.max(0.1, stockThicknessMm)
+      : spec.cutDoseJPerMm2 * thickness
     : operation === 'fill'
       ? fillLineDose(spec, fillPitchMm)
       : spec.etchDoseJPerMm;
@@ -456,7 +465,7 @@ export function deriveLaserFeeds(
      */
     speed = MAX_LASER_SPEED_MM_MIN;
     watts = (dose * speed) / 60;
-    powerFraction = watts / source.watts;
+    powerFraction = Math.max(MIN_LASER_POWER_PERCENT / 100, watts / source.watts);
     notes.push(routine(
       `${material.name} needs so little of a ${describeLaserSource(source)} that the head would have ` +
         `to outrun the machine. Power is turned down to ${Math.round(powerFraction * 100)}% instead, ` +
@@ -515,12 +524,13 @@ export function deriveLaserFeeds(
 
   const power = Math.max(MIN_LASER_POWER_PERCENT, Math.min(100, Math.round(powerFraction * 100)));
   const rounded = Math.round(speed);
+  const actualPowerFraction = power / 100;
 
   if (cutting && spec.cutDoseJPerMm2 !== null && stockThicknessMm > 0) {
     // Said plainly, because "12 passes" on a preview reads as a settings
     // problem rather than as the machine being the wrong size for the stock.
-    const perPass = (source.watts * powerFraction * 60) / (rounded * (spec.cutDoseJPerMm2 * (source.kind === 'diode' ? spec.diodeFactor! : 1)));
-    if (perPass < stockThicknessMm && passes >= MAX_LASER_PASSES) {
+    const perPass = (source.watts * actualPowerFraction * 60) / (rounded * (spec.cutDoseJPerMm2 * (source.kind === 'diode' ? spec.diodeFactor! : 1)));
+    if (perPass * passes < stockThicknessMm - 1e-6 && passes >= MAX_LASER_PASSES) {
       notes.push(
         `${stockThicknessMm} mm is thick for a ${describeLaserSource(source)}. Cut it on the router, ` +
           `or work in thinner stock.`
@@ -532,7 +542,7 @@ export function deriveLaserFeeds(
     speed: rounded,
     power,
     passes,
-    summary: `${round1(source.watts * powerFraction)} W · ${rounded} mm/min · ${passes} pass${
+    summary: `${round1(source.watts * actualPowerFraction)} W · ${rounded} mm/min · ${passes} pass${
       passes === 1 ? '' : 'es'
     }`,
     notes,

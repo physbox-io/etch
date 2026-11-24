@@ -227,4 +227,32 @@ describe('what a beam will not do at all', () => {
     const slate = derive('stone', 'etch', CO2_40W)!;
     expect(slate.power).toBeGreaterThan(glass.power);
   });
+
+  it('keeps power, summary watts, and note consistent at the 2% minimum power floor', () => {
+    // 200 W CO2 filling cardstock at 0.05 mm pitch needs 2 W (1%) at 12,000 mm/min,
+    // which clamps to the 2% minimum power floor (4 W).
+    const r = deriveLaserFeeds(
+      findMaterial('cardstock'),
+      'fill',
+      { id: '200w-co2', kind: 'co2', watts: 200 },
+      0.3,
+      0.05
+    )!;
+    expect(r.power).toBe(2);
+    expect(r.summary).toContain('4 W');
+    expect(r.notes.join(' ')).toContain('2%');
+  });
+
+  it('does not emit a thick-stock refusal when exactly 12 passes delivers full dose', () => {
+    // Plywood cutDose=1.4, diodeFactor=1.2 => 1.68 J/mm^2.
+    // On a 5 W diode at 120 mm/min, 12 passes deliver (5 * 60 / 120) * 12 = 30 J/mm => 17.85 mm.
+    // At 17.5 mm, singlePass = (5 / (1.68 * 17.5)) * 60 = 10.204 mm/min => ceil(120 / 10.204) = 12 passes exactly.
+    const r = derive('plywood', 'cut', { id: '5w-diode', kind: 'diode', watts: 5 }, 17.5)!;
+    expect(r.passes).toBe(12);
+    expect(r.notes.join(' ')).not.toMatch(/Cut it on the router/);
+  });
+
+  it('returns null for non-positive laser wattage', () => {
+    expect(derive('plywood', 'etch', { id: 'zero', kind: 'diode', watts: 0 })).toBeNull();
+  });
 });

@@ -528,8 +528,9 @@ export function profileFromRackTool(tool: RackTool): ToolProfile {
 
 /** An Etch tool as a rack entry, keeping the uid of the entry it was edited from. */
 export function rackToolFromProfile(tool: ToolProfile, previous?: RackTool): RackTool {
+  const tipAngleDeg = clampTipAngle(tool.tipAngleDeg);
   const shape: ToolShape =
-    tool.tipAngleDeg !== undefined ? 'vbit' : tool.tipShape === 'ball' ? 'ball' : previous?.shape === 'drill' ? 'drill' : 'flat';
+    tipAngleDeg !== undefined ? 'vbit' : tool.tipShape === 'ball' ? 'ball' : previous?.shape === 'drill' ? 'drill' : 'flat';
   return {
     ...(previous ?? {}),
     uid: tool.rackUid ?? previous?.uid ?? `etch-${tool.id}-${Date.now().toString(36)}`,
@@ -537,7 +538,7 @@ export function rackToolFromProfile(tool: ToolProfile, previous?: RackTool): Rac
     name: tool.name,
     shape,
     diameterMm: tool.diameter ?? previous?.diameterMm ?? 3.175,
-    tipAngleDeg: tool.tipAngleDeg,
+    tipAngleDeg,
     flutes: tool.cutting?.flutes,
     centerCutting: tool.cutting?.centerCutting,
     feedDiameterMm: tool.cutting?.feedDiameter,

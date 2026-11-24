@@ -348,4 +348,12 @@ describe('jobToolIds', () => {
     } as unknown as Parameters<typeof jobToolIds>[0];
     expect(jobToolIds(doc)).toEqual([1, 6]);
   });
+
+  it('does not classify a zero or NaN tipAngleDeg as a vbit when converting to a rack tool', async () => {
+    const { rackToolFromProfile } = await import('../src/utils/tooling');
+    const flat = { ...findTool('cnc', 1)!, tipAngleDeg: 0 };
+    const converted = rackToolFromProfile(flat);
+    expect(converted.shape).toBe('flat');
+    expect(converted.tipAngleDeg).toBeUndefined();
+  });
 });

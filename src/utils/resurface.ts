@@ -1,6 +1,14 @@
 import type { EtchDocument } from '../types/etch';
-import { docToMachine } from './machineCoords';
-import { deriveFeeds, planPasses, formatRpm, RAMP_ANGLE_DEG, type FeedRecipe, type SpindleRange } from './feeds';
+import { describeOrigin, docToMachine } from './machineCoords';
+import {
+  deriveFeeds,
+  planPasses,
+  formatRpm,
+  spindleRangeForMachine,
+  RAMP_ANGLE_DEG,
+  type FeedRecipe,
+  type SpindleRange,
+} from './feeds';
 import { findMaterial } from './materials';
 import { clampTipAngle, isFlatBottomed, type ToolProfile } from './tooling';
 import { DEFAULT_MOTION_PROFILE, type MotionProfile } from './motionProfile';
@@ -106,12 +114,14 @@ export function planResurface(doc: EtchDocument, opts: ResurfaceOptions): Resurf
       ? surfacingCandidates(opts.tools).find((t) => t.id === opts.toolId) ?? null
       : pickSurfacingTool(opts.tools);
   if (!tool) return { error: 'No flat end mill in the tool library to face the board with.' };
-  const feeds = deriveFeeds(tool, SPOILBOARD_MATERIAL, opts.spindle, opts.motion ?? DEFAULT_MOTION_PROFILE);
+  const motion = opts.motion ?? DEFAULT_MOTION_PROFILE;
+  const { range: spindle } = spindleRangeForMachine(opts.spindle, motion);
+  const feeds = deriveFeeds(tool, SPOILBOARD_MATERIAL, spindle, motion);
   if (!feeds) return { error: `${tool.name} has no cutting data to feed it with.` };
 
   const d = tool.diameter!;
   const r = d / 2;
-  if (doc.width <= d || doc.height <= d) {
+  if (!(doc.width > d && doc.height > d)) {
     return { error: `The stock is narrower than the ${d} mm cutter.` };
   }
 
@@ -146,6 +156,7 @@ export function planResurface(doc: EtchDocument, opts: ResurfaceOptions): Resurf
   g += `; Tool: T${tool.id} ${tool.name}\n`;
   g += `; ${formatRpm(feeds.rpm)} RPM · ${feeds.feed} mm/min · ${rows} rows at ${stepover.toFixed(2)} mm · ${depths.length} pass(es)\n`;
   g += `; Z0 must be the top of the spoilboard. The bed heightmap is not applied — the unevenness it measures is what this removes.\n`;
+  g += `; Work origin: ${doc.origin} — X0 Y0 is the ${describeOrigin(doc)}\n`;
   g += COORD_SYSTEM_PREAMBLE;
   g += `G0 Z${SAFE_Z} ; Spindle clearance height\n`;
   g += `M3 S${feeds.rpm} ; Spindle on — ${formatRpm(feeds.rpm)} RPM for ${material.name}\n`;
@@ -169,11 +180,13 @@ export function planResurface(doc: EtchDocument, opts: ResurfaceOptions): Resurf
     let left = rampLen;
     let zNow = prevZ;
     let uNow = u0;
+    let forward = true;
     while (left > 1e-6) {
       const run = Math.min(left, u1 - u0);
       zNow -= (run / rampLen) * (prevZ - depth);
       left -= run;
-      uNow = uNow === u0 ? u0 + run : u0;
+      uNow = forward ? u0 + run : u1 - run;
+      forward = !forward;
       g += `G1 ${at(uNow, v0)} ${z(left > 1e-6 ? zNow : depth)} F${feeds.feed}\n`;
       cutLength += run;
     }

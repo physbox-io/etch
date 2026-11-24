@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { docToMachine, boundsToMachine } from '../src/utils/machineCoords';
+import {
+  docToMachine,
+  machineToDoc,
+  boundsToMachine,
+  originFlipsY,
+  describeOrigin,
+} from '../src/utils/machineCoords';
 import { generateGCode } from '../src/utils/gcodeExporter';
 import type { EtchDocument, EtchElement } from '../src/types/etch';
 
@@ -49,6 +55,23 @@ describe('docToMachine', () => {
     const once = docToMachine(d, 33, 77);
     expect(docToMachine(d, once.x, once.y)).toEqual({ x: 33, y: 77 });
   });
+
+  it('round-trips docToMachine <-> machineToDoc across all three origins', () => {
+    for (const origin of ['top-left', 'center', 'bottom-left'] as const) {
+      const d = doc(origin);
+      const m = docToMachine(d, 42.5, 137.25);
+      expect(machineToDoc(d, m.x, m.y)).toEqual({ x: 42.5, y: 137.25 });
+    }
+  });
+
+  it('reports Y-flip handedness and origin descriptions accurately', () => {
+    expect(originFlipsY(doc('top-left'))).toBe(true);
+    expect(originFlipsY(doc('center'))).toBe(true);
+    expect(originFlipsY(doc('bottom-left'))).toBe(false);
+    expect(describeOrigin(doc('center'))).toMatch(/centre/i);
+    expect(describeOrigin(doc('bottom-left'))).toMatch(/front-left/i);
+    expect(describeOrigin(doc('top-left'))).toMatch(/front-left/i);
+  });
 });
 
 describe('boundsToMachine', () => {
@@ -58,10 +81,20 @@ describe('boundsToMachine', () => {
     expect(b).toEqual({ minX: 10, minY: 110, maxX: 60, maxY: 180 });
   });
 
-  it('preserves the box size', () => {
-    const b = boundsToMachine(doc('top-left'), { minX: 10, minY: 20, maxX: 60, maxY: 90 });
-    expect(b.maxX - b.minX).toBe(50);
-    expect(b.maxY - b.minY).toBe(70);
+  it('preserves the box size across all three origins', () => {
+    for (const origin of ['top-left', 'center', 'bottom-left'] as const) {
+      const b = boundsToMachine(doc(origin), { minX: 10, minY: 20, maxX: 60, maxY: 90 });
+      expect(b.minX).toBeLessThan(b.maxX);
+      expect(b.minY).toBeLessThan(b.maxY);
+      expect(b.maxX - b.minX).toBe(50);
+      expect(b.maxY - b.minY).toBe(70);
+    }
+    expect(boundsToMachine(doc('center'), { minX: 10, minY: 20, maxX: 60, maxY: 90 })).toEqual({
+      minX: -140,
+      minY: 10,
+      maxX: -90,
+      maxY: 80,
+    });
   });
 });
 

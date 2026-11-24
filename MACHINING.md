@@ -61,7 +61,7 @@ to prevent.
 
 | Value | Where | Basis | Source |
 |---|---|---|---|
-| `stepdownRatio` 0.5–1.0 × diameter | `materials.ts` | Depth per pass as a multiple of cutter diameter, for a **full-width slot** — the limiting case, not the typical one. Soft material clears chips and takes ~1×D; hardwood grabs; metal takes far less. | **Published** (1×D slotting rule of thumb in soft material), **Judgement** (per-material values) |
+| `stepdownRatio` 0.05–1.0 × diameter (0.5–1.0 wood/acrylic/foam, 0.15 aluminium, 0.05–0.10 glass/stone/ceramic) | `materials.ts` | Depth per pass as a multiple of cutter diameter, for a **full-width slot** — the limiting case, not the typical one. Soft material clears chips and takes ~1×D; hardwood grabs; metal and brittle stock take far less. | **Published** (1×D slotting rule of thumb in soft material), **Judgement** (per-material values) |
 | Finish allowance = 5% of cutter diameter, clamped 0.1–0.3 mm | `finishAllowanceFor` | A cutter in a deep cut is a cantilever: it deflects away from the wall under load and springs back where the load eases, so a single pass leaves a wall neither straight nor square. Roughing wide and returning with almost nothing in front of the tool is the standard answer. Too little and the finishing lap rubs; too much and it is a second roughing pass with a roughing pass's deflection. | **Published** (leaving a finish allowance is standard practice), **Judgement** (5%, and the clamp) |
 | Finishing applied only when the cut takes more than one depth pass | `finishAllowanceFor` | In stock thin enough to go through in one, the tool is barely loaded and barely deflects. A second lap round every part would be time spent for a difference nobody can measure. | **Judgement** |
 | `FINISH_STEP_MULTIPLE = 2`, `FINISH_AXIAL_DIAMETERS = 3` | `gcodeExporter.ts` | The finishing lap is radially almost nothing, so cutting load is not what bounds it — how much of the flute ends up buried in the wall is. Allowed twice the roughing step, and never more than three diameters. **The roughing stepdown is unchanged**: this is a second, lighter cut with its own limit, not a relaxation of the rule that stops a cutter being driven through 18 mm of ply in one bite. | **Judgement** |
@@ -72,6 +72,8 @@ to prevent.
 | A lead is skipped whenever any of its points falls in kept material | `planLead` | Kept-ness is even-odd across the layer, so the inside of a hole is waste and a hole's lead correctly swings inward. A neighbouring part half a lead radius away gets no lead rather than a squeezed one. | **Derived** |
 | A lead goes where it stays inside the lap's own extent and on the stock, tried at the lap's start and 16 points round it | `planLead`, `LEAD_START_CANDIDATES` | A closed lap can begin anywhere on itself. A lead at a part's extreme sticks a lead radius further out than the part, which put the lead-in of a hub ring nested 5 mm from the stock's back edge 1.7 mm further toward the end of the Y axis than the cut itself. Off the axes of a round part the lead sits inside the part's own extent; on a rectangle, where nowhere does, it goes where it sticks out least. Sixteen candidates is one every 22.5°, enough that a circle always has one inside its extent. The lap's direction never changes, so climb milling is untouched. | **Derived** |
 | `MIN_STEPDOWN_MM = 0.15` | `feeds.ts` | Below this the pass count explodes for no benefit. | **Judgement** |
+| `MAX_PASSES = 100` | `feeds.ts` | Hard ceiling on depth passes for one contour; catches unit mistakes (e.g. inches typed into a mm field) rather than emitting hundreds of passes. | **Judgement** |
+| Cut depth warning above `3 × diameter` | `toolWarning`, `tooling.ts` | Beyond roughly three diameters a slender cutter struggles to clear chips from a slot and risks deflection or breakage. | **Judgement** |
 | `RAMP_ANGLE_DEG = 3` | `feeds.ts` | A ramped entry shaves forward instead of drilling. Bits break on entry more than anywhere else. Published ramp guidance for end mills in wood is commonly 2–5°. | **Published** (range), **Judgement** (3°) |
 | Pocket stepover = tool stepover for flat-bottomed tools; fine pitch otherwise | `defaultPitch`, `tooling.ts` | A flat end mill leaves a flat floor, so passes closer than its stepover re-cut ground already at depth. A ball nose or V-bit leaves scallops, and pitch sets scallop height — no free coarsening. | **Derived** |
 | Pockets cleared with contour-parallel rings, innermost first | `pocketOffset.ts` | Constant tool engagement. A zig-zag drives the cutter into the wall at full width and reverses, twice per line — engagement swings between one stepover and a full slot, which is the chatter and the short tool life. Innermost-first leaves the wall pass last, so the pass anyone sees is the final one. | **Published** — contour-parallel (offset) pocketing versus zig-zag is standard CAM practice; the engagement argument is the standard reason for it. |
@@ -92,7 +94,7 @@ to prevent.
 | Value | Where | Basis | Source |
 |---|---|---|---|
 | `DEFAULT_RESURFACE_DEPTH_MM = 0.5` | `resurface.ts` | Enough to clear ordinary scoring from through-cuts in one light pass, little enough that a board survives many resurfacings. | **Judgement** |
-| `MAX_RESURFACE_DEPTH_MM = 3` | `resurface.ts` | A board worn deeper than this is replaced rather than faced; the cap mostly catches "5" typed for "0.5". | **Judgement** |
+| `MIN_RESURFACE_DEPTH_MM = 0.05`, `MAX_RESURFACE_DEPTH_MM = 3` | `resurface.ts` | Floor matches the 0.05 mm geometry budget; a board worn deeper than 3 mm is replaced rather than faced, and the cap mostly catches "5" typed for "0.5". | **Derived** (floor), **Judgement** (ceiling) |
 | Widest flat-bottomed tool in the library, fed as MDF | `pickSurfacingTool`, `planResurface` | Width is time; flat is the requirement — a ball nose scallops the floor it was meant to flatten. Spoilboards are MDF almost universally. | **Derived** (flat), **Judgement** (MDF) |
 | `RESURFACE_STEPOVER_RATIO = 0.4` of diameter, rows evened out | `planResurface` | Any tram error leaves a ridge at each row boundary; more overlap halves it. Equal rows land the last one on the edge with no sliver. | **Judgement** |
 | Cutter centre held a radius inside the stock | `planResurface` | The faced area is exactly the canvas, and the tool never reaches into clamps or the frame beyond it. | **Derived** |
@@ -135,6 +137,8 @@ This is the least-sourced part of the app and the most worth calibrating.
 | `diodeFactor` (≈1.2 for wood) | `materials.ts` | A diode's shorter wavelength and poorer beam quality do not deliver the same useful energy per watt as a CO₂ tube. | **Judgement** |
 | `maxPowerFraction` | `materials.ts` | Some materials mark better below full power than at it. | **Judgement** |
 | `MAX_LASER_SPEED_MM_MIN = 12000`, `MIN = 120` | `feeds.ts` | Gantry limits, not optical ones. | **Judgement** |
+| `MIN_LASER_POWER_PERCENT = 2` | `feeds.ts` | Lowest power worth firing at; below this a beam does not reliably reach threshold. | **Judgement** |
+| `MAX_LASER_PASSES = 12` | `feeds.ts` | Beyond 12 passes a beam is undersized for the stock; capped rather than emitting an unbounded multi-pass plan. | **Judgement** |
 | `FILL_LINE_WIDTH_MM = 0.2` | `feeds.ts` | The effective beam width a fill line deposits energy over. | **Judgement** |
 
 **If you calibrate one thing in this app, calibrate these.** Cut a material test
@@ -331,18 +335,17 @@ millimetre — the entire point of them.
 
 ## 8. Machine dynamics and time
 
+When connected to a GRBL controller, `$$` supplies per-axis acceleration
+(`$120`–`$122`), max rates (`$110`–`$112`), and junction deviation (`$11`). The
+values below in `DEFAULT_MOTION_PROFILE` (`motionProfile.ts`) are offline
+fallbacks only, used when no machine has reported its settings (see §1).
+
 | Value | Where | Basis | Source |
 |---|---|---|---|
-| `ASSUMED_ACCEL_MM_S2 = 500` | `toolpathMoves.ts` | The shape of a small belt-driven hobby machine. Used for both the time estimate and the overscan length. | **Judgement** |
-| `JUNCTION_DEVIATION_MM = 0.01` | `toolpathTimeline.ts` | GRBL's own junction-deviation concept: a corner is taken at the speed an arc of that sagitta holds. | **Documented** (GRBL planner), **Judgement** (0.01 as the machine's setting) |
+| `accel = { x: 500, y: 500, z: 200 }` mm/s² (fallback) | `DEFAULT_MOTION_PROFILE`, `motionProfile.ts` | The shape of a small belt-driven hobby machine with a slower leadscrew Z. Overridden by `$120`–`$122` on connect. | **Judgement** (fallback), **Documented** (GRBL `$120`–`$122`) |
+| `maxRate = { x: 4000, y: 4000, z: 1000 }` mm/min (fallback) | `DEFAULT_MOTION_PROFILE`, `motionProfile.ts` | Offline rapid/cutting ceiling per axis. Overridden by `$110`–`$112` on connect. | **Judgement** (fallback), **Documented** (GRBL `$110`–`$112`) |
+| `junctionDeviation = 0.01` mm (fallback) | `DEFAULT_MOTION_PROFILE`, `motionProfile.ts` | GRBL's factory default cornering sagitta. Overridden by `$11` on connect. | **Documented** (GRBL `$11`) |
 | `BLOCKS_PER_SECOND = 450` | `toolpathTimeline.ts` | The controller's planning throughput, which is what makes ten thousand 0.03 mm moves slower than their length suggests. | **Judgement** |
-
-> **The way to remove three Judgement rows at once:** the app already sends `$$`
-> on connect and never reads the reply. GRBL reports `$110`/`$111` (max rate) and
-> `$120`/`$121` (acceleration) per axis. Reading them would replace the assumed
-> acceleration, the assumed gantry speed caps and the junction deviation with the
-> machine's own settings — making the time estimate and the overscan length true
-> for the machine in the room rather than for a typical one.
 
 ## 9. Controller facts we rely on
 
@@ -441,7 +444,7 @@ That is what a cut-out coat is, and the dialog and the MCP tool both say it.
 Stated plainly, because the alternative is implying otherwise:
 
 1. **The entire laser dose model** (§5). Our estimates, no published basis.
-2. **Machine dynamics** (§8). Assumed, and readable from the controller instead.
+2. **Offline machine dynamics fallbacks & planner throughput** (§8). `DEFAULT_MOTION_PROFILE` is replaced by `$$` on connect, but `BLOCKS_PER_SECOND` and the offline fallbacks are judgements.
 3. **Tab geometry** (§4). Judgement about what snaps by hand.
 4. **Per-material chipload and stepdown values** (§1–2) — the *shape* is
    published, the specific figures are ours and chosen low.

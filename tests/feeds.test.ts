@@ -105,6 +105,25 @@ describe('deriveFeeds', () => {
     // But its depth of cut is still capped by its own absolute limit.
     expect(v.stepdown).toBeLessThanOrEqual(1.5);
   });
+
+  it('never exceeds a tool’s maxPlungeRate even when it is below 30 mm/min', () => {
+    const delicate = {
+      ...endMill(),
+      cutting: { ...endMill().cutting!, maxPlungeRate: 20 },
+    };
+    const r = deriveFeeds(delicate, 'hardwood', SPINDLE)!;
+    expect(r.plungeRate).toBeLessThanOrEqual(20);
+  });
+
+  it('distinguishes spindle ceiling from gantry feed ceiling in notes', () => {
+    // 1.5 mm end mill in softwood wants high RPM, well within gantry feed cap,
+    // so a 10,000 RPM spindle ceiling should not blame maxFeed.
+    const small = findTool('cnc', 2)!;
+    const r = deriveFeeds(small, 'softwood', { min: 6000, max: 10000 })!;
+    expect(r.rpm).toBe(10000);
+    expect(r.notes.join(' ')).toMatch(/capped at 10,000 RPM/);
+    expect(r.notes.join(' ')).not.toMatch(/stays within/);
+  });
 });
 
 describe('planPasses', () => {
