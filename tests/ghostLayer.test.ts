@@ -332,9 +332,13 @@ describe('the anchor path returns to its own layer when the text lets go', () =>
     // The anchor lives on the *second* layer, so "home" and "whichever layer
     // survives first" are different answers and the test can tell them apart.
     const other: EtchLayer = { ...etchLayer, id: 'layer-other', name: 'Other' };
-    load([{ ...anchor, layerId: 'layer-other' } as EtchElement, text]);
+    load([anchor, text]);
     useStore.setState({
-      document: { ...useStore.getState().document, layers: [etchLayer, other] },
+      document: {
+        ...useStore.getState().document,
+        layers: [etchLayer, other],
+        elements: [{ ...anchor, layerId: 'layer-other' } as EtchElement, text],
+      },
     });
 
     useStore.getState().updateElement('text', { textPathId: 'anchor' });

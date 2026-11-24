@@ -38,7 +38,6 @@ export const ImageImportModal: React.FC = () => {
     closeImageImport,
     document: doc,
     activeLayerId,
-    setDocument,
     cncTools,
   } = useStore(
     useShallow((s) => ({
@@ -47,7 +46,6 @@ export const ImageImportModal: React.FC = () => {
       closeImageImport: s.closeImageImport,
       document: s.document,
       activeLayerId: s.activeLayerId,
-      setDocument: s.setDocument,
       cncTools: jobTools(s.document, s.cncTools),
     })),
   );
@@ -416,11 +414,9 @@ export const ImageImportModal: React.FC = () => {
       const newLayers = [newShadeLayer, newCutLayer].filter(
         (l): l is NonNullable<typeof l> => !!l
       );
-      setDocument({
-        ...doc,
-        layers: newLayers.length ? [...doc.layers, ...newLayers] : doc.layers,
-        elements: [...doc.elements, ...added],
-        selectedIds: added.map((e) => e.id),
+      useStore.getState().appendImported({
+        elements: added,
+        layers: newLayers,
       });
 
       close();

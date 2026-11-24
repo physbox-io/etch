@@ -71,7 +71,7 @@ import {
   type Part,
 } from '../utils/packParts';
 import { cloudAutosave } from '../utils/cloudDocuments';
-import { markJobClean, markSheetClean, markSheetUnsaved, unsavedWork } from '../utils/unsavedWork';
+import { markJobClean, markSheetClean, markSheetUnsaved, unsavedWork, updateCleanRef } from '../utils/unsavedWork';
 import { recordRecent, renameRecent, forgetRecent } from '../utils/recentDocuments';
 import { copyName } from '../utils/documentCatalog';
 
@@ -94,15 +94,18 @@ export function readUserPresets(): Record<string, EtchDocument> {
 
 function writeUserPresets(presets: Record<string, EtchDocument>) {
   const stored = { ...presets };
+  const nextAccountOnly: Record<string, EtchDocument> = {};
   for (const name of Object.keys(accountOnly)) {
-    if (!Object.hasOwn(presets, name)) {
-      delete accountOnly[name];
-    } else {
-      accountOnly[name] = presets[name];
+    if (Object.hasOwn(presets, name)) {
+      nextAccountOnly[name] = presets[name];
       delete stored[name];
     }
   }
+  // Persist to localStorage BEFORE mutating `accountOnly`, so a QuotaExceededError
+  // never deletes an existing `accountOnly` preset from memory.
   localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(stored));
+  for (const name of Object.keys(accountOnly)) delete accountOnly[name];
+  Object.assign(accountOnly, nextAccountOnly);
 }
 
 /**
@@ -136,39 +139,95 @@ function cloneDoc(doc: EtchDocument): EtchDocument {
  * document is enough to clean it.
  */
 export function sanitizeDoc(doc: EtchDocument): EtchDocument {
+  // Repair invalid core dimensions / grid size on untrusted JSON, MCP, or share links.
+  const width = Number.isFinite(doc.width) && doc.width > 0 ? doc.width : 300;
+  const height = Number.isFinite(doc.height) && doc.height > 0 ? doc.height : 200;
+  const gridSize = Number.isFinite(doc.gridSize) && doc.gridSize > 0 ? doc.gridSize : 10;
+
+  let touched = width !== doc.width || height !== doc.height || gridSize !== doc.gridSize;
+  let nextDoc: EtchDocument = touched ? { ...doc, width, height, gridSize } : doc;
+
   // Carried tools arrive from files, the account and agents like any other
   // field, and decide the cutter compensation, so each is checked the way a
   // stored rack is. One that fails is dropped and re-taken from the rack.
-  if (doc.tools !== undefined) {
-    const tools = Array.isArray(doc.tools)
-      ? doc.tools.map(sanitizeStoredTool).filter((t): t is ToolProfile => t !== null)
+  if (nextDoc.tools !== undefined) {
+    const tools = Array.isArray(nextDoc.tools)
+      ? nextDoc.tools.map(sanitizeStoredTool).filter((t): t is ToolProfile => t !== null)
       : [];
-    doc = { ...doc, tools };
-  }
-  let touched = false;
-  const elements = doc.elements.map((el) => {
-    if (el.type !== 'text' || (el.w === undefined && el.h === undefined)) return el;
+    nextDoc = { ...nextDoc, tools };
     touched = true;
-    const rest = { ...el };
-    delete rest.w;
-    delete rest.h;
-    return rest;
+  }
+
+  // Guarantee at least one layer and deduplicate layer IDs.
+  const rawLayers = Array.isArray(nextDoc.layers) ? nextDoc.layers : [];
+  let layers = rawLayers;
+  if (layers.length === 0) {
+    layers = [
+      {
+        id: 'cut',
+        name: 'Cut',
+        color: '#ef4444',
+        operation: 'cut',
+        power: 85,
+        speed: 400,
+        passes: 1,
+        zDepth: 3,
+        visible: true,
+        locked: false,
+      },
+    ];
+    touched = true;
+  } else {
+    const seenLayerIds = new Set<string>();
+    const dedupedLayers = layers.map((l, idx) => {
+      if (l.id && !seenLayerIds.has(l.id)) {
+        seenLayerIds.add(l.id);
+        return l;
+      }
+      touched = true;
+      let id = `${l.id || 'layer'}_${idx + 1}`;
+      while (seenLayerIds.has(id)) id += '_1';
+      seenLayerIds.add(id);
+      return { ...l, id };
+    });
+    if (touched) layers = dedupedLayers;
+  }
+  const layerIds = new Set(layers.map((l) => l.id));
+  const fallbackLayerId = layers[0].id;
+
+  const seenElIds = new Set<string>();
+  const rawElements = Array.isArray(nextDoc.elements) ? nextDoc.elements : [];
+  const elements = rawElements.map((el, idx) => {
+    let item = el;
+    if (item.type === 'text' && (item.w !== undefined || item.h !== undefined)) {
+      touched = true;
+      const rest = { ...item };
+      delete rest.w;
+      delete rest.h;
+      item = rest;
+    }
+    if (!item.layerId || !layerIds.has(item.layerId)) {
+      touched = true;
+      item = { ...item, layerId: fallbackLayerId };
+    }
+    if (!item.id || seenElIds.has(item.id)) {
+      touched = true;
+      let id = `${item.id || 'el'}_${idx + 1}`;
+      while (seenElIds.has(id)) id += '_1';
+      item = { ...item, id };
+    }
+    seenElIds.add(item.id);
+    return item;
   });
-  // The other sheets of a saved job are for `jobSheets` to unpack into tabs,
-  // not for the live document to carry: a document that kept them would be
-  // saved with a copy of the job inside every sheet of the job.
-  // `savedAt` likewise belongs to the stored copy, not to the drawing.
-  if (doc.sheets !== undefined || doc.sheetIndex !== undefined || doc.savedAt !== undefined) {
-    const rest = { ...doc, elements };
+
+  if (nextDoc.sheets !== undefined || nextDoc.sheetIndex !== undefined || nextDoc.savedAt !== undefined) {
+    const rest = { ...nextDoc, layers, elements };
     delete rest.sheets;
     delete rest.sheetIndex;
     delete rest.savedAt;
     return pruneObjects(rest);
   }
-  // An element naming an object the file does not contain, or an object with
-  // nothing left in it, both read as clutter in the panel and neither is
-  // visible in the drawing. Every entry point comes through here.
-  return pruneObjects(touched ? { ...doc, elements } : doc);
+  return pruneObjects(touched ? { ...nextDoc, layers, elements } : nextDoc);
 }
 
 /**
@@ -384,6 +443,14 @@ interface EtchStore {
 
   // Actions
   setDocument: (doc: EtchDocument) => void;
+  /** Merges imported elements/layers into the live document as one undoable step, preserving `activePreset`. */
+  appendImported: (payload: {
+    elements: EtchElement[];
+    layers?: EtchLayer[];
+    stock?: Partial<Pick<EtchDocument, 'machine' | 'stockThickness' | 'material' | 'width' | 'height'>>;
+    name?: string;
+    selectAdded?: boolean;
+  }) => void;
   incrementMcpActive: () => void;
   decrementMcpActive: () => void;
   resetMcpActive: () => void;
@@ -752,7 +819,9 @@ function placeCut(
   const baseIndex = document.elements.findIndex((el) => el.id === frame.id);
   const kept = document.elements.filter((el) => !consumed.has(el.id));
   const insertAt = document.elements.slice(0, baseIndex).filter((el) => !consumed.has(el.id)).length;
-  const newDoc = releaseUnusedAnchors({ ...document, elements: [...kept.slice(0, insertAt), cut, ...kept.slice(insertAt)] });
+  const newDoc = pruneObjects(
+    releaseUnusedAnchors({ ...document, elements: [...kept.slice(0, insertAt), cut, ...kept.slice(insertAt)] })
+  );
   const newHistory = history.slice(0, historyIndex + 1);
   newHistory.push(newDoc);
 
@@ -860,8 +929,13 @@ function park(state: {
  * by hand six times is exactly the sort of chore this feature exists to remove.
  * Anything else gets "<name> 2", then 3, skipping names already in the job.
  */
-function nextSheetName(tabs: SheetTab[], from: EtchDocument, activeId: string): string {
-  const taken = new Set(tabs.map((t) => (t.id === activeId ? from.name : t.document.name)));
+function nextSheetName(
+  tabs: SheetTab[],
+  from: EtchDocument,
+  activeId: string,
+  activeName: string = from.name
+): string {
+  const taken = new Set(tabs.map((t) => (t.id === activeId ? activeName : t.document.name)));
   const match = /^(.*?)(\d+)\s*$/.exec(from.name.trim());
   const stem = match ? match[1] : `${from.name.trim() || 'Sheet'} `;
   let n = match ? Number(match[2]) + 1 : 2;
@@ -1009,23 +1083,33 @@ export const useStore = create<EtchStore>((set, get) => ({
   closeToolConfigModal: () => set({ isToolConfigModalOpen: false }),
 
   setCncTools: (tools, rackEntries) => {
-    const { cncTools: before, document } = get();
+    const { cncTools: before, document, history, historyIndex } = get();
     const docTools = snapshotDocumentTools(document, tools, editedToolIds(before, tools));
+    const nextDoc = docTools !== document.tools ? { ...document, tools: docTools } : document;
+    const nextHistory =
+      nextDoc !== document && history[historyIndex] === document
+        ? history.map((h, i) => (i === historyIndex ? nextDoc : h))
+        : history;
     set({
       cncTools: tools,
       cncToolsUnsaved: !writeCncTools(tools, rackEntries),
-      ...(docTools !== document.tools ? { document: { ...document, tools: docTools } } : {}),
+      ...(nextDoc !== document ? { document: nextDoc, history: nextHistory } : {}),
     });
   },
 
   resetCncTools: () => {
-    const { cncTools: before, document } = get();
+    const { cncTools: before, document, history, historyIndex } = get();
     const defaults = resetCncToolsUtil();
     const docTools = snapshotDocumentTools(document, defaults, editedToolIds(before, defaults));
+    const nextDoc = docTools !== document.tools ? { ...document, tools: docTools } : document;
+    const nextHistory =
+      nextDoc !== document && history[historyIndex] === document
+        ? history.map((h, i) => (i === historyIndex ? nextDoc : h))
+        : history;
     set({
       cncTools: defaults,
       cncToolsUnsaved: false,
-      ...(docTools !== document.tools ? { document: { ...document, tools: docTools } } : {}),
+      ...(nextDoc !== document ? { document: nextDoc, history: nextHistory } : {}),
     });
   },
 
@@ -1051,6 +1135,22 @@ export const useStore = create<EtchStore>((set, get) => ({
       // Callers that are loading a named preset re-set this straight after.
       activePreset: '',
     }));
+  },
+
+  appendImported: ({ elements, layers, stock, name, selectAdded = true }) => {
+    const { document } = get();
+    const nextDoc = sanitizeDoc({
+      ...document,
+      ...(stock ?? {}),
+      ...(name ? { name } : {}),
+      layers: layers?.length ? [...document.layers, ...layers] : document.layers,
+      elements: [...document.elements, ...elements],
+    });
+    set({
+      document: nextDoc,
+      ...(selectAdded ? { selectedIds: elements.map((e) => e.id) } : {}),
+    });
+    get().commitHistory();
   },
 
   incrementMcpActive: () => set((state) => ({ mcpActiveCount: state.mcpActiveCount + 1 })),
@@ -1095,15 +1195,17 @@ export const useStore = create<EtchStore>((set, get) => ({
     // Emptied before the copy, not after: stringifying the elements only to
     // throw them away serialised every traced image on the sheet for nothing.
     const doc: EtchDocument = {
-      ...JSON.parse(JSON.stringify({ ...from, elements: [], notecard: undefined })),
+      ...JSON.parse(JSON.stringify({ ...from, elements: [], objects: undefined, notecard: undefined })),
       id,
-      name: nextSheetName(state.tabs, state.document, state.activeTabId),
+      name: nextSheetName(state.tabs, state.document, state.activeTabId, state.document.name),
       elements: [],
+      objects: undefined,
       selectedIds: [],
       notecard: undefined,
     };
+    const inheritedPreset = state.activePreset.startsWith('user:') ? state.activePreset : '';
     set({
-      tabs: [...state.tabs.map((t) => (t.id === state.activeTabId ? park(state) : t)), parkedTab(id, doc, '')],
+      tabs: [...state.tabs.map((t) => (t.id === state.activeTabId ? park(state) : t)), parkedTab(id, doc, inheritedPreset)],
     });
     get().switchTab(id);
     return id;
@@ -1118,7 +1220,7 @@ export const useStore = create<EtchStore>((set, get) => ({
     const doc: EtchDocument = {
       ...JSON.parse(JSON.stringify(source.document)),
       id: newId,
-      name: nextSheetName(state.tabs, source.document, sourceId),
+      name: nextSheetName(state.tabs, source.document, state.activeTabId, state.document.name),
       selectedIds: [],
     };
     const at = state.tabs.findIndex((t) => t.id === sourceId);
@@ -1133,9 +1235,6 @@ export const useStore = create<EtchStore>((set, get) => ({
 
   closeTab: (id) => {
     const state = get();
-    // There is always a sheet. Closing the last one would leave the canvas with
-    // no document to draw, and "close" is not how anyone means to clear a
-    // drawing anyway.
     if (state.tabs.length <= 1) return;
     const index = state.tabs.findIndex((t) => t.id === id);
     if (index < 0) return;
@@ -1145,10 +1244,9 @@ export const useStore = create<EtchStore>((set, get) => ({
       return;
     }
     const next = remaining[Math.min(index, remaining.length - 1)];
-    set({ tabs: remaining });
-    // Straight from the parked copy: the sheet being closed is the live one, so
-    // there is nothing worth parking and `switchTab` would put it back.
+    // Single atomic update so subscribers never see an `activeTabId` missing from `tabs`.
     set({
+      tabs: remaining,
       activeTabId: next.id,
       document: next.document,
       history: next.history,
@@ -1171,9 +1269,12 @@ export const useStore = create<EtchStore>((set, get) => ({
       return;
     }
     set({
-      tabs: state.tabs.map((t) =>
-        t.id === id ? { ...t, document: { ...t.document, name: clean } } : t
-      ),
+      tabs: state.tabs.map((t) => {
+        if (t.id !== id) return t;
+        const renamedDoc = { ...t.document, name: clean };
+        const nextHistory = [...t.history.slice(0, t.historyIndex + 1), renamedDoc];
+        return { ...t, document: renamedDoc, history: nextHistory, historyIndex: nextHistory.length - 1 };
+      }),
     });
   },
 
@@ -1301,17 +1402,25 @@ export const useStore = create<EtchStore>((set, get) => ({
       // the pruning that automatic checkpoints are subject to.
       void cloudAutosave.saveExplicit(trimmed, newDoc, `Saved as “${trimmed}”`);
       recordRecent(`user:${trimmed}`);
+      const nextLiveDoc = single ? { ...document, name: trimmed } : document;
+      const nextHistory =
+        nextLiveDoc !== document && state.history[state.historyIndex] === document
+          ? state.history.map((h, i) => (i === state.historyIndex ? nextLiveDoc : h))
+          : state.history;
       set({
         activePreset: `user:${trimmed}`,
         userPresetNames: Object.keys(presets).sort(),
-        document: single ? { ...document, name: trimmed } : document,
+        document: nextLiveDoc,
+        history: nextHistory,
         // Every sheet of the job now belongs to that saved job, so Ctrl+S from
         // any of them saves the job rather than asking for a name again.
         tabs: state.tabs.map((t) => ({ ...t, activePreset: `user:${trimmed}` })),
       });
-      // Held for this session only, so it is not safe until the account has it.
-      if (accountAlone) void uploaded.then((inAccount) => inAccount && markJobClean(get()));
-      else markJobClean(get());
+      // Capture the saved state now so edits made while cloud upload is in
+      // flight are not falsely marked clean when the upload finishes.
+      const savedSnapshot = get();
+      if (accountAlone) void uploaded.then((inAccount) => inAccount && markJobClean(savedSnapshot));
+      else markJobClean(savedSnapshot);
       return null;
     } catch (e) {
       console.error('Failed to save user preset', e);
@@ -1431,7 +1540,12 @@ export const useStore = create<EtchStore>((set, get) => ({
       writeUserPresets(presets);
       removeCloudPreset(name);
       forgetRecent(`user:${name}`);
-      set({ userPresetNames: Object.keys(presets).sort() });
+      set((state) => ({
+        userPresetNames: Object.keys(presets).sort(),
+        tabs: state.tabs.map((t) =>
+          t.activePreset === `user:${name}` ? { ...t, activePreset: '' } : t
+        ),
+      }));
       if (get().activePreset === `user:${name}`) {
         get().loadPreset(DEFAULT_PRESET_ID);
       }
@@ -1458,7 +1572,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const renamed = saved.sheets?.length ? saved : { ...saved, name };
       presets[name] = renamed;
       delete presets[from];
-      writeUserPresets(presets);
+      writeOrLeaveWithAccount(presets, name);
       saveCloudPreset(name, renamed);
       removeCloudPreset(from);
       renameRecent(`user:${from}`, `user:${name}`);
@@ -1491,7 +1605,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       const name = copyName(from, Object.keys(presets));
       const copy = { ...(saved.sheets?.length ? saved : { ...saved, name }), savedAt: Date.now() };
       presets[name] = copy;
-      writeUserPresets(presets);
+      writeOrLeaveWithAccount(presets, name);
       saveCloudPreset(name, copy);
       set({ userPresetNames: Object.keys(presets).sort() });
       return { name };
@@ -1520,6 +1634,7 @@ export const useStore = create<EtchStore>((set, get) => ({
    */
   vectorizeText: async (ids) => {
     const { textToOutlineD, outlineSignature } = await import('../utils/textVectorizer');
+    const tabId = get().activeTabId;
     const allElements = get().document.elements;
     const findTarget = (el: EtchElement) =>
       el.textPathId ? allElements.find((e) => e.id === el.textPathId) : undefined;
@@ -1536,9 +1651,11 @@ export const useStore = create<EtchStore>((set, get) => ({
 
     for (const el of targets) {
       try {
+        if (get().activeTabId !== tabId) break;
         const currentElements = get().document.elements;
         const targetPathEl = el.textPathId ? currentElements.find((e) => e.id === el.textPathId) : undefined;
         const raw = await textToOutlineD(el, targetPathEl);
+        if (get().activeTabId !== tabId) break;
         const d = el.joinPieces
           ? joinOutlineD(
               raw,
@@ -1546,16 +1663,31 @@ export const useStore = create<EtchStore>((set, get) => ({
             )
           : raw;
         const sig = outlineSignature(el, targetPathEl);
-        set((state) => ({
-          document: {
-            ...state.document,
-            elements: state.document.elements.map((it) =>
-              it.id === el.id && outlineSignature(it, targetPathEl) === sig
-                ? { ...it, outlineD: d, outlineSig: sig }
-                : it
-            ),
-          },
-        }));
+        suppressAutosave = true;
+        try {
+          set((state) => {
+            if (state.activeTabId !== tabId) return state;
+            let matched = false;
+            const elements = state.document.elements.map((it) => {
+              if (it.id === el.id && outlineSignature(it, targetPathEl) === sig) {
+                matched = true;
+                return { ...it, outlineD: d, outlineSig: sig };
+              }
+              return it;
+            });
+            if (!matched) return state;
+            const prevDoc = state.document;
+            const nextDoc = { ...prevDoc, elements };
+            const nextHistory =
+              state.history[state.historyIndex] === prevDoc
+                ? state.history.map((h, i) => (i === state.historyIndex ? nextDoc : h))
+                : state.history;
+            updateCleanRef(tabId, prevDoc, nextDoc);
+            return { document: nextDoc, history: nextHistory };
+          });
+        } finally {
+          suppressAutosave = false;
+        }
         done++;
       } catch (e) {
         failed.push(`${el.name}: ${e instanceof Error ? e.message : String(e)}`);
@@ -2012,10 +2144,13 @@ export const useStore = create<EtchStore>((set, get) => ({
             ? (tab.document.objects ?? []).find((o) => o.id === el.objectId)
             : undefined;
           const copy: EtchElement = {
-            ...el,
+            ...JSON.parse(JSON.stringify(el)),
             id: `packed_${Date.now()}_${seq++}`,
             layerId: layerFor(sourceLayer),
           };
+          // Cross-sheet references cannot resolve on the destination sheet.
+          delete copy.textPathId;
+          delete copy.textureOf;
           if (sourceObject) copy.objectId = objectFor(tab.id, sourceObject);
           else delete copy.objectId;
           origin.set(copy.id, { tabId: tab.id, sourceId: el.id });
@@ -2092,7 +2227,12 @@ export const useStore = create<EtchStore>((set, get) => ({
         tabs: get().tabs.map((tab) => {
           const ids = gaveUp.get(tab.id);
           if (!ids || tab.id === activeTabId) return tab;
-          const doc = { ...tab.document, elements: tab.document.elements.filter((el) => !ids.has(el.id)) };
+          const doc = pruneObjects(
+            releaseUnusedAnchors({
+              ...tab.document,
+              elements: tab.document.elements.filter((el) => !ids.has(el.id)),
+            })
+          );
           const history = [...tab.history.slice(0, tab.historyIndex + 1), doc];
           return {
             ...tab,
@@ -3051,7 +3191,7 @@ export const useStore = create<EtchStore>((set, get) => ({
 
   clearCanvas: () => {
     const { document, history, historyIndex } = get();
-    const newDoc = { ...document, elements: [] };
+    const newDoc = pruneObjects({ ...document, elements: [] });
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newDoc);
 
@@ -3176,28 +3316,15 @@ export const useStore = create<EtchStore>((set, get) => ({
       const plan = build(tab.document);
       if (!plan.fits) return tab;
       added++;
+      const nextDoc = {
+        ...tab.document,
+        layers: plan.layerNeeded ? [...tab.document.layers, plan.layer] : tab.document.layers,
+        elements: [...tab.document.elements, ...plan.elements],
+      };
       return {
         ...tab,
-        document: {
-          ...tab.document,
-          layers: plan.layerNeeded ? [...tab.document.layers, plan.layer] : tab.document.layers,
-          elements: [...tab.document.elements, ...plan.elements],
-        },
-        /*
-         * A parked sheet's history is left where it was and the edit is pushed
-         * onto it, so undo on that sheet takes the holes back out — the same
-         * behaviour as if it had been done with the sheet open. Truncated at
-         * the current index first, because anything that was redoable is now a
-         * branch nobody can reach.
-         */
-        history: [
-          ...tab.history.slice(0, tab.historyIndex + 1),
-          {
-            ...tab.document,
-            layers: plan.layerNeeded ? [...tab.document.layers, plan.layer] : tab.document.layers,
-            elements: [...tab.document.elements, ...plan.elements],
-          },
-        ],
+        document: nextDoc,
+        history: [...tab.history.slice(0, tab.historyIndex + 1), nextDoc],
         historyIndex: tab.historyIndex + 1,
       };
     });
@@ -3274,37 +3401,52 @@ export const useStore = create<EtchStore>((set, get) => ({
         get().openJob(preset.doc, presetId);
         return;
       }
-      // Clone: PRESET_ETCHINGS holds module-level objects, and handing one
-      // straight to the store would make every later edit an edit of the
-      // preset itself.
-      get().setDocument(cloneDoc(preset.doc));
-      set({ activePreset: presetId });
-      markSheetClean(get());
+      // Route through openJob so loading a built-in template onto one sheet of
+      // a multi-sheet job keeps the strip's `activePreset` consistent.
+      get().openJob(cloneDoc(preset.doc), presetId);
     }
   },
 
   undo: () => {
-    const { history, historyIndex } = get();
-    if (historyIndex > 0) {
-      const newIdx = historyIndex - 1;
-      set({
-        document: history[newIdx],
-        historyIndex: newIdx,
-        selectedIds: selectionAfterStep(get().document, history[newIdx], get().selectedIds),
-        activeLayerId: activeLayerAfterStep(get().document, history[newIdx], get().activeLayerId),
-      });
-    }
+    const { document: cur, history, historyIndex, selectedIds, activeLayerId } = get();
+    // If there is an uncommitted transient edit, revert it to the current
+    // committed snapshot rather than skipping a step (or doing nothing at index 0).
+    const targetIdx = cur !== history[historyIndex] ? historyIndex : historyIndex - 1;
+    if (targetIdx < 0) return;
+    const raw = history[targetIdx];
+    // Preserve non-undoable view settings (`gridSize`, `snapToGrid`) across undo.
+    const nextDoc =
+      raw.gridSize === cur.gridSize && raw.snapToGrid === cur.snapToGrid
+        ? raw
+        : { ...raw, gridSize: cur.gridSize, snapToGrid: cur.snapToGrid };
+    const nextHistory =
+      nextDoc !== raw ? history.map((h, i) => (i === targetIdx ? nextDoc : h)) : history;
+    set({
+      document: nextDoc,
+      history: nextHistory,
+      historyIndex: targetIdx,
+      selectedIds: selectionAfterStep(cur, nextDoc, selectedIds),
+      activeLayerId: activeLayerAfterStep(cur, nextDoc, activeLayerId),
+    });
   },
 
   redo: () => {
-    const { history, historyIndex } = get();
+    const { document: cur, history, historyIndex, selectedIds, activeLayerId } = get();
     if (historyIndex < history.length - 1) {
       const newIdx = historyIndex + 1;
+      const raw = history[newIdx];
+      const nextDoc =
+        raw.gridSize === cur.gridSize && raw.snapToGrid === cur.snapToGrid
+          ? raw
+          : { ...raw, gridSize: cur.gridSize, snapToGrid: cur.snapToGrid };
+      const nextHistory =
+        nextDoc !== raw ? history.map((h, i) => (i === newIdx ? nextDoc : h)) : history;
       set({
-        document: history[newIdx],
+        document: nextDoc,
+        history: nextHistory,
         historyIndex: newIdx,
-        selectedIds: selectionAfterStep(get().document, history[newIdx], get().selectedIds),
-        activeLayerId: activeLayerAfterStep(get().document, history[newIdx], get().activeLayerId),
+        selectedIds: selectionAfterStep(cur, nextDoc, selectedIds),
+        activeLayerId: activeLayerAfterStep(cur, nextDoc, activeLayerId),
       });
     }
   },
@@ -3372,14 +3514,24 @@ if (typeof window !== 'undefined') {
  * it, and one no layer uses any more is dropped. Registered before autosave, so
  * the copy saved is the one with its tools in it.
  */
-useStore.subscribe((state, previous) => {
-  if (state.document === previous.document) return;
-  const tools = snapshotDocumentTools(state.document, state.cncTools);
-  if (tools !== state.document.tools) useStore.setState({ document: { ...state.document, tools } });
-});
+let suppressAutosave = false;
 
 useStore.subscribe((state, previous) => {
   if (state.document === previous.document) return;
+  const tools = snapshotDocumentTools(state.document, state.cncTools);
+  if (tools !== state.document.tools) {
+    const prevDoc = state.document;
+    const nextDoc = { ...prevDoc, tools };
+    const nextHistory =
+      state.history[state.historyIndex] === prevDoc
+        ? state.history.map((h, i) => (i === state.historyIndex ? nextDoc : h))
+        : state.history;
+    useStore.setState({ document: nextDoc, history: nextHistory });
+  }
+});
+
+useStore.subscribe((state, previous) => {
+  if (suppressAutosave || state.document === previous.document) return;
   // The current document, not this notification's: the tools snapshot above
   // sets a newer one from inside the same change, and that is the one to save.
   const { document } = useStore.getState();

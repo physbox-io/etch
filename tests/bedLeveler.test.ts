@@ -106,6 +106,33 @@ describe('warpGcode', () => {
     const src = 'G90\nG1 X10 Y10 Z-1';
     expect(warpGcode(src, null as unknown as BedProbeGrid)).toBe(src);
   });
+
+  it('linearizes G2/G3 arcs with warped Z and updates curX/curY so following G1 moves do not slash back', () => {
+    // Arc from (0,0) to (100,0) via (50,50) (CW G2 with center (50,0), I50 J0),
+    // followed by a straight G1 to (100,100). Previously curX stayed at 0 and
+    // the G1 slashed diagonally from (0,0) to (100,100).
+    const src = [
+      'G90 G91.1',
+      'G0 X0 Y0 Z-1',
+      'G2 X100 Y0 I50 J0 F600 ; inline X999 comment',
+      'G1 X100 Y100 F600',
+    ].join('\n');
+    const out = warpGcode(src, flatTilt, { maxSegmentLenMm: 10 }).split('\n');
+    // No raw G2 left behind; arc was linearized into G1 chords
+    expect(out.some((l) => /^G2\b/.test(l))).toBe(false);
+    // Inline comment token `X999` was ignored
+    expect(out.some((l) => l.includes('999'))).toBe(false);
+    // Every move after the arc reaches X100 must stay at X=100 (no jump back to X=0)
+    const afterArcIdx = out.findIndex((l) => l.startsWith('G1 X100.000 Y0.000'));
+    expect(afterArcIdx).toBeGreaterThan(0);
+    const tail = out.slice(afterArcIdx + 1);
+    expect(tail.length).toBeGreaterThan(1);
+    for (const line of tail) {
+      expect(line).toMatch(/^G1 X100\.000 Y/);
+    }
+    // At X=100 on flatTilt (+1 mm), Z=-1 becomes Z=0.000
+    expect(out[afterArcIdx]).toContain('Z0.000');
+  });
 });
 
 describe('rereferenceGrid', () => {

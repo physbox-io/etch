@@ -382,7 +382,7 @@ export const MachineControlModal: React.FC = () => {
                 onClick={() =>
                   jobBounds && webSerialManager.frameJob(jobBounds, { laserMode: isLaser })
                 }
-                disabled={!status.connected || !jobBounds}
+                disabled={!status.connected || !jobBounds || status.jobRunning}
                 title={
                   !jobBounds
                     ? 'Nothing visible to frame'

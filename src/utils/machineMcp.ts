@@ -13,11 +13,12 @@ import {
 import { webSerialManager } from './webSerialManager';
 import { fetchMachineDevices } from './apiClient';
 import { generateGCode } from './gcodeExporter';
+import { warpGcode } from './bedLeveler';
 import { readGuidePower } from './machineSettings';
 import { boundsToMachine } from './machineCoords';
 import { hasJobZAxis, machineKind } from './tooling';
 import { jobContextFor } from './jobContext';
-import type { EtchDocument } from '../types/etch';
+import type { BedProbeGrid, EtchDocument } from '../types/etch';
 
 // ---------------------------------------------------------------------------
 // Driving Etch's machine from MCP
@@ -59,13 +60,24 @@ export function subscribeToArming(listener: (state: ArmingState) => void): () =>
  * the operator is actually looking at, since an MCP-driven cut must not quietly
  * fall back to the stock tools they edited away from.
  */
-let current: { document: EtchDocument | null; cncTools: unknown } = {
+let current: {
+  document: EtchDocument | null;
+  cncTools: unknown;
+  bedProbeGrid?: BedProbeGrid | null;
+  setBedProbeGrid?: (grid: BedProbeGrid | null) => void;
+} = {
   document: null,
   cncTools: undefined,
+  bedProbeGrid: null,
 };
 
-export function setCurrentDocument(document: EtchDocument, cncTools: unknown): void {
-  current = { document, cncTools };
+export function setCurrentDocument(
+  document: EtchDocument,
+  cncTools: unknown,
+  bedProbeGrid?: BedProbeGrid | null,
+  setBedProbeGrid?: (grid: BedProbeGrid | null) => void
+): void {
+  current = { document, cncTools, bedProbeGrid: bedProbeGrid ?? null, setBedProbeGrid };
 }
 
 /**
@@ -94,7 +106,7 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
   const doc = current.document;
   if (!doc) throw new Error('There is no document open to cut.');
 
-  const gcode = generateGCode(doc, {
+  let gcode = generateGCode(doc, {
     customCncTools: current.cncTools,
     ...((args.options as object) ?? {}),
   } as Parameters<typeof generateGCode>[1]);
@@ -106,6 +118,12 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
     );
   }
 
+  // Apply the probed bed heightmap to CNC G-code, matching GCodePreviewModal.
+  const kind = machineKind(doc);
+  if (kind === 'cnc' && current.bedProbeGrid && !current.bedProbeGrid.simulated) {
+    gcode = warpGcode(gcode, current.bedProbeGrid);
+  }
+
   /*
    * The machine kind decides which safety checks the stream applies — a router
    * refuses to start without a trusted Z datum, a laser has none to check — and
@@ -114,7 +132,7 @@ async function runCurrentDocument(args: Record<string, unknown>): Promise<{ summ
    * the archive files the run under, as it is for the button.
    */
   const started = await webSerialManager.runProgram(gcode, {
-    machine: machineKind(doc),
+    machine: kind,
     job: jobContextFor(doc),
   });
   if (!started.started) throw new Error(started.message);
@@ -220,6 +238,7 @@ export function createEtchMachineHandlers(): Record<
      */
     MACHINE_ZERO_Z: async (args: McpArgs) => {
       machineArming.requireArmed('zero_z');
+      refuseWhileJobHoldsMachine(machine, 'zero Z');
       const shim = num(args, 'shimThicknessMm', 0);
       machineArming.noteAgentCommand('zero_z', `shim=${shim}`);
       const result = await webSerialManager.zeroZHere(shim);
@@ -261,9 +280,18 @@ export function createEtchMachineHandlers(): Record<
         throw new Error('Give fromLine: the whole program line to pick the job back up at.');
       }
       machineArming.noteAgentCommand('resume_from_line', `line=${fromLine}`);
-      const result = await webSerialManager.runFrom(fromLine);
-      if (!result.started) throw new Error(result.message);
-      return { ...describeMachine(machine, machineArming), message: result.message };
+      webSerialManager.expectAgentJob(true);
+      try {
+        const result = await webSerialManager.runFrom(fromLine);
+        if (!result.started) {
+          webSerialManager.expectAgentJob(false);
+          throw new Error(result.message);
+        }
+        return { ...describeMachine(machine, machineArming), message: result.message };
+      } catch (err) {
+        webSerialManager.expectAgentJob(false);
+        throw err;
+      }
     },
 
     /** What a run from a line would send before the program picks up. Read-only, so never gated. */
@@ -278,31 +306,29 @@ export function createEtchMachineHandlers(): Record<
     /**
      * Lights the laser at pointer power, so the operator can see where the head
      * actually is.
-     *
-     * The one command here with no equivalent in the other two apps, and the
-     * one an agent should reach for before asking someone to zero XY: "the dot
-     * is on the corner of your material" is a question they can answer, and
-     * "the DRO reads 12.4" is not.
      */
     MACHINE_GUIDE_SPOT: async (args: McpArgs) => {
-      machineArming.requireArmed('guide_spot');
       const on = args.on !== false;
-      /*
-       * The guide spot is `M3` at a low S word. On a laser that is a dot of
-       * light; on a router it is the spindle starting, at whatever speed that S
-       * word maps to, with the cutter wherever it was left — possibly sitting
-       * on the stock. Off is always allowed: it is `M5`, and stopping a spindle
-       * is never the wrong thing to have done.
-       */
-      if (on && current.document && hasJobZAxis(machineKind(current.document))) {
-        throw new Error(
-          'The guide spot is for a laser: on this router it would start the spindle. To see where ' +
-            'the tool is, jog it and read the position, or frame the job with the spindle off.'
-        );
+      // Turning a lit laser OFF is always allowed, even while disarmed.
+      if (on) {
+        machineArming.requireArmed('guide_spot');
+        if (!current.document || hasJobZAxis(machineKind(current.document))) {
+          throw new Error(
+            'The guide spot is for a laser document only: on a router it would start the spindle.'
+          );
+        }
       }
       machineArming.noteAgentCommand('guide_spot', on ? 'on' : 'off');
-      if (on) await webSerialManager.guideSpotOn(num(args, 'power', readGuidePower()));
-      else await webSerialManager.guideSpotOff();
+      if (on) {
+        const lit = await webSerialManager.guideSpotOn(num(args, 'power', readGuidePower()));
+        if (lit === false) {
+          throw new Error(
+            webSerialManager.getState().lastError || 'Could not switch the guide spot on.'
+          );
+        }
+      } else {
+        await webSerialManager.guideSpotOff();
+      }
       return { ...describeMachine(machine, machineArming), guideSpot: on };
     },
 
@@ -312,12 +338,32 @@ export function createEtchMachineHandlers(): Record<
      */
     MACHINE_PROBE_SURFACE: async (args: McpArgs) => {
       machineArming.requireArmed('probe_surface');
+      if (!webSerialManager.getState().connected) {
+        throw new Error('Connect to a machine before probing the surface.');
+      }
+      refuseWhileJobHoldsMachine(machine, 'probe the surface');
       machineArming.noteAgentCommand('probe_surface');
 
-      const bounds =
-        args.bounds && typeof args.bounds === 'object'
-          ? (args.bounds as ReturnType<typeof jobBounds>)
-          : jobBounds();
+      let bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
+      if (args.bounds !== undefined) {
+        if (!args.bounds || typeof args.bounds !== 'object') {
+          throw new Error('bounds must be an object with finite minX, minY, maxX, maxY.');
+        }
+        const b = args.bounds as Record<string, unknown>;
+        const minX = requireNumber(b, 'minX');
+        const minY = requireNumber(b, 'minY');
+        const maxX = requireNumber(b, 'maxX');
+        const maxY = requireNumber(b, 'maxY');
+        if (minX === undefined || minY === undefined || maxX === undefined || maxY === undefined) {
+          throw new Error('bounds must include finite minX, minY, maxX, and maxY.');
+        }
+        if (maxX <= minX || maxY <= minY) {
+          throw new Error('bounds must have maxX > minX and maxY > minY.');
+        }
+        bounds = { minX, minY, maxX, maxY };
+      } else {
+        bounds = jobBounds();
+      }
       if (!bounds) throw new Error('There is nothing to probe: pass bounds, or open a document.');
 
       const grid = await webSerialManager.probeGrid(
@@ -325,6 +371,8 @@ export function createEtchMachineHandlers(): Record<
         num(args, 'cols', 3),
         num(args, 'rows', 3)
       );
+      current.bedProbeGrid = grid;
+      current.setBedProbeGrid?.(grid);
       const zs = grid.points.flat().map((p: { z: number }) => p.z);
       return {
         ok: true,

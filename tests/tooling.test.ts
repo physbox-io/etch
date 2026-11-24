@@ -191,20 +191,22 @@ describe('tool change G-code', () => {
     // to set that segment's speed — on the bit about to come out.
     const lines = generateGCode(multi()).split('\n');
     const changes = lines.flatMap((l, i) => (/^M6 T/.test(l) ? [i] : []));
-    expect(changes.length).toBe(2);
+    expect(changes.length).toBe(1);
     // findLastIndex is ES2023; the app's lib is ES2022, Node has it.
     type WithFindLast = string[] & { findLastIndex(pred: (l: string) => boolean): number };
-    const lastCut = (lines.slice(0, changes[1]) as WithFindLast).findLastIndex((l) => /^G[123]\b/.test(l));
-    expect(lines.slice(lastCut, changes[1]).filter((l) => /^M3\b/.test(l))).toEqual([]);
+    const lastCut = (lines.slice(0, changes[0]) as WithFindLast).findLastIndex((l) => /^G[123]\b/.test(l));
+    expect(lines.slice(lastCut, changes[0]).filter((l) => /^M3\b/.test(l))).toEqual([]);
   });
 
-  it('holds the spindle off until the first tool of a multi-tool job is confirmed', () => {
+  it('starts the spindle for the first tool and only pauses when switching to subsequent tools', () => {
     const gcode = generateGCode(multi());
     const firstSpindle = gcode.indexOf('M3 S');
     const firstChange = gcode.indexOf('M6 T');
-    expect(firstChange).toBeLessThan(firstSpindle);
-    // Both tools are named in the header, so the operator knows what to gather.
-    expect(gcode).toMatch(/; Tool changes: 2/);
+    expect(firstSpindle).toBeGreaterThan(0);
+    expect(firstSpindle).toBeLessThan(firstChange);
+    // Both the starting tool and the swap are named in the header.
+    expect(gcode).toMatch(/; Tool: T3/);
+    expect(gcode).toMatch(/; Tool changes: 1/);
   });
 
   it('rapids to a known point after a change rather than cutting from where it is', () => {
@@ -221,8 +223,8 @@ describe('tool change G-code', () => {
   it('pauses the stream on the M6 line', () => {
     const lines = prepareJobLines(generateGCode(multi()));
     const m6 = lines.filter((l) => l.startsWith('M6'));
-    // Two stops: the T3 the job starts on, then the T1 it cuts with.
-    expect(m6.map(parseToolNumber)).toEqual([3, 1]);
+    // One stop: T3 is fitted and zeroed before Start, then the job pauses for T1.
+    expect(m6.map(parseToolNumber)).toEqual([1]);
     for (const line of m6) expect(classifyJobLine(line)).toBe('tool-change');
   });
 });
@@ -235,35 +237,15 @@ describe('tool changes in the preview timeline', () => {
       'cnc'
     );
     const timeline = buildTimeline(planToolpath(d).segments, { travelSpeed: 3000, laserMode: false });
-    expect(timeline.toolChanges.map((c) => c.tool)).toEqual([3, 1]);
-    expect(timeline.toolChanges[1].from).toBe(3);
-    expect(timeline.toolChanges[1].t).toBeGreaterThan(0);
-  });
-
-  /**
-   * A router job that opened with `M6 T6`, drilled with T6, then changed to T1:
-   * the live preview showed an amber "T6" sitting in the top-left corner the
-   * whole time T6 was cutting. That badge was the opening stop, pinned to the
-   * planner's notional start at document (0, 0) — a point no line of the
-   * program visits — and the head was drawn underneath it.
-   */
-  it('does not pin the opening stop to the planner\'s notional start', () => {
-    const d = doc(
-      [layer('etch', 'etch', 3), layer('cut', 'cut', 1, { zDepth: 3 })],
-      [rect('a', 'etch'), rect('b', 'cut')],
-      'cnc'
-    );
-    const timeline = buildTimeline(planToolpath(d).segments, { travelSpeed: 3000, laserMode: false });
-    const [opening, later] = timeline.toolChanges;
-    expect(opening.atStart).toBe(true);
-    expect(later.atStart).toBe(false);
-    // Placed where the new tool first goes, which is somewhere the job is.
-    const first = timeline.moves[0];
-    expect({ x: opening.x, y: opening.y }).toEqual({ x: first.x2, y: first.y2 });
-    expect(opening.x !== 0 || opening.y !== 0).toBe(true);
-    // A later stop is still where the old tool was parked for it.
-    const parked = timeline.moves.find((m) => m.t0 >= later.t);
-    expect({ x: later.x, y: later.y }).toEqual({ x: parked?.x1, y: parked?.y1 });
+    expect(timeline.toolChanges.map((c) => c.tool)).toEqual([1]);
+    expect(timeline.toolChanges[0].from).toBe(3);
+    expect(timeline.toolChanges[0].t).toBeGreaterThan(0);
+    expect(timeline.toolChanges[0].atStart).toBe(false);
+    const parked = timeline.moves.find((m) => m.t0 >= timeline.toolChanges[0].t);
+    expect({ x: timeline.toolChanges[0].x, y: timeline.toolChanges[0].y }).toEqual({
+      x: parked?.x1,
+      y: parked?.y1,
+    });
   });
 
   it('does not link a fill hop across a tool change', () => {
@@ -277,7 +259,7 @@ describe('tool changes in the preview timeline', () => {
     );
     const { segments } = planToolpath(d);
     const timeline = buildTimeline(segments, { travelSpeed: 3000, laserMode: false });
-    const change = timeline.toolChanges[1];
+    const change = timeline.toolChanges[0];
     // The first move after the stop is a rapid, not a cut across the gap.
     const next = timeline.moves.find((m) => m.t0 >= change.t && m.kind !== 'retract');
     expect(next?.kind).toBe('travel');

@@ -1,6 +1,6 @@
 import type { EtchDocument, EtchElement, EtchLayer, MachinedLayer, MachinedOperation } from '../types/etch';
 import { isMachinedLayer } from '../types/etch';
-import { localToBed, isOutsideStock, bedBoxOfAll } from './geom';
+import { localToBed } from './geom';
 import { type Pt } from './pathFlatten';
 import { extractElementContours } from './elementContours';
 import { clipValuedPolylineToStock, isWhollyInside } from './clipToStock';
@@ -813,30 +813,8 @@ export function planToolpath(
    * will be cut in the wrong place. Stated with the extent, because "outside"
    * is only actionable if you know by how much and in which direction.
    */
-  const ghostLayerIds = new Set(
-    doc.layers.filter((l) => l.operation === 'ghost').map((l) => l.id)
-  );
-  const strays = doc.elements.filter(
-    (el) =>
-      el.visible !== false &&
-      // A guide path — or, under "cut selected only", the part of the drawing
-      // that is not being cut — machines nothing, so it cannot come out
-      // incomplete and warning about it is noise over the stray that matters.
-      !ghostLayerIds.has(el.layerId) &&
-      isOutsideStock(el, doc.width, doc.height)
-  );
-  if (strays.length) {
-    const box = bedBoxOfAll(strays)!;
-    notes.push(
-      `${strays.length} element${strays.length === 1 ? '' : 's'} lie${strays.length === 1 ? 's' : ''} ` +
-        `outside the ${doc.width}x${doc.height} mm stock ` +
-        `(${strays.slice(0, 3).map((e) => `"${e.name}"`).join(', ')}` +
-        `${strays.length > 3 ? `, +${strays.length - 3} more` : ''}). ` +
-        `They span X ${box.minX.toFixed(1)}…${box.maxX.toFixed(1)}, ` +
-        `Y ${box.minY.toFixed(1)}…${box.maxY.toFixed(1)} mm. Whatever hangs over the edge is ` +
-        `left uncut — move them onto the stock, or resize it to fit, if you want all of it.`
-    );
-  }
+  // Off-stock geometry is handled automatically by `clipSegmentsToStock` below
+  // (which emits a single terse note if any paths are trimmed or dropped).
 
   /**
    * Geometry whose layer is not in the document, said rather than dropped.
@@ -1042,18 +1020,25 @@ export function planToolpath(
         contours.length > 0
       ) {
         const vMaxDepth = layer.vCarveMaxDepth ?? cut.zDepth;
+        const vStep = Math.abs(cut.depths[0] ?? vMaxDepth) || vMaxDepth;
+        const vCut = {
+          ...cut,
+          zDepth: vMaxDepth,
+          depths: planPasses(vMaxDepth, vStep).depths,
+        };
         // The tip flat, which for a V-bit is what `profile.diameter` holds —
         // the same number `cutWidthAtDepth` starts its taper from.
         const vOpts = {
           tipAngleDeg: cut.tipAngleDeg!,
           maxDepth: vMaxDepth,
           tipDiameterMm: cut.radius * 2,
+          emitFlipsY: flipsY,
         };
         const vcarveRuns = generateVCarveToolpaths(contours, vOpts);
 
         for (const run of vcarveRuns) {
           segments.push(
-            makeSegment(layer, cut, options, {
+            makeSegment(layer, vCut, options, {
               points: run.points,
               intensities: run.intensities,
               isClosed: false,
@@ -1063,19 +1048,13 @@ export function planToolpath(
           );
         }
 
-        /*
-         * The floor of anything too wide for the cone to reach the bottom of.
-         *
-         * Without this the medial-axis pass clamps at the ceiling and says
-         * nothing, so a wide letter comes out with tapered walls and its middle
-         * still standing at full height. These rings are cut at one constant
-         * depth, so they go in as ordinary closed geometry rather than as a
-         * shaded sweep — `intensities` is what marks a segment as varying-Z,
-         * and these do not vary.
-         */
         const flat = vCarveFlatBottom(contours, vOpts);
         if (flat.needed) {
-          const floorCut = { ...cut, zDepth: flat.depthMm, depths: [flat.depthMm] };
+          const floorCut = {
+            ...vCut,
+            zDepth: flat.depthMm,
+            depths: planPasses(flat.depthMm, vStep).depths,
+          };
           for (const ring of flat.rings) {
             segments.push(
               makeSegment(layer, floorCut, options, {
@@ -1501,8 +1480,14 @@ export function planToolpath(
         referenceHoles.length > 0
           ? offsetContours(referenceHoles, cut.radius + allowance, holeSide)
           : { contours: [] as Pt[][], dropped: 0 };
+      const allInside = cut.side === 'inside';
       const roughOffset = {
-        contours: orientSetForClimb([...roughParts.contours, ...roughHoles.contours], flipsY),
+        contours: orientSetForClimb(
+          [...roughParts.contours, ...roughHoles.contours],
+          flipsY,
+          allInside,
+          referenceContours
+        ),
         dropped: roughParts.dropped + roughHoles.dropped,
       };
       if (roughOffset.dropped > 0) {
@@ -1525,7 +1510,12 @@ export function planToolpath(
             ? offsetContours(referenceHoles, cut.radius, holeSide)
             : { contours: [] as Pt[][], dropped: 0 };
         const finishOffset = {
-          contours: orientSetForClimb([...finishParts.contours, ...finishHoles.contours], flipsY),
+          contours: orientSetForClimb(
+            [...finishParts.contours, ...finishHoles.contours],
+            flipsY,
+            allInside,
+            referenceContours
+          ),
           dropped: finishParts.dropped + finishHoles.dropped,
         };
         for (const pts of finishOffset.contours) {
@@ -1545,7 +1535,8 @@ export function planToolpath(
                 [...finishOffset.contours, ...referenceContours],
                 millable,
                 leadRadiusFor(cut),
-                { width: doc.width, height: doc.height }
+                { width: doc.width, height: doc.height },
+                allInside
               );
           if (lead) led++;
           // The lead may have moved where the lap begins; the lap is the same
@@ -1670,21 +1661,12 @@ export function planToolpath(
   if (clip.trimmed > 0 || clip.dropped > 0) {
     const parts: string[] = [];
     if (clip.trimmed > 0) {
-      parts.push(`${clip.trimmed} path${clip.trimmed === 1 ? ' was' : 's were'} cut short at the edge`);
+      parts.push(`${clip.trimmed} trimmed`);
     }
     if (clip.dropped > 0) {
-      parts.push(
-        `${clip.dropped} ${clip.dropped === 1 ? 'lies' : 'lie'} entirely off it and ${
-          clip.dropped === 1 ? 'is' : 'are'
-        } not machined at all`
-      );
+      parts.push(`${clip.dropped} skipped`);
     }
-    notes.push(
-      `Trimmed to the ${doc.width}x${doc.height} mm stock: ${parts.join(', and ')}. ` +
-        `Only the part of the drawing over the material is run — the rest would have been ` +
-        `cut into the bed. Nothing on the canvas has changed, so move or resize the art and ` +
-        `it comes back.`
-    );
+    notes.push(`Trimmed to the ${doc.width}x${doc.height} mm stock: ${parts.join(', ')}.`);
   }
 
   /*
@@ -2380,7 +2362,7 @@ function adaptiveRingCutting(
 
   const next = { ...cut };
 
-  if (layer.speedOverride === undefined) {
+  if (layer.feedOverride === undefined) {
     // Never past what the gantry will hold: a boost that asks for a feed the
     // machine cannot track is a rounded corner, not a faster job.
     next.speed = feedForEngagement(cut.speed, engagement, cuttingFeedCeiling(motion));
@@ -2996,6 +2978,10 @@ function applyEraseMasks(
         isClosed: isClosedContour(pts),
         bBoxArea: seg.intensities ? seg.bBoxArea : boundingArea(pts),
         tabs: seg.tabs.length > 0 ? planTabs(pathLength(pts)) : [],
+        leadIn: undefined,
+        leadOut: undefined,
+        linkFrom: null,
+        linkTolerance: 0,
         ...(piece.values ? { intensities: piece.values } : {}),
       });
     }
@@ -3053,6 +3039,10 @@ function clipSegmentsToStock(
         isClosed: isClosedContour(pts),
         bBoxArea: seg.intensities ? seg.bBoxArea : boundingArea(pts),
         tabs: seg.tabs.length > 0 ? planTabs(pathLength(pts)) : [],
+        leadIn: undefined,
+        leadOut: undefined,
+        linkFrom: null,
+        linkTolerance: 0,
         ...(piece.values ? { intensities: piece.values } : {}),
       });
     }
@@ -3212,13 +3202,19 @@ const LEAD_STOCK_EPS = 1e-6;
  * contour's own direction of travel, so a lead planned against a path that is
  * then reversed arrives from the wrong side.
  */
-function orientSetForClimb(contours: Pt[][], emitFlipsY: boolean): Pt[][] {
+function orientSetForClimb(
+  contours: Pt[][],
+  emitFlipsY: boolean,
+  allInside = false,
+  reference: Pt[][] = []
+): Pt[][] {
+  const siblings = reference.length ? [...contours, ...reference] : contours;
   return contours.map((c) => {
     if (c.length < 4) return c;
-    const enclosing = contours.filter(
+    const enclosing = siblings.filter(
       (other) => other !== c && pointInPolygon(c[0], other)
     ).length;
-    const isHole = enclosing % 2 === 1;
+    const isHole = allInside ? enclosing % 2 === 0 : enclosing % 2 === 1;
     return orientForClimb(c, isHole ? 'outside' : 'inside', emitFlipsY);
   });
 }
@@ -3228,7 +3224,8 @@ function planLead(
   siblings: Pt[][],
   keep: Pt[][],
   radius: number,
-  stock: { width: number; height: number }
+  stock: { width: number; height: number },
+  allInside = false
 ): { contour: Pt[]; leadIn: Pt[]; leadOut: Pt[] } | null {
   if (radius <= 0 || contour.length < 4) return null;
   // A lead is only sane on a contour substantially longer than the lead itself.
@@ -3252,7 +3249,7 @@ function planLead(
   let bestOvershoot = Infinity;
   for (const at of leadStartCandidates(contour)) {
     const lap = at === 0 ? contour : rotateClosedPath(contour, at);
-    const lead = leadAtStart(lap, contour, siblings, keep, radius, stock);
+    const lead = leadAtStart(lap, contour, siblings, keep, radius, stock, allInside);
     if (!lead) continue;
     let overshoot = 0;
     for (const p of [...lead.leadIn, ...lead.leadOut]) {
@@ -3317,7 +3314,8 @@ function leadAtStart(
   siblings: Pt[][],
   keep: Pt[][],
   radius: number,
-  stock: { width: number; height: number }
+  stock: { width: number; height: number },
+  allInside = false
 ): { leadIn: Pt[]; leadOut: Pt[] } | null {
   const start = contour[0];
   const tangent = unitBetween(start, contour[1]);
@@ -3327,10 +3325,11 @@ function leadAtStart(
 
   // Inside-ness of the contour's own region, and then of the layer: an odd
   // enclosure count makes this contour a hole, whose waste is on the inside.
+  // On a dedicated `cutSide: 'inside'` layer, top-level contours are holes.
   const enclosingCount = siblings.filter(
     (other) => other !== self && pointInPolygon(start, other)
   ).length;
-  const isHole = enclosingCount % 2 === 1;
+  const isHole = allInside ? enclosingCount % 2 === 0 : enclosingCount % 2 === 1;
 
   // The normal pointing into the region the contour encloses.
   const inward: Pt = { x: -tangent.y, y: tangent.x };
@@ -3361,16 +3360,6 @@ function leadAtStart(
   const leadIn = arc(start, tangent, true);
   const leadOut = arc(end, outTangent, false).reverse();
 
-  /*
-   * Nothing may swing into material that is being kept — a neighbouring part
-   * half a lead radius away is exactly how a lead-in ruins the job beside it.
-   *
-   * Kept-ness is even-odd across the whole layer, not "inside any contour". A
-   * point in the middle of a hole is inside two contours — the part's outline
-   * and the hole's — and is nevertheless waste, which is the whole reason a
-   * hole's lead swings inward. Counting them as one region each would refuse
-   * every lead on every hole in the job.
-   */
   const onStock = (p: Pt) =>
     p.x >= -LEAD_STOCK_EPS && p.y >= -LEAD_STOCK_EPS &&
     p.x <= stock.width + LEAD_STOCK_EPS && p.y <= stock.height + LEAD_STOCK_EPS;
@@ -3381,7 +3370,8 @@ function leadAtStart(
     for (const region of keep) {
       if (pointInPolygon(p, region)) enclosing++;
     }
-    if (enclosing % 2 === 1) return null;
+    const inKept = allInside ? enclosing % 2 === 0 : enclosing % 2 === 1;
+    if (inKept) return null;
   }
 
   return { leadIn, leadOut };
@@ -3912,10 +3902,11 @@ export interface ToolChange {
 /**
  * The tool changes a planned toolpath will stop for, in program order.
  *
- * A single-tool job returns nothing: the tool it needs is the one already in the
- * machine, and a pause before the first cut of a job that never changes tools is
- * a pause with nothing to do. A multi-tool job includes its *first* tool, so the
- * operator confirms what is loaded before the spindle starts.
+/**
+ * Plans tool-change pauses for a CNC job.
+ *
+ * The first tool is fitted and Z-zeroed before Start (same workflow as a
+ * single-tool job), so only switches to a subsequent tool emit a pause.
  */
 export function planToolChanges(segments: GCodeSegment[]): ToolChange[] {
   const changes: ToolChange[] = [];
@@ -3928,7 +3919,7 @@ export function planToolChanges(segments: GCodeSegment[]): ToolChange[] {
     }
   }
 
-  return changes.length > 1 ? changes : [];
+  return changes.length > 1 ? changes.slice(1) : [];
 }
 
 /**
@@ -4039,11 +4030,12 @@ export function generateGCode(
   // "T1 — uncatalogued tool" in the header of every laser job was an answer to a
   // question that machine does not ask.
   if (hasToolCatalog(machineKind, options.customCncTools)) {
+    if (segments.length) {
+      gcode += `; Tool: ${describeTool(machineKind, segments[0].tool, options.customCncTools)}\n`;
+    }
     if (toolChanges.length) {
       gcode += `; Tool changes: ${toolChanges.length} — the job pauses at each one\n`;
       for (const c of toolChanges) gcode += `;   ${describeTool(machineKind, c.tool, options.customCncTools)}\n`;
-    } else if (segments.length) {
-      gcode += `; Tool: ${describeTool(machineKind, segments[0].tool, options.customCncTools)}\n`;
     }
   }
   for (const s of skipped) gcode += `; SKIPPED: ${s}\n`;
@@ -4056,9 +4048,9 @@ export function generateGCode(
     gcode += `M5  ; Laser off initially\n`;
   } else {
     gcode += `G0 Z${SAFE_Z} ; Spindle clearance height\n`;
-    // On a multi-tool job the spindle waits until the first tool is confirmed
-    // loaded — starting it here would spin up a collet nobody has checked.
-    if (!toolChanges.length && firstRpm > 0) {
+    // The starting bit is already fitted and Z-zeroed before Start (same as a
+    // single-tool job), so the spindle starts here and only pauses on M6 swaps.
+    if (firstRpm > 0) {
       gcode += `M3 S${firstRpm} ; Spindle on — ${formatRpm(firstRpm)} RPM for ${material.name}\n`;
       gcode += `G4 P${SPINDLE_SPINUP_SECONDS} ; let it reach speed before cutting\n`;
     }
@@ -4087,7 +4079,7 @@ export function generateGCode(
   let lastS: number | null = null;
   let lastSegIndex = -1;
   let lastKind: PlannedMove['kind'] | null = null;
-  let currentRpm = toolChanges.length ? 0 : firstRpm;
+  let currentRpm = firstRpm;
 
   for (let i = 0; i < program.moves.length; i++) {
     const m = program.moves[i];
@@ -4141,22 +4133,18 @@ export function generateGCode(
       lastSegIndex = m.segIndex;
     }
 
+    const end = toMachine(m.x2, m.y2);
+    const zChanged = !options.laserMode && (lastZ === null || Math.abs(m.z2 - lastZ) > 1e-6);
+    const xyChanged = Math.abs(m.x2 - m.x1) > 1e-9 || Math.abs(m.y2 - m.y1) > 1e-9;
+    if (!zChanged && !xyChanged) continue;
+
     // Laser power is a per-move state on a machine with no Z: the beam is off
     // for every rapid and on for every cut, and switching it is the only thing
-    // that distinguishes the two.
+    // that distinguishes the two. Computed AFTER the zero-length move guard so
+    // a skipped sub-nanometre move can never swallow an S0 change.
     let sWord = '';
     if (options.laserMode) {
       const s = Math.round((m.power / 100) * options.spindleSpeedMax);
-      /**
-       * Constant power for lines, velocity-scaled power for pictures.
-       *
-       * M3 holds S whatever the machine is doing, which is what a cut wants:
-       * one line, one burn. A photograph is thousands of short moves the
-       * machine never reaches feed on, and under M3 every one of those
-       * accelerations dwells the beam and comes out as a dark smear at the end
-       * of the line. M4 scales power with actual speed, so a slow corner burns
-       * proportionally less and the tone survives the acceleration.
-       */
       const shading = !!segments[m.segIndex]?.intensities;
       if (m.beamOn && (!beamOn || shading !== dynamicPower)) {
         gcode += `${shading ? 'M4' : 'M3'} S${s} ; Laser ON${shading ? ' — dynamic power, tone follows speed' : ''}\n`;
@@ -4168,9 +4156,6 @@ export function generateGCode(
         beamOn = false;
         lastS = null;
       } else if (m.beamOn && s !== lastS) {
-        // S rides on the move itself rather than on a line of its own: a
-        // shaded sweep changes tone thousands of times, and a separate word
-        // for each would double the size of the file for no extra control.
         sWord = ` S${s}`;
         lastS = s;
       }
@@ -4251,22 +4236,30 @@ export function generateGCode(
           } else {
             const arcG = arcToMachineGCode(doc, cmd);
             const startM = docToMachine(doc, cmd.from.x, cmd.from.y);
-            const chord = Math.hypot(arcG.end.x - startM.x, arcG.end.y - startM.y);
-            const rStart = Math.hypot(arcG.i, arcG.j);
-            const rEnd = Math.hypot(arcG.end.x - (startM.x + arcG.i), arcG.end.y - (startM.y + arcG.j));
+            // Check quantized `.toFixed(3)` coordinates against GRBL's error:33
+            // radius-match tolerance (0.003 mm) rather than raw floats.
+            const qSx = Number(startM.x.toFixed(3));
+            const qSy = Number(startM.y.toFixed(3));
+            const qEx = Number(arcG.end.x.toFixed(3));
+            const qEy = Number(arcG.end.y.toFixed(3));
+            const qI = Number(arcG.i.toFixed(3));
+            const qJ = Number(arcG.j.toFixed(3));
+            const chord = Math.hypot(qEx - qSx, qEy - qSy);
+            const rStart = Math.hypot(qI, qJ);
+            const rEnd = Math.hypot(qEx - (qSx + qI), qEy - (qSy + qJ));
             const deltaR = Math.abs(rStart - rEnd);
+            const arcZChanged =
+              !options.laserMode &&
+              (lastZ === null || Math.abs(m.z2 - lastZ) > 1e-6);
 
-            // Safety guard: if quantized endpoints are degenerate or deltaR exceeds GRBL tolerance (0.003 mm),
-            // emit as linear move to prevent 360-degree full-circle loops or GRBL error 33 aborts
-            if (chord < 0.01 || deltaR > 0.003) {
+            // Safety guard: if quantized endpoints are degenerate, deltaR exceeds GRBL tolerance,
+            // or Z changes on this move, emit as linear move to prevent error:33 or dropped Z.
+            if (chord < 0.01 || deltaR > 0.003 || arcZChanged) {
               const end = toMachine(cmd.to.x, cmd.to.y);
               const feed = Math.max(1, Math.round(m.feed));
               const fWord = feed !== lastFeed ? ` F${feed}` : '';
-              const zChanged =
-                !options.laserMode &&
-                (lastZ === null || Math.abs(m.z2 - lastZ) > 1e-6);
               const axes = `X${end.x.toFixed(3)} Y${end.y.toFixed(3)}${
-                zChanged ? ` Z${m.z2.toFixed(3)}` : ''
+                arcZChanged ? ` Z${m.z2.toFixed(3)}` : ''
               }`;
               gcode += `G1 ${axes}${fWord}${sWord}\n`;
               lastFeed = feed;
@@ -4286,11 +4279,6 @@ export function generateGCode(
         continue;
       }
     }
-
-    const end = toMachine(m.x2, m.y2);
-    const zChanged = !options.laserMode && (lastZ === null || Math.abs(m.z2 - lastZ) > 1e-6);
-    const xyChanged = Math.abs(m.x2 - m.x1) > 1e-9 || Math.abs(m.y2 - m.y1) > 1e-9;
-    if (!zChanged && !xyChanged) continue;
 
     const axes =
       (xyChanged ? `X${end.x.toFixed(3)} Y${end.y.toFixed(3)}` : '') +

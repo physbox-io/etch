@@ -320,6 +320,15 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * explicit machine narrated its pauses in router vocabulary at a laser.
    */
   private jobMachine: MachineKind = 'laser';
+  /**
+   * Machine kind of the last streamed or checkpoint-restored program, kept
+   * separate from `jobMachine` (which follows the open document while idle) so
+   * reloading or switching documents never clobbers an interrupted CNC job to
+   * `'laser'` before `runFrom()`.
+   */
+  private lastProgramMachine: MachineKind | null = null;
+  /** Optional hook notified whenever a trusted Z datum is recorded (e.g. to auto-re-reference a bed probe grid). */
+  private zDatumListeners = new Set<(xy: { x: number; y: number } | null) => void>();
 
   /** Deadline for the guide spot, so a lit beam cannot be walked away from. */
   private guideSpotTimer: ReturnType<typeof setTimeout> | null = null;
@@ -394,7 +403,10 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
   /** A job from before a reload is back: its name, and laser or router, with it. */
   protected onCheckpointRestored(cp: RestorableCheckpoint): Partial<EtchMachineState> {
     const { machine, ...settings } = cp.program.settings ?? {};
-    if (machine === 'laser' || machine === 'cnc') this.jobMachine = machine;
+    if (machine === 'laser' || machine === 'cnc') {
+      this.jobMachine = machine;
+      this.lastProgramMachine = machine;
+    }
     this.jobContext = {
       name: cp.program.jobName ?? undefined,
       documentId: cp.program.documentId,
@@ -418,6 +430,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
 
   protected onJobStarted(): void {
     this.jobStartedAt = Date.now();
+    this.layerResetAt = -1;
     this.updateState({ lastCompletedJob: null });
   }
 
@@ -704,16 +717,16 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * here. `M3` is constant power and fires immediately at idle, which is why
    * `frameJob` uses it too.
    */
-  public async guideSpotOn(power: number = readGuidePower()): Promise<void> {
+  public async guideSpotOn(power: number = readGuidePower()): Promise<boolean> {
     if (!this.state.connected) {
       this.updateState({ lastError: 'Not connected to a machine.' });
-      return;
+      return false;
     }
     // Firing into a running job would fight the program's own S words, and the
     // spot would be indistinguishable from the cut anyway.
     if (this.isRunning()) {
       this.updateState({ lastError: 'Cannot light the guide spot while a job is running.' });
-      return;
+      return false;
     }
     // GRBL refuses everything in alarm, `M3` included, and refuses it *quietly*
     // as far as the operator is concerned — the beam simply never appears, which
@@ -722,7 +735,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       this.updateState({
         lastError: 'The machine is in alarm and will refuse to fire. Home it, or unlock ($X), first.',
       });
-      return;
+      return false;
     }
 
     /*
@@ -752,6 +765,7 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     this.updateState({ guideSpot: true });
     this.armGuideSpotTimeout();
     if (readGuideJiggle()) void this.runGuideJiggle();
+    return true;
   }
 
   /**
@@ -817,6 +831,11 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       // is still off in the controller's EEPROM, and clearing the flag here was
       // forgetting that just because the link was down. `onConnected` repays it.
       if (this.state.guideSpot) this.updateState({ guideSpot: false });
+      return;
+    }
+    // Fast-path: when the guide spot was never lit and `$32` is not borrowed,
+    // do not queue M5/S0 behind an active job buffer (e.g. during disconnect).
+    if (!this.state.guideSpot && !this.guideJiggleRunning && !this.guideSpotRestoreLaserMode) {
       return;
     }
     // The flag goes down *first*, and is what the jiggle loop watches. Sending
@@ -929,6 +948,22 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     return this.state.zDatumTrusted === true;
   }
 
+  /** Work XY where Z0 was last recorded, or null if Z has not been zeroed this session. */
+  public getZDatumWorkXY(): { x: number; y: number } | null {
+    return this.zDatumWorkXY();
+  }
+
+  /** Subscribe to Z-datum updates so stored bed probe grids re-reference automatically. */
+  public onZDatumRecorded(listener: (xy: { x: number; y: number } | null) => void): () => void {
+    this.zDatumListeners.add(listener);
+    return () => { this.zDatumListeners.delete(listener); };
+  }
+
+  private notifyZDatumRecorded(): void {
+    const xy = this.zDatumWorkXY();
+    for (const fn of this.zDatumListeners) fn(xy);
+  }
+
   /**
    * A laser focuses once by hand and its Z never moves during a job, so the
    * shared refusal to cut against an unconfirmed datum does not apply to one.
@@ -957,18 +992,33 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
     if (!this.state.connected) {
       return { success: false, message: 'Not connected to a machine.' };
     }
-    const machineZ = this.state.mpos.z;
-    await this.sendCommandAndWait(`G10 L20 P1 Z${shimThicknessMm.toFixed(3)}`);
-    // A hand-set datum is still a datum, and a heightmap has to be referenced
-    // to it exactly as it would be to a probed one.
-    this.recordZDatum();
-    return {
-      success: true,
-      machineZ,
-      message: shimThicknessMm
-        ? `Z zeroed by hand at machine Z${machineZ.toFixed(3)}, ${shimThicknessMm} mm shim allowed for.`
-        : `Z zeroed by hand at machine Z${machineZ.toFixed(3)}, with the tool taken as touching the work.`,
-    };
+    if (this.state.status === 'ALARM') {
+      return { success: false, message: 'The machine is in alarm. Unlock or home before zeroing Z.' };
+    }
+    if (this.isRunning() && this.state.status !== 'PAUSED_TOOL') {
+      return { success: false, message: 'Cannot zero Z while a job is running.' };
+    }
+    try {
+      await this.refreshPosition();
+      const machineZ = this.state.mpos.z;
+      await this.sendLine(`G10 L20 P1 Z${shimThicknessMm.toFixed(3)}`);
+      await this.drain();
+      // A hand-set datum is still a datum, and a heightmap has to be referenced
+      // to it exactly as it would be to a probed one.
+      this.recordZDatum();
+      this.notifyZDatumRecorded();
+      return {
+        success: true,
+        machineZ,
+        message: shimThicknessMm
+          ? `Z zeroed by hand at machine Z${machineZ.toFixed(3)}, ${shimThicknessMm} mm shim allowed for.`
+          : `Z zeroed by hand at machine Z${machineZ.toFixed(3)}, with the tool taken as touching the work.`,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to set Z zero.';
+      this.updateState({ lastError: message });
+      return { success: false, message };
+    }
   }
 
   /** `homeMachine()` under the name this app's panels have always called it. */
@@ -977,50 +1027,56 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
   }
 
   /**
-   * Stops the job now. This is the button someone reaches for when a cut is
-   * going wrong, so it kills output first and tidies state after.
+   * Stops the job now. Overrides `GrblMachine.eStop` so every caller (UI
+   * FloatingStop, MachineControlModal, MCP `MACHINE_ESTOP`, and `cancelJob`)
+   * gets guide-spot shutdown and `$32=1` restoration after soft-reset.
    */
-  public async emergencyStop(): Promise<void> {
+  public override async eStop(): Promise<void> {
     this.clearGuideSpotTimeout();
-    // Ordered before the reset so it is delivered to a controller that is still
-    // listening: `$32` lives in EEPROM and survives the reset, so a spot lit at
-    // the moment of an E-stop would otherwise leave laser mode off for whatever
-    // is run next.
-    this.restoreLaserMode();
-    await this.eStop();
-    await this.sendCommand('M5');
-    // The M5 above put the guide spot out along with everything else.
+    // Drop the flag immediately so `runGuideJiggle` stops pumping moves during
+    // the reset window.
+    if (this.state.guideSpot) this.updateState({ guideSpot: false });
+    const restoreLaser = this.guideSpotRestoreLaserMode;
+    await super.eStop();
+    // Restore `$32=1` *after* soft-reset boots, not before: a line queued right
+    // ahead of `0x18` is flushed out of GRBL's receive buffer before it reaches
+    // EEPROM. Only clear the borrowed breadcrumb once the controller accepts it.
+    if (restoreLaser && this.state.connected) {
+      try {
+        await this.sendLine('$32=1');
+        this.guideSpotRestoreLaserMode = false;
+        this.grblSettings.set(32, 1);
+        writeLaserModeBorrowed(false);
+      } catch {
+        // Leave `guideSpotRestoreLaserMode = true` and the breadcrumb intact so
+        // the next command or connection repays `$32=1`.
+      }
+    }
     this.updateState({ guideSpot: false, pauseMessage: undefined });
+  }
+
+  /** Legacy alias for `eStop()`. */
+  public async emergencyStop(): Promise<void> {
+    await this.eStop();
   }
 
   /**
    * Traces the job's bounding box so you can check it fits the stock.
-   *
-   * What that means depends on the machine, and getting it wrong is destructive
-   * in one direction only:
-   *
-   *  - **Laser** — trace at a low guide power so the dot is visible. There is no
-   *    Z in the toolpath, so none is commanded here either.
-   *  - **CNC** — retract to clearance first and trace with the spindle *off*.
-   *    A router sits at work Z0 after zeroing, which is the surface of the
-   *    stock; framing there with `M3` running drags a spinning cutter right
-   *    around the outline of the part before a single line of the job has run.
-   *
-   * The CNC path is the shared one. The laser path is not: the beam has to be
-   * lit at a *percentage* of this machine's full-scale S, and no other app has
-   * a machine whose framing pass fires.
    */
   public async frameJob(
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     opts: FrameJobOptions & { laserMode?: boolean; guidePower?: number; safeZ?: number } = {}
   ): Promise<void> {
+    if (!this.state.connected || this.isRunning() || this.state.status === 'ALARM') {
+      return;
+    }
     const { laserMode = true, guidePower = readGuidePower(), safeZ = 5 } = opts;
 
     // Framing drives the head, and it commands its own beam state at its own
     // power. Putting a lit guide spot out first means the flag matches the
     // machine afterwards rather than claiming a beam this method has since
     // switched off.
-    if (this.state.guideSpot) await this.guideSpotOff();
+    if (this.state.guideSpot || this.guideJiggleRunning) await this.guideSpotOff();
 
     if (!laserMode) {
       await super.frameJob(bounds, { ...opts, retractZmm: opts.retractZmm ?? safeZ });
@@ -1034,16 +1090,26 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       [minX, maxY],
       [minX, minY],
     ];
-    await this.sendCommand('G21 G90');
-    await this.sendCommand(`G0 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
-    // A **percentage**, like the setting it comes from: this used to be a
-    // hardcoded `5` emitted as a raw S word, which is half a percent on a `$30`
-    // of 1000 and five percent on a `$30` of 100.
-    await this.sendCommand(`M3 S${guidePowerToS(guidePower, this.spindlePwmMax())}`);
-    for (const [x, y] of corners) {
-      await this.sendCommand(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+    let beamLit = false;
+    try {
+      await this.sendLine('G21 G90');
+      await this.sendLine(`G0 X${minX.toFixed(3)} Y${minY.toFixed(3)} F3000`);
+      await this.sendLine(`M3 S${guidePowerToS(guidePower, this.spindlePwmMax())}`);
+      beamLit = true;
+      for (const [x, y] of corners) {
+        await this.sendLine(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F3000`);
+      }
+    } catch (err) {
+      this.updateState({
+        lastError: err instanceof Error ? err.message : 'Framing stopped.',
+      });
+    } finally {
+      const live = this.getState();
+      if (beamLit && live.connected && live.status !== 'ALARM') {
+        await this.sendCommand('M5');
+        await this.sendCommand('S0');
+      }
     }
-    await this.sendCommand('M5');
   }
 
   // -------------------------------------------------------------------------
@@ -1120,40 +1186,19 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
         message: 'The machine is in alarm. Home it, or unlock, before running a job.',
       };
     }
-    /*
-     * A jiggling guide spot has moves of its own in flight on the same serial
-     * link, and they would interleave with the program's opening lines and eat
-     * the `ok`s that pace it. So the spot is put out here and the job refused
-     * *this* time: the loop unwinds within a move or two, and pressing run again
-     * starts a job with the channel to itself.
-     */
-    if (this.guideJiggleRunning) {
-      void this.guideSpotOff();
-      return {
-        started: false,
-        message: 'The guide spot was still lit — it has been switched off. Press run again.',
-      };
-    }
+    // Auto-handle a lit/jiggling guide spot instead of refusing and making the
+    // operator click Run twice.
+    await this.ensureGuideSpotClearedBeforeStream();
 
     // Kept for the tool-change prompt: a T-number alone tells the operator
     // nothing about which bit to reach for, and only the document knows what T3
     // is. Laser jobs never raise one — that machine has no tools to change.
     this.jobMachine = opts.machine ?? 'laser';
+    if (!opts.auxiliary) this.lastProgramMachine = this.jobMachine;
     // Recorded before the first line goes out, so the very first telemetry frame
     // already says what this run is — that frame is what opens the archived run.
     this.jobContext = opts.job ?? {};
     if (!opts.auxiliary) this.lastJobName = this.jobContext.name;
-
-    // A guide spot left lit would be a beam already firing as the program's
-    // first rapid runs, dragging a burn across the stock on the way to the
-    // start point.
-    this.clearGuideSpotTimeout();
-    if (this.state.guideSpot) await this.sendCommand('M5');
-    // Laser mode back on *before* the first line goes out. A program streamed
-    // with `$32=0` cuts correctly and burns a line through every rapid on the
-    // way between contours.
-    this.restoreLaserMode();
-    this.updateState({ guideSpot: false });
 
     const lines = scanJobProgram(gcode).lines;
     if (lines.length === 0) {
@@ -1187,18 +1232,31 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
    * Refusals come back as a result for the same reason `runProgram`'s do: a
    * button that does nothing has to say why.
    */
+  /** Stops any lit/jiggling guide spot and restores `$32=1` before streaming. */
+  private async ensureGuideSpotClearedBeforeStream(): Promise<void> {
+    if (this.state.guideSpot || this.guideJiggleRunning || this.guideSpotRestoreLaserMode) {
+      await this.guideSpotOff();
+    } else {
+      this.clearGuideSpotTimeout();
+    }
+  }
+
   /** What `runFrom(line)` would send before the program picks up. See `previewRunFrom`. */
   public previewRunFromLine(line: number) {
-    return this.previewRunFrom(line, { isLaser: this.jobMachine === 'laser' });
+    const machine = this.lastProgramMachine ?? this.jobMachine;
+    return this.previewRunFrom(line, { isLaser: machine === 'laser' });
   }
 
   public async runFrom(line: number): Promise<{ started: boolean; message: string }> {
+    const machine = this.lastProgramMachine ?? this.jobMachine;
+    this.jobMachine = machine;
+    await this.ensureGuideSpotClearedBeforeStream();
     const refused = this.startBlockedReason([]);
     if (refused) {
       this.updateState({ lastError: refused });
       return { started: false, message: refused };
     }
-    const running = this.runFromLine(line, { isLaser: this.jobMachine === 'laser' });
+    const running = this.runFromLine(line, { isLaser: machine === 'laser' });
     // The stream's own checks — the travel of what is left, above all — refuse
     // before its first wait, so a refusal has landed by the next tick.
     const early = await Promise.race([
@@ -1325,11 +1383,11 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
 
   /** The job is over as far as anything reported from here is concerned. */
   private endTelemetryJob(): void {
+    const wasOpen = this.telemetryJobOpen;
     this.telemetryJobOpen = false;
-    // Not while a job is still on the wire: a dropped link is followed by the
-    // base clearing `isJobRunning`, and a frame from a job still running would
-    // lose its name.
-    if (!this.isJobRunning) this.jobContext = {};
+    // Only wipe jobContext when a live telemetry run just closed, so a restored
+    // interrupted checkpoint keeps its name/settings while disconnected.
+    if (wasOpen && !this.isJobRunning) this.jobContext = {};
   }
 
   /**
@@ -1503,10 +1561,18 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       return { success: false, message };
     }
 
-    await this.sendCommandAndWait(`G10 L20 P1 Z${touchPlateThicknessMm.toFixed(3)}`);
+    try {
+      await this.sendLine(`G10 L20 P1 Z${touchPlateThicknessMm.toFixed(3)}`);
+      await this.drain();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to write Z zero offset.';
+      this.updateState({ lastError: message });
+      return { success: false, message };
+    }
     // Where the datum was taken, so a later heightmap can be referenced to it.
     // XY has not moved during the probe, so this is the plate's position.
     this.recordZDatum();
+    this.notifyZDatumRecorded();
     // Relative retract: it clears the plate by the same 5 mm wherever the datum
     // ended up, and does not depend on the offset just written.
     await this.sendCommandAndWait('G91 G0 Z5.000');
@@ -1691,27 +1757,21 @@ export class WebSerialManager extends GrblMachine<EtchMachineState> {
       }
 
       if (isLive) {
-        const finalRetractZ = Math.max(10, (await this.refreshPosition()).wpos.z);
-        await this.sendCommandAndWait(`G0 Z${finalRetractZ.toFixed(3)} F3000`);
+        // Relative retract only — never command an absolute Z during/after a
+        // probe cycle when Z0 may not have been set yet.
+        if (!aborted && this.state.status !== 'ALARM') {
+          await this.sendCommandAndWait('G91 G0 Z5.000');
+          await this.sendCommandAndWait('G90');
+        }
         if (aborted) {
           this.updateState({
             lastError:
-              `Bed probing stopped after ${probed} of ${totalPoints} points — the machine went into ` +
-              `alarm. The heightmap is incomplete and should not be used. Clear the alarm, check the ` +
-              `probe clip and starting Z, and probe again.`,
+              `Bed probing stopped after ${probed} of ${totalPoints} points (machine alarm).`,
           });
         } else if (missed > 0) {
           this.updateState({
             lastError:
-              `Probe made no contact at ${missed} of ${totalPoints} points — those are recorded flat, ` +
-              `so levelling will be wrong there. Check the probe clip and the starting Z.`,
-          });
-        } else if (!datum) {
-          this.updateState({
-            lastError:
-              `Heightmap measured, but work Z0 has not been set this session — it is referenced to the ` +
-              `first probed point instead. Probe Z zero, then probe the bed again, or cut depth will be ` +
-              `off by the height difference between the two.`,
+              `Probe missed contact at ${missed} of ${totalPoints} points (recorded flat).`,
           });
         }
       }

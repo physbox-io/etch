@@ -46,7 +46,7 @@ describe('geometry left off the stock after a resize', () => {
     clearGeomBBoxCache();
     const doc = asBusinessCard(keychain.doc);
     const { notes } = planToolpath(doc);
-    expect(notes.some((n) => n.includes('outside the 85x55 mm stock'))).toBe(true);
+    expect(notes.some((n) => n.includes('Trimmed to the 85x55 mm stock'))).toBe(true);
   });
 
   it('says nothing when everything is on the stock', () => {

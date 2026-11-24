@@ -747,7 +747,10 @@ export const EtchCanvas: React.FC = () => {
     setShapeCurrent(null);
     setMarquee(null);
     setMarqueeAdditive(false);
-    setNodeDrag(null);
+    if (nodeDrag) {
+      setNodeDrag(null);
+      commitHistory();
+    }
     if (isTransforming) {
       setIsTransforming(null);
       setTransformStart(null);

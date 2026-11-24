@@ -93,8 +93,6 @@ export const AICopilotPanel: React.FC = () => {
     document: doc,
     selectedIds,
     addElement,
-    updateElement,
-    deleteElements,
     setSelectedIds,
     commitHistory,
     openDocs,
@@ -107,8 +105,6 @@ export const AICopilotPanel: React.FC = () => {
       document: s.document,
       selectedIds: s.selectedIds,
       addElement: s.addElement,
-      updateElement: s.updateElement,
-      deleteElements: s.deleteElements,
       setSelectedIds: s.setSelectedIds,
       commitHistory: s.commitHistory,
       openDocs: s.openDocs,
@@ -187,30 +183,27 @@ export const AICopilotPanel: React.FC = () => {
   const applyEdits = async (payload: CopilotPayload): Promise<string> => {
     const byId = new Map(doc.elements.map((el) => [el.id, el]));
     const notes: string[] = [];
-    let changed = 0;
 
     const removeIds: string[] = Array.isArray(payload.remove)
       ? payload.remove.filter((id): id is string => typeof id === 'string' && byId.has(id))
       : [];
-    if (removeIds.length) {
-      deleteElements(removeIds);
-      changed += removeIds.length;
-    }
+    const removeSet = new Set(removeIds);
+    const updatePatches = new Map<string, Partial<EtchElement>>();
 
     if (Array.isArray(payload.update)) {
       for (const patch of payload.update as CopilotEdit[]) {
         if (!patch) continue;
         const { id, ...fields } = patch;
         if (typeof id !== 'string') continue;
-        if (!byId.has(id) || removeIds.includes(id)) {
+        if (!byId.has(id) || removeSet.has(id)) {
           notes.push(`No element "${id}" — skipped.`);
           continue;
         }
-        updateElement(id, fields as Partial<EtchElement>, true);
-        changed++;
+        updatePatches.set(id, { ...(updatePatches.get(id) ?? {}), ...(fields as Partial<EtchElement>) });
       }
     }
 
+    const addedElements: EtchElement[] = [];
     const addedIds: string[] = [];
     if (Array.isArray(payload.add)) {
       const layerIds = new Set(doc.layers.map((l) => l.id));
@@ -222,21 +215,13 @@ export const AICopilotPanel: React.FC = () => {
             ? spec.layerId
             : doc.layers[0]?.id;
 
-        /**
-         * Clip art asked for by id becomes real geometry here.
-         *
-         * A `symbol` element is a path plus a viewBox-derived scale, and one
-         * with neither draws and machines as nothing — an add that looks like
-         * it worked and produces an empty toolpath. The model is told to send
-         * only the id for exactly this reason.
-         */
         if (spec.type === 'symbol' && spec.symbolId) {
           const symbol = await loadClipArtItem(spec.symbolId);
           if (!symbol) {
             notes.push(`No clip art "${spec.symbolId}" — skipped.`);
             continue;
           }
-          addElement(
+          addedElements.push(
             buildSymbolElement(symbol, {
               docWidth: doc.width,
               docHeight: doc.height,
@@ -250,18 +235,15 @@ export const AICopilotPanel: React.FC = () => {
             })
           );
           addedIds.push(id);
-          changed++;
           continue;
         }
 
         if (spec.type === 'image') {
-          // There are no pixels in a JSON reply, and an image element without
-          // them is a blank rectangle on a shade layer.
           notes.push('An image has to be brought in through Import Image — skipped.');
           continue;
         }
 
-        addElement({
+        addedElements.push({
           strokeWidth: 0.5,
           strokeColor: '#ef4444',
           fillColor: 'none',
@@ -278,15 +260,26 @@ export const AICopilotPanel: React.FC = () => {
           y: spec.y ?? doc.height / 2,
           visible: true,
           locked: false,
-        });
+        } as EtchElement);
         addedIds.push(id);
-        changed++;
       }
     }
 
+    const changed = removeIds.length + updatePatches.size + addedElements.length;
     if (changed === 0) throw new LLMError('The model did not return any change that could be applied.');
 
-    // One history entry for the whole edit, so a single undo takes it back.
+    // Apply remove + update + add in one atomic store update so a single Ctrl+Z reverts the whole edit.
+    const liveDoc = useStore.getState().document;
+    const nextElements = [
+      ...liveDoc.elements
+        .filter((el) => !removeSet.has(el.id))
+        .map((el) => {
+          const patch = updatePatches.get(el.id);
+          return patch ? { ...el, ...patch } : el;
+        }),
+      ...addedElements,
+    ];
+    useStore.setState({ document: { ...liveDoc, elements: nextElements } });
     commitHistory();
     if (addedIds.length) setSelectedIds(addedIds);
 

@@ -19,6 +19,8 @@ export const SheetTabs: React.FC = () => {
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
   const documentName = useStore((s) => s.document.name);
+  const documentWidth = useStore((s) => s.document.width);
+  const documentHeight = useStore((s) => s.document.height);
   const elementCount = useStore((s) => s.document.elements.length);
   const switchTab = useStore((s) => s.switchTab);
   const newTab = useStore((s) => s.newTab);
@@ -58,6 +60,8 @@ export const SheetTabs: React.FC = () => {
         // not show on its own tab until you left it.
         const name = isActive ? documentName : tab.document.name;
         const count = isActive ? elementCount : tab.document.elements.length;
+        const width = isActive ? documentWidth : tab.document.width;
+        const height = isActive ? documentHeight : tab.document.height;
         return (
           <div
             key={tab.id}
@@ -68,7 +72,7 @@ export const SheetTabs: React.FC = () => {
               setDraft(name);
               setEditing(tab.id);
             }}
-            title={`${name} — ${count} element${count === 1 ? '' : 's'}, ${tab.document.width}x${tab.document.height} mm`}
+            title={`${name} — ${count} element${count === 1 ? '' : 's'}, ${width}x${height} mm`}
             className={`group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-md border text-[11px] font-semibold cursor-pointer shrink-0 transition-colors ${
               isActive
                 ? 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 shadow-sm'

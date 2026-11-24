@@ -278,7 +278,7 @@ export function buildTimeline(
   }
 ): Timeline {
   const travelSpeed = Math.max(1, opts.travelSpeed);
-  const changes = planToolChanges(segments);
+  const changes = opts.laserMode ? [] : planToolChanges(segments);
   const program = planMoves(segments, {
     laserMode: opts.laserMode,
     travelSpeed,

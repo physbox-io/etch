@@ -40,8 +40,22 @@ function sameDrawing(a: EtchDocument, b: EtchDocument): boolean {
   const ra = a as unknown as Record<string, unknown>;
   const rb = b as unknown as Record<string, unknown>;
   const keys = new Set([...Object.keys(ra), ...Object.keys(rb)]);
-  for (const k of keys) if (k !== 'tools' && ra[k] !== rb[k]) return false;
+  for (const k of keys) {
+    if (k === 'tools' || k === 'gridSize' || k === 'snapToGrid') continue;
+    if (ra[k] !== rb[k]) return false;
+  }
   return true;
+}
+
+/**
+ * Advances the clean reference for a sheet after a cache-only update (such as
+ * background `vectorizeText` populating `outlineD`) so an untouched sheet stays clean.
+ */
+export function updateCleanRef(tabId: string, prevDoc: EtchDocument, nextDoc: EtchDocument): void {
+  const existing = clean.get(tabId);
+  if (existing && sameDrawing(existing, prevDoc)) {
+    clean.set(tabId, nextDoc);
+  }
 }
 
 /** The whole job is as it was loaded or saved: a new strip, a save, an export. */

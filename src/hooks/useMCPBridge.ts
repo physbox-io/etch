@@ -30,7 +30,6 @@ import {
 import { hasFreshOutline } from '../utils/textVectorizer';
 import { DEFAULT_TEST_GRID, buildTestGrid, type TestGridOptions } from '../utils/testGrid';
 import { DITHER_LABELS } from '../utils/imageProcessor';
-import { webSerialManager, type OverrideStep } from '../utils/webSerialManager';
 import { buildSnapshotSvg, rasterizeSvg } from '../utils/svgSnapshot';
 import { getBedBBox, bedBoxOfAll, isOutsideStock } from '../utils/geom';
 import { floodFillRegion, fillElement, fillTargetLayerId, isFloodFillFailure } from '../utils/floodFill';
@@ -140,8 +139,6 @@ export const SWITCH_COMMANDS: readonly string[] = [
   'etch_update_layer', 'UPDATE_LAYER',
   'etch_combine', 'COMBINE',
   'etch_make_test_grid', 'MAKE_TEST_GRID',
-  'etch_machine_status', 'MACHINE_STATUS',
-  'etch_machine_trim', 'MACHINE_TRIM',
   'etch_list_capabilities', 'LIST_CAPABILITIES',
 ];
 
@@ -169,9 +166,17 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
 
   // The machine handlers outlive any one call, so they are pointed at the
   // document this one is answering about rather than closing over a stale one.
-  setCurrentDocument(store.document, jobTools(store.document, store.cncTools));
+  setCurrentDocument(
+    store.document,
+    jobTools(store.document, store.cncTools),
+    store.bedProbeGrid,
+    store.setBedProbeGrid
+  );
 
-  const machineHandler = machineHandlers[cmd];
+  // Route lowercase machine aliases (e.g. `etch_machine_trim`, `etch_machine_status`)
+  // through the shared `machineHandlers` so ArmingGate and safety checks always run.
+  const machineCmd = cmd.startsWith('etch_machine_') ? cmd.slice('etch_'.length).toUpperCase() : cmd;
+  const machineHandler = machineHandlers[machineCmd];
   if (machineHandler) {
     try {
       return (await machineHandler(msg ?? {})) as MCPResult;
@@ -472,20 +477,34 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
       }
 
       const result = importSVG(svgContent);
-      const existingIds = new Set(store.document.layers.map((l) => l.id));
-      // A part sent from a sibling app (Mesh's physics_export_cut) comes at
-      // true size, named, with the stock it was laid out for, as the link
-      // hand-off does it (svgHandoff.ts): its size is the point, and the
-      // feeds come from the material and thickness.
+      // Rename colliding incoming layer IDs (`svg_1`, `svg_2`, …) instead of
+      // dropping them, so a second SVG's guide/etch layer is not merged into
+      // an earlier import's cut layer.
+      const taken = new Set(doc.layers.map((l) => l.id));
+      const renamed = new Map<string, string>();
+      for (const l of result.layers) {
+        if (!taken.has(l.id)) {
+          taken.add(l.id);
+          continue;
+        }
+        let n = 2;
+        while (taken.has(`${l.id}_${n}`)) n++;
+        renamed.set(l.id, `${l.id}_${n}`);
+        taken.add(`${l.id}_${n}`);
+      }
+      const newLayers = result.layers.map((l) => ({ ...l, id: renamed.get(l.id) ?? l.id }));
       const placed = trueSize ? placeUnscaled(result.elements, result.bounds, doc.width, doc.height) : null;
+      const rawElements = (placed ? placed.elements : result.elements).map(
+        (el) => ({ ...el, layerId: renamed.get(el.layerId) ?? el.layerId })
+      );
       store.setDocument({
         ...doc,
         ...(typeof msg.name === 'string' && msg.name ? { name: msg.name } : {}),
         ...(thickness ? { stockThickness: thickness } : {}),
         ...(machine ? { machine } : {}),
         ...(material ? { material } : {}),
-        layers: [...doc.layers, ...result.layers.filter((l) => !existingIds.has(l.id))],
-        elements: placed ? placed.elements : result.elements,
+        layers: [...doc.layers, ...newLayers],
+        elements: rawElements,
       });
       return {
         ok: true,
@@ -1518,97 +1537,6 @@ export async function handleMCPCommand(cmd: string, msg: MCPMessage): Promise<MC
         neededMm: { width: plan.neededWidth, height: plan.neededHeight },
         warning: plan.warning ?? undefined,
         document: useStore.getState().document,
-      };
-    }
-
-    case 'etch_machine_status':
-    case 'MACHINE_STATUS': {
-      const status = webSerialManager.getStatus();
-      return {
-        ok: true,
-        connected: status.connected,
-        state: status.state,
-        jobRunning: status.jobRunning,
-        jobPaused: status.jobPaused,
-        progress: status.totalLines
-          ? { line: status.currentLine, total: status.totalLines }
-          : undefined,
-        work: { x: status.wx, y: status.wy, z: status.wz },
-        machine: { x: status.x, y: status.y, z: status.z },
-        feedRate: status.feedRate,
-        trim: {
-          feed: status.feedOverride,
-          rapid: status.rapidOverride,
-          power: status.spindleOverride,
-        },
-      };
-    }
-
-    case 'etch_machine_trim':
-    case 'MACHINE_TRIM': {
-      /*
-       * Feed and power trim while a job runs — the one machine command exposed
-       * here, and only because it is the safe direction of travel: it changes
-       * how hard an already-running job cuts, and cannot start one. There is
-       * deliberately no way to begin, resume or jog from MCP. A machine starts
-       * moving when the person standing next to it says so.
-       */
-      const status = webSerialManager.getStatus();
-      if (!status.connected) {
-        return { ok: false, error: 'No machine is connected over Web Serial.' };
-      }
-
-      const STEPS: OverrideStep[] = [10, 1, -1, -10];
-      const applied: string[] = [];
-
-      for (const [field, nudge, reset] of [
-        ['feed', webSerialManager.nudgeFeedOverride, webSerialManager.resetFeedOverride],
-        ['power', webSerialManager.nudgeSpindleOverride, webSerialManager.resetSpindleOverride],
-      ] as const) {
-        const value = msg[field];
-        if (value === undefined || value === null) continue;
-        if (value === 'reset') {
-          await reset.call(webSerialManager);
-          applied.push(`${field}=reset`);
-          continue;
-        }
-        if (!STEPS.includes(value)) {
-          // The controller takes steps, not targets. Saying so beats accepting
-          // 87 and silently doing nothing with it.
-          return {
-            ok: false,
-            error: `${field} must be one of ${STEPS.join(', ')} or "reset" — GRBL trims in steps, it cannot be set to a figure.`,
-          };
-        }
-        await nudge.call(webSerialManager, value);
-        applied.push(`${field}=${value > 0 ? '+' : ''}${value}%`);
-      }
-
-      if (msg.rapid !== undefined && msg.rapid !== null) {
-        if (![100, 50, 25].includes(msg.rapid)) {
-          return { ok: false, error: 'rapid must be 100, 50 or 25 — the only three GRBL implements.' };
-        }
-        await webSerialManager.setRapidOverride(msg.rapid);
-        applied.push(`rapid=${msg.rapid}%`);
-      }
-
-      if (applied.length === 0) {
-        return { ok: false, error: 'Nothing to do — send feed, power or rapid.' };
-      }
-
-      // Read back rather than reporting what was asked for: the trim belongs to
-      // the controller, which reports it in its own time and may have been
-      // changed from a pendant since.
-      const after = webSerialManager.getStatus();
-      return {
-        ok: true,
-        applied,
-        trim: {
-          feed: after.feedOverride,
-          rapid: after.rapidOverride,
-          power: after.spindleOverride,
-        },
-        note: 'The controller reports its trim a moment later — call etch_machine_status to confirm.',
       };
     }
 

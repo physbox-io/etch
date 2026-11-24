@@ -156,15 +156,23 @@ export function warpGcode(gcode: string, grid: BedProbeGrid, opts: WarpOptions =
       continue;
     }
 
+    // Strip inline comments (`; ...` and `(...)`) before parsing G-code words so
+    // comment text like `; X2` is never misread as an axis coordinate.
+    const codePart = trimmed.split(';')[0].replace(/\([^)]*\)/g, '').trim();
+    if (!codePart) {
+      result.push(rawLine);
+      continue;
+    }
+
     // Anchored so `G91.1` (arc IJK mode) is not read as a switch to relative
     // positioning, which would pass the rest of the file through unlevelled.
-    if (/(^|\s)G90(\s|$)/.test(trimmed)) absoluteMode = true;
-    if (/(^|\s)G91(\s|$)/.test(trimmed)) absoluteMode = false;
+    if (/(^|\s)G90(\s|$)/.test(codePart)) absoluteMode = true;
+    if (/(^|\s)G91(\s|$)/.test(codePart)) absoluteMode = false;
 
-    const parts = trimmed.split(/\s+/);
+    const parts = codePart.split(/\s+/);
     const cmd = parts[0].toUpperCase();
 
-    if (!absoluteMode || (cmd !== 'G0' && cmd !== 'G1')) {
+    if (!absoluteMode || (cmd !== 'G0' && cmd !== 'G1' && cmd !== 'G2' && cmd !== 'G3')) {
       result.push(rawLine);
       continue;
     }
@@ -174,6 +182,9 @@ export function warpGcode(gcode: string, grid: BedProbeGrid, opts: WarpOptions =
     let targetZ = curZ;
     let hasX = false;
     let hasY = false;
+    let arcI = 0;
+    let arcJ = 0;
+    let hasIJ = false;
     const extras: string[] = [];
 
     for (const p of parts.slice(1)) {
@@ -187,13 +198,51 @@ export function warpGcode(gcode: string, grid: BedProbeGrid, opts: WarpOptions =
         hasY = true;
       } else if (axis === 'Z' && Number.isFinite(value)) {
         targetZ = value;
+      } else if ((cmd === 'G2' || cmd === 'G3') && axis === 'I' && Number.isFinite(value)) {
+        arcI = value;
+        hasIJ = true;
+      } else if ((cmd === 'G2' || cmd === 'G3') && axis === 'J' && Number.isFinite(value)) {
+        arcJ = value;
+        hasIJ = true;
       } else {
         extras.push(p);
       }
     }
 
-    const distXY = Math.hypot(targetX - curX, targetY - curY);
     const extrasStr = extras.length ? ` ${extras.join(' ')}` : '';
+
+    if (cmd === 'G2' || cmd === 'G3') {
+      if (!hasIJ) {
+        // Unrecognised arc format (e.g. R-word): pass through untouched, but still
+        // advance curX/curY/curZ so subsequent moves do not slash from a stale start.
+        result.push(rawLine);
+      } else {
+        const cx = curX + arcI;
+        const cy = curY + arcJ;
+        const r = Math.hypot(curX - cx, curY - cy);
+        const startA = Math.atan2(curY - cy, curX - cx);
+        const endA = Math.atan2(targetY - cy, targetX - cx);
+        const isFullCircle = Math.hypot(targetX - curX, targetY - curY) < 1e-6;
+        let sweep = cmd === 'G2' ? startA - endA : endA - startA;
+        if (isFullCircle || sweep <= 1e-9) sweep += 2 * Math.PI;
+        const arcLen = r * sweep;
+        const steps = Math.max(1, Math.ceil(arcLen / maxSegmentLenMm));
+        for (let s = 1; s <= steps; s++) {
+          const t = s / steps;
+          const a = cmd === 'G2' ? startA - sweep * t : startA + sweep * t;
+          const px = s === steps ? targetX : cx + r * Math.cos(a);
+          const py = s === steps ? targetY : cy + r * Math.sin(a);
+          const pz = curZ + (targetZ - curZ) * t + interpolateGridZ(grid, px, py);
+          result.push(`G1 X${f(px)} Y${f(py)} Z${f(pz)}${s === 1 ? extrasStr : ''}`);
+        }
+      }
+      curX = targetX;
+      curY = targetY;
+      curZ = targetZ;
+      continue;
+    }
+
+    const distXY = Math.hypot(targetX - curX, targetY - curY);
 
     if (cmd === 'G1' && (hasX || hasY) && distXY > maxSegmentLenMm) {
       const steps = Math.ceil(distXY / maxSegmentLenMm);

@@ -424,12 +424,11 @@ export const TopNavbar: React.FC = () => {
       }
       const newLayers = result.layers.map((l) => ({ ...l, id: renamed.get(l.id) ?? l.id }));
       const newElements = placed.elements.map((el) => ({ ...el, layerId: renamed.get(el.layerId) ?? el.layerId }));
-      setDocument({
-        ...doc,
-        ...stock,
-        ...(fileName ? { name: fileName } : {}),
-        layers: [...doc.layers, ...newLayers],
-        elements: [...doc.elements, ...newElements],
+      useStore.getState().appendImported({
+        elements: newElements,
+        layers: newLayers,
+        stock,
+        name: fileName || undefined,
       });
     }
     const after = useStore.getState().document;

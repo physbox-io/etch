@@ -542,6 +542,8 @@ export function vCarveFlatBottom(
   options: VCarveOptions & {
     /** Stepover as a fraction of the width the bit cuts at the ceiling. Default 0.4. */
     stepoverFraction?: number;
+    /** Whether the emitted machine coordinates flip Y relative to document space. */
+    emitFlipsY?: boolean;
   }
 ): VCarveFlatBottom {
   const depthMm = Math.max(0, options.maxDepth);
@@ -560,7 +562,7 @@ export function vCarveFlatBottom(
   // The bit is a cone: at the ceiling it is cutting `2 * radius` wide, and that
   // — not its nominal diameter — is the width the rings have to overlap by.
   const stepover = Math.max(1e-3, (options.stepoverFraction ?? 0.4) * 2 * radius);
-  const plan = pocketRings(region, stepover);
+  const plan = pocketRings(region, stepover, 2 * radius, options.emitFlipsY ?? false);
 
   return {
     rings: plan.rings,

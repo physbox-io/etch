@@ -964,6 +964,16 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
        */
       let startAlong = 0;
 
+      // The Z a tab's top sits at — fixed for the whole cut, not per pass.
+      const tabTopZ = seg.tabHeight > 0 ? -Math.max(0, seg.zDepth - seg.tabHeight) : null;
+      const inTabAt = (along: number): boolean => {
+        if (opts.laserMode || tabTopZ === null || seg.tabs.length === 0) return false;
+        const local = geom.closed && geom.length > 0
+          ? ((along % geom.length) + geom.length) % geom.length
+          : along;
+        return seg.tabs.some((tab) => local >= tab.start - 1e-6 && local <= tab.end + 1e-6);
+      };
+
       if (lead && !opts.laserMode) {
         /*
          * Down through air, then round onto the wall.
@@ -1012,37 +1022,16 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         cx = lx;
         cy = ly;
       } else if (!opts.laserMode && !isLink && Math.abs(z - (engaged ?? 0)) > 1e-6) {
-        let from = engaged ?? 0;
+        let from: number = engaged ?? 0;
 
         if (engaged === null) {
-          /**
-           * Rapid down through the part of the hole that already exists.
-           *
-           * On the second and later passes the material above this pass's depth
-           * has already been removed at this point on the path, so descending
-           * through it is a move through air and belongs at rapid speed. Only
-           * the last millimetre — and then the new depth of cut — is ramped.
-           * Without this every pass ramps from the surface again, so a twelve
-           * pass cut spends most of its time re-cutting air it already cleared.
-           */
           const alreadyCut = passIdx > 0 ? seg.depths[passIdx - 1] : 0;
-          /**
-           * On the second and later passes the rapid runs all the way down to
-           * the floor the previous pass left, not to a clearance above it.
-           *
-           * The clearance is there for the first pass, where "the top of the
-           * material" is a number typed into the machine rather than something
-           * measured, and half a millimetre of margin means an uneven surface is
-           * met by a shallow ramp instead of by the end of the tool. On later
-           * passes there is nothing left to be uncertain about: this pass starts
-           * at the same XY the last one did, and the last one went round the
-           * whole path at that depth. Ramping down through it again at half feed
-           * was re-cutting a hole that was already there.
-           */
-          const approachZ = Math.min(
-            parkedZ,
-            passIdx > 0 ? alreadyCut : alreadyCut + APPROACH_CLEARANCE_MM
-          );
+          let approachTarget = passIdx > 0 ? alreadyCut : alreadyCut + APPROACH_CLEARANCE_MM;
+          // Never rapid-plunge into a holding tab that spans along = 0.
+          if (tabTopZ !== null && inTabAt(0)) {
+            approachTarget = Math.max(approachTarget, tabTopZ);
+          }
+          const approachZ = Math.min(parkedZ, approachTarget);
           if (parkedZ > approachZ) {
             moves.push({
               ...common,
@@ -1066,59 +1055,53 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
           } else {
             plunged.set(seg.layerId, { count: 1, longest: geom.length });
           }
+          const plungeZ: number = tabTopZ !== null && inTabAt(0) ? Math.max(z, tabTopZ) : z;
           moves.push({
             ...common,
             kind: 'plunge',
             x1: cx, y1: cy, z1: from,
-            x2: cx, y2: cy, z2: z,
+            x2: cx, y2: cy, z2: plungeZ,
             feed: seg.plungeRate,
             along0: 0, along1: 0,
           });
+          engaged = plungeZ;
         } else {
           let px = cx;
           let py = cy;
-          let pz = from;
+          let pz: number = from;
           for (const s of entry.samples) {
+            const sampleZ =
+              tabTopZ !== null && inTabAt(s.along) ? Math.max(s.z, tabTopZ) : s.z;
             moves.push({
               ...common,
               kind: 'ramp',
               x1: px, y1: py, z1: pz,
-              x2: s.x, y2: s.y, z2: s.z,
+              x2: s.x, y2: s.y, z2: sampleZ,
               feed: Math.min(seg.speed, Math.max(seg.plungeRate, seg.speed * 0.5)),
               along0: 0, along1: 0,
             });
             px = s.x;
             py = s.y;
-            pz = s.z;
+            pz = sampleZ;
           }
           cx = px;
           cy = py;
           startAlong = entry.endAlong;
+          engaged = pz;
         }
-        engaged = z;
       } else if (!opts.laserMode) {
         engaged = z;
       }
 
       // The cutting pass itself: one full circuit for a closed contour, from
       // wherever the ramp left off; the remainder of the line for an open one.
-      /**
-       * The Z a tab's top sits at — fixed for the whole cut, not per pass.
-       *
-       * A tab is material left at the *bottom* of the cut, so its height is
-       * measured from the finished depth once. Recomputing it per pass made
-       * every pass lift over every tab, which both wasted the motion and left
-       * the tab as tall as the last pass was deep instead of as tall as it was
-       * asked to be.
-       */
-      const tabTopZ = seg.tabHeight > 0 ? -Math.max(0, seg.zDepth - seg.tabHeight) : null;
       const cutSamples = walkPath(
         geom,
         startAlong,
         seg.isClosed ? geom.length : Math.max(0, geom.length - startAlong)
       );
 
-      if (over && (cx !== first.x || cy !== first.y)) {
+      if (over && Math.hypot(cx - first.x, cy - first.y) > 1e-9) {
         // At cutting feed with S0. By the time the beam lights at `first` the
         // head is up to speed, so the first millimetres of the line get the
         // same energy per millimetre as the rest of it.
@@ -1186,7 +1169,7 @@ export function planMoves(segments: GCodeSegment[], opts: PlanMoveOptions): Plan
         cy = ly;
       }
 
-      if (over && (cx !== over.tail.x || cy !== over.tail.y)) {
+      if (over && Math.hypot(cx - over.tail.x, cy - over.tail.y) > 1e-9) {
         // Carrying on past the end rather than stopping on it: decelerating
         // with the beam still lit is the same artefact as accelerating into it,
         // and it is the end of the line that shows it worst.
@@ -1275,10 +1258,6 @@ function overscanFor(
    * both means either a burnt border that is still there or travel spent
    * outside the work for nothing.
    */
-  const accel = accelAlong(opts.motion ?? DEFAULT_MOTION_PROFILE, 1, 0, 0);
-  const distance = (mmPerSec * mmPerSec) / (2 * accel);
-  if (!(distance > 0.01)) return null;
-
   const pts = seg.points;
   const first = pts[0];
   const last = pts[pts.length - 1];
@@ -1287,11 +1266,18 @@ function overscanFor(
   const fwd = unit(pts[pts.length - 2], last);
   if (!back || !fwd) return null;
 
+  const motion = opts.motion ?? DEFAULT_MOTION_PROFILE;
+  const accelLead = accelAlong(motion, back.x, back.y, 0);
+  const accelTail = accelAlong(motion, fwd.x, fwd.y, 0);
+  const distLead = (mmPerSec * mmPerSec) / (2 * accelLead);
+  const distTail = (mmPerSec * mmPerSec) / (2 * accelTail);
+  if (!(distLead > 0.01) && !(distTail > 0.01)) return null;
+
   return {
     // `back` already points away from the line — it is measured from the second
     // point towards the first — so the run-up is that direction *added*.
-    lead: clampToStock({ x: first.x + back.x * distance, y: first.y + back.y * distance }, opts),
-    tail: clampToStock({ x: last.x + fwd.x * distance, y: last.y + fwd.y * distance }, opts),
+    lead: clampToStock({ x: first.x + back.x * distLead, y: first.y + back.y * distLead }, opts),
+    tail: clampToStock({ x: last.x + fwd.x * distTail, y: last.y + fwd.y * distTail }, opts),
   };
 }
 
@@ -1400,7 +1386,8 @@ function walkPath(geom: PathGeom, start: number, distance: number): Sample[] {
 
   // Advance to the next original vertex at or after `d`, repeatedly.
   let guard = 0;
-  while (d < end - 1e-9 && guard++ < geom.points.length * 4 + 16) {
+  const maxSteps = Math.ceil(distance / geom.length + 2) * geom.points.length + 16;
+  while (d < end - 1e-9 && guard++ < maxSteps) {
     const local = geom.closed ? ((d % geom.length) + geom.length) % geom.length : d;
     let next = Infinity;
     for (let i = 0; i < geom.cum.length; i++) {
@@ -1577,12 +1564,14 @@ function withTabBreaks(
   const breaks: number[] = [];
   const base = samples.length ? samples[0].along : 0;
   const end = samples.length ? samples[samples.length - 1].along : 0;
+  const firstLap = geom.length > 0 ? Math.floor(base / geom.length) : 0;
+  const lastLap = geom.length > 0 ? Math.ceil(end / geom.length) : 0;
   for (const tab of seg.tabs) {
     for (const edge of [tab.start, tab.end, tab.end + TAB_EXIT_RAMP_MM]) {
-      // Tabs are positioned on the path, which the pass may enter part-way
-      // along and wrap around, so each edge is considered on both laps.
-      for (const lap of [0, geom.length]) {
-        const at = edge + lap;
+      // Tabs are positioned on the path, which a multi-lap helix may enter at
+      // any lap index, so cover every lap overlapped by [base, end].
+      for (let lapIdx = firstLap; lapIdx <= lastLap; lapIdx++) {
+        const at = edge + lapIdx * geom.length;
         if (at > base + 1e-9 && at < end - 1e-9) breaks.push(at);
       }
     }

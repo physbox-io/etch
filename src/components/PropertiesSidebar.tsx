@@ -1119,7 +1119,8 @@ export const PropertiesSidebar: React.FC = () => {
               <input
                 type="text"
                 value={selectedElement.name}
-                onChange={(e) => updateElement(selectedElement.id, { name: e.target.value })}
+                onChange={(e) => updateElement(selectedElement.id, { name: e.target.value }, true)}
+                onBlur={commitHistory}
                 className="flex-1 min-w-0 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:border-red-500"
               />
               <button
@@ -1360,7 +1361,8 @@ export const PropertiesSidebar: React.FC = () => {
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">X Position (mm)</label>
               <NumberInput
                 value={round1(selectedElement.x)}
-                onChange={(val) => updateElement(selectedElement.id, { x: val ?? 0 })}
+                onChange={(val) => updateElement(selectedElement.id, { x: val ?? 0 }, true)}
+                onCommit={commitHistory}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
@@ -1368,7 +1370,8 @@ export const PropertiesSidebar: React.FC = () => {
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-semibold">Y Position (mm)</label>
               <NumberInput
                 value={round1(selectedElement.y)}
-                onChange={(val) => updateElement(selectedElement.id, { y: val ?? 0 })}
+                onChange={(val) => updateElement(selectedElement.id, { y: val ?? 0 }, true)}
+                onCommit={commitHistory}
                 className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
               />
             </div>
@@ -1773,8 +1776,9 @@ export const PropertiesSidebar: React.FC = () => {
                           selectedElement.innerRadius !== undefined
                             ? selectedElement.innerRadius * (nextOuter / shapeRadius)
                             : undefined,
-                      });
+                      }, true);
                     }}
+                    onCommit={commitHistory}
                     className={NUM_INPUT}
                   />
                 </div>
@@ -1794,8 +1798,9 @@ export const PropertiesSidebar: React.FC = () => {
                           shape: shapeKind,
                           outerRadius: shapeRadius,
                           pointsCount: val ? Math.round(val) : 5,
-                        })
+                        }, true)
                       }
+                      onCommit={commitHistory}
                       className={NUM_INPUT}
                     />
                   </div>
@@ -1820,8 +1825,9 @@ export const PropertiesSidebar: React.FC = () => {
                           shape: shapeKind,
                           outerRadius: shapeRadius,
                           innerRadius: val ?? shapeRadius * 0.4,
-                        })
+                        }, true)
                       }
+                      onCommit={commitHistory}
                       className={NUM_INPUT}
                     />
                   </div>
@@ -1936,7 +1942,8 @@ export const PropertiesSidebar: React.FC = () => {
                   <input
                     type="text"
                     value={selectedElement.text || ''}
-                    onChange={(e) => updateElement(selectedElement.id, { text: e.target.value })}
+                    onChange={(e) => updateElement(selectedElement.id, { text: e.target.value }, true)}
+                    onBlur={commitHistory}
                     className="w-full mt-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-sans"
                   />
                 </div>
@@ -1994,7 +2001,8 @@ export const PropertiesSidebar: React.FC = () => {
                       <NumberInput
                         step={1}
                         value={selectedElement.textPathOffset || 0}
-                        onChange={(val) => updateElement(selectedElement.id, { textPathOffset: val ?? 0 })}
+                        onChange={(val) => updateElement(selectedElement.id, { textPathOffset: val ?? 0 }, true)}
+                        onCommit={commitHistory}
                         className="w-full mt-1 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-slate-100 font-mono"
                       />
                     </div>
@@ -2430,7 +2438,8 @@ export const PropertiesSidebar: React.FC = () => {
                               min={0.05}
                               fallbackOnBlur={0.5}
                               value={layer.roughLeaveMm ?? 0.5}
-                              onChange={(val) => updateLayer(layer.id, { roughLeaveMm: val ?? 0.5 })}
+                              onChange={(val) => updateLayer(layer.id, { roughLeaveMm: val ?? 0.5 }, true)}
+                              onCommit={commitHistory}
                               className={NUM_INPUT}
                             />
                           </div>

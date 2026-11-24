@@ -223,14 +223,25 @@ export const GCodePreviewModal: React.FC = () => {
    * job streams is not.
    */
   const [program, setProgram] = useState<ProgramResult | null>(null);
+  const [plannedInput, setPlannedInput] = useState<{
+    document: typeof document;
+    exportOpts: typeof exportOpts;
+    travelSpeed: number;
+    laserMode: boolean;
+  } | null>(null);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
 
+  const isPlanStale =
+    !plannedInput ||
+    plannedInput.document !== document ||
+    plannedInput.exportOpts !== exportOpts ||
+    plannedInput.travelSpeed !== travelSpeed ||
+    plannedInput.laserMode !== laserMode;
+  const isPlanningNow = planning || isPlanStale;
+
   useEffect(() => {
     if (!isGCodeModalOpen) return;
-    // `document` changes identity on every frame of a drag and on every status
-    // poll of a running job. Without the delay each of those starts a plan the
-    // next one immediately makes stale, and the worker spends the job queueing.
     let live = true;
     const t = setTimeout(() => {
       setPlanning(true);
@@ -239,6 +250,7 @@ export const GCodePreviewModal: React.FC = () => {
         .then((result) => {
           if (!live) return;
           setProgram(result);
+          setPlannedInput({ document, exportOpts, travelSpeed, laserMode });
           setPlanError(null);
         })
         .catch((err: unknown) => {
@@ -1038,29 +1050,14 @@ export const GCodePreviewModal: React.FC = () => {
                   {/* Which tools to have to hand, before the machine is holding
                       a half-cut part waiting for one that is still in a drawer. */}
                   {toolChanges.length > 0 && (
-                    <div className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                      {/* The first stop is before anything is cut. Said first,
-                          because Z zeroed with a different bit in the collet
-                          is wasted the moment the job asks for this one. */}
-                      <p className="font-semibold">
-                        Starts with {describeTool('cnc', toolChanges[0].tool, cncTools)}.
-                      </p>
-                      <p className="mb-1">
-                        The job stops first to load it — zero Z then, with it fitted.
-                        Zeroing Z before Start is wasted.
-                      </p>
-                      <p className="font-semibold">
-                        {toolChanges.length} tool stops — have these ready:
-                      </p>
-                      <ul className="mt-0.5 space-y-0.5">
-                        {toolChanges.map((c, i) => (
-                          <li key={i} className="font-mono">
-                            {describeTool(laserMode ? 'laser' : 'cnc', c.tool, cncTools)}
-                          </li>
-                        ))}
-                      </ul>
-                      <p className="mt-1">Re-zero Z after each change.</p>
-                    </div>
+                    <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                      Starts with{' '}
+                      <span className="font-mono font-semibold">
+                        {describeTool('cnc', plan.segments[0]?.tool ?? toolChanges[0].from ?? 1, cncTools)}
+                      </span>
+                      ; pauses to swap to{' '}
+                      {toolChanges.map((c) => describeTool('cnc', c.tool, cncTools)).join(', ')} (re-zero Z at each change).
+                    </p>
                   )}
                   <div className="flex gap-2">
                     <button
@@ -1108,17 +1105,17 @@ export const GCodePreviewModal: React.FC = () => {
                       // There is no program to send until the plan comes back,
                       // and offering the button anyway would start a job from
                       // an empty file.
-                      disabled={!gcodeStr}
+                      disabled={!gcodeStr || isPlanningNow}
                       className="flex-1 py-2 rounded-lg font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white shadow-md shadow-emerald-500/20 transition-all cursor-pointer text-xs"
                     >
-                      {!gcodeStr ? (
+                      {!gcodeStr || isPlanningNow ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : machine.connected ? (
                         <Play className="w-4 h-4" />
                       ) : (
                         <Usb className="w-4 h-4" />
                       )}
-                      <span>{gcodeStr ? 'Run on Machine' : 'Planning\u2026'}</span>
+                      <span>{gcodeStr && !isPlanningNow ? 'Run on Machine' : 'Planning\u2026'}</span>
                     </button>
                     <button
                       onClick={() => {
