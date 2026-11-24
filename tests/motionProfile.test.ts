@@ -97,6 +97,26 @@ describe('motionProfileFromSettings', () => {
     const p = motionProfileFromSettings(parseGrblSettings(['$130=400', '$120=900', '$110=8000']));
     expect(p.travel).toBeNull();
   });
+
+  it('clamps spindle min to max when controller reports inverted $31 > $30', () => {
+    const p = motionProfileFromSettings(parseGrblSettings(['$30=1000', '$31=2000']));
+    expect(p.spindle).toEqual({ min: 1000, max: 1000 });
+  });
+});
+
+describe('per-axis limits safety', () => {
+  it('falls back safely when a profile carries non-positive or NaN axis limits', () => {
+    const bad = {
+      ...DEFAULT_MOTION_PROFILE,
+      accel: { x: 0, y: -10, z: Number.NaN },
+      maxRate: { x: 0, y: Number.NaN, z: -5 },
+    };
+    expect(accelAlong(bad, 1, 0, 0)).toBe(DEFAULT_MOTION_PROFILE.accel.x);
+    expect(accelAlong(bad, 0, 1, 0)).toBe(DEFAULT_MOTION_PROFILE.accel.y);
+    expect(accelAlong(bad, 0, 0, 1)).toBe(DEFAULT_MOTION_PROFILE.accel.z);
+    expect(maxRateAlong(bad, 1, 0, 0)).toBe(DEFAULT_MOTION_PROFILE.maxRate.x);
+    expect(maxRateAlong(bad, 0, 0, 1)).toBe(DEFAULT_MOTION_PROFILE.maxRate.z);
+  });
 });
 
 describe('per-axis limits', () => {

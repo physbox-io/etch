@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { GCodeSegment } from '../src/utils/gcodeExporter';
-import { buildTimeline, moveIndexAt, sampleAt } from '../src/utils/toolpathTimeline';
+import { buildTimeline, moveIndexAt, sampleAt, warpTimeline } from '../src/utils/toolpathTimeline';
+import type { BedProbeGrid } from '../src/types/etch';
 
 function seg(over: Partial<GCodeSegment> = {}): GCodeSegment {
   return {
@@ -175,5 +176,82 @@ describe('buildTimeline', () => {
     expect(half.x).toBeLessThan(60);
     expect(moveIndexAt(moves, 0)).toBe(0);
     expect(moveIndexAt(moves, minutes)).toBe(moves.length - 1);
+  });
+
+  it('counts overscan dark run-ups as travelLength rather than cutLength', () => {
+    const fillLine = seg({
+      type: 'fill',
+      speed: 2400,
+      power: 60,
+      depths: [0],
+      fillGroup: 0,
+      points: [
+        { x: 30, y: 20 },
+        { x: 50, y: 20 },
+      ],
+    });
+    const withOver = buildTimeline([fillLine], {
+      travelSpeed: 3000,
+      laserMode: true,
+      overscan: true,
+      stock: { width: 100, height: 100 },
+    });
+    const noOver = buildTimeline([fillLine], {
+      travelSpeed: 3000,
+      laserMode: true,
+      overscan: false,
+      stock: { width: 100, height: 100 },
+    });
+    expect(withOver.moves.some((m) => m.dark)).toBe(true);
+    // Cut length is strictly the 20 mm engraved line in both cases.
+    expect(withOver.cutLength).toBeCloseTo(20, 6);
+    expect(noOver.cutLength).toBeCloseTo(20, 6);
+    // Overscan run-up/run-out adds to travelLength.
+    expect(withOver.travelLength).toBeGreaterThan(noOver.travelLength);
+  });
+
+  it('slows down at 3D Z-reversals in CNC shaded reliefs', () => {
+    // 20 mm straight line in X with sharp alternating Z peaks (sawtooth relief)
+    // vs a flat 20 mm line at the same depth.
+    const pts = Array.from({ length: 41 }, (_, i) => ({ x: i * 0.5, y: 10 }));
+    const sawtooth = pts.map((_, i) => (i % 2 === 0 ? 0.1 : 1.0));
+    const flat = pts.map(() => 0.5);
+
+    const relief = buildTimeline(
+      [seg({ type: 'shade', zDepth: 2, depths: [-2], speed: 2000, points: pts, intensities: sawtooth })],
+      { travelSpeed: 3000, laserMode: false }
+    );
+    const level = buildTimeline(
+      [seg({ type: 'shade', zDepth: 2, depths: [-2], speed: 2000, points: pts, intensities: flat })],
+      { travelSpeed: 3000, laserMode: false }
+    );
+    expect(relief.minutes).toBeGreaterThan(level.minutes * 1.5);
+  });
+
+  it('warps timeline Z coordinates and deepestZ to match bed-levelling heightmap', () => {
+    const base = buildTimeline(
+      [seg({ depths: [-2], points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] })],
+      { travelSpeed: 3000, laserMode: false }
+    );
+    // Tilted bed: z = 0 at machine x=0, z = -0.5 at machine x=100
+    const grid: BedProbeGrid = {
+      minX: 0,
+      minY: 0,
+      maxX: 100,
+      maxY: 100,
+      gridX: 2,
+      gridY: 2,
+      points: [
+        [{ x: 0, y: 0, z: 0 }, { x: 100, y: 0, z: -0.5 }],
+        [{ x: 0, y: 100, z: 0 }, { x: 100, y: 100, z: -0.5 }],
+      ],
+      referencedTo: 'z-datum',
+      missed: 0,
+      simulated: false,
+      probedAt: 0,
+    };
+    const warped = warpTimeline(base, grid, { origin: 'bottom-left', width: 100, height: 100 });
+    expect(base.deepestZ).toBeCloseTo(-2, 6);
+    expect(warped.deepestZ).toBeCloseTo(-2.5, 6);
   });
 });

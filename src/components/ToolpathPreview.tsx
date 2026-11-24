@@ -3,7 +3,8 @@ import { readMotionProfile } from '../utils/machineSettings';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 import type { EtchDocument } from '../types/etch';
 import type { GCodeSegment } from '../utils/gcodeExporter';
-import { buildTimeline, sampleAt, type Timeline, type ToolMove } from '../utils/toolpathTimeline';
+import type { PassOrder } from '../utils/toolpathMoves';
+import { buildTimeline, moveIndexAt, sampleAt, type Timeline, type ToolMove } from '../utils/toolpathTimeline';
 import { usePanZoom } from '../hooks/usePanZoom';
 import { ZoomControls } from './ZoomControls';
 import { buildChunks, TONE_LEVELS } from '../utils/toolpathChunks';
@@ -89,6 +90,8 @@ export const ToolpathPreview: React.FC<{
   travelSpeed: number;
   showTravel: boolean;
   laserMode: boolean;
+  passOrder?: PassOrder;
+  overscan?: boolean;
   /** Non-null while a job is on the machine; the animation then follows it. */
   live?: LiveToolPosition | null;
   /** Outlines a dry run will trace, drawn over the path when one is in view. */
@@ -109,6 +112,8 @@ export const ToolpathPreview: React.FC<{
   travelSpeed,
   showTravel,
   laserMode,
+  passOrder,
+  overscan,
   live = null,
   boundaries = null,
   timeline: precomputed = null,
@@ -125,13 +130,15 @@ export const ToolpathPreview: React.FC<{
       buildTimeline(segments, {
         travelSpeed,
         laserMode,
+        passOrder,
+        overscan,
         stock: { width: doc.width, height: doc.height },
         // The machine's own acceleration and corner tolerance, so the playhead
         // crawls through the dense parts and flies through the open ones where
         // the tool actually will.
         motion,
       }),
-    [precomputed, segments, travelSpeed, laserMode, doc.width, doc.height, motion]
+    [precomputed, segments, travelSpeed, laserMode, passOrder, overscan, doc.width, doc.height, motion]
   );
 
   const colourFor = useCallback(
@@ -253,12 +260,47 @@ export const ToolpathPreview: React.FC<{
       const s = sampleAt(moves, t);
       // A ramp is engaged in the material, just descending while it goes, so it
       // counts as cutting everywhere the animation distinguishes the two.
-      const cutting = s.move?.kind === 'cut' || s.move?.kind === 'ramp';
+      // Overscan run-ups (`dark`) run at cutting feed with the beam off and
+      // count as travel, not cutting.
+      const cutting = (s.move?.kind === 'cut' && !s.move.dark) || s.move?.kind === 'ramp';
       const raw = laserMode ? (cutting ? s.move!.power : 0) : Math.abs(s.z);
       cols.push({ v: span > 0 ? clamp01(raw / span) : 0, cutting });
     }
     return { cols, span };
   }, [timeline, laserMode]);
+
+  /**
+   * View bounds: always includes the full bed, and expands automatically if
+   * overscan run-ups, lead-ins, or unclipped paths extend past the stock edge.
+   */
+  const viewBox = useMemo(() => {
+    let minX = 0;
+    let minY = 0;
+    let maxX = doc.width;
+    let maxY = doc.height;
+    for (const m of timeline.moves) {
+      if (m.x1 < minX) minX = m.x1;
+      if (m.x2 < minX) minX = m.x2;
+      if (m.y1 < minY) minY = m.y1;
+      if (m.y2 < minY) minY = m.y2;
+      if (m.x1 > maxX) maxX = m.x1;
+      if (m.x2 > maxX) maxX = m.x2;
+      if (m.y1 > maxY) maxY = m.y1;
+      if (m.y2 > maxY) maxY = m.y2;
+    }
+    if (boundaries) {
+      for (const poly of boundaries) {
+        for (const p of poly) {
+          if (p.x < minX) minX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y > maxY) maxY = p.y;
+        }
+      }
+    }
+    const pad = Math.max(5, Math.max(doc.width, doc.height) * 0.03);
+    return `${(minX - pad).toFixed(2)} ${(minY - pad).toFixed(2)} ${(maxX - minX + pad * 2).toFixed(2)} ${(maxY - minY + pad * 2).toFixed(2)}`;
+  }, [doc.width, doc.height, timeline.moves, boundaries]);
 
   // ---- Animation plumbing -------------------------------------------------
   // One entry per chunk, holding its path elements: a shaded chunk is drawn as
@@ -271,7 +313,9 @@ export const ToolpathPreview: React.FC<{
   const depthTextRef = useRef<HTMLSpanElement | null>(null);
   const timeTextRef = useRef<HTMLSpanElement | null>(null);
   const clockRef = useRef(0);
-  const prevChunkRef = useRef(-1);
+  const lastMoveIdxRef = useRef(-1);
+  const chunkMaxFracRef = useRef<Float32Array>(new Float32Array(0));
+  const displayedFracRef = useRef<Float32Array>(new Float32Array(0));
   /**
    * The running job's stopwatch: seconds since it started, less time held.
    *
@@ -301,62 +345,96 @@ export const ToolpathPreview: React.FC<{
    * then the machine's, not the simulation's.
    *
    * `elapsedSecs` likewise replaces the clock readout while a job is running.
-   * `t` is *program* time at the tool's position, and the timeline models each
-   * move as distance/feed with no acceleration — on an etch, which is thousands
-   * of short reversing scanlines the machine never gets up to feed on, that
-   * runs a long way behind the room. The readout next to "Live" is read as a
-   * stopwatch, so while the machine is running it is one.
+   * `t` is *program* time at the tool's position, and the readout next to "Live"
+   * is read as a stopwatch, so while the machine is running it is one.
    */
   const applyFrame = useCallback(
     (t: number, head?: { x: number; y: number; z: number } | null, elapsedSecs?: number | null) => {
       const { moves, minutes } = timeline;
       const done = minutes <= 0 || t >= minutes;
-      const s = sampleAt(moves, Math.min(t, minutes));
+      const clampedT = Math.min(t, minutes);
+      const s = sampleAt(moves, clampedT);
       const move: ToolMove | null = done ? moves[moves.length - 1] ?? null : s.move;
 
-      // Reveal the drawing up to the tool, and un-reveal on a backward seek or
-      // a loop wrap. Only the chunks that changed state are touched.
-      const segIdx = done ? segments.length - 1 : move?.segIndex ?? -1;
-      const targetChunkIdx = segIdx < 0 ? -1 : chunkOfSegment[segIdx] ?? -1;
-      const prevChunk = prevChunkRef.current;
+      // High-water-mark reveal per chunk: handles both per-level and per-path
+      // pass orders without erasing pass 1 during pass 2, and never flickers
+      // during retracts, plunges, travels, or overscan run-ups.
+      const nChunks = chunks.length;
+      if (chunkMaxFracRef.current.length !== nChunks) {
+        chunkMaxFracRef.current = new Float32Array(nChunks);
+        displayedFracRef.current = new Float32Array(nChunks).fill(-1);
+        lastMoveIdxRef.current = -1;
+      }
+      const maxFrac = chunkMaxFracRef.current;
+      const dispFrac = displayedFracRef.current;
 
-      if (targetChunkIdx < prevChunk) {
-        for (let k = targetChunkIdx + 1; k <= prevChunk; k++) setChunkReveal(k, 0);
+      const moveRevealFrac = (segIdx: number, along: number): [number, number] => {
+        if (segIdx < 0 || segIdx >= chunkOfSegment.length) return [-1, 0];
+        const cIdx = chunkOfSegment[segIdx];
+        const chunk = chunks[cIdx];
+        if (!chunk || chunk.totalLen <= 0) return [cIdx, 0];
+        const segOffset = segIdx - chunk.startIndex;
+        const priorLen = segOffset > 0 ? chunk.cumLens[segOffset - 1] : 0;
+        const currLen = priorLen + Math.min(segLengths[segIdx] || 0, Math.max(0, along));
+        return [cIdx, clamp01(currLen / chunk.totalLen)];
+      };
+
+      const targetMoveIdx = !moves.length
+        ? -1
+        : done
+          ? moves.length
+          : moveIndexAt(moves, clampedT);
+
+      const recordCompletedMove = (m: ToolMove) => {
+        if (m.dark || (m.kind !== 'cut' && m.kind !== 'ramp')) return;
+        const [cIdx, frac] = moveRevealFrac(m.segIndex, m.along1);
+        if (cIdx >= 0 && frac > maxFrac[cIdx]) maxFrac[cIdx] = frac;
+      };
+
+      if (targetMoveIdx < lastMoveIdxRef.current) {
+        maxFrac.fill(0);
+        for (let i = 0; i < targetMoveIdx; i++) recordCompletedMove(moves[i]);
       } else {
-        for (let k = prevChunk + 1; k < targetChunkIdx; k++) setChunkReveal(k, 1);
+        const start = Math.max(0, lastMoveIdxRef.current);
+        for (let i = start; i < targetMoveIdx; i++) recordCompletedMove(moves[i]);
+      }
+      lastMoveIdxRef.current = targetMoveIdx;
+
+      // Active move's partial reveal (without committing its end to maxFrac).
+      let activeChunkIdx = -1;
+      let activeFrac = 0;
+      if (!done && move && !move.dark && (move.kind === 'cut' || move.kind === 'ramp')) {
+        const [cIdx, frac] = moveRevealFrac(move.segIndex, s.along);
+        activeChunkIdx = cIdx;
+        activeFrac = frac;
       }
 
-      if (targetChunkIdx >= 0) {
-        const chunk = chunks[targetChunkIdx];
-        if (chunk) {
-          const segOffset = segIdx - chunk.startIndex;
-          const priorLen = segOffset > 0 ? chunk.cumLens[segOffset - 1] : 0;
-          const currLen =
-            priorLen + Math.min(segLengths[segIdx] || 0, Math.max(0, s.along));
-          setChunkReveal(
-            targetChunkIdx,
-            done ? 1 : chunk.totalLen > 0 ? clamp01(currLen / chunk.totalLen) : 0
-          );
+      for (let k = 0; k < nChunks; k++) {
+        const want = k === activeChunkIdx ? Math.max(maxFrac[k], activeFrac) : maxFrac[k];
+        if (Math.abs(want - dispFrac[k]) > 1e-4) {
+          dispFrac[k] = want;
+          setChunkReveal(k, want);
         }
       }
-      prevChunkRef.current = targetChunkIdx;
 
-      // The move in flight, drawn ahead of the revealed path so a rapid reads
-      // as a rapid while it is happening.
+      const isCuttingMove = !!move && ((move.kind === 'cut' && !move.dark) || move.kind === 'ramp');
+
+      // The move in flight, drawn ahead of the revealed path so a rapid or
+      // overscan run-up reads as non-cutting travel while it is happening.
       if (liveRef.current && move) {
         const l = liveRef.current;
         l.setAttribute('x1', String(move.x1));
         l.setAttribute('y1', String(move.y1));
         l.setAttribute('x2', String(done ? move.x2 : s.x));
         l.setAttribute('y2', String(done ? move.y2 : s.y));
-        l.setAttribute('opacity', done || move.kind === 'cut' || move.kind === 'ramp' ? '0' : '0.9');
+        l.setAttribute('opacity', done || isCuttingMove ? '0' : '0.9');
       }
 
       // The machine's own Z when it is reporting one: a tool sitting at +25 mm
       // on a dry run must not be drawn as if it were buried in the stock.
       const z = head ? head.z : s.z;
       const depthFrac = laserMode
-        ? (move && (move.kind === 'cut' || move.kind === 'ramp') ? move.power / 100 : 0)
+        ? (isCuttingMove ? move!.power / 100 : 0)
         : timeline.deepestZ < 0
           ? clamp01(Math.max(0, -z) / Math.abs(timeline.deepestZ))
           : 0;
@@ -374,7 +452,7 @@ export const ToolpathPreview: React.FC<{
       }
       if (depthTextRef.current) {
         depthTextRef.current.textContent = laserMode
-          ? `S ${Math.round((move && (move.kind === 'cut' || move.kind === 'ramp') ? move.power : 0))}%`
+          ? `S ${Math.round(isCuttingMove ? move!.power : 0)}%`
           : `Z ${z.toFixed(2)} mm`;
       }
       if (timeTextRef.current) {
@@ -383,7 +461,7 @@ export const ToolpathPreview: React.FC<{
         timeTextRef.current.textContent = `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}${passNote}`;
       }
     },
-    [timeline, segLengths, segments.length, chunks, chunkOfSegment, laserMode]
+    [timeline, segLengths, chunks, chunkOfSegment, laserMode]
   );
 
   // A new toolpath starts from the top: stale reveal state would leave paths
@@ -391,7 +469,9 @@ export const ToolpathPreview: React.FC<{
   useEffect(() => {
     revealRefs.current.length = chunks.length;
     clockRef.current = 0;
-    prevChunkRef.current = chunks.length - 1; // force a full un-reveal on the first frame
+    lastMoveIdxRef.current = -1;
+    chunkMaxFracRef.current = new Float32Array(chunks.length);
+    displayedFracRef.current = new Float32Array(chunks.length).fill(-1);
     applyFrame(0);
   }, [applyFrame, chunks.length]);
 
@@ -410,20 +490,28 @@ export const ToolpathPreview: React.FC<{
       const { moves, minutes } = timeline;
       if (!moves.length) return 0;
       const anchor = Math.min(moves.length - 1, Math.max(0, Math.round(progress * (moves.length - 1))));
-      const from = Math.max(0, anchor - LIVE_SEARCH_WINDOW);
-      const to = Math.min(moves.length - 1, anchor + LIVE_SEARCH_WINDOW);
       let best = anchor;
       let bestF = 0;
       let bestD = Infinity;
-      for (let i = from; i <= to; i++) {
-        const m = moves[i];
-        const f = projectFraction(m.x1, m.y1, m.x2, m.y2, x, y);
-        const d = Math.hypot(m.x1 + (m.x2 - m.x1) * f - x, m.y1 + (m.y2 - m.y1) * f - y);
-        if (d < bestD) {
-          bestD = d;
-          best = i;
-          bestF = f;
+      const search = (halfWindow: number) => {
+        const from = Math.max(0, anchor - halfWindow);
+        const to = Math.min(moves.length - 1, anchor + halfWindow);
+        for (let i = from; i <= to; i++) {
+          const m = moves[i];
+          const f = projectFraction(m.x1, m.y1, m.x2, m.y2, x, y);
+          const d = Math.hypot(m.x1 + (m.x2 - m.x1) * f - x, m.y1 + (m.y2 - m.y1) * f - y);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+            bestF = f;
+          }
         }
+      };
+      search(LIVE_SEARCH_WINDOW);
+      // Arc-fitted or bed-levelled G-code changes line counts relative to
+      // planned moves; widen the search if the local window missed the tool.
+      if (bestD > 2) {
+        search(Math.max(LIVE_SEARCH_WINDOW * 4, Math.ceil(moves.length * 0.05)));
       }
       const m = moves[best];
       return Math.min(minutes, m.t0 + (m.t1 - m.t0) * bestF);
@@ -525,10 +613,11 @@ export const ToolpathPreview: React.FC<{
     applyFrame(clockRef.current);
   };
 
+  const totalSecs = Math.round(timeline.minutes * 60);
   const estimate =
-    timeline.minutes < 1
-      ? `${Math.round(timeline.minutes * 60)}s`
-      : `${Math.floor(timeline.minutes)}m ${Math.round((timeline.minutes % 1) * 60)}s`;
+    totalSecs < 60
+      ? `${totalSecs}s`
+      : `${Math.floor(totalSecs / 60)}m ${totalSecs % 60}s`;
 
   const headSize = Math.max(doc.width, doc.height) / 110;
 
@@ -579,7 +668,7 @@ export const ToolpathPreview: React.FC<{
             canvas uses. Without the clip a zoomed toolpath draws over the
             panels either side of it. */}
         <svg
-          viewBox={`-5 -5 ${doc.width + 10} ${doc.height + 10}`}
+          viewBox={viewBox}
           className="w-full h-full touch-none"
           preserveAspectRatio="xMidYMid meet"
           style={{
@@ -804,17 +893,18 @@ export const ToolpathPreview: React.FC<{
           </div>
         </div>
 
-        <div
-          className={`h-12 px-3 pb-1.5 select-none touch-none ${live ? '' : 'cursor-ew-resize'}`}
-          onPointerDown={(e) => {
-            e.currentTarget.setPointerCapture(e.pointerId);
-            seekTo(e);
-          }}
-          onPointerMove={(e) => {
-            if (e.buttons === 1) seekTo(e);
-          }}
-        >
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
+        <div className="h-12 px-3 pb-1.5 select-none">
+          <div
+            className={`w-full h-full touch-none ${live ? '' : 'cursor-ew-resize'}`}
+            onPointerDown={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              seekTo(e);
+            }}
+            onPointerMove={(e) => {
+              if (e.buttons === 1 || e.currentTarget.hasPointerCapture(e.pointerId)) seekTo(e);
+            }}
+          >
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
             <rect x={0} y={0} width={100} height={100} className="fill-slate-100 dark:fill-slate-950" />
             {track ? (
               track.cols.map((c, i) => {
@@ -874,7 +964,8 @@ export const ToolpathPreview: React.FC<{
               strokeWidth={1.5}
               vectorEffect="non-scaling-stroke"
             />
-          </svg>
+            </svg>
+          </div>
         </div>
       </div>
 

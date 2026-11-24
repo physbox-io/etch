@@ -12,6 +12,7 @@ import {
 import { readCncTools } from './tooling';
 import {
   traceMarchingSquares,
+  traceCutoutOutline,
   generateHalftoneCompoundPath,
   generateScanlinePaths,
   type ImageProcessOptions,
@@ -85,6 +86,30 @@ function stripUndefined<T extends object>(opts: T | undefined): Partial<T> {
   return Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+function makeAbortError(message = 'CAM request aborted'): Error {
+  const err = new Error(message);
+  err.name = 'AbortError';
+  return err;
+}
+
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
+interface PendingEntry {
+  resolve: (val: unknown) => void;
+  reject: (err: Error) => void;
+  cleanup?: () => void;
+}
+
+interface QueuedPlanProgram {
+  req: Extract<CamRequestPayload, { type: 'PLAN_PROGRAM' }>;
+  resolve: (val: ProgramResult) => void;
+  reject: (err: Error) => void;
+  signal?: AbortSignal;
+  cleanup?: () => void;
+}
+
 class CamWorkerClient {
   private worker: Worker | null = null;
   private reqId = 1;
@@ -93,13 +118,19 @@ class CamWorkerClient {
    * map holds every kind of reply the worker can send at once; each public
    * method casts its own back, which is where the shape is actually known.
    */
-  private pending = new Map<
-    number,
-    { resolve: (val: unknown) => void; reject: (err: Error) => void }
-  >();
+  private pending = new Map<number, PendingEntry>();
+  /** At most one PLAN_PROGRAM runs in the worker at a time; newer ones coalesce here. */
+  private activePlanProgramId: number | null = null;
+  private queuedPlanProgram: QueuedPlanProgram | null = null;
 
   constructor() {
     this.initWorker();
+  }
+
+  private handleWorkerCrash(reason: string) {
+    this.failPending(new Error(reason));
+    this.worker?.terminate();
+    this.worker = null;
   }
 
   private initWorker() {
@@ -111,14 +142,21 @@ class CamWorkerClient {
         );
         this.worker.onmessage = (e: MessageEvent<WorkerCamResponse>) => {
           const res = e.data;
+          const wasActivePlan = res.id === this.activePlanProgramId;
+          if (wasActivePlan) this.activePlanProgramId = null;
+
           const handler = this.pending.get(res.id);
-          if (!handler) return;
-          this.pending.delete(res.id);
-          if (res.success) {
-            handler.resolve(res.result);
-          } else {
-            handler.reject(new Error(res.error));
+          if (handler) {
+            this.pending.delete(res.id);
+            handler.cleanup?.();
+            if (res.success) {
+              handler.resolve(res.result);
+            } else {
+              handler.reject(new Error(res.error));
+            }
           }
+
+          if (wasActivePlan) this.flushQueuedPlanProgram();
         };
         this.worker.onerror = (err) => {
           console.warn('CAM Worker error, falling back to main thread:', err);
@@ -128,9 +166,11 @@ class CamWorkerClient {
           // is lowered in that caller's `finally`, stays up for the rest of the
           // session). Dropping the worker also sends the next request down the
           // main-thread path rather than into a corpse.
-          this.failPending(new Error(`CAM worker failed: ${err.message || 'unknown error'}`));
-          this.worker?.terminate();
-          this.worker = null;
+          this.handleWorkerCrash(`CAM worker failed: ${err.message || 'unknown error'}`);
+        };
+        this.worker.onmessageerror = () => {
+          console.warn('CAM Worker message error, falling back to main thread');
+          this.handleWorkerCrash('CAM worker failed: message serialization error');
         };
       } catch (err) {
         console.warn('Failed to initialize CAM Worker, using main thread:', err);
@@ -140,23 +180,90 @@ class CamWorkerClient {
   }
 
   private failPending(err: Error) {
-    for (const handler of this.pending.values()) handler.reject(err);
+    this.activePlanProgramId = null;
+    const queued = this.queuedPlanProgram;
+    this.queuedPlanProgram = null;
+    if (queued) {
+      queued.cleanup?.();
+      queued.reject(err);
+    }
+    for (const handler of this.pending.values()) {
+      handler.cleanup?.();
+      handler.reject(err);
+    }
     this.pending.clear();
   }
 
-  private sendRequest<T>(req: CamRequestPayload): Promise<T> {
-    const id = this.reqId++;
+  private flushQueuedPlanProgram() {
+    if (!this.queuedPlanProgram || this.activePlanProgramId !== null) return;
+    const next = this.queuedPlanProgram;
+    this.queuedPlanProgram = null;
+    next.cleanup?.();
+    if (next.signal?.aborted) {
+      next.reject(makeAbortError());
+      return;
+    }
+    this.dispatchToWorker<ProgramResult>(next.req, next.signal)
+      .then(next.resolve, next.reject);
+  }
 
-    if (this.worker) {
-      return new Promise<T>((resolve, reject) => {
-        // The map is keyed by request id and holds every kind of reply at once,
-        // so it cannot be typed per request. The cast is the one place the two
-        // meet, and `sendRequest`'s own caller is where T is actually known.
-        this.pending.set(id, { resolve: resolve as (val: unknown) => void, reject });
-        this.worker!.postMessage({ ...req, id } as WorkerCamRequest);
-      });
+  private dispatchToWorker<T>(req: CamRequestPayload, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) return Promise.reject(makeAbortError());
+
+    if (!this.worker) {
+      return this.runOnMainThread<T>(req);
     }
 
+    const id = this.reqId++;
+    const isPlanProgram = req.type === 'PLAN_PROGRAM';
+
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        const entry = this.pending.get(id);
+        if (!entry) return;
+        this.pending.delete(id);
+        entry.cleanup?.();
+        reject(makeAbortError());
+      };
+
+      const cleanup = signal
+        ? () => signal.removeEventListener('abort', onAbort)
+        : undefined;
+
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+
+      this.pending.set(id, {
+        resolve: resolve as (val: unknown) => void,
+        reject,
+        cleanup,
+      });
+      if (isPlanProgram) this.activePlanProgramId = id;
+
+      try {
+        this.worker!.postMessage({ ...req, id } as WorkerCamRequest);
+      } catch (err) {
+        this.pending.delete(id);
+        cleanup?.();
+        if (isPlanProgram && this.activePlanProgramId === id) {
+          this.activePlanProgramId = null;
+          this.flushQueuedPlanProgram();
+        }
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  private sendRequest<T>(req: CamRequestPayload, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) return Promise.reject(makeAbortError());
+
+    if (this.worker) {
+      return this.dispatchToWorker<T>(req, signal);
+    }
+
+    return this.runOnMainThread<T>(req);
+  }
+
+  private runOnMainThread<T>(req: CamRequestPayload): Promise<T> {
     // Main thread fallback (for Node, Vitest, or fallback)
     try {
       switch (req.type) {
@@ -169,6 +276,10 @@ class CamWorkerClient {
             colorSpace: 'srgb' as PredefinedColorSpace,
           } as ImageData;
 
+          const outlineD = options.cutout
+            ? traceCutoutOutline(fakeImageData, options, scaleX, scaleY).join(' ') || undefined
+            : undefined;
+
           if (options.mode === 'vector') {
             const paths = traceMarchingSquares(fakeImageData, options, scaleX, scaleY);
             return Promise.resolve({
@@ -176,6 +287,7 @@ class CamWorkerClient {
               paths,
               detailCount: paths.length,
               compoundD: paths.join(' '),
+              outlineD,
             } as unknown as T);
           } else if (options.mode === 'halftone') {
             const { pathD, dotCount } = generateHalftoneCompoundPath(fakeImageData, options, scaleX, scaleY);
@@ -183,6 +295,7 @@ class CamWorkerClient {
               mode: 'halftone',
               pathD,
               detailCount: dotCount,
+              outlineD,
             } as unknown as T);
           } else if (options.mode === 'scanline') {
             const lines = generateScanlinePaths(fakeImageData, options, scaleX, scaleY);
@@ -191,11 +304,13 @@ class CamWorkerClient {
               lines,
               detailCount: lines.length,
               compoundD: lines.join(' '),
+              outlineD,
             } as unknown as T);
           } else {
             return Promise.resolve({
               mode: 'shade',
               detailCount: Math.max(1, Math.round(options.targetHeight / Math.max(0.05, options.shadePitch))),
+              outlineD,
             } as unknown as T);
           }
         }
@@ -348,12 +463,44 @@ class CamWorkerClient {
   public planProgram(
     doc: EtchDocument,
     opts: Partial<GCodeOptions>,
-    timeline: { travelSpeed: number; laserMode: boolean }
+    timeline: { travelSpeed: number; laserMode: boolean },
+    signal?: AbortSignal
   ): Promise<ProgramResult> {
-    return this.sendRequest({
+    if (signal?.aborted) return Promise.reject(makeAbortError());
+
+    const req: Extract<CamRequestPayload, { type: 'PLAN_PROGRAM' }> = {
       type: 'PLAN_PROGRAM',
       payload: { doc, opts: this.withMotion(opts), timeline },
-    });
+    };
+
+    if (this.worker && this.activePlanProgramId !== null) {
+      // Coalesce rapid option/document edits so the worker never burns seconds
+      // planning superseded snapshots queued behind an active job.
+      if (this.queuedPlanProgram) {
+        const prev = this.queuedPlanProgram;
+        this.queuedPlanProgram = null;
+        prev.cleanup?.();
+        prev.reject(makeAbortError('Superseded by newer plan request'));
+      }
+
+      return new Promise<ProgramResult>((resolve, reject) => {
+        const entry: QueuedPlanProgram = { req, resolve, reject, signal };
+        if (signal) {
+          const onAbort = () => {
+            if (this.queuedPlanProgram === entry) {
+              this.queuedPlanProgram = null;
+              entry.cleanup?.();
+              reject(makeAbortError());
+            }
+          };
+          entry.cleanup = () => signal.removeEventListener('abort', onAbort);
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+        this.queuedPlanProgram = entry;
+      });
+    }
+
+    return this.sendRequest<ProgramResult>(req, signal);
   }
 
   public fitArcs(
