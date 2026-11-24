@@ -225,4 +225,86 @@ describe('DXF import', () => {
     );
     expect(r.bounds).toEqual({ minX: 10, minY: -50, width: 30, height: 40 });
   });
+
+  it('handles UTF-8 BOM and CR-only line endings', () => {
+    const raw = '\uFEFF' + entities([[0, 'LINE'], [8, '0'], [10, 0], [20, 0], [11, 12], [21, 0]]).replace(/\n/g, '\r');
+    const r = importDXF(raw);
+    expect(r.elements).toHaveLength(1);
+    expect(points(r.elements[0].d!)[1].x).toBeCloseTo(12, 4);
+  });
+
+  it('rotates an ARC inside a rotated INSERT block', () => {
+    const file = dxf(
+      [0, 'SECTION'], [2, 'BLOCKS'],
+      [0, 'BLOCK'], [2, 'B'], [10, 0], [20, 0],
+      // 0°..90° arc of radius 10: from (10,0) to (0,10) in local CAD space.
+      [0, 'ARC'], [8, '0'], [10, 0], [20, 0], [40, 10], [50, 0], [51, 90],
+      [0, 'ENDBLK'],
+      [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      // Rotated +90° CCW in CAD: runs from (0,10) to (-10,0) in CAD → (0,-10) to (-10,0) in doc.
+      [0, 'INSERT'], [8, 'CUT'], [2, 'B'], [10, 0], [20, 0], [50, 90],
+      [0, 'ENDSEC'], [0, 'EOF']
+    );
+    const r = importDXF(file);
+    expect(r.elements).toHaveLength(1);
+    // Block entity on layer '0' inherits the INSERT's layer ('CUT').
+    expect(r.layers[0].name).toBe('CUT');
+    const pts = points(r.elements[0].d!);
+    expect(pts[0].x).toBeCloseTo(0, 3);
+    expect(pts[0].y).toBeCloseTo(-10, 3);
+    expect(pts[pts.length - 1].x).toBeCloseTo(-10, 3);
+    expect(pts[pts.length - 1].y).toBeCloseTo(0, 3);
+  });
+
+  it('mirrors a polyline bulge inside a negatively scaled INSERT block', () => {
+    const file = dxf(
+      [0, 'SECTION'], [2, 'BLOCKS'],
+      [0, 'BLOCK'], [2, 'B'], [10, 0], [20, 0],
+      [0, 'LWPOLYLINE'], [8, '0'], [90, 2], [70, 0],
+      [10, 0], [20, 0], [42, 1],
+      [10, 10], [20, 0],
+      [0, 'ENDBLK'],
+      [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      // Mirror across X (sx = -1): chord runs (0,0) → (-10,0), arc still bows below chord in CAD (Y > 0 in doc).
+      [0, 'INSERT'], [8, '0'], [2, 'B'], [10, 0], [20, 0], [41, -1], [42, 1],
+      [0, 'ENDSEC'], [0, 'EOF']
+    );
+    const r = importDXF(file);
+    const pts = points(r.elements[0].d!);
+    const mid = pts[Math.floor(pts.length / 2)];
+    expect(mid.x).toBeCloseTo(-5, 1);
+    expect(mid.y).toBeCloseTo(5, 1);
+  });
+
+  it('drops a NaN vertex in LWPOLYLINE without shifting subsequent Y coordinates', () => {
+    const r = importDXF(
+      entities([
+        [0, 'LWPOLYLINE'], [8, '0'], [70, 0],
+        [10, 0], [20, 0],
+        [10, 'NaN'], [20, 999],
+        [10, 20], [20, 10],
+      ])
+    );
+    const pts = points(r.elements[0].d!);
+    expect(pts).toHaveLength(2);
+    expect(pts[0]).toEqual({ x: 0, y: 0 });
+    expect(pts[1]).toEqual({ x: 20, y: -10 });
+  });
+
+  it('handles ELLIPSE arcs crossing 0 and degenerate SPLINE knots safely', () => {
+    const r = importDXF(
+      entities([
+        [0, 'ELLIPSE'], [8, '0'], [10, 0], [20, 0], [11, 10], [21, 0], [40, 0.5], [41, 5.5], [42, 0.5],
+        [0, 'SPLINE'], [8, '0'], [70, 1], [71, 0],
+        [40, 0], [40, 0], [40, 0], [40, 0], [40, 0],
+        [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10],
+      ])
+    );
+    expect(r.elements).toHaveLength(2);
+    expect(r.elements[0].d).not.toContain('NaN');
+    expect(r.elements[1].d).toMatch(/Z$/);
+    expect(r.elements[1].d).not.toContain('NaN');
+  });
 });

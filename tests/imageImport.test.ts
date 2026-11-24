@@ -115,6 +115,14 @@ describe('planImageImport', () => {
     const { element } = planImageImport(doc(), blank, options({ mode: 'vector' }), 'cut');
     expect(element).toBeNull();
   });
+
+  it('returns an empty plan for zero-dimension images or invalid target dimensions', () => {
+    const empty = { data: new Uint8ClampedArray(0), width: 0, height: 0, colorSpace: 'srgb' } as ImageData;
+    expect(planImageImport(doc(), empty, options({ mode: 'shade' }), 'cut').element).toBeNull();
+    const img = imageWithBlackSquare(8, 8);
+    expect(planImageImport(doc(), img, options({ mode: 'shade', targetWidth: 0 }), 'cut').element).toBeNull();
+    expect(planImageImport(doc(), img, options({ mode: 'vector', targetHeight: NaN }), 'cut').element).toBeNull();
+  });
 });
 
 describe('buildSymbolElement', () => {

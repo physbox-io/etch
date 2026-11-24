@@ -81,12 +81,12 @@ const UNIT_SCALE: Record<number, { mm: number; name: string }> = {
  * DXF is a DOS format and most files still carry CRLF.
  */
 function parsePairs(text: string): Pair[] {
-  const lines = text.split('\n');
+  const lines = text.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/);
   const pairs: Pair[] = [];
   for (let i = 0; i + 1 < lines.length; i += 2) {
     const code = parseInt(lines[i].trim(), 10);
     if (Number.isNaN(code)) continue;
-    pairs.push({ code, value: lines[i + 1].replace(/\r$/, '') });
+    pairs.push({ code, value: lines[i + 1] });
   }
   return pairs;
 }
@@ -114,62 +114,73 @@ function nums(e: Entity, code: number): number[] {
 const fmt = (n: number) => (Math.abs(n) < 1e-9 ? '0' : parseFloat(n.toFixed(4)).toString());
 
 /**
- * A cubic approximation of a circular arc, in doc space.
+ * A cubic approximation of a circular arc, transformed by `m` and flipped into doc space.
  *
  * Quarter-turn-or-less spans, because a single cubic's error grows fast beyond
  * that: at 90° it is under a thousandth of the radius, which on a 100 mm circle
  * is well inside the 0.05 mm budget the rest of the pipeline works to.
  *
- * `a0`/`a1` are DXF angles — counter-clockwise, in a Y-up space. The caller has
- * already decided the sweep; the Y flip happens per point, which is what makes
- * the resulting direction correct without anything here reasoning about it.
+ * `a0`/`a1` are DXF angles — counter-clockwise, in local Y-up DXF space.
+ * Applying `m` to the cubic control points preserves rotation, mirroring, and
+ * non-uniform scaling exactly because Béziers are affine-invariant.
  */
-function arcPath(cx: number, cy: number, r: number, a0: number, a1: number, flipY: boolean): string {
+function arcPath(
+  cx: number,
+  cy: number,
+  r: number,
+  a0: number,
+  a1: number,
+  m: (p: Pt) => Pt,
+  flipY: boolean
+): string {
   const sweep = a1 - a0;
   const steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
   const step = sweep / steps;
   const k = (4 / 3) * Math.tan(step / 4);
-  const at = (a: number): Pt => ({ x: cx + r * Math.cos(a), y: (flipY ? -1 : 1) * (cy + r * Math.sin(a)) });
-  const tangent = (a: number): Pt => {
-    // d/da of the point above, which carries the same flip.
-    return { x: -r * Math.sin(a), y: (flipY ? -1 : 1) * r * Math.cos(a) };
+  const at = (a: number): Pt => ({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+  const tangent = (a: number): Pt => ({ x: -r * Math.sin(a), y: r * Math.cos(a) });
+  const toDoc = (p: Pt): Pt => {
+    const q = m(p);
+    return { x: q.x, y: flipY ? -q.y : q.y };
   };
 
-  const start = at(a0);
+  const start = toDoc(at(a0));
   let d = `M ${fmt(start.x)} ${fmt(start.y)}`;
   for (let i = 0; i < steps; i++) {
     const s = a0 + step * i;
     const e = s + step;
-    const p0 = at(s);
-    const p3 = at(e);
+    const q0 = at(s);
+    const q3 = at(e);
     const t0 = tangent(s);
     const t1 = tangent(e);
+    const c1 = toDoc({ x: q0.x + k * t0.x, y: q0.y + k * t0.y });
+    const c2 = toDoc({ x: q3.x - k * t1.x, y: q3.y - k * t1.y });
+    const p3 = toDoc(q3);
     d +=
-      ` C ${fmt(p0.x + k * t0.x)} ${fmt(p0.y + k * t0.y)}` +
-      ` ${fmt(p3.x - k * t1.x)} ${fmt(p3.y - k * t1.y)}` +
+      ` C ${fmt(c1.x)} ${fmt(c1.y)}` +
+      ` ${fmt(c2.x)} ${fmt(c2.y)}` +
       ` ${fmt(p3.x)} ${fmt(p3.y)}`;
   }
   return d;
 }
 
 /**
- * The arc a polyline bulge describes between two vertices.
+ * The arc a polyline bulge describes between two local DXF vertices.
  *
  * `bulge` is the tangent of a quarter of the included angle — the compact way
- * DXF stores "this side of the rectangle is actually a fillet". Ignoring it is
- * the classic DXF import bug: every rounded corner comes in as a chamfer, and
- * the part no longer fits what it was drawn to fit.
+ * DXF stores "this side of the rectangle is actually a fillet". Computed in
+ * local DXF space and transformed through `m` so mirrored or scaled INSERT
+ * blocks preserve exact arc orientation and shape.
  */
-function bulgeArc(p0: Pt, p1: Pt, bulge: number, flipY: boolean): string {
+function bulgeArc(p0: Pt, p1: Pt, bulge: number, m: (p: Pt) => Pt, flipY: boolean): string {
   const theta = 4 * Math.atan(bulge);
   const chord = Math.hypot(p1.x - p0.x, p1.y - p0.y);
   if (chord < 1e-9 || Math.abs(bulge) < 1e-9) {
-    return ` L ${fmt(p1.x)} ${fmt(flipY ? -p1.y : p1.y)}`;
+    const q = m(p1);
+    return ` L ${fmt(q.x)} ${fmt(flipY ? -q.y : q.y)}`;
   }
   const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
   const mid = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
-  // Perpendicular offset from the chord to the centre; its sign is the bulge's,
-  // which is what makes a negative bulge arc the other way round.
   const h = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2))) * (Math.abs(theta) > Math.PI ? -1 : 1);
   const ux = (p1.x - p0.x) / chord;
   const uy = (p1.y - p0.y) / chord;
@@ -179,18 +190,21 @@ function bulgeArc(p0: Pt, p1: Pt, bulge: number, flipY: boolean): string {
   const a0 = Math.atan2(p0.y - cy, p0.x - cx);
   const a1 = a0 + theta;
   // Drop the leading M: this continues a path that is already open.
-  return arcPath(cx, cy, r, a0, a1, flipY).replace(/^M [^C]*/, ' ');
+  return arcPath(cx, cy, r, a0, a1, m, flipY).replace(/^M [^C]*/, ' ');
 }
 
-/** Cox–de Boor evaluation of a B-spline, for SPLINE entities. */
-function splinePoint(ctrl: Pt[], knots: number[], degree: number, t: number): Pt {
+/** Cox–de Boor evaluation of a (possibly rational) B-spline, for SPLINE entities. */
+function splinePoint(ctrl: Pt[], knots: number[], degree: number, t: number, weights?: number[]): Pt {
   const n = ctrl.length - 1;
   let span = degree;
   while (span < n && knots[span + 1] <= t) span++;
-  const d: Pt[] = [];
+  const rational = !!weights && weights.length === ctrl.length;
+  const d: Array<{ x: number; y: number; w: number }> = [];
   for (let i = 0; i <= degree; i++) {
-    const c = ctrl[span - degree + i] ?? ctrl[ctrl.length - 1];
-    d.push({ x: c.x, y: c.y });
+    const idx = Math.min(Math.max(span - degree + i, 0), n);
+    const c = ctrl[idx];
+    const w = rational ? weights[idx] : 1;
+    d.push({ x: c.x * w, y: c.y * w, w });
   }
   for (let r = 1; r <= degree; r++) {
     for (let i = degree; i >= r; i--) {
@@ -200,10 +214,15 @@ function splinePoint(ctrl: Pt[], knots: number[], degree: number, t: number): Pt
       d[i] = {
         x: d[i - 1].x * (1 - a) + d[i].x * a,
         y: d[i - 1].y * (1 - a) + d[i].y * a,
+        w: d[i - 1].w * (1 - a) + d[i].w * a,
       };
     }
   }
-  return d[degree];
+  const out = d[degree];
+  if (rational && Math.abs(out.w) > 1e-12) {
+    return { x: out.x / out.w, y: out.y / out.w };
+  }
+  return { x: out.x, y: out.y };
 }
 
 /**
@@ -244,37 +263,42 @@ function entityPath(
     }
 
     case 'CIRCLE': {
-      const c = P(num(e, 10, 0), num(e, 20, 0));
-      const r = num(e, 40, 0) * scaleOf(m);
+      const cx = num(e, 10, 0);
+      const cy = num(e, 20, 0);
+      const r = num(e, 40, 0);
       if (r <= 0) return null;
-      return `${arcPath(c.x, c.y, r, 0, Math.PI * 2, true)} Z`;
+      return `${arcPath(cx, cy, r, 0, Math.PI * 2, m, true)} Z`;
     }
 
     case 'ARC': {
-      const c = P(num(e, 10, 0), num(e, 20, 0));
-      const r = num(e, 40, 0) * scaleOf(m);
+      const cx = num(e, 10, 0);
+      const cy = num(e, 20, 0);
+      const r = num(e, 40, 0);
       if (r <= 0) return null;
       const a0 = (num(e, 50, 0) * Math.PI) / 180;
       let a1 = (num(e, 51, 0) * Math.PI) / 180;
       // DXF arcs always run counter-clockwise from start to end, so an end
       // angle below the start has gone once round the top.
       while (a1 < a0) a1 += Math.PI * 2;
-      return arcPath(c.x, c.y, r, a0, a1, true);
+      if (a1 - a0 < 1e-9) return null;
+      return arcPath(cx, cy, r, a0, a1, m, true);
     }
 
     case 'ELLIPSE': {
-      const c = P(num(e, 10, 0), num(e, 20, 0));
+      const cx = num(e, 10, 0);
+      const cy = num(e, 20, 0);
       // The major axis is stored as a vector from the centre, so it carries
       // both the size and the rotation of the ellipse.
-      const majorRaw = { x: num(e, 11, 0), y: num(e, 21, 0) };
-      const major = { x: m(majorRaw).x - m({ x: 0, y: 0 }).x, y: m(majorRaw).y - m({ x: 0, y: 0 }).y };
+      const mx = num(e, 11, 0);
+      const my = num(e, 21, 0);
       const ratio = num(e, 40, 1);
       const t0 = num(e, 41, 0);
-      const t1 = num(e, 42, Math.PI * 2);
-      const a = Math.hypot(major.x, major.y);
+      let t1 = num(e, 42, Math.PI * 2);
+      while (t1 < t0) t1 += Math.PI * 2;
+      const a = Math.hypot(mx, my);
       const b = a * ratio;
-      if (a <= 0) return null;
-      const rot = Math.atan2(major.y, major.x);
+      if (a <= 0 || b <= 0) return null;
+      const rot = Math.atan2(my, mx);
       const cos = Math.cos(rot);
       const sin = Math.sin(rot);
       const pts: Pt[] = [];
@@ -284,70 +308,114 @@ function entityPath(
         const t = t0 + (span * i) / steps;
         const ex = a * Math.cos(t);
         const ey = b * Math.sin(t);
-        pts.push({ x: c.x + ex * cos - ey * sin, y: -(c.y + ex * sin + ey * cos) });
+        const q = m({ x: cx + ex * cos - ey * sin, y: cy + ex * sin + ey * cos });
+        pts.push({ x: q.x, y: -q.y });
       }
       return fittedPath(pts, Math.abs(span - Math.PI * 2) < 1e-6);
     }
 
     case 'LWPOLYLINE':
     case 'POLYLINE': {
-      const xs = nums(e, 10);
-      const ys = nums(e, 20);
-      if (xs.length < 2 || ys.length < 2) return null;
       /*
-       * Bulges are positional: group code 42 appears only on the vertices that
-       * have one, so they cannot simply be zipped against the vertex list. The
-       * pairs are walked in file order instead, and each bulge is attached to
-       * the vertex whose coordinates preceded it.
+       * Walk pairs in file order so each vertex's (10, 20, optional 42) stay
+       * paired together — a NaN coordinate on one vertex drops only that vertex
+       * instead of shifting every subsequent Y against the wrong X.
        */
-      const bulges = new Array(xs.length).fill(0);
-      let vi = -1;
+      const localVerts: Array<{ x: number; y: number; bulge: number }> = [];
+      let curX: number | null = null;
+      let curY: number | null = null;
+      let curB = 0;
+      const flush = () => {
+        if (curX !== null && curY !== null && Number.isFinite(curX) && Number.isFinite(curY)) {
+          localVerts.push({ x: curX, y: curY, bulge: curB });
+        }
+        curX = null;
+        curY = null;
+        curB = 0;
+      };
       for (const p of e.pairs) {
-        if (p.code === 10) vi++;
-        else if (p.code === 42 && vi >= 0 && vi < bulges.length) bulges[vi] = parseFloat(p.value) || 0;
+        if (p.code === 10) {
+          if (curX !== null) flush();
+          curX = parseFloat(p.value);
+        } else if (p.code === 20) {
+          curY = parseFloat(p.value);
+        } else if (p.code === 42) {
+          const b = parseFloat(p.value);
+          curB = Number.isFinite(b) ? b : 0;
+        }
       }
+      flush();
+      if (localVerts.length < 2) return null;
+
       const closed = (num(e, 70, 0) & 1) === 1;
-      const verts = xs.slice(0, Math.min(xs.length, ys.length)).map((x, i) => P(x, ys[i]));
-      let d = `M ${D(verts[0])}`;
-      const last = closed ? verts.length : verts.length - 1;
+      const firstDoc = P(localVerts[0].x, localVerts[0].y);
+      let d = `M ${D(firstDoc)}`;
+      const last = closed ? localVerts.length : localVerts.length - 1;
       for (let i = 0; i < last; i++) {
-        const a = verts[i];
-        const b = verts[(i + 1) % verts.length];
-        const closing = closed && i === verts.length - 1;
+        const a = localVerts[i];
+        const b = localVerts[(i + 1) % localVerts.length];
+        const closing = closed && i === localVerts.length - 1;
         /*
          * `Z` already draws the straight run back to the start, so emitting it
          * as well leaves a zero-length segment — a stray node in the editor and
          * a retract to nowhere in the toolpath. A closing run that is an arc
          * still has to be drawn: `Z` only ever closes straight.
          */
-        if (closing && !bulges[i]) break;
-        d += bulges[i] ? bulgeArc(a, b, bulges[i], true) : ` L ${D(b)}`;
+        if (closing && !a.bulge) break;
+        d += a.bulge ? bulgeArc(a, b, a.bulge, m, true) : ` L ${D(P(b.x, b.y))}`;
       }
       return closed ? `${d} Z` : d;
     }
 
     case 'SPLINE': {
-      const xs = nums(e, 10);
-      const ys = nums(e, 20);
-      const ctrl = xs.map((x, i) => P(x, ys[i] ?? 0)).filter((p) => Number.isFinite(p.y));
+      const ctrl: Pt[] = [];
+      let curX: number | null = null;
+      let curY: number | null = null;
+      const flushCtrl = () => {
+        if (curX !== null && curY !== null && Number.isFinite(curX) && Number.isFinite(curY)) {
+          const p = P(curX, curY);
+          if (Number.isFinite(p.x) && Number.isFinite(p.y)) ctrl.push(p);
+        }
+        curX = null;
+        curY = null;
+      };
+      for (const p of e.pairs) {
+        if (p.code === 10) {
+          if (curX !== null) flushCtrl();
+          curX = parseFloat(p.value);
+        } else if (p.code === 20) {
+          curY = parseFloat(p.value);
+        }
+      }
+      flushCtrl();
       if (ctrl.length < 2) return null;
-      const degree = Math.min(num(e, 71, 3), ctrl.length - 1);
+
+      const degree = Math.max(1, Math.min(Math.round(num(e, 71, 3)), ctrl.length - 1));
       const knots = nums(e, 40);
+      const weights = nums(e, 41);
       const closed = (num(e, 70, 0) & 1) === 1;
       if (ctrl.length === 2 || knots.length < ctrl.length + degree + 1) {
         // Not enough knots to evaluate — a straight run through the control
         // points is wrong by less than pretending the entity was not there.
-        return `M ${ctrl.map(D).join(' L ')}`;
+        return `M ${ctrl.map(D).join(' L ')}${closed ? ' Z' : ''}`;
       }
       const t0 = knots[degree];
       const t1 = knots[ctrl.length];
+      if (!Number.isFinite(t0) || !Number.isFinite(t1) || !(t1 > t0)) {
+        return `M ${ctrl.map(D).join(' L ')}${closed ? ' Z' : ''}`;
+      }
+      const useWeights = weights.length === ctrl.length && weights.every((w) => w > 0) ? weights : undefined;
       const steps = Math.max(32, ctrl.length * SPLINE_SAMPLES_PER_SPAN);
+      const eps = (t1 - t0) * 1e-9;
       const pts: Pt[] = [];
       for (let i = 0; i <= steps; i++) {
         const t = t0 + ((t1 - t0) * i) / steps;
-        const p = splinePoint(ctrl, knots, degree, Math.min(t, t1 - 1e-9));
-        pts.push({ x: p.x, y: -p.y });
+        const p = splinePoint(ctrl, knots, degree, Math.min(t, t1 - eps), useWeights);
+        if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
+          pts.push({ x: p.x, y: -p.y });
+        }
       }
+      if (pts.length < 2) return null;
       return fittedPath(pts, closed);
     }
 
@@ -356,7 +424,9 @@ function entityPath(
       // Four corners, in the DXF's own boustrophedon order — 10,11,13,12 — which
       // is why a naive read of it draws a bow tie.
       const order = [10, 11, 13, 12];
-      const pts = order.map((c) => P(num(e, c, NaN), num(e, c + 10, NaN))).filter((p) => Number.isFinite(p.x));
+      const pts = order
+        .map((c) => P(num(e, c, NaN), num(e, c + 10, NaN)))
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
       if (pts.length < 3) return null;
       return `M ${pts.map(D).join(' L ')} Z`;
     }
@@ -387,13 +457,6 @@ function entityPath(
     default:
       return null;
   }
-}
-
-/** Uniform scale a block transform applies, for radii that have no vector. */
-function scaleOf(m: (p: Pt) => Pt): number {
-  const o = m({ x: 0, y: 0 });
-  const u = m({ x: 1, y: 0 });
-  return Math.hypot(u.x - o.x, u.y - o.y) || 1;
 }
 
 /** Sampled points, refitted as Béziers so the flattener decides the chords. */
@@ -590,7 +653,9 @@ export function importDXF(content: string, opts: DxfImportOptions = {}): SvgImpo
    * `depth` guards against a block that inserts itself — a malformed file
    * should not hang the tab, and nothing here is on a worker.
    */
-  const walk = (entities: Entity[], m: (p: Pt) => Pt, depth: number) => {
+  const MAX_GRID_INSTANCES = 10000;
+
+  const walk = (entities: Entity[], m: (p: Pt) => Pt, depth: number, parentLayer: string) => {
     if (depth > 8) {
       warnings.add('A block is nested more than eight deep, or inserts itself; the rest was skipped.');
       return;
@@ -611,14 +676,21 @@ export function importDXF(content: string, opts: DxfImportOptions = {}): SvgImpo
         const cos = Math.cos(rot);
         const sin = Math.sin(rot);
         // A block placed as a grid — the DXF way of saying "six of these".
-        const cols = Math.max(1, Math.round(num(e, 70, 1)));
-        const rows = Math.max(1, Math.round(num(e, 71, 1)));
+        const cols = Math.max(1, Math.min(1000, Math.round(num(e, 70, 1))));
+        let rows = Math.max(1, Math.min(1000, Math.round(num(e, 71, 1))));
+        if (cols * rows > MAX_GRID_INSTANCES) {
+          rows = Math.max(1, Math.floor(MAX_GRID_INSTANCES / cols));
+        }
         const colGap = num(e, 44, 0);
         const rowGap = num(e, 45, 0);
+        const insertLayer = val(e, 8);
+        const effectiveLayer = !insertLayer || insertLayer === '0' ? parentLayer : insertLayer;
         for (let c = 0; c < cols; c++) {
           for (let r = 0; r < rows; r++) {
-            const ox = ix + c * colGap;
-            const oy = iy + r * rowGap;
+            const gx = c * colGap;
+            const gy = r * rowGap;
+            const ox = ix + gx * cos - gy * sin;
+            const oy = iy + gx * sin + gy * cos;
             walk(
               block.entities,
               (p) => {
@@ -626,18 +698,23 @@ export function importDXF(content: string, opts: DxfImportOptions = {}): SvgImpo
                 const py = (p.y - block.base.y) * sy;
                 return m({ x: ox + px * cos - py * sin, y: oy + px * sin + py * cos });
               },
-              depth + 1
+              depth + 1,
+              effectiveLayer
             );
           }
         }
         continue;
       }
       const d = entityPath(e, m, warnings);
-      if (d) paths.push({ d, layer: val(e, 8) || '0' });
+      if (d) {
+        const eLayer = val(e, 8);
+        const layer = !eLayer || eLayer === '0' ? parentLayer : eLayer;
+        paths.push({ d, layer });
+      }
     }
   };
 
-  walk(groupEntities(section(pairs, 'ENTITIES')), (p) => ({ x: p.x * unit, y: p.y * unit }), 0);
+  walk(groupEntities(section(pairs, 'ENTITIES')), (p) => ({ x: p.x * unit, y: p.y * unit }), 0, '0');
 
   if (!paths.length) {
     return {
@@ -702,7 +779,7 @@ export function importDXF(content: string, opts: DxfImportOptions = {}): SvgImpo
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (const p of paths) {
-    for (const match of p.d.matchAll(/(-?\d*\.?\d+)\s+(-?\d*\.?\d+)/g)) {
+    for (const match of p.d.matchAll(/([-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?)/g)) {
       const x = parseFloat(match[1]);
       const y = parseFloat(match[2]);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;

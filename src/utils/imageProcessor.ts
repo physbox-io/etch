@@ -193,6 +193,7 @@ const CUTOUT_ISLAND_FRACTION = 0.01;
  */
 export function grayFromImageData(imageData: ImageData): Uint8Array {
   const { width, height, data } = imageData;
+  if (!(width > 0) || !(height > 0) || data.length < width * height * 4) return new Uint8Array(0);
   const out = new Uint8Array(width * height);
   for (let i = 0; i < width * height; i++) out[i] = data[i * 4];
   return out;
@@ -205,14 +206,20 @@ export function loadImageElement(source: File | Blob | string): Promise<HTMLImag
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = (err) => reject(err);
+    const objectUrl = typeof source === 'string' ? null : URL.createObjectURL(source);
+    const cleanup = () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    img.onload = () => {
+      cleanup();
+      resolve(img);
+    };
+    img.onerror = (err) => {
+      cleanup();
+      reject(err);
+    };
 
-    if (typeof source === 'string') {
-      img.src = source;
-    } else {
-      img.src = URL.createObjectURL(source);
-    }
+    img.src = objectUrl ?? (source as string);
   });
 }
 
@@ -231,13 +238,14 @@ export function processImageCanvas(
   /** Present when `options.cutout` was on and the mask was applied. */
   cutout?: CutoutInfo;
 } {
-  let w = img.naturalWidth || img.width || 300;
-  let h = img.naturalHeight || img.height || 300;
+  const cap = Number.isFinite(maxDimension) && maxDimension > 0 ? Math.max(1, Math.round(maxDimension)) : 300;
+  let w = img.naturalWidth || img.width || cap;
+  let h = img.naturalHeight || img.height || cap;
 
-  if (w > maxDimension || h > maxDimension) {
-    const scale = maxDimension / Math.max(w, h);
-    w = Math.round(w * scale);
-    h = Math.round(h * scale);
+  if (w > cap || h > cap) {
+    const scale = cap / Math.max(w, h);
+    w = Math.max(1, Math.round(w * scale));
+    h = Math.max(1, Math.round(h * scale));
   }
 
   const canvas = document.createElement('canvas');
@@ -256,10 +264,12 @@ export function processImageCanvas(
   const colorDiff =
     options.cutout && options.cutoutBackground === 'any' ? colorDistanceFromBorder(data, w, h) : undefined;
 
-  // Apply Brightness & Contrast factor
-  const contrastFactor = (259 * (options.contrast + 255)) / (255 * (259 - options.contrast));
-  const brightnessOffset = (options.brightness / 100) * 255;
-  const gamma = options.gamma ?? 1;
+  // Apply Brightness & Contrast factor (clamp contrast away from ±259 singularity)
+  const contrast = Number.isFinite(options.contrast) ? Math.max(-255, Math.min(255, options.contrast)) : 0;
+  const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+  const brightness = Number.isFinite(options.brightness) ? options.brightness : 0;
+  const brightnessOffset = (brightness / 100) * 255;
+  const gamma = Number.isFinite(options.gamma) && options.gamma > 0 ? options.gamma : 1;
 
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -353,6 +363,9 @@ export function applyCutout(
 ): CutoutInfo {
   const { width: w, height: h, data } = imageData;
   const n = w * h;
+  if (!(w > 0) || !(h > 0) || data.length < n * 4) {
+    return { background: 'white', borderGray: 255, tolerance: CUTOUT_TOLERANCE_MIN, subjectFraction: 0 };
+  }
 
   // The border, read once. A picture of someone against a backdrop has
   // backdrop along most of its edge; a subject that reaches the edge (the
@@ -489,6 +502,7 @@ export function applyCutout(
  * is at distance zero, because a transparent PNG's backdrop *is* nothing.
  */
 export function colorDistanceFromBorder(data: Uint8ClampedArray, w: number, h: number): Uint8Array {
+  if (!(w > 0) || !(h > 0) || data.length < w * h * 4) return new Uint8Array(0);
   const chan: number[][] = [[], [], []];
   const push = (i: number) => {
     if (data[i * 4 + 3] < 128) return;
@@ -738,6 +752,7 @@ export function applyDither(
   h: number,
   mode: Exclude<DitherMode, 'none'>
 ): void {
+  if (!(w > 0) || !(h > 0) || data.length < w * h * 4) return;
   if (mode === 'ordered') {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -888,6 +903,17 @@ function traceGrid(
   scaleX: number,
   scaleY: number
 ): string[] {
+  if (
+    !(width > 0) ||
+    !(height > 0) ||
+    grid.length < width * height ||
+    !Number.isFinite(scaleX) ||
+    !Number.isFinite(scaleY) ||
+    scaleX <= 0 ||
+    scaleY <= 0
+  ) {
+    return [];
+  }
   const lw = width + 1;
   // One flag per lattice edge. Horizontal edge (x,y) runs right from that
   // corner; vertical edge (x,y) runs down from it.
@@ -899,7 +925,15 @@ function traceGrid(
   // points to be scaled into. Defaulted rather than required so a caller from
   // before this was a setting — the MCP bridge, an older saved preset — still
   // traces at the three-quarters of a pixel it always did.
-  const epsilon = (options.simplifyPx ?? DEFAULT_IMAGE_OPTIONS.simplifyPx) * Math.min(scaleX, scaleY);
+  const simplifyPx =
+    typeof options.simplifyPx === 'number' && Number.isFinite(options.simplifyPx) && options.simplifyPx >= 0
+      ? options.simplifyPx
+      : DEFAULT_IMAGE_OPTIONS.simplifyPx;
+  const epsilon = simplifyPx * Math.min(scaleX, scaleY);
+  const minHoleArea =
+    typeof options.minHoleArea === 'number' && Number.isFinite(options.minHoleArea) && options.minHoleArea >= 0
+      ? options.minHoleArea
+      : 0;
 
   const sample = (x: number, y: number) => {
     if (x < 0 || x >= width || y < 0 || y >= height) return 0;
@@ -957,7 +991,7 @@ function traceGrid(
       // `minHoleArea` is a pixel *area*, so speck rejection measures the area
       // the loop encloses. Comparing it against the point count — as this used
       // to — threw away a long thin outline and kept a fat blob of noise.
-      if (polyPoints.length >= 3 && polygonArea(polyPoints) >= options.minHoleArea * scaleX * scaleY) {
+      if (polyPoints.length >= 3 && polygonArea(polyPoints) >= minHoleArea * scaleX * scaleY) {
         const d = pointsToSVGPath(polyPoints, options.smoothing, epsilon);
         if (d) paths.push(d);
       }
@@ -1039,6 +1073,19 @@ export function generateHalftoneCompoundPath(
   scaleY: number
 ): { pathD: string; dotCount: number } {
   const { width, height, data } = imageData;
+  if (
+    !(width > 0) ||
+    !(height > 0) ||
+    data.length < width * height * 4 ||
+    !Number.isFinite(scaleX) ||
+    !Number.isFinite(scaleY) ||
+    scaleX <= 0 ||
+    scaleY <= 0 ||
+    !Number.isFinite(options.halftoneSpacing) ||
+    options.halftoneSpacing <= 0
+  ) {
+    return { pathD: '', dotCount: 0 };
+  }
 
   const stepX = Math.max(1, Math.round(options.halftoneSpacing / scaleX));
   const stepY = Math.max(1, Math.round(options.halftoneSpacing / scaleY));
@@ -1116,6 +1163,19 @@ export function generateScanlinePaths(
 ): string[] {
   const { width, height, data } = imageData;
   const paths: string[] = [];
+  if (
+    !(width > 0) ||
+    !(height > 0) ||
+    data.length < width * height * 4 ||
+    !Number.isFinite(scaleX) ||
+    !Number.isFinite(scaleY) ||
+    scaleX <= 0 ||
+    scaleY <= 0 ||
+    !Number.isFinite(options.scanlineSpacing) ||
+    options.scanlineSpacing <= 0
+  ) {
+    return paths;
+  }
 
   const stepY = Math.max(1, Math.round(options.scanlineSpacing / scaleY));
   const thresh = options.threshold;
@@ -1136,7 +1196,7 @@ export function generateScanlinePaths(
       } else if (!isDark && lineActive) {
         lineActive = false;
         const x1 = startX * scaleX;
-        const x2 = (x - 1) * scaleX;
+        const x2 = x * scaleX;
         const posY = py * scaleY;
         segD += ` M ${x1.toFixed(2)},${posY.toFixed(2)} L ${x2.toFixed(2)},${posY.toFixed(2)}`;
       }
@@ -1144,7 +1204,7 @@ export function generateScanlinePaths(
 
     if (lineActive) {
       const x1 = startX * scaleX;
-      const x2 = (width - 1) * scaleX;
+      const x2 = width * scaleX;
       const posY = py * scaleY;
       segD += ` M ${x1.toFixed(2)},${posY.toFixed(2)} L ${x2.toFixed(2)},${posY.toFixed(2)}`;
     }

@@ -80,14 +80,30 @@ const SAME_MM = 0.5;
  * ply and then run on 4 mm does not go together.
  */
 function readDeclaredStock(svgText: string): { thicknessMm: number | null; kerfMm: number | null } {
-  const thickness = /Thickness=([\d.]+)mm/.exec(svgText);
-  const kerf = /Kerf=([\d.]+)mm/.exec(svgText);
+  const thickness = /Thickness=([\d.]+)\s*mm/.exec(svgText);
+  const kerf = /Kerf=([\d.]+)\s*mm/.exec(svgText);
   const t = thickness ? parseFloat(thickness[1]) : NaN;
   const k = kerf ? parseFloat(kerf[1]) : NaN;
   return {
     thicknessMm: Number.isFinite(t) && t > 0 ? t : null,
     kerfMm: Number.isFinite(k) && k > 0 ? k : null,
   };
+}
+
+function stripUnsafeNodes(root: Element): void {
+  for (const el of [...root.querySelectorAll('script, foreignObject')]) {
+    el.remove();
+  }
+  for (const el of [root, ...root.querySelectorAll('*')]) {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) {
+        el.removeAttribute(attr.name);
+      } else if ((name === 'href' || name === 'xlink:href') && /^\s*javascript:/i.test(attr.value)) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
 }
 
 /**
@@ -158,8 +174,10 @@ export function analyseSheetedSvg(svgText: string): SheetedSvg | null {
      */
     const match = /\(\s*[\d.]+mm\s*x\s*[\d.]+mm\s*x\s*([\d.]+)mm/.exec(text.textContent ?? '');
     if (!Number.isFinite(ty) || !match) continue;
+    const t = parseFloat(match[1]);
+    if (!Number.isFinite(t) || t <= 0) continue;
     const band = measured.findIndex((m) => ty >= m.top - SAME_MM && ty <= m.top + m.height);
-    if (band >= 0) captionThickness.set(band, parseFloat(match[1]));
+    if (band >= 0) captionThickness.set(band, t);
   }
 
   /*
@@ -177,6 +195,7 @@ export function analyseSheetedSvg(svgText: string): SheetedSvg | null {
     if (tx < band.width * 0.1 && ty - band.top < band.height * 0.1) text.remove();
   }
   for (const m of measured) m.el.remove();
+  stripUnsafeNodes(svg);
 
   const declared = readDeclaredStock(svgText);
   return {
@@ -194,6 +213,9 @@ export function analyseSheetedSvg(svgText: string): SheetedSvg | null {
   };
 }
 
+const posFinite = (v: number | null | undefined): number | null =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+
 /**
  * Resolves a stacked multi-sheet SVG either from its dashed sheet frames
  * (`analyseSheetedSvg`) or, when the sender hid sheet frames (`Annotations:
@@ -206,39 +228,36 @@ export function resolveSheetedSvg(
   specs?: readonly DeclaredSheetSpec[] | null,
   fallbackThicknessMm?: number | null,
 ): SheetedSvg | null {
+  const safeFallback = posFinite(fallbackThicknessMm);
   const analysed = analyseSheetedSvg(svgText);
   if (analysed) {
     const bands = analysed.bands.bands.map((b, i) => ({
       ...b,
       thicknessMm:
-        (specs?.[i]?.thicknessMm && specs[i].thicknessMm! > 0 ? specs[i].thicknessMm! : null) ??
+        posFinite(specs?.[i]?.thicknessMm) ??
         b.thicknessMm ??
-        (fallbackThicknessMm && fallbackThicknessMm > 0 ? fallbackThicknessMm : null),
+        safeFallback,
     }));
     return {
       cleanedSvg: analysed.cleanedSvg,
       bands: {
         ...analysed.bands,
         bands,
-        thicknessMm:
-          analysed.bands.thicknessMm ??
-          (fallbackThicknessMm && fallbackThicknessMm > 0 ? fallbackThicknessMm : null),
+        thicknessMm: analysed.bands.thicknessMm ?? safeFallback,
       },
     };
   }
   if (!specs || specs.length < 2) return null;
-  if (specs.some((s) => !(s.widthMm > 0) || !(s.heightMm > 0))) return null;
+  if (specs.some((s) => !posFinite(s.widthMm) || !posFinite(s.heightMm))) return null;
   const declared = readDeclaredStock(svgText);
-  const fallback =
-    declared.thicknessMm ??
-    (fallbackThicknessMm && fallbackThicknessMm > 0 ? fallbackThicknessMm : null);
+  const fallback = declared.thicknessMm ?? safeFallback;
   let top = 0;
   const bands: SheetBand[] = specs.map((s) => {
     const band: SheetBand = {
       top,
       width: s.widthMm,
       height: s.heightMm,
-      thicknessMm: s.thicknessMm && s.thicknessMm > 0 ? s.thicknessMm : fallback,
+      thicknessMm: posFinite(s.thicknessMm) ?? fallback,
     };
     top += s.heightMm;
     return band;
@@ -256,6 +275,7 @@ export function resolveSheetedSvg(
 
 /** Shifts an element up by `dy` millimetres, path data included. */
 function liftBy(el: EtchElement, dy: number): EtchElement {
+  if (dy === 0) return el;
   if (el.d) {
     const m: Matrix = [1, 0, 0, 1, 0, -dy];
     return { ...el, d: transformPathD(el.d, m) };

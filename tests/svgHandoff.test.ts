@@ -113,6 +113,13 @@ describe('readSvgHandoff', () => {
     expect(handoff?.sheets).toBeNull();
   });
 
+  it('rejects Infinity or extra dimensions in sheets and normalizes machine case', async () => {
+    setHash(fragment(STENCIL_SVG, { machine: ' CNC ', sheets: 'Infinityx400,300x200' }));
+    const handoff = await readSvgHandoff();
+    expect(handoff?.machine).toBe('cnc');
+    expect(handoff?.sheets).toBeNull();
+  });
+
   it('refuses a version it does not know', async () => {
     setHash(fragment(STENCIL_SVG, { v: '2' }));
     await expect(readSvgHandoff()).rejects.toThrow(/newer version/);

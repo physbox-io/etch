@@ -7,7 +7,9 @@ import { hasFreshOutline } from './textVectorizer';
  * Serializes an EtchDocument into a clean, standalone SVG XML string.
  */
 export function exportToSVGString(doc: EtchDocument): string {
-  const { width, height, layers, elements } = doc;
+  const { layers, elements } = doc;
+  const width = safeNum(doc.width, 300);
+  const height = safeNum(doc.height, 200);
 
   let svg = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n`;
   svg += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">\n`;
@@ -22,7 +24,7 @@ export function exportToSVGString(doc: EtchDocument): string {
     if (!layer.visible) continue;
     const layerElements = elements.filter(el => el.layerId === layer.id && el.visible);
 
-    svg += `  <g id="layer-${layer.id}" data-layer-name="${escapeXml(layer.name)}" data-operation="${layer.operation}">\n`;
+    svg += `  <g id="layer-${escapeXml(layer.id)}" data-layer-name="${escapeXml(layer.name)}" data-operation="${escapeXml(layer.operation)}">\n`;
 
     for (const el of layerElements) {
       svg += renderElementSvg(el, layer);
@@ -33,6 +35,10 @@ export function exportToSVGString(doc: EtchDocument): string {
 
   svg += `</svg>`;
   return svg;
+}
+
+function safeNum(v: number | undefined, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
 function escapeXml(unsafe: string): string {
@@ -53,9 +59,9 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
   // was on screen (it previously rotated about a different pivot).
   const transform = `transform="${getElementTransform(el)}"`;
   const stroke = el.strokeColor || layer.color;
-  const strokeW = el.strokeWidth || 0.5;
+  const strokeW = safeNum(el.strokeWidth, 0.5) || 0.5;
   const fill = el.fillColor || (layer.operation === 'fill' ? stroke : 'none');
-  const opacity = el.opacity ?? 1;
+  const opacity = safeNum(el.opacity, 1);
 
   // Colours can carry text straight through from an imported file, so they are
   // escaped like any other untrusted attribute value rather than interpolated raw.
@@ -63,22 +69,25 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
 
   switch (el.type) {
     case 'rect':
-      return `    <rect ${transform} width="${el.w || 50}" height="${el.h || 30}" rx="${el.rx || 0}" ry="${el.ry || 0}" ${style} />\n`;
+      return `    <rect ${transform} width="${safeNum(el.w, 50)}" height="${safeNum(el.h, 30)}" rx="${safeNum(el.rx, 0)}" ry="${safeNum(el.ry, 0)}" ${style} />\n`;
 
     case 'circle':
-      return `    <circle ${transform} r="${el.r || 25}" ${style} />\n`;
+      return `    <circle ${transform} r="${safeNum(el.r, 25)}" ${style} />\n`;
 
     case 'ellipse':
-      return `    <ellipse ${transform} rx="${el.rx2 || 30}" ry="${el.ry2 || 20}" ${style} />\n`;
+      return `    <ellipse ${transform} rx="${safeNum(el.rx2, 30)}" ry="${safeNum(el.ry2, 20)}" ${style} />\n`;
 
     case 'line':
-      return `    <line ${transform} x1="0" y1="0" x2="${el.x2 || 40}" y2="${el.y2 || 0}" ${style} />\n`;
+      return `    <line ${transform} x1="0" y1="0" x2="${safeNum(el.x2, 40)}" y2="${safeNum(el.y2, 0)}" ${style} />\n`;
 
     case 'polygon': {
-      let pts = el.points?.map(p => `${p.x},${p.y}`).join(' ');
+      let pts = el.points
+        ?.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y))
+        .map(p => `${p.x},${p.y}`)
+        .join(' ');
       if (!pts) {
-        const sides = el.sides || 6;
-        const r = el.r || 25;
+        const sides = Math.max(3, Math.round(safeNum(el.sides, 6)));
+        const r = safeNum(el.r, 25);
         const polyPts: string[] = [];
         for (let i = 0; i < sides; i++) {
           const a = (i * 2 * Math.PI) / sides;
@@ -98,7 +107,7 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
       // dominant-baseline matches the canvas and the bounding-box maths, which
       // both hang the glyphs down from the origin. Without it the exported text
       // sat one ascender higher than it appeared on screen.
-      return `    <text ${transform} dominant-baseline="hanging" font-family="${escapeXml(el.fontFamily || 'Outfit')}" font-size="${el.fontSize || 16}" font-weight="${escapeXml(String(el.fontWeight || '600'))}" letter-spacing="${el.letterSpacing || 0}" ${style}>${escapeXml(el.text || '')}</text>\n`;
+      return `    <text ${transform} dominant-baseline="hanging" font-family="${escapeXml(el.fontFamily || 'Outfit')}" font-size="${safeNum(el.fontSize, 16)}" font-weight="${escapeXml(String(el.fontWeight || '600'))}" letter-spacing="${safeNum(el.letterSpacing, 0)}" ${style}>${escapeXml(el.text || '')}</text>\n`;
 
     case 'path':
     case 'freehand':
@@ -120,7 +129,7 @@ function renderElementSvg(el: EtchElement, layer: EtchLayer): string {
        * would leave the operator wondering where it went.
        */
       return (
-        `    <rect ${transform} width="${el.w || 50}" height="${el.h || 50}" ` +
+        `    <rect ${transform} width="${safeNum(el.w, 50)}" height="${safeNum(el.h, 50)}" ` +
         `stroke="${escapeXml(stroke)}" stroke-width="${strokeW}" stroke-dasharray="2,1" ` +
         `fill="none" opacity="${opacity}" data-shaded-image="${escapeXml(el.name)}" />\n`
       );
