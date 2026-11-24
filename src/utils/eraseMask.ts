@@ -52,15 +52,25 @@ const JOIN_TOL = 1e-9;
  * non-uniform scale; an elliptical brush is not worth a second code path.
  */
 export function eraserWidth(el: EtchElement): number {
-  const scale = Math.sqrt(Math.abs((el.scaleX ?? 1) * (el.scaleY ?? 1))) || 1;
-  return Math.max(MIN_ERASER_WIDTH_MM, (el.strokeWidth || DEFAULT_ERASER_WIDTH_MM) * scale);
+  const sx = Number.isFinite(el.scaleX) ? el.scaleX! : 1;
+  const sy = Number.isFinite(el.scaleY) ? el.scaleY! : 1;
+  const scale = Math.sqrt(Math.abs(sx * sy)) || 1;
+  const sw =
+    Number.isFinite(el.strokeWidth) && (el.strokeWidth ?? 0) > 0
+      ? el.strokeWidth!
+      : DEFAULT_ERASER_WIDTH_MM;
+  return Math.max(MIN_ERASER_WIDTH_MM, sw * scale);
 }
 
 /** An eraser stroke's centreline, in bed millimetres. */
 function centrelines(el: EtchElement): Pt[][] {
   if (!el.d) return [];
   return flattenPath(el.d)
-    .map((sp) => sp.points.map((p) => localToBed(el, p.x, p.y)))
+    .map((sp) =>
+      sp.points
+        .map((p) => localToBed(el, p.x, p.y))
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+    )
     .filter((pts) => pts.length >= 1);
 }
 
@@ -112,7 +122,8 @@ export function maskPolygons(elements: EtchElement[]): Pt[][] {
        * duplicated point gives it a zero-length line, which round caps turn
        * into the circle the operator drew.
        */
-      const pts = line.length >= 2 ? line : [line[0], { x: line[0].x + 1e-4, y: line[0].y }];
+      const pts =
+        line.length >= 2 ? line : [line[0], { x: line[0].x + 1 / CLIPPER_SCALE, y: line[0].y }];
       co.AddPaths(
         toClipperPaths([pts]),
         ClipperLib.JoinType.jtRound,
@@ -179,7 +190,13 @@ export function buildMask(polys: Pt[][]): EraseMask | null {
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i];
       const b = poly[(i + 1) % poly.length];
-      if (a.x === b.x && a.y === b.y) continue;
+      if (
+        !Number.isFinite(a.x) || !Number.isFinite(a.y) ||
+        !Number.isFinite(b.x) || !Number.isFinite(b.y) ||
+        (a.x === b.x && a.y === b.y)
+      ) {
+        continue;
+      }
       edges.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
       minX = Math.min(minX, a.x);
       minY = Math.min(minY, a.y);
@@ -237,6 +254,7 @@ function clampIdx(i: number, n: number): number {
  * still drawing the operator kept.
  */
 export function insideMask(mask: EraseMask, p: Pt): boolean {
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
   if (p.x < mask.minX || p.x > mask.maxX || p.y < mask.minY || p.y > mask.maxY) return false;
 
   const row = clampIdx(Math.floor((p.y - mask.minY) / mask.cell), mask.rows);
@@ -259,6 +277,12 @@ export function insideMask(mask: EraseMask, p: Pt): boolean {
 
 /** Where a→b crosses the mask's boundary, as parameters in (0,1), sorted. */
 function crossings(mask: EraseMask, a: Pt, b: Pt): number[] {
+  if (
+    !Number.isFinite(a.x) || !Number.isFinite(a.y) ||
+    !Number.isFinite(b.x) || !Number.isFinite(b.y)
+  ) {
+    return [];
+  }
   const rx = b.x - a.x;
   const ry = b.y - a.y;
   if (rx === 0 && ry === 0) return [];

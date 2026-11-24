@@ -834,3 +834,19 @@ describe('beautify — smoothness', () => {
     expect(notes.join(' ')).toMatch(/spiral/);
   });
 });
+
+describe('beautify robustness', () => {
+  it('handles zero-length lines and elements with NaN coordinates cleanly', () => {
+    const zeroLine = {
+      id: 'zl', name: 'Zero', type: 'line', layerId: 'cut', x: 10, y: 10, x2: 0, y2: 0,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true, locked: false,
+    } as EtchElement;
+    const nanRect = {
+      id: 'nr', name: 'Bad', type: 'rect', layerId: 'cut', x: NaN, y: 10, w: 20, h: 20,
+      rotation: 0, scaleX: 1, scaleY: 1, opacity: 1, strokeWidth: 0.3, visible: true, locked: false,
+    } as EtchElement;
+    const res = beautifyElements([zeroLine, nanRect]);
+    expect(res.elements).toHaveLength(2);
+    expect(res.changed).toBe(0);
+  });
+});

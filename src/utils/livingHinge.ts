@@ -171,11 +171,16 @@ export function planLivingHinge(
   timestamp = Date.now()
 ): LivingHingePlan {
   const notes: string[] = [];
-  const across = opts.axis === 'x' ? opts.height : opts.width;
+  const floored = (v: number, min: number) => (Number.isFinite(v) ? Math.max(min, v) : min);
+  const width = floored(opts.width, 0);
+  const height = floored(opts.height, 0);
+  const x = Number.isFinite(opts.x) ? opts.x : 0;
+  const y = Number.isFinite(opts.y) ? opts.y : 0;
+  const across = opts.axis === 'x' ? height : width;
 
-  const slit = Math.max(0.5, opts.slitLengthMm);
-  const bridge = Math.max(0.1, opts.bridgeMm);
-  const pitch = Math.max(0.2, opts.pitchMm);
+  const slit = floored(opts.slitLengthMm, 0.5);
+  const bridge = floored(opts.bridgeMm, 0.1);
+  const pitch = floored(opts.pitchMm, 0.2);
 
   const spec: LivingHingeSpec = {
     axis: opts.axis,
@@ -183,17 +188,15 @@ export function planLivingHinge(
     bridgeMm: bridge,
     pitchMm: pitch,
   };
-  const { d, rows, slits } = hingeField(opts.width, opts.height, spec);
+  const { d, rows, slits } = hingeField(width, height, spec);
 
   const minBendRadiusMm = (across * 2) / Math.PI;
 
-  const fits = rows >= MIN_ROWS && slits > 0 && opts.width > 0 && opts.height > 0;
+  const fits = rows >= MIN_ROWS && slits > 0 && width > 0 && height > 0;
   if (rows < MIN_ROWS) {
     notes.push(
-      `${across.toFixed(0)} mm across at a ${pitch} mm pitch leaves ${rows} ` +
-        `row${rows === 1 ? '' : 's'} of slits. A hinge needs at least ${MIN_ROWS}: the bend is shared ` +
-        `between the rows, and with fewer it all lands on a handful of beams and they tear. Make the ` +
-        `hinge wider or the pitch finer.`
+      `${across.toFixed(0)} mm across at ${pitch} mm pitch leaves ${rows} ` +
+        `row${rows === 1 ? '' : 's'} (need at least ${MIN_ROWS}).`
     );
   }
   const thickness = doc.stockThickness ?? 3;
@@ -231,10 +234,10 @@ export function planLivingHinge(
     if (el.visible === false || el.type === 'erase') continue;
     const b = getBedBBox(el);
     if (
-      opts.x + opts.width > b.minX &&
-      opts.x < b.minX + b.width &&
-      opts.y + opts.height > b.minY &&
-      opts.y < b.minY + b.height
+      x + width > b.minX &&
+      x < b.minX + b.width &&
+      y + height > b.minY &&
+      y < b.minY + b.height
     ) {
       clashes.add(el.name);
     }
@@ -242,8 +245,7 @@ export function planLivingHinge(
   if (clashes.size > 0) {
     notes.push(
       `${[...clashes].map((n) => `"${n}"`).join(', ')} ` +
-        `${clashes.size === 1 ? 'is' : 'are'} inside the hinge. The slits are cut straight through ` +
-        `whatever is there — move the hinge or the artwork first.`
+        `${clashes.size === 1 ? 'is' : 'are'} inside the hinge and will be cut through.`
     );
   }
 
@@ -268,11 +270,11 @@ export function planLivingHinge(
          * is a few millimetres inside this and would put the handles somewhere
          * nobody drew.
          */
-        w: opts.width,
-        h: opts.height,
+        w: width,
+        h: height,
         hinge: spec,
-        x: opts.x,
-        y: opts.y,
+        x,
+        y,
         rotation: 0,
         scaleX: 1,
         scaleY: 1,

@@ -236,3 +236,20 @@ describe('resizing a perforation', () => {
     expect(Number.isFinite(field.holes)).toBe(true);
   });
 });
+
+describe('perforation robustness', () => {
+  it('handles NaN and Infinity region dimensions without hanging or NaN openArea', () => {
+    const f1 = perforationField(NaN, 100, DEFAULT_PERFORATION);
+    expect(f1.holes).toBe(0);
+    expect(Number.isFinite(f1.openArea)).toBe(true);
+
+    const f2 = perforationField(Infinity, 100, DEFAULT_PERFORATION);
+    expect(f2.holes).toBe(0);
+
+    const plan = planPerforation(base(), opts({ sizeMm: 2, pitchMm: NaN, slotLengthMm: NaN }));
+    expect(plan.elements).toHaveLength(1);
+    expect(Number.isFinite(plan.elements[0].perforation!.sizeMm)).toBe(true);
+    expect(Number.isFinite(plan.elements[0].perforation!.pitchMm)).toBe(true);
+    expect(Number.isFinite(plan.elements[0].perforation!.slotLengthMm)).toBe(true);
+  });
+});

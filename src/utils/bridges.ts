@@ -47,6 +47,7 @@ const MAX_BRIDGE_WIDTH_MM = 2.5;
  * middle, and gone with one pass of a blade.
  */
 export function bridgeWidthFor(stockThicknessMm: number): number {
+  if (!Number.isFinite(stockThicknessMm)) return MIN_BRIDGE_WIDTH_MM;
   return Math.min(
     MAX_BRIDGE_WIDTH_MM,
     Math.max(MIN_BRIDGE_WIDTH_MM, stockThicknessMm / 3)
@@ -63,7 +64,14 @@ export function bridgeWidthFor(stockThicknessMm: number): number {
  * at three points that nearly touch is the same as cutting it out.
  */
 export function planBridgeSpans(perimeterMm: number, widthMm: number): TabSpan[] {
-  if (!(widthMm > 0) || perimeterMm < widthMm * MIN_BRIDGES * 2) return [];
+  if (
+    !Number.isFinite(perimeterMm) ||
+    !Number.isFinite(widthMm) ||
+    !(widthMm > 0) ||
+    perimeterMm < widthMm * MIN_BRIDGES * 2
+  ) {
+    return [];
+  }
 
   const count = Math.max(MIN_BRIDGES, Math.round(perimeterMm / BRIDGE_SPACING_MM));
   const pitch = perimeterMm / count;
@@ -121,7 +129,7 @@ export function splitPolylineAtSpans(points: Pt[], spans: TabSpan[]): Pt[][] {
     const a = points[i - 1];
     const b = points[i];
     const len = Math.hypot(b.x - a.x, b.y - a.y);
-    if (len === 0) continue;
+    if (!(len > 0) || !Number.isFinite(len)) continue;
 
     // The edge is split at every bridge boundary that falls inside it, and each
     // resulting piece is kept or dropped whole. Testing only the endpoints

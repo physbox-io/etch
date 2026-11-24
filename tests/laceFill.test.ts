@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { growLace, type LacePt } from '../src/utils/laceFill';
+import { circleShape, growLace, type LacePt } from '../src/utils/laceFill';
 
 const square = { minX: 0, minY: 0, maxX: 60, maxY: 60, inside: (x: number, y: number) => x > 0 && y > 0 && x < 60 && y < 60 };
 const mirror = [(p: LacePt): LacePt => p, ([x, y]: LacePt): LacePt => [60 - x, y]];
@@ -49,5 +49,16 @@ describe('growLace', () => {
         expect(d).toBeGreaterThan(opts.gap + opts.strand - 0.6);
       }
     }
+  });
+});
+
+describe('laceFill robustness', () => {
+  it('returns empty cleanly on degenerate regions and non-finite/non-positive options', () => {
+    const inverted = { minX: 50, minY: 0, maxX: 10, maxY: 60, inside: () => true };
+    expect(growLace(inverted, opts)).toEqual({ strands: [], solids: [], details: [] });
+    expect(growLace(square, { ...opts, strand: 0 })).toEqual({ strands: [], solids: [], details: [] });
+    expect(growLace(square, { ...opts, gap: NaN })).toEqual({ strands: [], solids: [], details: [] });
+    expect(growLace(square, { ...opts, maxScroll: Infinity })).toEqual({ strands: [], solids: [], details: [] });
+    expect(circleShape(0, 0, Infinity).length).toBeGreaterThanOrEqual(16);
   });
 });

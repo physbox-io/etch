@@ -266,3 +266,31 @@ describe('offsetSelected', () => {
     expect(useStore.getState().offsetNotice).toContain('Select a shape');
   });
 });
+
+describe('offsetShape robustness', () => {
+  it('preserves coincident duplicate shapes instead of cancelling them out', () => {
+    clearGeomBBoxCache();
+    const r = offsetElements([rect('a', 10, 10, 40, 40), rect('b', 10, 10, 40, 40)], 2);
+    expect('error' in r).toBe(false);
+    if ('error' in r) return;
+    const box = extent(r);
+    expect(box.maxX - box.minX).toBeCloseTo(44, 1);
+    expect(box.maxY - box.minY).toBeCloseTo(44, 1);
+  });
+
+  it('keeps coincident duplicate holes inside a plate as a single hole', () => {
+    clearGeomBBoxCache();
+    const r = offsetElements(
+      [rect('plate', 0, 0, 100, 100), rect('h1', 30, 30, 40, 40), rect('h2', 30, 30, 40, 40)],
+      2
+    );
+    expect('error' in r).toBe(false);
+    if ('error' in r) return;
+    expect(flattenPath(r.d)).toHaveLength(2);
+  });
+
+  it('rejects non-finite offset distances cleanly', () => {
+    expect('error' in offsetElements([rect('a', 0, 0, 20, 20)], NaN)).toBe(true);
+    expect('error' in offsetElements([rect('a', 0, 0, 20, 20)], Infinity)).toBe(true);
+  });
+});

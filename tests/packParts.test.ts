@@ -241,3 +241,34 @@ describe('the gap between parts', () => {
     expect(gap).toBeCloseTo(6 + PART_CLEARANCE_MM, 6);
   });
 });
+
+describe('packParts robustness', () => {
+  it('handles non-finite gap/stock, poisoned fixed boxes, and zero-width parts at gap=0', () => {
+    const goodPart = {
+      ids: ['a'],
+      box: { minX: 0, minY: 0, maxX: 20, maxY: 10 },
+      fixed: false,
+      mayRotate: true,
+    };
+    const badFixed = {
+      ids: ['bad'],
+      box: { minX: NaN, minY: 0, maxX: NaN, maxY: 10 },
+      fixed: true,
+      mayRotate: false,
+    };
+    const res = packParts([badFixed, goodPart], { width: 100, height: 100 }, NaN);
+    expect(res.placements).toHaveLength(1);
+    expect(Number.isFinite(res.placements[0].x)).toBe(true);
+
+    const zeroW = {
+      ids: ['line'],
+      box: { minX: 5, minY: 0, maxX: 5, maxY: 20 },
+      fixed: false,
+      mayRotate: false,
+    };
+    const zeroRes = packParts([zeroW], { width: 100, height: 100 }, 0);
+    expect(zeroRes.placements).toHaveLength(1);
+
+    expect(packParts([goodPart], { width: 0, height: 100 }, 2).leftovers).toHaveLength(1);
+  });
+});

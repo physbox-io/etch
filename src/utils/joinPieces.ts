@@ -399,12 +399,13 @@ export interface JoinedRegion {
  * `minBridge` is `MIN_BRIDGE_MM` in those units.
  */
 export function joinRegion(region: ClipperLib.Paths, minBridge: number): JoinedRegion | BooleanFailure {
+  const safeMinBridge = Number.isFinite(minBridge) && minBridge > 0 ? minBridge : MIN_BRIDGE_MM;
   const pieces = piecesOf(region).map(toPiece);
   if (pieces.length < 2) {
     return { error: 'Already one piece — nothing to join.' };
   }
 
-  const bridges = spanningBridges(pieces, minBridge);
+  const bridges = spanningBridges(pieces, safeMinBridge);
 
   /*
    * Each bar is run a half-width into the material at both ends, along the line
@@ -437,6 +438,9 @@ export function joinRegion(region: ClipperLib.Paths, minBridge: number): JoinedR
   const widest = Math.max(...bridges.map((b) => b.width));
   const crumb = (widest * widest) / 4;
   const parts = piecesOf(joined).sort((a, b) => areaOf(b[0]) - areaOf(a[0]));
+  if (parts.length === 0) {
+    return { error: 'Joining left nothing behind.' };
+  }
 
   /*
    * Anything but the main piece is a crumb or a failure. Crumbs happen: where a
@@ -549,6 +553,7 @@ export function joinOutlineD(d: string, mmPerUnit = 1): string {
   // Non-zero, as fonts are: see `resolveElementOf`.
   const region = resolveElement(regionsOf(local), ClipperLib.PolyFillType.pftNonZero);
   if (region.length === 0) return d;
-  const joined = joinRegion(region, MIN_BRIDGE_MM / (mmPerUnit > 0 ? mmPerUnit : 1));
+  const safeScale = Number.isFinite(mmPerUnit) && mmPerUnit > 1e-6 ? mmPerUnit : 1;
+  const joined = joinRegion(region, MIN_BRIDGE_MM / safeScale);
   return 'error' in joined ? d : contoursToPathD(joined.contours);
 }

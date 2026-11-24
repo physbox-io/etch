@@ -226,3 +226,21 @@ describe('fill placement', () => {
     expect(el.x).toBe(r.x);
   });
 });
+
+describe('floodFill robustness', () => {
+  it('rejects non-finite seeds and degenerate stock dimensions without hanging', () => {
+    expect(isFloodFillFailure(floodFillRegion(doc([]), { x: NaN, y: 10 }))).toBe(true);
+    expect(isFloodFillFailure(floodFillRegion(doc([], { width: 0, height: 80 }), { x: 10, y: 10 }))).toBe(true);
+    expect(isFloodFillFailure(floodFillRegion(doc([], { width: NaN, height: 80 }), { x: 10, y: 10 }))).toBe(true);
+  });
+
+  it('sanitizes zero/negative/NaN pitch options and clips huge wall segments', () => {
+    const hugeLine = line('huge', -1e7, 20, 1e7, 20);
+    const r = floodFillRegion(doc([rect('a', 20, 20, 40, 30), hugeLine]), { x: 40, y: 35 }, {
+      pitchMm: 0,
+      coarsePitchMm: -1,
+      sealGapMm: NaN,
+    });
+    expect(isFloodFillFailure(r)).toBe(false);
+  });
+});

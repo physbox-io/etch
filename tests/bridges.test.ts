@@ -200,3 +200,12 @@ describe('a framed picture, planned end to end', () => {
     expect(cuts.some((s) => s.isClosed)).toBe(true);
   });
 });
+
+describe('bridges robustness', () => {
+  it('handles NaN/Infinity inputs without NaN output or infinite loops', () => {
+    expect(Number.isFinite(bridgeWidthFor(NaN))).toBe(true);
+    expect(planBridgeSpans(Infinity, 1)).toEqual([]);
+    expect(planBridgeSpans(NaN, 1)).toEqual([]);
+    expect(planBridgeSpans(200, Infinity)).toEqual([]);
+  });
+});

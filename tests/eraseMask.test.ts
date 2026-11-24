@@ -260,3 +260,27 @@ describe('the eraser in a planned job', () => {
     expect(restored.notes.some((n) => n.startsWith('Erased:'))).toBe(false);
   });
 });
+
+describe('eraseMask robustness', () => {
+  it('turns a single-point tap into a circular mask at Clipper scale', () => {
+    const mask = buildMask(maskPolygons([eraser('M 0 0', 4, 'l1', P(25, 25))]))!;
+    expect(mask).not.toBeNull();
+    expect(insideMask(mask, P(25, 25))).toBe(true);
+    expect(insideMask(mask, P(26.5, 25))).toBe(true);
+    expect(insideMask(mask, P(28, 25))).toBe(false);
+  });
+
+  it('handles non-finite strokeWidth, scales, and query points without throwing', () => {
+    const infWidth = eraser('M 0 0 L 10 0', Infinity, 'l1', P(10, 10));
+    const mask = buildMask(maskPolygons([infWidth]))!;
+    expect(mask).not.toBeNull();
+    expect(insideMask(mask, P(NaN, 10))).toBe(false);
+    expect(insideMask(mask, P(Infinity, 10))).toBe(false);
+    const { pieces, removedMm } = subtractMaskFromPolyline([P(NaN, 0), P(10, 10)], null, mask);
+    expect(Number.isFinite(removedMm)).toBe(true);
+    expect(Array.isArray(pieces)).toBe(true);
+
+    const nanScale = { ...eraser('M 0 0 L 10 0', 4, 'l1', P(10, 10)), scaleX: NaN, scaleY: Infinity };
+    expect(buildMask(maskPolygons([nanScale]))).toBeNull();
+  });
+});
