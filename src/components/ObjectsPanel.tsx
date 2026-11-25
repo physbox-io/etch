@@ -63,6 +63,8 @@ export const ObjectsPanel: React.FC = () => {
     <div className="shrink-0 border-t border-slate-200 dark:border-slate-800/80">
       <div className="flex items-center justify-between px-4 py-2.5">
         <button
+          type="button"
+          aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider cursor-pointer"
         >
@@ -79,8 +81,10 @@ export const ObjectsPanel: React.FC = () => {
         </button>
         <div className="flex items-center">
           <button
+            type="button"
             onClick={groupSelected}
             disabled={!canGroup}
+            aria-label="Group selected elements"
             title={
               canGroup
                 ? 'Put the selected elements in one object'
@@ -99,8 +103,11 @@ export const ObjectsPanel: React.FC = () => {
             single line of text is usually several pieces already.
           */}
           <button
+            type="button"
             onClick={joinedSelected ? unjoinSelected : joinSelected}
             disabled={selectedIds.length === 0}
+            aria-label={joinedSelected ? 'Unjoin selected' : 'Join selected into one piece'}
+            aria-pressed={joinedSelected}
             title={
               joinedSelected
                 ? 'Unjoin: take the bridges out. Joined text stays text; joined shapes come back as the pieces they were made from'
@@ -122,7 +129,7 @@ export const ObjectsPanel: React.FC = () => {
       {/* Outside the fold: the panel starts closed, and a join done from a
           closed panel still has to say what it did. */}
       {joinNotice && (
-        <p className="px-4 pb-2 -mt-1 text-[10px] text-slate-600 dark:text-slate-400 leading-relaxed">
+        <p role="status" aria-live="polite" className="px-4 pb-2 -mt-1 text-[10px] text-slate-600 dark:text-slate-400 leading-relaxed">
           {joinNotice}
         </p>
       )}
@@ -159,6 +166,9 @@ export const ObjectsPanel: React.FC = () => {
               >
                 <div className="flex items-center gap-1 px-1.5 py-1">
                   <button
+                    type="button"
+                    aria-expanded={isOpen}
+                    aria-label={isOpen ? `Collapse ${object.name}` : `Expand ${object.name}`}
                     onClick={() => setExpanded((e) => ({ ...e, [object.id]: !isOpen }))}
                     title={isOpen ? 'Hide contents' : 'Show contents'}
                     className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
@@ -172,18 +182,22 @@ export const ObjectsPanel: React.FC = () => {
                       rather than a double-click-to-edit dance, which is a
                       gesture nobody discovers. */}
                   <input
+                    aria-label="Object name"
                     value={object.name}
                     onChange={(e) => renameObject(object.id, e.target.value)}
                     onBlur={commitHistory}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') e.currentTarget.blur();
                     }}
-                    className="flex-1 min-w-0 bg-transparent text-xs font-semibold text-slate-700 dark:text-slate-200 px-1 py-0.5 rounded outline-none focus:bg-white dark:focus:bg-slate-800"
+                    className="flex-1 min-w-0 bg-transparent text-xs font-semibold text-slate-700 dark:text-slate-200 px-1 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus:bg-white dark:focus:bg-slate-800"
                   />
 
                   <button
+                    type="button"
                     onClick={() => setObjectVisible(object.id, !anyVisible)}
                     disabled={members.length === 0}
+                    aria-label={anyVisible ? `Hide ${object.name}` : `Show ${object.name}`}
+                    aria-pressed={anyVisible}
                     title={
                       anyVisible
                         ? 'Hide this object — hidden elements are not drawn and are not machined'
@@ -194,14 +208,18 @@ export const ObjectsPanel: React.FC = () => {
                     {anyVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                   </button>
                   <button
+                    type="button"
                     onClick={() => selectObject(object.id)}
+                    aria-label={`Select all ${members.length} elements in ${object.name}`}
                     title="Select everything in this object"
                     className="text-[10px] font-semibold text-slate-400 hover:text-violet-500 px-1 cursor-pointer"
                   >
                     {members.length}
                   </button>
                   <button
+                    type="button"
                     onClick={() => ungroupSelected(object.id)}
+                    aria-label={`Ungroup ${object.name}`}
                     title="Ungroup — the elements stay where they are"
                     className="p-0.5 rounded text-slate-400 hover:text-rose-500 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
                   >
@@ -214,6 +232,7 @@ export const ObjectsPanel: React.FC = () => {
                     {members.map((el) => (
                       <li key={el.id} className="flex items-center gap-1">
                         <button
+                          type="button"
                           onClick={() => setSelectedIds([el.id])}
                           className={`flex-1 min-w-0 text-left text-[11px] truncate px-1.5 py-0.5 rounded cursor-pointer ${
                             selected.has(el.id)
@@ -224,7 +243,10 @@ export const ObjectsPanel: React.FC = () => {
                           {el.name || el.type}
                         </button>
                         <button
+                          type="button"
                           onClick={() => updateElement(el.id, { visible: el.visible === false })}
+                          aria-label={el.visible === false ? `Show ${el.name || el.type}` : `Hide ${el.name || el.type}`}
+                          aria-pressed={el.visible !== false}
                           title={el.visible === false ? 'Show' : 'Hide'}
                           className="shrink-0 p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
                         >

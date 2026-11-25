@@ -38,6 +38,9 @@ const bboxCache = new Map<
     w: number;
     h: number;
     text: string;
+    fontSize: number;
+    letterSpacing: number;
+    freshOutline: boolean;
     /**
      * A parametric shape has no path of its own, so its box has to be keyed on
      * the numbers the outline is generated from. Without these, changing a
@@ -69,6 +72,9 @@ export function clearGeomBBoxCache(): void {
 export function getLocalBBox(el: EtchElement): BBox {
   const key = shapeKeyOf(el);
   const stored = el.d || el.outlineD || '';
+  const freshOutline = el.type === 'text' ? hasFreshOutline(el) : false;
+  const fontSizeKey = el.fontSize || 0;
+  const letterSpacingKey = el.letterSpacing || 0;
   const cached = bboxCache.get(el.id);
   if (
     cached &&
@@ -76,6 +82,9 @@ export function getLocalBBox(el: EtchElement): BBox {
     cached.w === (el.w || 0) &&
     cached.h === (el.h || 0) &&
     cached.text === (el.text || '') &&
+    cached.fontSize === fontSizeKey &&
+    cached.letterSpacing === letterSpacingKey &&
+    cached.freshOutline === freshOutline &&
     cached.shape === key.shape &&
     cached.outerRadius === key.outerRadius &&
     cached.innerRadius === key.innerRadius &&
@@ -213,6 +222,9 @@ export function getLocalBBox(el: EtchElement): BBox {
       w: el.w || 0,
       h: el.h || 0,
       text: el.text || '',
+      fontSize: fontSizeKey,
+      letterSpacing: letterSpacingKey,
+      freshOutline,
       ...key,
       bbox: res,
     });
@@ -342,6 +354,31 @@ export function pivotAnchoredPosition(
 
 /** Axis-aligned bounding box in bed (mm) coordinates, rotation included. */
 export function getBedBBox(el: EtchElement): BBox {
+  if (el.type === 'line') {
+    const p0 = localToBed(el, 0, 0);
+    const p1 = localToBed(el, el.x2 ?? 40, el.y2 ?? 0);
+    const b = boundsOf([p0, p1]);
+    return { ...b, centerX: b.minX + b.width / 2, centerY: b.minY + b.height / 2 };
+  }
+  if (el.type === 'circle' || el.type === 'ellipse') {
+    const a = el.type === 'circle' ? el.r || 20 : el.rx2 || 30;
+    const bAxis = el.type === 'circle' ? el.r || 20 : el.ry2 || 20;
+    const rad = ((el.rotation || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const sx = Math.abs(el.scaleX ?? 1);
+    const sy = Math.abs(el.scaleY ?? 1);
+    const hw = sx * Math.hypot(a * cos, bAxis * sin);
+    const hh = sy * Math.hypot(a * sin, bAxis * cos);
+    return {
+      minX: el.x - hw,
+      minY: el.y - hh,
+      width: 2 * hw,
+      height: 2 * hh,
+      centerX: el.x,
+      centerY: el.y,
+    };
+  }
   const l = getLocalBBox(el);
   const corners: Pt[] = [
     localToBed(el, l.minX, l.minY),

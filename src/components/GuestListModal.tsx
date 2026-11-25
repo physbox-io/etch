@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useRef } from 'react';
 import ReactDOM from 'react-dom';
 import { X, Sparkles, CheckCircle2, ShieldCheck, ArrowRight } from 'lucide-react';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 
 interface GuestListModalProps {
   isOpen: boolean;
@@ -9,15 +10,8 @@ interface GuestListModalProps {
 }
 
 export const GuestListModal: React.FC<GuestListModalProps> = ({ isOpen, onClose, userEmail }) => {
-  useEffect(() => {
-    if (isOpen) {
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') onClose();
-      };
-      window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
-    }
-  }, [isOpen, onClose]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -27,11 +21,17 @@ export const GuestListModal: React.FC<GuestListModalProps> = ({ isOpen, onClose,
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guest-list-modal-title"
         className="bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-500/30 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl text-slate-800 dark:text-slate-100 p-6 text-center relative my-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <button
+          type="button"
           onClick={onClose}
+          aria-label="Close"
           className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
           title="Close (Esc)"
         >
@@ -42,7 +42,7 @@ export const GuestListModal: React.FC<GuestListModalProps> = ({ isOpen, onClose,
           <Sparkles className="w-3.5 h-3.5" /> Early Access VIP Guest List
         </div>
 
-        <h2 className="text-2xl font-extrabold text-slate-900 dark:text-slate-100 mb-2">
+        <h2 id="guest-list-modal-title" className="text-2xl font-extrabold text-slate-900 dark:text-slate-100 mb-2">
           You're on the Guest List!
         </h2>
 

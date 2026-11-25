@@ -13,6 +13,7 @@ import {
 } from '../utils/imageProcessor';
 import { camWorker } from '../utils/camWorkerClient';
 import { usePanZoom } from '../hooks/usePanZoom';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import { ZoomControls } from './ZoomControls';
 import { BusyToast } from './BusyToast';
 import { DocsInfoButton } from './DocsModal';
@@ -332,6 +333,9 @@ export const ImageImportModal: React.FC = () => {
     };
   }, [loadedImg, options, targetLayerId]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isImageImportOpen, closeImageImport);
+
   if (!isImageImportOpen) return null;
 
   const handleWidthChange = (val: number | undefined) => {
@@ -432,7 +436,7 @@ export const ImageImportModal: React.FC = () => {
           works — and the preview underneath is still the previous trace until
           it comes back. */}
       <BusyToast show={tracing} label="Tracing image…" />
-      <div role="dialog" aria-modal="true" aria-label="Import and Vectorize Image" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden text-slate-800 dark:text-slate-100">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="image-import-modal-title" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden text-slate-800 dark:text-slate-100">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/50">
           <div className="flex items-center gap-3">
@@ -440,7 +444,7 @@ export const ImageImportModal: React.FC = () => {
               <ImageIcon className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold flex items-center gap-1.5">
+              <h2 id="image-import-modal-title" className="text-lg font-bold flex items-center gap-1.5">
                 <span>Import &amp; Vectorize Image</span>
                 <DocsInfoButton tab="images" size="w-4 h-4" />
               </h2>

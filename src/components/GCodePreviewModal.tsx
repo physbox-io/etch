@@ -1,6 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import {
   generateAirCutGCode,
   planAirCutBoundaries,
@@ -396,6 +397,9 @@ export const GCodePreviewModal: React.FC = () => {
   }, [machine.jobRunning, machine.jobPaused, machine.wx, machine.wy, machine.wz,
       machine.currentLine, machine.totalLines, activeRun, document]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isGCodeModalOpen, toggleGCodeModal);
+
   if (!isGCodeModalOpen) return null;
 
   return (
@@ -403,12 +407,12 @@ export const GCodePreviewModal: React.FC = () => {
       {/* The plan is made on a worker now, so the panel stays usable while it
           runs — which is exactly why it has to say that it is running. */}
       <BusyToast show={planning} label={`Planning ${laserMode ? 'cut path' : 'toolpath'}\u2026`} />
-      <div role="dialog" aria-modal="true" aria-label={`Make: ${laserMode ? 'Cut' : 'Toolpath'} Preview`} className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] transition-colors">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="gcode-preview-modal-title" className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] transition-colors">
         {/* Modal Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <FileCode className="w-5 h-5 text-red-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="gcode-preview-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               Make: {laserMode ? 'Cut' : 'Toolpath'} Preview
             </h2>
           </div>

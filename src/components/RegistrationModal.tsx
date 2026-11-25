@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { X, Target, AlertTriangle } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { NumberInput } from '@physbox-io/ui';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import {
   defaultRegistration,
   planRegistration,
@@ -36,6 +37,8 @@ export const RegistrationModal: React.FC = () => {
   const [opts, setOpts] = useState<RegistrationOptions | null>(null);
   const [allSheets, setAllSheets] = useState(true);
   const active = opts ?? derived;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isOpen, toggle);
 
   // Re-planned on every keystroke: it is a handful of circles, and the warnings
   // are the reason the dialog exists.
@@ -78,11 +81,11 @@ export const RegistrationModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
-      <div role="dialog" aria-modal="true" aria-label="Registration Holes" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="registration-modal-title" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Target className="w-5 h-5 text-violet-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="registration-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               Registration Holes
             </h2>
           </div>

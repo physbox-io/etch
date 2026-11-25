@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useStore, jobDocument } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useSuiteDarkMode } from '@physbox-io/ui';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import { PRESET_ETCHINGS } from '../presets/presetEtchings';
 import { exportToSVGString } from '../utils/svgParser';
 import { importSVG, fitToBed, nameFromImport, type SvgImportResult } from '../utils/svgImporter';
@@ -68,6 +69,7 @@ export const TopNavbar: React.FC = () => {
     document,
     setDocument,
     openJob,
+    isAiPanelOpen,
     toggleAiPanel,
     toggleGCodeModal,
     toggleSettings,
@@ -89,6 +91,7 @@ export const TopNavbar: React.FC = () => {
       document: s.document,
       setDocument: s.setDocument,
       openJob: s.openJob,
+      isAiPanelOpen: s.isAiPanelOpen,
       toggleAiPanel: s.toggleAiPanel,
       toggleGCodeModal: s.toggleGCodeModal,
       toggleSettings: s.toggleSettings,
@@ -109,6 +112,8 @@ export const TopNavbar: React.FC = () => {
   );
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const saveModalRef = useRef<HTMLDivElement | null>(null);
+  useDialogA11y(saveModalRef, isSaveModalOpen, () => setIsSaveModalOpen(false));
   /** The JSON file picker, which the document browser's "Open file…" also opens. */
   const jsonInputRef = React.useRef<HTMLInputElement | null>(null);
   const [presetNameInput, setPresetNameInput] = useState('');
@@ -763,9 +768,9 @@ export const TopNavbar: React.FC = () => {
           <div className="w-8 h-8 shrink-0 rounded-lg bg-gradient-to-br from-red-500 via-amber-500 to-cyan-500 flex items-center justify-center shadow-md">
             <Scissors className="w-5 h-5 text-white" />
           </div>
-          {/* The mark alone identifies the app on a phone; the wordmark and
-              tagline are the first thing to give up the width. */}
-          <div className="hidden md:block">
+          {/* The mark alone identifies the app visually on a phone; keep the
+              heading accessible to screen readers below `md`. */}
+          <div className="sr-only md:not-sr-only">
             <div className="flex items-center gap-2">
               <h1 className="text-base font-extrabold tracking-tight text-slate-900 dark:text-white font-sans">
                 PhysBox: <span className="text-red-500 dark:text-red-400 font-normal">Etch</span>
@@ -799,14 +804,18 @@ export const TopNavbar: React.FC = () => {
           {isUserPreset && (
             <>
               <button
+                type="button"
                 onClick={handleSave}
+                aria-label={`Update design "${userPresetName}"`}
                 className="flex items-center justify-center p-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                 title={`Update design "${userPresetName}" (Ctrl+S)`}
               >
                 <Save className="w-3.5 h-3.5" />
               </button>
               <button
+                type="button"
                 onClick={handleDelete}
+                aria-label={`Delete saved design "${userPresetName}"`}
                 className="flex items-center justify-center p-1 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
                 title={`Delete saved design "${userPresetName}"`}
               >
@@ -822,7 +831,11 @@ export const TopNavbar: React.FC = () => {
           that when the bar wraps it stays on the first row, opposite the preset
           name it acts on. */}
       <button
+        type="button"
+        data-tour="right-layers-toggle"
         onClick={() => setPropertiesOpen(!isPropertiesOpen)}
+        aria-expanded={isPropertiesOpen}
+        aria-label="Properties & Layers"
         className="lg:hidden shrink-0 flex items-center justify-center w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 cursor-pointer"
         title="Properties & Layers"
       >
@@ -842,7 +855,9 @@ export const TopNavbar: React.FC = () => {
         {/* Make: the same control, in the same place, in every PhysBox app. */}
         <div data-tour="make-btn" className="flex items-center max-lg:shrink-0 bg-slate-100 dark:bg-slate-800/80 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/60 shadow-inner">
           <button
+            type="button"
             onClick={toggleGCodeModal}
+            aria-label="Make — preview toolpath and cut"
             className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-md font-semibold text-xs hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-100 transition-all cursor-pointer"
             title="Preview the toolpath and cut this design"
           >
@@ -856,7 +871,9 @@ export const TopNavbar: React.FC = () => {
           {/* Always Save As: the disk icon beside the document name above is the one
               that overwrites the selected document in place with no prompt. */}
           <button
+            type="button"
             onClick={handleSaveAs}
+            aria-label="Save As"
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
             title="Save As… (Ctrl+Shift+S)"
           >
@@ -864,23 +881,38 @@ export const TopNavbar: React.FC = () => {
           </button>
 
           <label
-            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-cyan-600 dark:text-cyan-400 transition-colors cursor-pointer"
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-cyan-600 dark:text-cyan-400 focus-within:ring-2 focus-within:ring-cyan-500 transition-colors cursor-pointer"
             title="Import vector artwork (.svg, .dxf)"
           >
             <Upload className="w-3.5 h-3.5" />
-            <input type="file" accept=".svg,.dxf" onChange={handleImportVector} className="hidden" />
+            <input
+              type="file"
+              accept=".svg,.dxf"
+              aria-label="Import vector artwork (.svg, .dxf)"
+              onChange={handleImportVector}
+              className="sr-only"
+            />
           </label>
 
           <label
-            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
+            className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 focus-within:ring-2 focus-within:ring-indigo-500 transition-colors cursor-pointer"
             title="Open Etch design (.json)"
           >
             <FolderInput className="w-3.5 h-3.5" />
-            <input ref={jsonInputRef} type="file" accept=".json,application/json" onChange={handleImportJson} className="hidden" />
+            <input
+              ref={jsonInputRef}
+              type="file"
+              accept=".json,application/json"
+              aria-label="Open Etch design (.json)"
+              onChange={handleImportJson}
+              className="sr-only"
+            />
           </label>
 
           <button
+            type="button"
             onClick={handleExportJson}
+            aria-label="Export JSON"
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-indigo-600 dark:text-indigo-400 transition-colors cursor-pointer"
             title="Export JSON (.json)"
           >
@@ -888,7 +920,9 @@ export const TopNavbar: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={handleExportSvg}
+            aria-label="Export SVG"
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer"
             title="SVG"
           >
@@ -899,7 +933,9 @@ export const TopNavbar: React.FC = () => {
               cutting it. Lettered rather than another download arrow: three
               identical icons in a row say nothing about which is which. */}
           <button
+            type="button"
             onClick={handleExportDxf}
+            aria-label="Export DXF"
             className="flex items-center justify-center px-1 py-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-emerald-600 dark:text-emerald-400 transition-colors cursor-pointer text-[10px] font-bold tracking-tight"
             title="Export DXF — the drawing, for CAD"
           >
@@ -910,7 +946,9 @@ export const TopNavbar: React.FC = () => {
               it is one — the same job as the JSON file, addressed to a browser
               instead of a disk. */}
           <button
+            type="button"
             onClick={handleShare}
+            aria-label="Copy share link"
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-sky-600 dark:text-sky-400 transition-colors cursor-pointer"
             title="Copy a share link — the whole job travels inside it"
           >
@@ -918,8 +956,10 @@ export const TopNavbar: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={undo}
             disabled={!canUndo}
+            aria-label="Undo"
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
             title="Undo (Ctrl+Z)"
           >
@@ -927,8 +967,10 @@ export const TopNavbar: React.FC = () => {
           </button>
 
           <button
+            type="button"
             onClick={redo}
             disabled={!canRedo}
+            aria-label="Redo"
             className="flex items-center justify-center p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:hover:bg-transparent transition-colors cursor-pointer"
             title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
           >
@@ -940,7 +982,9 @@ export const TopNavbar: React.FC = () => {
         <div className="flex flex-wrap items-center justify-end gap-1.5 max-sm:gap-1 max-w-full">
           {/* Dark Mode Toggle */}
           <button
+            type="button"
             onClick={toggleDarkMode}
+            aria-label={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
             className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
             title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           >
@@ -949,7 +993,9 @@ export const TopNavbar: React.FC = () => {
 
           {/* Reference Guide (Docs) */}
           <button
+            type="button"
             onClick={() => openDocs()}
+            aria-label="Reference Guide"
             className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors cursor-pointer shadow-xs"
             title="Reference Guide"
           >
@@ -958,7 +1004,10 @@ export const TopNavbar: React.FC = () => {
 
           {/* Settings */}
           <button
+            type="button"
             onClick={toggleSettings}
+            aria-expanded={isSettingsOpen}
+            aria-label="Global Settings"
             className={`flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border transition-colors cursor-pointer shadow-xs ${
               isSettingsOpen
                 ? 'bg-blue-100 border-blue-400 text-blue-700 dark:bg-blue-950 dark:border-blue-700 dark:text-blue-400'
@@ -971,7 +1020,10 @@ export const TopNavbar: React.FC = () => {
 
           {/* AI Copilot sidebar toggle */}
           <button
+            type="button"
             onClick={toggleAiPanel}
+            aria-expanded={isAiPanelOpen}
+            aria-label="AI Copilot"
             className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-300 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 transition-colors cursor-pointer shadow-xs"
             title="AI Copilot"
           >
@@ -989,6 +1041,7 @@ export const TopNavbar: React.FC = () => {
             href="https://github.com/physbox-io/etch"
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="Physbox GitHub Repository"
             className="flex items-center justify-center max-lg:shrink-0 w-8 h-8 rounded-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
             title="Physbox GitHub Repository"
           >
@@ -1010,29 +1063,44 @@ export const TopNavbar: React.FC = () => {
           nothing about the panel's classes was wrong, the ancestor was. */}
       {(share || shareError || shareTooBig) &&
         ReactDOM.createPortal(
-        <div className="fixed top-16 right-4 max-lg:top-1/2 max-lg:right-1/2 max-lg:translate-x-1/2 max-lg:-translate-y-1/2 z-50 w-[28rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
-          <div className="flex items-start justify-between gap-3">
-            <p className="font-bold text-slate-800 dark:text-slate-100">
-              {shareTooBig
-                ? 'This job is too big to put in a link'
-                : shareError
-                  ? 'This job could not be shared as a link'
-                  : copied
-                    ? 'Link copied'
-                    : 'Share link'}
-            </p>
-            <button
-              onClick={() => {
-                setShare(null);
-                setShareError(null);
-                setShareTooBig(null);
-              }}
-              className="text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold cursor-pointer px-1"
-              title="Dismiss"
-            >
-              ✕
-            </button>
-          </div>
+        <>
+          <div
+            className="lg:hidden fixed inset-0 z-40 bg-slate-950/40"
+            onClick={() => {
+              setShare(null);
+              setShareError(null);
+              setShareTooBig(null);
+            }}
+          />
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed top-16 right-4 max-lg:top-1/2 max-lg:right-1/2 max-lg:translate-x-1/2 max-lg:-translate-y-1/2 z-50 w-[28rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <p className="font-bold text-slate-800 dark:text-slate-100">
+                {shareTooBig
+                  ? 'This job is too big to put in a link'
+                  : shareError
+                    ? 'This job could not be shared as a link'
+                    : copied
+                      ? 'Link copied'
+                      : 'Share link'}
+              </p>
+              <button
+                type="button"
+                aria-label="Dismiss"
+                onClick={() => {
+                  setShare(null);
+                  setShareError(null);
+                  setShareTooBig(null);
+                }}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold cursor-pointer px-1"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
 
           {shareError && (
             <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">{shareError}</p>
@@ -1094,9 +1162,10 @@ export const TopNavbar: React.FC = () => {
               <div className="mt-2 flex items-center gap-1.5">
                 <input
                   readOnly
+                  aria-label="Share URL"
                   value={share.url}
                   onFocus={(e) => e.currentTarget.select()}
-                  className="flex-1 min-w-0 px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-mono text-[10px] outline-none"
+                  className="flex-1 min-w-0 px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-mono text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
                 />
                 <button
                   onClick={() => copyLink(share.url)}
@@ -1136,7 +1205,8 @@ export const TopNavbar: React.FC = () => {
               )}
             </>
           )}
-        </div>,
+          </div>
+        </>,
           window.document.body
         )}
 
@@ -1146,28 +1216,40 @@ export const TopNavbar: React.FC = () => {
           was under the same note card. */}
       {importReport &&
         ReactDOM.createPortal(
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 max-lg:top-1/2 max-lg:-translate-y-1/2 z-50 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-bold text-slate-800 dark:text-slate-100">{importReport.headline}</p>
-              {importReport.notes.length > 0 && (
-                <ul className="mt-1.5 space-y-1 text-[11px] text-amber-700 dark:text-amber-400 list-disc list-inside max-h-40 overflow-y-auto">
-                  {importReport.notes.slice(0, 8).map((n, i) => (
-                    <li key={i}>{n}</li>
-                  ))}
-                  {importReport.notes.length > 8 && <li>…and {importReport.notes.length - 8} more</li>}
-                </ul>
-              )}
+        <>
+          <div
+            className="lg:hidden fixed inset-0 z-40 bg-slate-950/40"
+            onClick={() => setImportReport(null)}
+          />
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed top-16 left-1/2 -translate-x-1/2 max-lg:top-1/2 max-lg:-translate-y-1/2 z-50 w-[26rem] max-w-[90vw] p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl text-xs"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-bold text-slate-800 dark:text-slate-100">{importReport.headline}</p>
+                {importReport.notes.length > 0 && (
+                  <ul className="mt-1.5 space-y-1 text-[11px] text-amber-700 dark:text-amber-400 list-disc list-inside max-h-40 overflow-y-auto">
+                    {importReport.notes.slice(0, 8).map((n, i) => (
+                      <li key={i}>{n}</li>
+                    ))}
+                    {importReport.notes.length > 8 && <li>…and {importReport.notes.length - 8} more</li>}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                aria-label="Dismiss"
+                onClick={() => setImportReport(null)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold cursor-pointer px-1"
+                title="Dismiss"
+              >
+                ✕
+              </button>
             </div>
-            <button
-              onClick={() => setImportReport(null)}
-              className="text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold cursor-pointer px-1"
-              title="Dismiss"
-            >
-              ✕
-            </button>
           </div>
-        </div>,
+        </>,
           window.document.body
         )}
 
@@ -1187,14 +1269,24 @@ export const TopNavbar: React.FC = () => {
 
       {isSaveModalOpen &&
         ReactDOM.createPortal(
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 flex flex-col gap-4">
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          onClick={() => setIsSaveModalOpen(false)}
+        >
+          <div
+            ref={saveModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="save-design-title"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 flex flex-col gap-4"
+          >
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-lg bg-red-100 dark:bg-red-950/60 flex items-center justify-center text-red-600 dark:text-red-400">
                 <Save className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="font-bold text-slate-800 dark:text-slate-100 text-base">Save Design</h2>
+                <h2 id="save-design-title" className="font-bold text-slate-800 dark:text-slate-100 text-base">Save Design</h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   Give your design a name to save it locally
                 </p>
@@ -1203,6 +1295,7 @@ export const TopNavbar: React.FC = () => {
             <input
               autoFocus
               type="text"
+              aria-label="Design name"
               placeholder="e.g. Workshop Sign v2"
               value={presetNameInput}
               onChange={(e) => setPresetNameInput(e.target.value)}

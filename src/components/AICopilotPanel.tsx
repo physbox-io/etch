@@ -381,7 +381,10 @@ export const AICopilotPanel: React.FC = () => {
   return (
     /* `max-lg:absolute inset-y-0` for the same reason as the properties
        inspector: below `lg` the bars wrap, so `top-14` is a guess. */
-    <aside className="fixed right-0 top-14 z-30 w-96 max-w-full h-[calc(100dvh-3.5rem)] max-lg:absolute max-lg:inset-y-0 max-lg:h-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-l border-purple-200 dark:border-purple-500/20 shadow-2xl flex flex-col transition-colors">
+    <aside
+      aria-label="AI Copilot"
+      className="fixed right-0 top-14 z-30 w-96 max-w-full h-[calc(100dvh-3.5rem)] max-lg:absolute max-lg:inset-y-0 max-lg:z-40 max-lg:h-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-l border-purple-200 dark:border-purple-500/20 shadow-2xl flex flex-col transition-colors"
+    >
       {/* Header */}
       <div className="p-4 border-b border-purple-200 dark:border-purple-500/20 flex items-center justify-between bg-gradient-to-r from-purple-50 dark:from-purple-950/40 to-white dark:to-slate-900">
         <div className="flex items-center gap-2">
@@ -390,14 +393,19 @@ export const AICopilotPanel: React.FC = () => {
         </div>
         <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={openSettings}
             title="API keys and model"
+            aria-label="API keys and model"
             className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <Settings2 className="w-4 h-4" />
           </button>
           <button
+            type="button"
             onClick={toggleAiPanel}
+            title="Close AI Copilot"
+            aria-label="Close AI Copilot"
             className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />

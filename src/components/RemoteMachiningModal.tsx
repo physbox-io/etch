@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { X, Radio, Clock, AlertTriangle, RefreshCw, Cpu, Star } from 'lucide-react';
 import { fetchLatestTelemetry, MachiningTelemetry, isProAccount } from '../utils/apiClient';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 
 interface RemoteMachiningModalProps {
   isOpen: boolean;
@@ -18,6 +19,8 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
    * spent before the panel had drawn once.
    */
   const [loading, setLoading] = useState(true);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isOpen, onClose);
 
   const loadData = useCallback(async () => {
     try {
@@ -31,15 +34,10 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
     if (!isOpen) return;
     void loadData();
     const interval = setInterval(() => void loadData(), 3000);
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
     return () => {
       clearInterval(interval);
-      window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, loadData, onClose]);
+  }, [isOpen, loadData]);
 
   if (!isOpen) return null;
 
@@ -49,9 +47,10 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Remote Machining Telemetry"
+        aria-labelledby="remote-machining-modal-title"
         className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl my-auto overflow-hidden text-slate-800 dark:text-slate-100"
         onClick={(e) => e.stopPropagation()}
       >
@@ -62,7 +61,7 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
               <Radio className="w-5 h-5 animate-pulse" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              <h2 id="remote-machining-modal-title" className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                 Remote Machining Telemetry
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">Live CNC status synchronized across devices via api.physbox.io</p>
@@ -70,15 +69,19 @@ export const RemoteMachiningModal: React.FC<RemoteMachiningModalProps> = ({ isOp
           </div>
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={loadData}
               disabled={loading}
+              aria-label="Refresh telemetry"
               className="p-2 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
               title="Refresh"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
             <button
+              type="button"
               onClick={onClose}
+              aria-label="Close"
               className="p-2 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
               title="Close (Esc)"
             >

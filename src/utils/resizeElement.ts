@@ -37,16 +37,18 @@ export function isScaleDriven(el: EtchElement): boolean {
 const FLAT_AXIS_MM = 0.002;
 
 export function clampScale(s: number): number {
-  if (!Number.isFinite(s) || Math.abs(s) < 0.02) return 0.02;
-  return Math.min(Math.abs(s), 50) * Math.sign(s || 1);
+  if (!Number.isFinite(s)) return 0.02;
+  const sign = s < 0 ? -1 : 1;
+  if (Math.abs(s) < 0.02) return 0.02 * sign;
+  return Math.min(Math.abs(s), 50) * sign;
 }
 
 /** The extent to seed a drag with, so the first mouse move doesn't jump. */
 export function resizeSeed(el: EtchElement): ResizeStart {
   const local = getLocalBBox(el);
   return {
-    elW: el.type === 'line' ? el.x2 ?? 40 : isScaleDriven(el) ? local.width * (el.scaleX ?? 1) : el.w ?? local.width,
-    elH: el.type === 'line' ? el.y2 ?? 0 : isScaleDriven(el) ? local.height * (el.scaleY ?? 1) : el.h ?? local.height,
+    elW: el.type === 'line' ? el.x2 ?? 40 : isScaleDriven(el) ? local.width * Math.abs(el.scaleX ?? 1) : el.w ?? local.width,
+    elH: el.type === 'line' ? el.y2 ?? 0 : isScaleDriven(el) ? local.height * Math.abs(el.scaleY ?? 1) : el.h ?? local.height,
     elR: el.r ?? 20,
     elRx: el.rx2 ?? 30,
     elRy: el.ry2 ?? 20,
@@ -99,14 +101,24 @@ function anchorTo(
 }
 
 /** The local-bbox corner or opposite edge midpoint that must stay still while `handle` is dragged. */
-function anchorCorner(box: { minX: number; minY: number; width: number; height: number }, handle: ResizeHandle) {
+function anchorCorner(
+  box: { minX: number; minY: number; width: number; height: number },
+  handle: ResizeHandle,
+  signX = 1,
+  signY = 1
+) {
   const west = handle === 'nw' || handle === 'sw' || handle === 'w';
   const east = handle === 'ne' || handle === 'se' || handle === 'e';
   const north = handle === 'nw' || handle === 'ne' || handle === 'n';
   const south = handle === 'sw' || handle === 'se' || handle === 's';
+  // When mirrored (negative scale), visual east/west and north/south map to opposite local sides.
+  const localWest = signX < 0 ? east : west;
+  const localEast = signX < 0 ? west : east;
+  const localNorth = signY < 0 ? south : north;
+  const localSouth = signY < 0 ? north : south;
   return {
-    x: west ? box.minX + box.width : east ? box.minX : box.minX + box.width / 2,
-    y: north ? box.minY + box.height : south ? box.minY : box.minY + box.height / 2,
+    x: localWest ? box.minX + box.width : localEast ? box.minX : box.minX + box.width / 2,
+    y: localNorth ? box.minY + box.height : localSouth ? box.minY : box.minY + box.height / 2,
   };
 }
 
@@ -141,13 +153,15 @@ export function computeResize(
   const sin = Math.sin(rad);
   const sx = el.scaleX ?? 1;
   const sy = el.scaleY ?? 1;
+  const signX = sx < 0 ? -1 : 1;
+  const signY = sy < 0 ? -1 : 1;
 
-  // Rotation-corrected: the on-screen extent, for scale-driven shapes.
-  const rdx = dx * cos - dy * sin;
-  const rdy = dx * sin + dy * cos;
-  // …and additionally unscaled, for shapes sized by their own w/h/r.
-  const ldx = rdx / (sx || 1);
-  const ldy = rdy / (sy || 1);
+  // `getElementTransform` / `localToBed` applies T · S · R, so the exact inverse
+  // for a bed-space delta is R⁻¹ · S⁻¹: unscale first, then unrotate.
+  const ux = dx / (sx || 1);
+  const uy = dy / (sy || 1);
+  const ldx = ux * cos - uy * sin;
+  const ldy = ux * sin + uy * cos;
 
   if (el.type === 'line') {
     // A west or north handle on a line means its start; anything else, its end.
@@ -193,23 +207,24 @@ export function computeResize(
 
   /** New extent from the start extent, with Shift locking the proportions. */
   const sized = (w0: number, h0: number, dw: number, dh: number, floor: number) => {
-    let w = w0 + dw;
-    let h = h0 + dh;
+    const w = w0 + dw;
+    const h = h0 + dh;
     if (aspect && w0 > 0 && h0 > 0) {
       const fx = w / w0;
       const fy = h / h0;
       // Whichever axis the pointer pushed further from where it started wins,
       // so a mostly-horizontal drag reads as "this wide" and not as a fight
       // between two half-answers.
-      const f = Math.abs(fx - 1) > Math.abs(fy - 1) ? fx : fy;
-      w = w0 * f;
-      h = h0 * f;
+      const rawF = Math.abs(fx - 1) > Math.abs(fy - 1) ? fx : fy;
+      const minF = Math.max(floor / w0, floor / h0);
+      const f = Math.max(minF, rawF);
+      return { w: w0 * f, h: h0 * f };
     }
     return { w: Math.max(floor, w), h: Math.max(floor, h) };
   };
 
   const localBefore = getLocalBBox(el);
-  const anchorBefore = anchorCorner(localBefore, handle);
+  const anchorBefore = anchorCorner(localBefore, handle, signX, signY);
 
   /*
    * A generated field is asked for by size, not scaled. The store re-lays it at
@@ -219,9 +234,9 @@ export function computeResize(
    * changed the pattern as well as the box.
    */
   if (isGeneratedField(el)) {
-    const { w, h } = sized(start.elW, start.elH, signW * ldx, signH * ldy, 1);
+    const { w, h } = sized(start.elW, start.elH, signW * signX * ldx, signH * signY * ldy, 1);
     const localAfterField = getLocalBBox({ ...el, w, h } as EtchElement);
-    return anchorTo(el, { w, h }, anchorBefore, anchorCorner(localAfterField, handle));
+    return anchorTo(el, { w, h }, anchorBefore, anchorCorner(localAfterField, handle, signX, signY));
   }
 
   let patch: Partial<EtchElement>;
@@ -229,14 +244,14 @@ export function computeResize(
     case 'circle': {
       // One radius, two axes: follow whichever the corner asked more of, so a
       // sideways drag still tracks the cursor instead of moving at half speed.
-      const dw = signW * ldx;
-      const dh = signH * ldy;
+      const dw = signW * signX * ldx;
+      const dh = signH * signY * ldy;
       const d = Math.abs(dw) > Math.abs(dh) ? dw : dh;
       patch = { r: Math.max(0.5, start.elR + d / 2) };
       break;
     }
     case 'ellipse': {
-      const { w, h } = sized(start.elRx * 2, start.elRy * 2, signW * ldx, signH * ldy, 1);
+      const { w, h } = sized(start.elRx * 2, start.elRy * 2, signW * signX * ldx, signH * signY * ldy, 1);
       patch = { rx2: w / 2, ry2: h / 2 };
       break;
     }
@@ -246,14 +261,13 @@ export function computeResize(
       // resampled onto whatever it is stretched to, so `w`/`h` are the picture
       // on the material and a scale factor would be a second, redundant way of
       // saying the same thing.
-      const { w, h } = sized(start.elW, start.elH, signW * ldx, signH * ldy, 1);
+      const { w, h } = sized(start.elW, start.elH, signW * signX * ldx, signH * signY * ldy, 1);
       patch = { w, h };
       break;
     }
     default: {
       // Path-backed shapes (star, freehand, bezier, imported paths) and text
       // have no usable w/h, so they scale instead.
-      const { w, h } = sized(start.elW, start.elH, signW * rdx, signH * rdy, 0.02);
       // An axis with no extent to start with — a perfectly straight freehand
       // stroke, an eraser dragged along one line — is left alone. There is
       // nothing there to scale, and dividing the drag by a box that getLocalBBox
@@ -261,14 +275,32 @@ export function computeResize(
       // 50x ceiling: one twitch and the stroke shot off the bed.
       const flatX = localBefore.width <= FLAT_AXIS_MM;
       const flatY = localBefore.height <= FLAT_AXIS_MM;
-      patch = {
-        scaleX: flatX ? el.scaleX ?? 1 : clampScale(w / localBefore.width),
-        scaleY: flatY ? el.scaleY ?? 1 : clampScale(h / localBefore.height),
-      };
+      const dw = signW * ldx * sx;
+      const dh = signH * ldy * sy;
+      if (aspect && !flatX && !flatY && start.elW > 0 && start.elH > 0) {
+        const fx = (start.elW + dw) / start.elW;
+        const fy = (start.elH + dh) / start.elH;
+        const rawF = Math.abs(fx - 1) > Math.abs(fy - 1) ? fx : fy;
+        const absSx = Math.abs(sx) || 1;
+        const absSy = Math.abs(sy) || 1;
+        const minF = Math.max(0.02 / absSx, 0.02 / absSy);
+        const maxF = Math.min(50 / absSx, 50 / absSy);
+        const f = Math.min(maxF, Math.max(minF, rawF));
+        patch = {
+          scaleX: clampScale(signX * absSx * f),
+          scaleY: clampScale(signY * absSy * f),
+        };
+      } else {
+        const { w, h } = sized(start.elW, start.elH, dw, dh, 0.02);
+        patch = {
+          scaleX: flatX ? el.scaleX ?? 1 : clampScale(signX * (w / localBefore.width)),
+          scaleY: flatY ? el.scaleY ?? 1 : clampScale(signY * (h / localBefore.height)),
+        };
+      }
       break;
     }
   }
 
   const localAfter = getLocalBBox({ ...el, ...patch } as EtchElement);
-  return anchorTo(el, patch, anchorBefore, anchorCorner(localAfter, handle));
+  return anchorTo(el, patch, anchorBefore, anchorCorner(localAfter, handle, signX, signY));
 }

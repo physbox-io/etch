@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Copy, Plus, X, Layers2 } from 'lucide-react';
+import { Copy, Plus, X, Layers2, Pencil } from 'lucide-react';
 import { useStore } from '../store/useStore';
 
 /**
@@ -31,6 +31,7 @@ export const SheetTabs: React.FC = () => {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   useEffect(() => {
     if (editing) inputRef.current?.select();
@@ -39,6 +40,21 @@ export const SheetTabs: React.FC = () => {
   const commitRename = () => {
     if (editing) renameTab(editing, draft);
     setEditing(null);
+  };
+
+  const handleTabKeyDown = (e: React.KeyboardEvent, idx: number) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    let nextIdx = idx;
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = tabs.length - 1;
+    const nextTab = tabs[nextIdx];
+    if (nextTab) {
+      switchTab(nextTab.id);
+      tabRefs.current.get(nextTab.id)?.focus();
+    }
   };
 
   return (
@@ -53,79 +69,118 @@ export const SheetTabs: React.FC = () => {
         <span className="max-lg:hidden">Sheets</span>
       </div>
 
-      {tabs.map((tab) => {
-        const isActive = tab.id === activeTabId;
-        // The live document is the truth for the sheet on screen — its parked
-        // copy is a snapshot from the last switch, so a rename or an edit would
-        // not show on its own tab until you left it.
-        const name = isActive ? documentName : tab.document.name;
-        const count = isActive ? elementCount : tab.document.elements.length;
-        const width = isActive ? documentWidth : tab.document.width;
-        const height = isActive ? documentHeight : tab.document.height;
-        return (
-          <div
-            key={tab.id}
-            data-sheet-id={tab.id}
-            onClick={() => switchTab(tab.id)}
-            onDoubleClick={() => {
-              switchTab(tab.id);
-              setDraft(name);
-              setEditing(tab.id);
-            }}
-            title={`${name} — ${count} element${count === 1 ? '' : 's'}, ${width}x${height} mm`}
-            className={`group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-md border text-[11px] font-semibold cursor-pointer shrink-0 transition-colors ${
-              isActive
-                ? 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 shadow-sm'
-                : 'bg-transparent border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/60'
-            }`}
-          >
-            {editing === tab.id ? (
-              <input
-                ref={inputRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitRename();
-                  if (e.key === 'Escape') setEditing(null);
-                  e.stopPropagation();
-                }}
-                onClick={(e) => e.stopPropagation()}
-                className="w-24 bg-transparent border-b border-red-500 outline-none text-[11px] font-semibold"
-              />
-            ) : (
-              <span className="max-w-[10rem] truncate">{name}</span>
-            )}
-            {/* Only ever one way to be left with no document: there isn't one.
-                The close button is hidden rather than disabled on the last
-                sheet, since a button that never does anything is worse. */}
-            {tabs.length > 1 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.id);
-                }}
-                title={`Close ${name}`}
-                className={`p-0.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer ${
-                  isActive ? '' : 'opacity-0 group-hover:opacity-100'
-                }`}
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-        );
-      })}
+      <div role="tablist" aria-label="Job sheets" className="flex items-stretch gap-1">
+        {tabs.map((tab, idx) => {
+          const isActive = tab.id === activeTabId;
+          // The live document is the truth for the sheet on screen — its parked
+          // copy is a snapshot from the last switch, so a rename or an edit would
+          // not show on its own tab until you left it.
+          const name = isActive ? documentName : tab.document.name;
+          const count = isActive ? elementCount : tab.document.elements.length;
+          const width = isActive ? documentWidth : tab.document.width;
+          const height = isActive ? documentHeight : tab.document.height;
+          return (
+            <div
+              key={tab.id}
+              className={`group flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-md border text-[11px] font-semibold shrink-0 transition-colors ${
+                isActive
+                  ? 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 shadow-sm'
+                  : 'bg-transparent border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/60'
+              }`}
+            >
+              {editing === tab.id ? (
+                <input
+                  ref={inputRef}
+                  aria-label="Sheet name"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename();
+                    if (e.key === 'Escape') setEditing(null);
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-24 bg-transparent border-b border-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded-xs text-[11px] font-semibold"
+                />
+              ) : (
+                <button
+                  ref={(el) => {
+                    if (el) tabRefs.current.set(tab.id, el);
+                    else tabRefs.current.delete(tab.id);
+                  }}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                  data-sheet-id={tab.id}
+                  onClick={() => switchTab(tab.id)}
+                  onKeyDown={(e) => handleTabKeyDown(e, idx)}
+                  onDoubleClick={() => {
+                    switchTab(tab.id);
+                    setDraft(name);
+                    setEditing(tab.id);
+                  }}
+                  title={`${name} — ${count} element${count === 1 ? '' : 's'}, ${width}x${height} mm`}
+                  className="max-w-[10rem] truncate text-left cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                >
+                  {name}
+                </button>
+              )}
+              {isActive && editing !== tab.id && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDraft(name);
+                    setEditing(tab.id);
+                  }}
+                  aria-label={`Rename ${name}`}
+                  title={`Rename ${name}`}
+                  className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                >
+                  <Pencil className="w-2.5 h-2.5" />
+                </button>
+              )}
+              {/* Only ever one way to be left with no document: there isn't one.
+                  The close button is hidden rather than disabled on the last
+                  sheet, since a button that never does anything is worse. */}
+              {tabs.length > 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.id);
+                  }}
+                  aria-label={`Close ${name}`}
+                  title={`Close ${name}`}
+                  className={`p-0.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer focus-visible:opacity-100 focus-visible:pointer-events-auto ${
+                    isActive
+                      ? ''
+                      : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'
+                  }`}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       <button
+        type="button"
         onClick={() => newTab()}
+        aria-label="New sheet"
         title="New sheet — same stock, material and layers as this one, with nothing drawn on it"
         className="shrink-0 px-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/70 dark:hover:bg-slate-800/70 cursor-pointer"
       >
         <Plus className="w-3.5 h-3.5" />
       </button>
       <button
+        type="button"
         onClick={() => duplicateTab()}
+        aria-label="Duplicate sheet"
         title="Duplicate this sheet — the way the next layer of a stack gets its frame and its registration holes"
         className="shrink-0 px-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/70 dark:hover:bg-slate-800/70 cursor-pointer"
       >

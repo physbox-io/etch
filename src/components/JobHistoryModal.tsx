@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { X, History, RefreshCw, AlertTriangle, Star, ChevronRight, ChevronDown } from 'lucide-react';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import {
   fetchRun,
   fetchRuns,
@@ -266,14 +267,8 @@ export const JobHistoryModal: React.FC<JobHistoryModalProps> = ({ isOpen, onClos
     void load();
   }, [isOpen, signedIn, isPro, load]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isOpen, onClose);
 
   const toggleRun = async (run: ArchivedRun) => {
     if (openId === run.id) {
@@ -301,6 +296,10 @@ export const JobHistoryModal: React.FC<JobHistoryModalProps> = ({ isOpen, onClos
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="job-history-modal-title"
         className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl my-auto overflow-hidden text-slate-800 dark:text-slate-100"
         onClick={(e) => e.stopPropagation()}
       >
@@ -310,7 +309,7 @@ export const JobHistoryModal: React.FC<JobHistoryModalProps> = ({ isOpen, onClos
               <History className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold">Job History</h2>
+              <h2 id="job-history-modal-title" className="text-base sm:text-lg font-bold">Job History</h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Every run this account has recorded, and what it was cut at
               </p>
@@ -319,8 +318,10 @@ export const JobHistoryModal: React.FC<JobHistoryModalProps> = ({ isOpen, onClos
           <div className="flex items-center gap-2">
             {!needsPro && signedIn && (
               <button
+                type="button"
                 onClick={() => void load()}
                 disabled={loading}
+                aria-label="Refresh job history"
                 className="p-2 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                 title="Refresh"
               >
@@ -328,7 +329,9 @@ export const JobHistoryModal: React.FC<JobHistoryModalProps> = ({ isOpen, onClos
               </button>
             )}
             <button
+              type="button"
               onClick={onClose}
+              aria-label="Close"
               className="p-2 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
               title="Close (Esc)"
             >

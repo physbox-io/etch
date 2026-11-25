@@ -638,7 +638,18 @@ export const ToolpathPreview: React.FC<{
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex-1 min-h-0 bg-slate-100 dark:bg-slate-950 p-3 relative overflow-hidden">
+      <div
+        ref={attachHost}
+        onPointerDown={view.onPointerDown}
+        onPointerMove={view.onPointerMove}
+        onPointerUp={view.onPointerUp}
+        onPointerCancel={view.onPointerUp}
+        onLostPointerCapture={view.onLostPointerCapture}
+        style={{
+          cursor: view.zoom > 1 ? (view.panning ? 'grabbing' : 'grab') : undefined,
+        }}
+        className="flex-1 min-h-0 bg-slate-100 dark:bg-slate-950 p-3 relative overflow-hidden touch-none"
+      >
         {/* Live readout — the numbers that change as the tool moves. */}
         <div className="absolute top-4 right-4 z-10 flex items-center gap-2 px-2 py-1 rounded-md bg-white/85 dark:bg-slate-900/85 border border-slate-200 dark:border-slate-700 font-mono text-[11px] pointer-events-none">
           {live && (
@@ -673,13 +684,7 @@ export const ToolpathPreview: React.FC<{
           preserveAspectRatio="xMidYMid meet"
           style={{
             transform: view.transform,
-            cursor: view.zoom > 1 ? (view.panning ? 'grabbing' : 'grab') : undefined,
           }}
-          ref={attachHost}
-          onPointerDown={view.onPointerDown}
-          onPointerMove={view.onPointerMove}
-          onPointerUp={view.onPointerUp}
-          onPointerCancel={view.onPointerUp}
         >
           {/* The bed, so scale and overruns are obvious */}
           <rect

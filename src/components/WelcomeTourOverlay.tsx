@@ -2,9 +2,10 @@
 // First-visit interactive coachmark tour with hand-drawn SVG sketch arrows
 // ---------------------------------------------------------------------------
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
 import { START_TOUR_EVENT } from '../utils/deepLink';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 
 interface TourStep {
   target: string;
@@ -112,10 +113,14 @@ export const WelcomeTourOverlay: React.FC = () => {
     h: typeof window !== 'undefined' ? window.innerHeight : 800,
   }));
 
+  const cardRef = useRef<HTMLDivElement>(null);
+
   const close = useCallback(() => {
     markSeen();
     setOpen(false);
   }, []);
+
+  useDialogA11y(cardRef, open, close);
 
   useEffect(() => {
     const onStart = () => {
@@ -130,14 +135,19 @@ export const WelcomeTourOverlay: React.FC = () => {
 
   const measure = useCallback(() => {
     if (typeof window === 'undefined') return;
-    setVp({ w: window.innerWidth, h: window.innerHeight });
-    const el = document.querySelector<HTMLElement>(`[data-tour="${step.target}"]`);
-    if (!el) {
-      setTargetRect(null);
-      return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    setVp({ w: vw, h: vh });
+    let el = document.querySelector<HTMLElement>(`[data-tour="${step.target}"]`);
+    let r = el?.getBoundingClientRect();
+    if (!el || !r || r.width <= 0 || r.height <= 0 || r.right <= 0 || r.left >= vw) {
+      // On narrow screens the PropertiesSidebar is off-screen; redirect Step 3 to the navbar toggle.
+      if (step.target === 'right-layers') {
+        el = document.querySelector<HTMLElement>('[data-tour="right-layers-toggle"]');
+        r = el?.getBoundingClientRect();
+      }
     }
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) {
+    if (!el || !r || r.width <= 0 || r.height <= 0 || r.right <= 0 || r.left >= vw) {
       setTargetRect(null);
       return;
     }
@@ -232,7 +242,7 @@ export const WelcomeTourOverlay: React.FC = () => {
     <div
       role="dialog"
       aria-modal="false"
-      aria-label="Quick workspace tour"
+      aria-labelledby="welcome-tour-title"
       className="fixed inset-0 z-[140] pointer-events-none select-none"
     >
       <svg className="fixed inset-0 w-full h-full pointer-events-auto" onClick={close}>
@@ -277,6 +287,7 @@ export const WelcomeTourOverlay: React.FC = () => {
       </svg>
 
       <div
+        ref={cardRef}
         style={{ left: `${cardLeft}px`, top: `${cardTop}px`, width: `${cardW}px` }}
         onClick={(e) => e.stopPropagation()}
         className="fixed pointer-events-auto rounded-2xl bg-white dark:bg-slate-900 border-2 border-amber-400/80 dark:border-amber-400/70 shadow-2xl p-4 text-slate-800 dark:text-slate-100 transition-all duration-200"
@@ -297,7 +308,7 @@ export const WelcomeTourOverlay: React.FC = () => {
           </button>
         </div>
 
-        <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-1">{step.title}</h3>
+        <h2 id="welcome-tour-title" className="text-sm font-bold text-slate-900 dark:text-white mb-1">{step.title}</h2>
         <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300 mb-3.5">{step.body}</p>
 
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">

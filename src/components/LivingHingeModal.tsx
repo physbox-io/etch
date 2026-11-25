@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { X, Waves, AlertTriangle } from 'lucide-react';
 import { NumberInput } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import {
   defaultLivingHinge,
   planLivingHinge,
@@ -31,6 +32,8 @@ export const LivingHingeModal: React.FC = () => {
   const derived = useMemo(() => defaultLivingHinge(document), [document]);
   const [opts, setOpts] = useState<LivingHingeOptions | null>(null);
   const active = opts ?? derived;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isOpen, toggle);
 
   const plan = useMemo(
     () => planLivingHinge(document, active, cncTools),
@@ -55,11 +58,11 @@ export const LivingHingeModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
-      <div role="dialog" aria-modal="true" aria-label="Living Hinge" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="living-hinge-modal-title" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Waves className="w-5 h-5 text-sky-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="living-hinge-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               Living Hinge
             </h2>
           </div>

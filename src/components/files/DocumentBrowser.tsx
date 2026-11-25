@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import {
   Search, X, FilePlus2, FolderOpen, BookOpen, Wand2, FileJson, Clock, Shapes,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, readUserPresets, type DocumentBrowserTab } from '../../store/useStore';
+import { useDialogA11y } from '../../hooks/useDialogA11y';
 import { PRESET_ETCHINGS } from '../../presets/presetEtchings';
 import {
   GENERATORS, matchesQuery, templateEntries, templateShelves, formatSavedDate,
@@ -119,11 +120,8 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
     openOrnament: s.openOrnament,
   })));
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [close]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, true, close);
 
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SavedSort>('date');
@@ -311,7 +309,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
       className="fixed inset-0 z-50 flex items-center justify-center sm:p-4 bg-slate-900/60 backdrop-blur-xs"
       onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
     >
-      <div role="dialog" aria-modal="true" aria-label="Open Design" className="w-full max-w-5xl h-full sm:h-[85dvh] bg-white dark:bg-slate-900 sm:rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Open Design" className="w-full max-w-5xl h-full sm:h-[85dvh] bg-white dark:bg-slate-900 sm:rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 focus-within:ring-2 ring-red-400">
             <Search className="w-4 h-4 text-slate-400 shrink-0" />
@@ -325,12 +323,13 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
               aria-label="Search designs"
             />
             {query && (
-              <button onClick={() => setQuery('')} className="text-slate-400 hover:text-slate-600 cursor-pointer" title="Clear">
+              <button type="button" aria-label="Clear search" onClick={() => setQuery('')} className="text-slate-400 hover:text-slate-600 cursor-pointer" title="Clear">
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
           <button
+            type="button"
             onClick={() => load('blank')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold cursor-pointer shrink-0"
             title="Start a blank sheet"
@@ -338,7 +337,7 @@ function OpenDocumentBrowser({ tab, onOpenFile }: { tab: DocumentBrowserTab; onO
             <FilePlus2 className="w-4 h-4" />
             <span className="hidden sm:inline">New blank</span>
           </button>
-          <button onClick={close} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" title="Close (Esc)">
+          <button type="button" onClick={close} aria-label="Close" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" title="Close (Esc)">
             <X className="w-5 h-5" />
           </button>
         </div>

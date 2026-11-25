@@ -83,7 +83,7 @@ const KerfField: React.FC<{ machineId?: string; machineName?: string }> = ({
           kerfRef.current = saved;
           setKerf(saved);
         }}
-        className="w-12 bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none border-none"
+        className="w-12 bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 border-none"
       />
       <span className="text-slate-500 dark:text-slate-400">mm</span>
     </div>
@@ -108,6 +108,8 @@ export const BottomStatusBar: React.FC = () => {
   const {
     document,
     zoom,
+    setZoom,
+    setPan,
     setGridSize,
     setDocumentSize,
     toggleSnapToGrid,
@@ -124,6 +126,8 @@ export const BottomStatusBar: React.FC = () => {
     useShallow((s) => ({
       document: s.document,
       zoom: s.zoom,
+      setZoom: s.setZoom,
+      setPan: s.setPan,
       setGridSize: s.setGridSize,
       setDocumentSize: s.setDocumentSize,
       toggleSnapToGrid: s.toggleSnapToGrid,
@@ -164,7 +168,7 @@ export const BottomStatusBar: React.FC = () => {
       job's stop button lives out here on purpose — none of it is something to
       drop on a narrow screen, so all of it stays reachable by scrolling.
     */
-    <footer className="h-8 shrink-0 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:py-1 max-lg:gap-x-3 max-lg:gap-y-1">
+    <footer className="h-8 shrink-0 w-full bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800/80 px-4 pb-[env(safe-area-inset-bottom)] flex items-center justify-between z-20 text-[11px] text-slate-500 dark:text-slate-400 font-mono select-none transition-colors max-lg:h-auto max-lg:flex-wrap max-lg:justify-start max-lg:px-2 max-lg:pt-1 max-lg:pb-[max(0.25rem,env(safe-area-inset-bottom))] max-lg:gap-x-3 max-lg:gap-y-1">
       {/* Stock Size, Material Type & Live Cursor Position */}
       <div className="flex items-center gap-4 lg:flex-1 lg:min-w-0 max-lg:w-full max-lg:overflow-x-auto max-lg:[scrollbar-width:none] max-lg:[&::-webkit-scrollbar]:hidden [&>*]:shrink-0">
         <div data-tour="bench-bar" className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shrink-0">
@@ -188,6 +192,7 @@ export const BottomStatusBar: React.FC = () => {
           <span className="text-slate-400">×</span>
           <NumberInput
             id="stock-height"
+            aria-label="Stock height (mm)"
             min={10}
             max={3000}
             step={10}
@@ -202,6 +207,7 @@ export const BottomStatusBar: React.FC = () => {
           <span className="text-slate-400">×</span>
           <NumberInput
             id="stock-thickness"
+            aria-label="Stock thickness (mm)"
             min={0.1}
             max={200}
             // A tenth, not a half. The ladder runs from `min`, so a step of 0.5
@@ -228,10 +234,11 @@ export const BottomStatusBar: React.FC = () => {
           <div className="w-px h-3 bg-slate-200 dark:bg-slate-800 mx-0.5" />
           <Layers2 className="w-3.5 h-3.5 text-emerald-500" />
           <select
+            aria-label="Stock material"
             value={document.material ?? DEFAULT_MATERIAL}
             onChange={(e) => setMaterial(e.target.value as MaterialId)}
             title={materialNote(findMaterial(document.material), machineKind)}
-            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 cursor-pointer border-none"
           >
             {materialCatalog().map((m) => (
               <option key={m.id} value={m.id}>
@@ -284,9 +291,10 @@ export const BottomStatusBar: React.FC = () => {
           />
           <span className="text-slate-400">mm</span>
           <select
+            aria-label="Common grid pitches"
             value={GRID_PRESETS.includes(gridSize) ? String(gridSize) : ''}
             onChange={(e) => e.target.value && setGridSize(parseFloat(e.target.value))}
-            className="bg-transparent text-slate-500 dark:text-slate-400 cursor-pointer outline-none"
+            className="bg-transparent text-slate-500 dark:text-slate-400 cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
             title="Common grid pitches"
           >
             <option value="" disabled hidden>
@@ -301,7 +309,9 @@ export const BottomStatusBar: React.FC = () => {
         </div>
 
         <button
+          type="button"
           onClick={toggleSnapToGrid}
+          aria-pressed={document.snapToGrid}
           className={`flex items-center gap-1.5 px-2 py-1 rounded-md border transition-colors cursor-pointer ${
             document.snapToGrid
               ? 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-300 dark:border-cyan-800 text-cyan-700 dark:text-cyan-300'
@@ -320,10 +330,11 @@ export const BottomStatusBar: React.FC = () => {
         <div className="flex items-center gap-1.5">
           <Cpu className="w-3.5 h-3.5 text-amber-500" />
           <select
+            aria-label="Target machine"
             value={document.machine ?? 'laser'}
             onChange={(e) => setMachineTarget(e.target.value === 'cnc' ? 'cnc' : 'laser')}
             title="What this design is cut on — a laser has no Z depth, a router does"
-            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+            className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 cursor-pointer border-none"
           >
             <option value="laser">Laser</option>
             <option value="cnc">CNC Router</option>
@@ -331,10 +342,11 @@ export const BottomStatusBar: React.FC = () => {
 
           {machineKind === 'laser' && (
             <select
+              aria-label="Laser source"
               value={laserSource.id}
               onChange={(e) => setLaserSource(e.target.value)}
               title="The laser on your bench. Speed and power are derived from it — a 5 W diode and a 40 W tube are not the same job."
-              className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+              className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 cursor-pointer border-none"
             >
               {LASER_SOURCES.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -355,6 +367,7 @@ export const BottomStatusBar: React.FC = () => {
           {machineKind === 'cnc' && (
             <div className="flex items-center gap-1">
               <select
+                aria-label="CNC tool rack"
                 value=""
                 onChange={(e) => {
                   if (e.target.value === 'configure') {
@@ -362,7 +375,7 @@ export const BottomStatusBar: React.FC = () => {
                   }
                 }}
                 title="CNC tool rack. Click to configure cutters, diameters, and feeds."
-                className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 outline-none cursor-pointer border-none"
+                className="bg-transparent text-slate-800 dark:text-slate-200 font-semibold rounded px-1 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 cursor-pointer border-none"
               >
                 <option value="" disabled hidden>
                   {toolRackLabel(cncTools)} ({cncTools.length} cutter{cncTools.length === 1 ? '' : 's'})
@@ -425,7 +438,14 @@ export const BottomStatusBar: React.FC = () => {
               {machineStatus.jobPaused ? 'Paused' : 'Cutting'} {machineStatus.currentLine}/
               {machineStatus.totalLines}
             </span>
-            <div className="w-20 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+            <div
+              role="progressbar"
+              aria-label="Job progress"
+              aria-valuenow={machineStatus.currentLine}
+              aria-valuemin={0}
+              aria-valuemax={machineStatus.totalLines || 100}
+              className="w-20 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden"
+            >
               <div
                 className="h-full bg-emerald-500 transition-all"
                 style={{
@@ -454,10 +474,11 @@ export const BottomStatusBar: React.FC = () => {
               />
             ) : (
               <button
+                type="button"
                 onClick={() => webSerialManager.pauseJob()}
                 title="Pause job"
                 aria-label="Pause job"
-                className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                className="min-h-8 min-w-8 max-lg:min-h-10 max-lg:min-w-10 flex items-center justify-center rounded text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <Pause className="w-3.5 h-3.5" />
               </button>
@@ -478,13 +499,21 @@ export const BottomStatusBar: React.FC = () => {
         <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
 
         {/*
-          Zoom is driven by the mouse wheel, as it is in Mesh and Volt. The
-          readout stays — knowing the scale you are drawing at is worth a
-          bottom-bar slot; three buttons duplicating the wheel are not.
+          Zoom is driven by the mouse wheel, as it is in Mesh and Volt. Clicking
+          the readout resets zoom and pan back to 100%.
         */}
-        <span className="text-slate-800 dark:text-slate-200 w-10 text-center" title="Zoom — scroll to change">
+        <button
+          type="button"
+          onClick={() => {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+          }}
+          aria-label="Reset zoom and pan"
+          title="Reset zoom and pan (scroll to zoom)"
+          className="text-slate-800 dark:text-slate-200 w-10 text-center rounded hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+        >
           {Math.round(zoom * 100)}%
-        </span>
+        </button>
       </div>
     </footer>
   );

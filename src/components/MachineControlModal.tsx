@@ -27,6 +27,7 @@ import {
   getStoredAuthToken,
 } from '../utils/apiClient';
 import { machineBedStore } from '../utils/machineBed';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 
 /** Bounds of everything visible, in bed mm — what framing traces and probing covers. */
 function useJobBounds() {
@@ -156,6 +157,9 @@ export const MachineControlModal: React.FC = () => {
     logEndRef.current?.scrollIntoView({ block: 'end' });
   }, [log]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isMachineModalOpen, toggleMachineModal);
+
   if (!isMachineModalOpen) return null;
 
   const handleConsoleSubmit = (e: React.FormEvent) => {
@@ -172,12 +176,12 @@ export const MachineControlModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
-      <div role="dialog" aria-modal="true" aria-label={`Direct ${isLaser ? 'Laser Cutter' : 'CNC Router'} Control`} className="w-full max-w-5xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] transition-colors">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="machine-control-modal-title" className="w-full max-w-5xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] transition-colors">
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Cpu className="w-5 h-5 text-amber-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="machine-control-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               Direct {isLaser ? 'Laser Cutter' : 'CNC Router'} Control (Web Serial)
             </h2>
             <DocsInfoButton tab="zeroing" size="w-4 h-4" />
@@ -274,11 +278,12 @@ export const MachineControlModal: React.FC = () => {
                     </p>
                     <div className="flex gap-1.5">
                       <input
+                        aria-label="Machine name"
                         value={machineNameDraft}
                         onChange={(e) => setMachineNameDraft(e.target.value)}
                         placeholder="Big CO2, Diode on the bench…"
                         maxLength={32}
-                        className="flex-1 min-w-0 px-2 py-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-[11px] text-slate-800 dark:text-slate-200 outline-none"
+                        className="flex-1 min-w-0 px-2 py-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded text-[11px] text-slate-800 dark:text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                       />
                       <button
                         onClick={() => {

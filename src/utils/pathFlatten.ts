@@ -379,6 +379,7 @@ function emitArc(
   p1: Pt,
   out: (x: number, y: number) => void
 ) {
+  if (p0.x === p1.x && p0.y === p1.y) return;
   if (rx === 0 || ry === 0) {
     out(p1.x, p1.y);
     return;

@@ -176,6 +176,8 @@ const LaserLayerCutting: React.FC<{
       )}
 
       <button
+        type="button"
+        aria-expanded={showAdvanced}
         onClick={() => setShowAdvanced((v) => !v)}
         className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
       >
@@ -394,6 +396,8 @@ const CncLayerCutting: React.FC<{
       )}
 
       <button
+        type="button"
+        aria-expanded={showAdvanced}
         onClick={() => setShowAdvanced((v) => !v)}
         className="w-full text-left text-[9px] uppercase font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
       >
@@ -767,6 +771,19 @@ export const PropertiesSidebar: React.FC = () => {
   const material = findMaterial(document.material);
   const stockThickness = document.stockThickness ?? DEFAULT_STOCK_THICKNESS_MM;
 
+  const asideRef = React.useRef<HTMLElement>(null);
+  React.useEffect(() => {
+    const syncInert = () => {
+      const el = asideRef.current as (HTMLElement & { inert?: boolean }) | null;
+      if (!el) return;
+      const hiddenOnMobile = !isPropertiesOpen && window.innerWidth < 1024;
+      el.inert = hiddenOnMobile;
+    };
+    syncInert();
+    window.addEventListener('resize', syncInert);
+    return () => window.removeEventListener('resize', syncInert);
+  }, [isPropertiesOpen]);
+
   return (
     /*
       Below `lg` there is not room for a permanent 18rem column beside a
@@ -785,9 +802,11 @@ export const PropertiesSidebar: React.FC = () => {
       a preset name got longer.
     */
     <aside
+      ref={asideRef}
       data-tour="right-layers"
+      aria-label="Properties and Layers"
       className={`w-72 h-full min-h-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-l border-slate-200 dark:border-slate-800/80 flex flex-col z-20 select-none overflow-hidden transition-colors max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:h-auto max-lg:w-80 max-lg:max-w-[85vw] max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200 ${
-        isPropertiesOpen ? 'max-lg:translate-x-0' : 'max-lg:translate-x-full max-lg:pointer-events-none'
+        isPropertiesOpen ? 'max-lg:translate-x-0' : 'max-lg:translate-x-full max-lg:pointer-events-none max-lg:invisible'
       }`}
     >
       {/* Element Properties Header */}
@@ -798,8 +817,10 @@ export const PropertiesSidebar: React.FC = () => {
         </h2>
         {/* The drawer covers the canvas, so it has to carry its own way out. */}
         <button
+          type="button"
           onClick={() => setPropertiesOpen(false)}
-          className="lg:hidden p-1 -m-1 rounded-md text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+          aria-label="Close properties inspector"
+          className="lg:hidden p-1 -m-1 max-lg:min-h-9 max-lg:min-w-9 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
           title="Close the properties inspector"
         >
           <X className="w-4 h-4" />
@@ -1126,6 +1147,7 @@ export const PropertiesSidebar: React.FC = () => {
               <button
                 type="button"
                 aria-label={allVisible ? 'Hide selected' : 'Show selected'}
+                aria-pressed={allVisible}
                 onClick={() => applyTo(selectedEls, () => ({ visible: !allVisible }))}
                 title={
                   selectedEls.length > 1
@@ -1143,6 +1165,7 @@ export const PropertiesSidebar: React.FC = () => {
               <button
                 type="button"
                 aria-label={allLocked ? 'Unlock selected' : 'Lock selected'}
+                aria-pressed={allLocked}
                 onClick={() => applyTo(selectedEls, () => ({ locked: !allLocked }))}
                 title={
                   selectedEls.length > 1
@@ -2083,14 +2106,15 @@ export const PropertiesSidebar: React.FC = () => {
                   {hasFreshOutline(selectedElement) ? 'Re-vectorize' : 'Convert to Outlines'}
                 </button>
                 <label
-                  className="px-2 py-1 bg-slate-200/60 dark:bg-slate-700/60 hover:bg-slate-300/60 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-semibold text-slate-600 dark:text-slate-300 cursor-pointer flex items-center"
+                  className="px-2 py-1 bg-slate-200/60 dark:bg-slate-700/60 hover:bg-slate-300/60 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-semibold text-slate-600 dark:text-slate-300 focus-within:ring-2 focus-within:ring-cyan-500 cursor-pointer flex items-center"
                   title="Use a font file from disk (.ttf, .otf, .woff2) — needed for fonts Google does not serve, or when offline"
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <input
                     type="file"
                     accept=".ttf,.otf,.woff2"
-                    className="hidden"
+                    aria-label="Upload local font file (.ttf, .otf, .woff2)"
+                    className="sr-only"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
@@ -2190,6 +2214,8 @@ export const PropertiesSidebar: React.FC = () => {
             <span>Operation Layers</span>
           </h3>
           <button
+            type="button"
+            aria-label="Add layer"
             onClick={() =>
               addLayer({
                 name: 'New Cut Layer',
@@ -2204,7 +2230,7 @@ export const PropertiesSidebar: React.FC = () => {
                 tool: suggestTool(machineKind, 'cut', cncTools),
               })
             }
-            className="p-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
+            className="p-1 max-lg:min-h-9 max-lg:min-w-9 flex items-center justify-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
             title="Add Layer"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -2231,8 +2257,17 @@ export const PropertiesSidebar: React.FC = () => {
             return (
               <div
                 key={layer.id}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isActive}
                 onClick={() => setActiveLayer(layer.id)}
-                className={`p-2.5 rounded-lg border transition-all cursor-pointer ${
+                onKeyDown={(e) => {
+                  if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                    e.preventDefault();
+                    setActiveLayer(layer.id);
+                  }
+                }}
+                className={`p-2.5 rounded-lg border transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
                   isActive
                     ? 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-600 shadow-xs'
                     : 'bg-white dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
@@ -2242,6 +2277,7 @@ export const PropertiesSidebar: React.FC = () => {
                   <div className="flex items-center gap-1.5 flex-1 mr-1 overflow-hidden" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="color"
+                      aria-label={`Layer color for ${layer.name}`}
                       value={layer.color}
                       onChange={(e) => updateLayer(layer.id, { color: e.target.value }, true)}
                       onBlur={commitHistory}
@@ -2250,12 +2286,14 @@ export const PropertiesSidebar: React.FC = () => {
                     />
                     <input
                       type="text"
+                      aria-label="Layer name"
                       value={layer.name}
                       onChange={(e) => updateLayer(layer.id, { name: e.target.value }, true)}
                       onBlur={commitHistory}
                       className="font-semibold text-slate-800 dark:text-slate-200 bg-transparent border-b border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-red-500 focus:outline-none text-xs truncate min-w-0 flex-1 px-0.5"
                     />
                     <select
+                      aria-label={`Operation for ${layer.name}`}
                       value={layer.operation}
                       onChange={(e) => updateLayer(layer.id, { operation: e.target.value as LayerOperation })}
                       className="text-[9px] uppercase px-1 py-0.5 rounded font-mono bg-slate-200 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-800 cursor-pointer"
@@ -2269,22 +2307,27 @@ export const PropertiesSidebar: React.FC = () => {
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <button
+                      type="button"
+                      aria-label={layer.visible ? `Hide layer ${layer.name}` : `Show layer ${layer.name}`}
+                      aria-pressed={layer.visible}
                       onClick={(e) => {
                         e.stopPropagation();
                         updateLayer(layer.id, { visible: !layer.visible });
                       }}
-                      className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-0.5"
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-0.5 max-lg:min-h-9 max-lg:min-w-9 flex items-center justify-center rounded"
                       title={layer.visible ? "Hide Layer" : "Show Layer"}
                     >
                       {layer.visible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                     </button>
                     {document.layers.length > 1 && (
                       <button
+                        type="button"
+                        aria-label={`Delete layer ${layer.name}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           deleteLayer(layer.id);
                         }}
-                        className="text-red-500 hover:text-red-600 dark:hover:text-red-300 p-0.5"
+                        className="text-red-500 hover:text-red-600 dark:hover:text-red-300 p-0.5 max-lg:min-h-9 max-lg:min-w-9 flex items-center justify-center rounded"
                         title="Delete Layer"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -2354,6 +2397,7 @@ export const PropertiesSidebar: React.FC = () => {
                       </button>
                     </div>
                     <select
+                      aria-label={`Tool for ${layer.name}`}
                       value={tool}
                       onChange={(e) => updateLayer(layer.id, { tool: parseInt(e.target.value, 10) })}
                       className="w-full mt-0.5 px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-800 dark:text-slate-200 text-[10px] cursor-pointer"

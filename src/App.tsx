@@ -70,6 +70,8 @@ export const App: React.FC = () => {
     vectorizeText,
     isPropertiesOpen,
     setPropertiesOpen,
+    isAiPanelOpen,
+    toggleAiPanel,
     mcpActiveCount,
   } = useStore(
     useShallow((s) => ({
@@ -82,6 +84,8 @@ export const App: React.FC = () => {
       vectorizeText: s.vectorizeText,
       isPropertiesOpen: s.isPropertiesOpen,
       setPropertiesOpen: s.setPropertiesOpen,
+      isAiPanelOpen: s.isAiPanelOpen,
+      toggleAiPanel: s.toggleAiPanel,
       mcpActiveCount: s.mcpActiveCount,
     })),
   );
@@ -151,8 +155,14 @@ export const App: React.FC = () => {
   // Keyboard Shortcuts Handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore key events when typing inside text inputs / textareas
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
+      const target = e.target as HTMLElement | null;
+      // Ignore key events when typing inside text inputs, textareas, contentEditable, or when a modal dialog is open
+      if (
+        !target ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) ||
+        target.isContentEditable ||
+        window.document.querySelector('[role="dialog"][aria-modal="true"]')
+      ) {
         return;
       }
 
@@ -240,7 +250,14 @@ export const App: React.FC = () => {
         useStore.getState().nudgeSelected(dx * step, dy * step);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
         e.preventDefault();
-        setSelectedIds(document.elements.map((el) => el.id));
+        const hiddenLayers = new Set(
+          document.layers.filter((l) => l.visible === false).map((l) => l.id),
+        );
+        setSelectedIds(
+          document.elements
+            .filter((el) => el.visible !== false && !hiddenLayers.has(el.layerId))
+            .map((el) => el.id),
+        );
       }
     };
 
@@ -256,7 +273,7 @@ export const App: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedIds, document.elements, document.gridSize, document.snapToGrid,
+  }, [selectedIds, document.elements, document.layers, document.gridSize, document.snapToGrid,
       deleteElements, undo, redo, setSelectedIds]);
 
   return (
@@ -280,7 +297,7 @@ export const App: React.FC = () => {
         <LeftToolbar />
 
         {/* Center SVG Interactive Bed Canvas */}
-        <div className="flex-1 h-full relative">
+        <main className="flex-1 h-full relative" aria-label="Workspace">
           <EtchCanvas />
 
           {/*
@@ -294,7 +311,11 @@ export const App: React.FC = () => {
           */}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-col gap-2 items-center pointer-events-none">
             {mcpActiveCount > 0 && (
-              <div className="bg-white/90 dark:bg-slate-900/90 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800/80 px-3.5 py-1.5 rounded-full shadow-md flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md transition-all duration-300">
+              <div
+                role="status"
+                aria-live="polite"
+                className="bg-white/90 dark:bg-slate-900/90 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800/80 px-3.5 py-1.5 rounded-full shadow-md flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md transition-all duration-300"
+              >
                 <div className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -304,14 +325,17 @@ export const App: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
+        </main>
 
-        {/* Dimmer behind the inspector drawer. Only exists below `lg`, where
-            the inspector is an overlay; tapping the drawing puts it away. */}
-        {isPropertiesOpen && (
+        {/* Dimmer behind the inspector / AI copilot drawer. Only exists below `lg`,
+            where either drawer is an overlay; tapping the drawing puts it away. */}
+        {(isPropertiesOpen || isAiPanelOpen) && (
           <div
             className="lg:hidden absolute inset-0 z-30 bg-slate-950/40"
-            onClick={() => setPropertiesOpen(false)}
+            onClick={() => {
+              if (isPropertiesOpen) setPropertiesOpen(false);
+              if (isAiPanelOpen) toggleAiPanel();
+            }}
           />
         )}
 

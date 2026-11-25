@@ -59,6 +59,7 @@ export function wheelIntent(e: WheelLike, latched: WheelIntent | null): WheelInt
  * delta instead.
  */
 export function wheelZoomFactor(e: WheelLike): number {
+  if (e.deltaY === 0) return 1;
   if (e.deltaMode === 0 && Math.abs(e.deltaY) < NOTCH_PX) return Math.exp(-e.deltaY / 100);
   return e.deltaY < 0 ? 1.1 : 1 / 1.1;
 }

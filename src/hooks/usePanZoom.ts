@@ -61,6 +61,7 @@ export interface PanZoom {
   onPointerDown: (e: React.PointerEvent) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: (e: React.PointerEvent) => void;
+  onLostPointerCapture: (e: React.PointerEvent) => void;
 }
 
 /**
@@ -81,10 +82,13 @@ export interface PanZoom {
 export function usePanZoom(maxZoom = 12): PanZoom {
   const [{ zoom, pan }, setView] = useState<ViewState>({ zoom: 1, pan: { x: 0, y: 0 } });
   const [host, setHost] = useState<Element | null>(null);
-  /** Pointer position less pan at mouse-down, or null when not dragging. */
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  /** Pointer position less pan at mouse-down, plus active pointerId, or null when not dragging. */
+  const [dragStart, setDragStart] = useState<{ x: number; y: number; pointerId: number } | null>(null);
 
-  const reset = useCallback(() => setView({ zoom: 1, pan: { x: 0, y: 0 } }), []);
+  const reset = useCallback(() => {
+    setDragStart(null);
+    setView({ zoom: 1, pan: { x: 0, y: 0 } });
+  }, []);
 
   /** Zoom about a point in the host's own box, keeping that point put. */
   const zoomAbout = useCallback(
@@ -107,8 +111,12 @@ export function usePanZoom(maxZoom = 12): PanZoom {
     if (!host) return;
     const handler: EventListener = (raw) => {
       const e = raw as WheelEvent;
+      if (e.deltaY === 0) return;
       e.preventDefault();
       const box = host.getBoundingClientRect();
+      // Clear any active pan drag anchor so wheel-zooming mid-drag does not
+      // snap pan back to the pre-zoom offset on the next pointermove.
+      setDragStart(null);
       zoomAbout(
         e.deltaY < 0 ? 1.15 : 1 / 1.15,
         e.clientX - box.left - box.width / 2,
@@ -121,27 +129,48 @@ export function usePanZoom(maxZoom = 12): PanZoom {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
       if (zoom <= 1) return;
-      setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-      e.currentTarget.setPointerCapture(e.pointerId);
+      setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y, pointerId: e.pointerId });
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Synthetic pointer events in tests may not have an active pointerId.
+      }
     },
     [zoom, pan]
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
-      if (!dragStart) return;
+      if (!dragStart || e.pointerId !== dragStart.pointerId) return;
       setView((v) => ({ ...v, pan: { x: e.clientX - dragStart.x, y: e.clientY - dragStart.y } }));
     },
     [dragStart]
   );
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    setDragStart(null);
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  }, []);
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      if (dragStart && e.pointerId !== dragStart.pointerId) return;
+      setDragStart(null);
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignore synthetic events without pointer capture.
+      }
+    },
+    [dragStart]
+  );
+
+  const onLostPointerCapture = useCallback(
+    (e: React.PointerEvent) => {
+      if (dragStart && e.pointerId !== dragStart.pointerId) return;
+      setDragStart(null);
+    },
+    [dragStart]
+  );
 
   return {
     zoom,
@@ -154,5 +183,6 @@ export function usePanZoom(maxZoom = 12): PanZoom {
     onPointerDown,
     onPointerMove,
     onPointerUp,
+    onLostPointerCapture,
   };
 }

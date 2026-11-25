@@ -72,13 +72,13 @@ export function SavedDocumentList({
                     // Escape cancels the rename, not the whole browser.
                     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setRenaming(null); }
                   }}
-                  className="flex-1 min-w-0 text-sm px-2 py-1 rounded border border-red-400 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 outline-none"
+                  className="flex-1 min-w-0 text-sm px-2 py-1 rounded border border-red-400 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                   aria-label="New name"
                 />
-                <button type="submit" className="p-1 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer" title="Rename">
+                <button type="submit" aria-label="Confirm rename" className="p-1 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer" title="Rename">
                   <Check className="w-4 h-4" />
                 </button>
-                <button type="button" onClick={() => setRenaming(null)} className="p-1 rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" title="Cancel">
+                <button type="button" aria-label="Cancel rename" onClick={() => setRenaming(null)} className="p-1 rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" title="Cancel">
                   <X className="w-4 h-4" />
                 </button>
               </form>

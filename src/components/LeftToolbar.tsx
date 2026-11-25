@@ -73,14 +73,21 @@ export const LeftToolbar: React.FC = () => {
       Written as `max-lg:` overrides on top of the original classes, so the
       desktop column is untouched rather than reconstructed.
     */
-    <aside data-tour="left-tools" className="absolute left-4 top-20 z-20 flex flex-col gap-1.5 p-1.5 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800/80 rounded-xl shadow-xl transition-colors max-lg:left-2 max-lg:right-2 max-lg:top-auto max-lg:bottom-2 max-lg:flex-row max-lg:flex-wrap max-lg:justify-center">
+    <aside
+      data-tour="left-tools"
+      aria-label="Drawing tools"
+      className="absolute left-4 top-20 z-20 flex flex-col gap-1.5 p-1.5 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800/80 rounded-xl shadow-xl transition-colors max-lg:left-2 max-lg:right-2 max-lg:top-auto max-lg:bottom-2 max-lg:flex-row max-lg:flex-nowrap max-lg:overflow-x-auto max-lg:justify-start max-lg:[scrollbar-width:none] max-lg:[&::-webkit-scrollbar]:hidden"
+    >
       {tools.map((t) => {
         const Icon = t.icon;
         const isActive = activeTool === t.id;
         return (
           <button
             key={t.id}
+            type="button"
             onClick={() => setToolMode(t.id)}
+            aria-label={t.label}
+            aria-pressed={isActive}
             className={`w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center transition-all cursor-pointer ${
               isActive
                 ? 'bg-gradient-to-br from-red-500 to-amber-500 text-white shadow-md shadow-red-500/30'
@@ -97,13 +104,14 @@ export const LeftToolbar: React.FC = () => {
 
       {/* Import Image (PNG, JPG, WebP, Vector Trace) */}
       <label
-        className="w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 transition-colors cursor-pointer"
+        className="w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 focus-within:ring-2 focus-within:ring-emerald-500 transition-colors cursor-pointer"
         title="Import Image (PNG, JPG, WebP) & Vectorize"
       >
         <ImageIcon className="w-4 h-4 max-lg:w-5 max-lg:h-5" />
         <input
           type="file"
           accept="image/*"
+          aria-label="Import Image (PNG, JPG, WebP) & Vectorize"
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) {
@@ -113,13 +121,15 @@ export const LeftToolbar: React.FC = () => {
             }
             e.target.value = '';
           }}
-          className="hidden"
+          className="sr-only"
         />
       </label>
 
       {/* Clip Art Library Button */}
       <button
+        type="button"
         onClick={toggleClipArtModal}
+        aria-label="Clip Art & Symbol Gallery"
         className="w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-950/60 transition-colors cursor-pointer"
         title="Clip Art & Symbol Gallery"
       >
@@ -128,8 +138,10 @@ export const LeftToolbar: React.FC = () => {
 
       {/* Duplicate Selected */}
       <button
+        type="button"
         onClick={duplicateSelected}
         disabled={selectedIds.length === 0}
+        aria-label="Duplicate Selected (Ctrl+D)"
         className="w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors cursor-pointer"
         title="Duplicate Selected (Ctrl+D)"
       >
@@ -138,8 +150,10 @@ export const LeftToolbar: React.FC = () => {
 
       {/* Delete Selected */}
       <button
+        type="button"
         onClick={() => deleteElements(selectedIds)}
         disabled={selectedIds.length === 0}
+        aria-label="Delete Selected"
         className="w-9 h-9 rounded-lg max-lg:w-11 max-lg:h-11 max-lg:shrink-0 flex items-center justify-center text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-30 hover:bg-red-50 dark:hover:bg-red-950/60 transition-colors cursor-pointer"
         title="Delete Selected"
       >

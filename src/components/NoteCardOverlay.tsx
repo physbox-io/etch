@@ -51,7 +51,12 @@ export function NoteCardOverlay({ card, isEditing, onToggleEdit, onToggleMinimiz
     dragRef.current = { startX: e.clientX, startY: e.clientY, origX: card.x, origY: card.y };
     const handleMouseMove = (me: PointerEvent) => {
       if (!dragRef.current) return;
-      onMove(dragRef.current.origX + me.clientX - dragRef.current.startX, dragRef.current.origY + me.clientY - dragRef.current.startY);
+      const rawX = dragRef.current.origX + me.clientX - dragRef.current.startX;
+      const rawY = dragRef.current.origY + me.clientY - dragRef.current.startY;
+      const cardW = Math.min(300, Math.max(120, window.innerWidth - 24));
+      const clampedX = Math.min(Math.max(8, window.innerWidth - cardW - 8), Math.max(8, rawX));
+      const clampedY = Math.min(Math.max(8, window.innerHeight - 120), Math.max(8, rawY));
+      onMove(clampedX, clampedY);
     };
     const handleMouseUp = () => {
       dragRef.current = null;
@@ -92,13 +97,13 @@ export function NoteCardOverlay({ card, isEditing, onToggleEdit, onToggleMinimiz
           <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">Note Card</span>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={onToggleEdit} className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors" title={isEditing ? 'Preview' : 'Edit'}>
+          <button type="button" onClick={onToggleEdit} aria-label={isEditing ? 'Preview note' : 'Edit note'} className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors" title={isEditing ? 'Preview' : 'Edit'}>
             <Edit3 className="w-3 h-3 text-slate-500 dark:text-slate-400" />
           </button>
-          <button onClick={onToggleMinimize} className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors" title={card.minimized ? 'Expand' : 'Minimize'}>
+          <button type="button" onClick={onToggleMinimize} aria-label={card.minimized ? 'Expand note' : 'Minimize note'} className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors" title={card.minimized ? 'Expand' : 'Minimize'}>
             {card.minimized ? <ChevronDown className="w-3 h-3 text-slate-500 dark:text-slate-400" /> : <ChevronUp className="w-3 h-3 text-slate-500 dark:text-slate-400" />}
           </button>
-          <button onClick={onClose} className="p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-950/40 transition-colors" title="Close">
+          <button type="button" onClick={onClose} aria-label="Close note" className="p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-950/40 transition-colors" title="Close">
             <X className="w-3 h-3 text-slate-500 dark:text-slate-400 hover:text-red-500" />
           </button>
         </div>

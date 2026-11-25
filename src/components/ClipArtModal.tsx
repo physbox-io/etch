@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import {
   CLIP_ART_CATEGORIES,
   CLIP_ART_INDEX,
@@ -35,6 +36,8 @@ export const ClipArtModal: React.FC = () => {
   );
   const [paths, setPaths] = useState<Record<string, string> | null>(null);
   const [revealed, setRevealed] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isClipArtModalOpen, toggleClipArtModal);
 
   // Geometry lives on its own chunk; opening the gallery is what asks for it.
   useEffect(() => {
@@ -94,12 +97,12 @@ export const ClipArtModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
-      <div role="dialog" aria-modal="true" aria-label="Clip Art & Vector Symbol Gallery" className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-colors">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="clip-art-modal-title" className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-colors">
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Image className="w-5 h-5 text-cyan-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="clip-art-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               Clip Art &amp; Vector Symbol Gallery
             </h2>
           </div>

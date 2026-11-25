@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { X, LayoutGrid, AlertTriangle } from 'lucide-react';
 import { useStore, type PackReport } from '../store/useStore';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import { clusterParts, partGapMm } from '../utils/packParts';
 import { jobTools, machineWords, machineKind } from '../utils/tooling';
 
@@ -28,6 +29,11 @@ export const PackPartsModal: React.FC = () => {
 
   const [includeOtherSheets, setIncludeOtherSheets] = useState(false);
   const [report, setReport] = useState<PackReport | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isOpen, () => {
+    setReport(null);
+    toggle();
+  });
 
   const gap = useMemo(() => partGapMm(document, cncTools), [document, cncTools]);
   const parts = useMemo(() => clusterParts(document.elements), [document.elements]);
@@ -53,11 +59,11 @@ export const PackPartsModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
-      <div role="dialog" aria-modal="true" aria-label="Pack onto Stock" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="pack-parts-modal-title" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <LayoutGrid className="w-5 h-5 text-violet-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="pack-parts-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               Pack onto Stock
             </h2>
           </div>

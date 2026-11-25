@@ -1,4 +1,5 @@
 import type { BezierNode, EtchElement } from '../types/etch';
+import { shapeOutlineD } from './parametricShapes';
 import { normalizePathD } from './pathTransform';
 import type { Pt } from './pathFlatten';
 import { resweepLocalSpine } from './sweepPath';
@@ -36,6 +37,18 @@ const lerp = (a: Pt, b: Pt, t: number): Pt => ({
   y: a.y + (b.y - a.y) * t,
 });
 
+function hasAnyHandle(nodes: BezierNode[]): boolean {
+  return nodes.some(
+    (n) =>
+      (n.handleIn && Math.hypot(n.handleIn.x, n.handleIn.y) > WELD_EPS) ||
+      (n.handleOut && Math.hypot(n.handleOut.x, n.handleOut.y) > WELD_EPS)
+  );
+}
+
+function canClose(nodes: BezierNode[]): boolean {
+  return nodes.length > 2 || (nodes.length === 2 && hasAnyHandle(nodes));
+}
+
 /**
  * Builds an SVG path from pen-tool nodes, emitting real cubic segments wherever
  * handles exist. A node pair with no handles between them stays a straight `L`,
@@ -46,7 +59,7 @@ export function nodesToPath(nodes: BezierNode[], closed: boolean): string {
   const f = (n: number) => +n.toFixed(3);
   let d = `M ${f(nodes[0].x)} ${f(nodes[0].y)}`;
   for (let i = 1; i < nodes.length; i++) d += segmentD(nodes[i - 1], nodes[i], f);
-  if (closed && nodes.length > 2) {
+  if (closed && canClose(nodes)) {
     d += segmentD(nodes[nodes.length - 1], nodes[0], f);
     d += ' Z';
   }
@@ -138,11 +151,12 @@ export function elementNodePath(el: EtchElement): NodePath | null {
     }
     return el.sweep.spineD ? pathToNodes(el.sweep.spineD) : null;
   }
-  const closed = /z\s*$/i.test((el.d || '').trim());
+  const pathD = el.d || shapeOutlineD(el);
+  const closed = /z\s*$/i.test(pathD.trim());
   if (el.bezierNodes && el.bezierNodes.length > 1) {
     return { nodes: el.bezierNodes.map(cloneNode), closed };
   }
-  return el.d ? pathToNodes(el.d) : null;
+  return pathD ? pathToNodes(pathD) : null;
 }
 
 /**
@@ -291,7 +305,7 @@ export function removeNode(np: NodePath, index: number): NodePath {
   if (index < 0 || index >= np.nodes.length || np.nodes.length <= 2) return np;
   const nodes = np.nodes.map(cloneNode);
   nodes.splice(index, 1);
-  return { nodes, closed: np.closed && nodes.length > 2 };
+  return { nodes, closed: np.closed && canClose(nodes) };
 }
 
 /** Moves an anchor to `to`. Its handles are relative, so they ride along. */

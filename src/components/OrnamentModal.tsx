@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { X, Sparkles, AlertTriangle, Shuffle } from 'lucide-react';
 import { NumberInput } from '@physbox-io/ui';
 import { useStore } from '../store/useStore';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 import {
   ornamentById, planOrnament, defaultOrnamentRegion, ornamentPathOptions,
   type OrnamentOptions, type OrnamentRegion,
@@ -23,6 +24,8 @@ export const OrnamentModal: React.FC = () => {
   const addOrnament = useStore((s) => s.addOrnament);
 
   const spec = id ? ornamentById(id) : undefined;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, Boolean(spec), close);
   const derivedRegion = useMemo(() => defaultOrnamentRegion(document), [document]);
   const [region, setRegion] = useState<OrnamentRegion | null>(null);
   const [opts, setOpts] = useState<OrnamentOptions>({});
@@ -69,11 +72,11 @@ export const OrnamentModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4">
-      <div role="dialog" aria-modal="true" aria-label={spec.label} className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="ornament-modal-title" className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-purple-500" />
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
+            <h2 id="ornament-modal-title" className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
               {spec.label}
             </h2>
           </div>

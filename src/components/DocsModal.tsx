@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Info, Sparkles, X } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { DOCS_TABS, type DocsTabId } from '../docs/docsContent';
 import { START_TOUR_EVENT } from '../utils/deepLink';
+import { useDialogA11y } from '../hooks/useDialogA11y';
 
 /**
  * Small (i) affordance that deep-links a panel to its explainer. Anywhere a
@@ -24,6 +25,7 @@ export const DocsInfoButton: React.FC<{ tab: DocsTabId; className?: string; size
         openDocs(tab);
       }}
       title="Click for documentation"
+      aria-label="Open documentation"
       className={`text-slate-400 hover:text-amber-500 transition-colors cursor-pointer shrink-0 ${className}`}
     >
       <Info className={size} />
@@ -1055,17 +1057,19 @@ export const DocsModal: React.FC = () => {
       closeDocs: s.closeDocs,
     })),
   );
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, isDocsOpen, closeDocs);
   if (!isDocsOpen) return null;
 
   return (
     // Above the export and machine modals (z-50), which would otherwise paint
     // over the docs they just opened.
     <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-      <div role="dialog" aria-modal="true" aria-label="Physbox Etch Reference Guide" className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="docs-modal-title" className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/80">
           <div className="flex items-center gap-2">
             <Info className="w-5 h-5 text-amber-500" />
-            <h2 className="font-bold text-slate-800 dark:text-slate-100 text-base">
+            <h2 id="docs-modal-title" className="font-bold text-slate-800 dark:text-slate-100 text-base">
               Physbox Etch Reference Guide
             </h2>
           </div>

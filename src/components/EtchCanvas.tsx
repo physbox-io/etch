@@ -152,6 +152,7 @@ export const EtchCanvas: React.FC = () => {
     setCursor,
     addElement,
     updateElement,
+    updateElements,
     commitHistory,
     setToolMode,
   } = useStore(
@@ -172,13 +173,55 @@ export const EtchCanvas: React.FC = () => {
       setCursor: s.setCursor,
       addElement: s.addElement,
       updateElement: s.updateElement,
+      updateElements: s.updateElements,
       commitHistory: s.commitHistory,
       setToolMode: s.setToolMode,
     })),
   );
 
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const coarsePointer = useCoarsePointer();
+
+  // Track rendered SVG CSS dimensions so touch/pointer hit targets stay a
+  // consistent size in CSS pixels regardless of bed dimensions or viewport width.
+  const [svgCssSize, setSvgCssSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const measure = () => {
+      const w = svg.clientWidth || svg.getBoundingClientRect().width;
+      const h = svg.clientHeight || svg.getBoundingClientRect().height;
+      setSvgCssSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const w = entry.contentRect.width;
+      const h = entry.contentRect.height;
+      setSvgCssSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    });
+    ro.observe(svg);
+    return () => ro.disconnect();
+  }, []);
+
+  /** Snapshot of the element before a node-edit drag, so pinch/cancel can revert it. */
+  const nodeDragInitialRef = useRef<{ id: string; el: EtchElement } | null>(null);
+  /** Deferred flood-fill seed point; executes on single-pointer pointerup (not if pinched). */
+  const pendingFillRef = useRef<{ x: number; y: number } | null>(null);
+
+  const bedW = document.width;
+  const bedH = document.height;
+  const viewMinX = -BED_MARGIN;
+  const viewMinY = -BED_MARGIN;
+  const viewW = bedW + BED_MARGIN * 2;
+  const viewH = bedH + BED_MARGIN * 2;
+  const mmPerCssPx =
+    svgCssSize.w > 0 && svgCssSize.h > 0
+      ? Math.max(viewW / svgCssSize.w, viewH / svgCssSize.h) / zoom
+      : 1 / zoom;
 
   // Viewport Panning
   const [isPanning, setIsPanning] = useState(false);
@@ -252,7 +295,11 @@ export const EtchCanvas: React.FC = () => {
    * reach the others. Alt-click cycling was there all along, and nobody could
    * have known: a modifier nobody is told about is a modifier nobody presses.
    */
-  const [stackHint, setStackHint] = useState<{ index: number; count: number } | null>(null);
+  const [stackHint, setStackHint] = useState<{
+    index: number;
+    count: number;
+    candidates: string[];
+  } | null>(null);
   useEffect(() => {
     if (!stackHint) return;
     const t = window.setTimeout(() => setStackHint(null), 4000);
@@ -327,11 +374,11 @@ export const EtchCanvas: React.FC = () => {
     return { x: p.x, y: p.y };
   }, []);
 
-  /** Bed coords, snapped to the grid when snapping is on. */
+  /** Bed coords, snapped to the grid when snapping is on (Alt bypasses snap). */
   const toBedSnapped = useCallback(
-    (e: { clientX: number; clientY: number }) => {
+    (e: { clientX: number; clientY: number; altKey?: boolean }) => {
       const raw = toBed(e);
-      return snapEnabled ? snapPoint(raw, gridSize) : raw;
+      return snapEnabled && !e.altKey ? snapPoint(raw, gridSize) : raw;
     },
     [toBed, snapEnabled, gridSize]
   );
@@ -342,12 +389,12 @@ export const EtchCanvas: React.FC = () => {
    * pointer. A native listener rather than React's `onWheel`, because React
    * attaches wheel handlers passively and the `preventDefault` that stops the
    * page (and the browser's own pinch-zoom) from moving too was being ignored.
-   * The view is read from the store at event time: a trackpad sends dozens of
-   * these per second and a closure over render-time `pan` would drop most.
+   * Attached to the full-viewport host `<div>` rather than the scaled `<svg>`
+   * so zoomed-out or panned viewports have no dead zones.
    */
   useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
+    const host = hostRef.current;
+    if (!host) return;
     let latched: WheelIntent | null = null;
     let lastAt = 0;
     const onWheel = (e: WheelEvent) => {
@@ -365,17 +412,14 @@ export const EtchCanvas: React.FC = () => {
       }
       const next = Math.max(0.2, Math.min(z * wheelZoomFactor(e), 5.0));
       const applied = next / z;
-      const host = svg.parentElement;
-      if (host) {
-        const rect = host.getBoundingClientRect();
-        const mx = e.clientX - rect.left;
-        const my = e.clientY - rect.top;
-        sp({ x: mx - (mx - p.x) * applied, y: my - (my - p.y) * applied });
-      }
+      const rect = host.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      sp({ x: mx - (mx - p.x) * applied, y: my - (my - p.y) * applied });
       sz(next);
     };
-    svg.addEventListener('wheel', onWheel, { passive: false });
-    return () => svg.removeEventListener('wheel', onWheel);
+    host.addEventListener('wheel', onWheel, { passive: false });
+    return () => host.removeEventListener('wheel', onWheel);
   }, []);
 
   /*
@@ -384,30 +428,34 @@ export const EtchCanvas: React.FC = () => {
    * Magic Mouse has no middle button.
    *
    * Only claimed while the pointer is over the canvas and focus is not in a
-   * text field. The keyup's default is cancelled as well as the keydown's,
-   * because a focused button — which is whatever toolbar button was clicked
-   * last — activates on Space *up*, and panning must not press it again.
+   * text field, modal, or interactive control. `spaceHeldRef` lets `keyup`
+   * call `preventDefault()` synchronously (React state updaters run async).
    */
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const spaceHeldRef = useRef(false);
   const pointerOverCanvas = useRef(false);
   useEffect(() => {
-    const typing = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      return !!el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
-    };
     const onDown = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || typing(e.target) || !pointerOverCanvas.current) return;
+      if (e.code !== 'Space' || !pointerOverCanvas.current) return;
+      if (isKeyboardShortcutBlocked(e.target, { blockInteractive: true })) return;
       e.preventDefault();
-      if (!e.repeat) setSpaceHeld(true);
+      if (!spaceHeldRef.current) {
+        spaceHeldRef.current = true;
+        setSpaceHeld(true);
+      }
     };
     const onUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
-      setSpaceHeld((held) => {
-        if (held) e.preventDefault();
-        return false;
-      });
+      if (spaceHeldRef.current) {
+        e.preventDefault();
+        spaceHeldRef.current = false;
+        setSpaceHeld(false);
+      }
     };
-    const onBlur = () => setSpaceHeld(false);
+    const onBlur = () => {
+      spaceHeldRef.current = false;
+      setSpaceHeld(false);
+    };
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
     window.addEventListener('blur', onBlur);
@@ -432,6 +480,11 @@ export const EtchCanvas: React.FC = () => {
   const [filling, setFilling] = useState(false);
   const [fillNotice, setFillNotice] = useState<string | null>(null);
   const fillNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (fillNoticeTimer.current) clearTimeout(fillNoticeTimer.current);
+    };
+  }, []);
   const showFillNotice = useCallback((msg: string) => {
     setFillNotice(msg);
     if (fillNoticeTimer.current) clearTimeout(fillNoticeTimer.current);
@@ -495,14 +548,20 @@ export const EtchCanvas: React.FC = () => {
 
   // ---------------------------------------------------------------- Bezier
 
+  const cancelBezier = useCallback(() => {
+    setBezierNodes([]);
+    setIsDraggingHandle(false);
+  }, []);
+
   const finishBezier = useCallback(
     (close: boolean = false) => {
-      if (bezierNodes.length > 1) {
+      const cleaned = stripTrailingDuplicateBezierNode(bezierNodes);
+      if (cleaned.length > 1) {
         // Author the path around a local origin at the first node, so the
         // element's x/y really is its position on the bed.
-        const ox = bezierNodes[0].x;
-        const oy = bezierNodes[0].y;
-        const local = bezierNodes.map((n) => ({ ...n, x: n.x - ox, y: n.y - oy }));
+        const ox = cleaned[0].x;
+        const oy = cleaned[0].y;
+        const local = cleaned.map((n) => ({ ...n, x: n.x - ox, y: n.y - oy }));
         const rawEl: EtchElement = {
           id: `bezier_${Date.now()}`,
           name: 'Bezier Path',
@@ -562,20 +621,20 @@ export const EtchCanvas: React.FC = () => {
   useEffect(() => {
     if (activeTool !== 'bezier') return;
     const onKey = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return;
       if (e.key === 'Enter') {
+        if (isKeyboardShortcutBlocked(e.target, { blockInteractive: true })) return;
         e.preventDefault();
         finishBezier(false);
       } else if (e.key === 'Escape') {
+        if (isKeyboardShortcutBlocked(e.target)) return;
         e.preventDefault();
         e.stopPropagation();
-        setBezierNodes([]);
-        setIsDraggingHandle(false);
+        cancelBezier();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeTool, finishBezier]);
+  }, [activeTool, finishBezier, cancelBezier]);
 
   /*
    * Switching tools mid-path would otherwise silently discard the work.
@@ -636,11 +695,18 @@ export const EtchCanvas: React.FC = () => {
     [document.layers]
   );
 
+  /** Locked either on the element itself or via its owning layer. */
+  const isElementLocked = useCallback(
+    (el: EtchElement) =>
+      Boolean(el.locked || document.layers.find((l) => l.id === el.layerId)?.locked),
+    [document.layers]
+  );
+
   // ----------------------------------------------------------- Node editing
 
   const selectedElement =
     selectedIds.length === 1
-      ? document.elements.find((el) => el.id === selectedIds[0]) ?? null
+      ? document.elements.find((el) => el.id === selectedIds[0] && isPickable(el)) ?? null
       : null;
 
   /**
@@ -650,10 +716,10 @@ export const EtchCanvas: React.FC = () => {
    */
   const editPath = useMemo<NodePath | null>(
     () =>
-      activeTool === 'node-edit' && selectedElement && !selectedElement.locked
+      activeTool === 'node-edit' && selectedElement && !isElementLocked(selectedElement)
         ? elementNodePath(selectedElement)
         : null,
-    [activeTool, selectedElement]
+    [activeTool, selectedElement, isElementLocked]
   );
 
   /**
@@ -711,21 +777,26 @@ export const EtchCanvas: React.FC = () => {
 
   // Delete/Backspace removes the selected node. App's global handler defers to
   // this while the node tool is up, so the key does not delete the whole path.
+  const deleteActiveNode = useCallback(() => {
+    if (!editPath || activeIdx === null) return;
+    const next = removeNode(editPath, activeIdx);
+    if (next === editPath) return; // a 2-node path has nothing to spare
+    applyNodePath(next, false);
+    setActiveNode(Math.min(activeIdx, next.nodes.length - 1));
+  }, [editPath, activeIdx, applyNodePath]);
+
   useEffect(() => {
     if (activeTool !== 'node-edit') return;
     const onKey = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return;
+      if (isKeyboardShortcutBlocked(e.target)) return;
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       if (!editPath || activeIdx === null) return;
       e.preventDefault();
-      const next = removeNode(editPath, activeIdx);
-      if (next === editPath) return; // a 2-node path has nothing to spare
-      applyNodePath(next, false);
-      setActiveNode(Math.min(activeIdx, next.nodes.length - 1));
+      deleteActiveNode();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeTool, editPath, activeIdx, applyNodePath]);
+  }, [activeTool, editPath, activeIdx, deleteActiveNode]);
 
   // ---------------------------------------------------------- Pointer down
 
@@ -733,13 +804,18 @@ export const EtchCanvas: React.FC = () => {
    * Drop whatever gesture is in flight without treating it as finished.
    *
    * A second finger landing mid-stroke is not the operator finishing the
-   * stroke, so nothing here builds an element or extends a selection. A
-   * transform is the exception: it has already been written to the document
-   * transiently, so it still needs its one history entry.
+   * stroke, so nothing here builds an element, extends a selection, or commits
+   * history. Any transient transform or node drag is reverted to its initial
+   * snapshot, and an in-progress bezier node is popped so pinch-zooming never
+   * drops stray points or accidental edits.
    */
-  const abandonGesture = () => {
+  const abandonGesture = useCallback(() => {
+    pendingFillRef.current = null;
     setIsPanning(false);
-    setIsDraggingHandle(false);
+    if (isDraggingHandle) {
+      setIsDraggingHandle(false);
+      setBezierNodes((prev) => prev.slice(0, -1));
+    }
     setIsFreehandDrawing(false);
     setFreehandPoints([]);
     setIsCreatingShape(false);
@@ -749,15 +825,41 @@ export const EtchCanvas: React.FC = () => {
     setMarqueeAdditive(false);
     if (nodeDrag) {
       setNodeDrag(null);
-      commitHistory();
+      if (nodeDragInitialRef.current) {
+        const { id, el } = nodeDragInitialRef.current;
+        nodeDragInitialRef.current = null;
+        updateElement(id, { ...el }, true);
+      }
     }
     if (isTransforming) {
+      if (transformStart && transformStart.moves.length > 0) {
+        updateElements(
+          transformStart.moves.map((m) => ({ id: m.id, updates: { ...m.initialEl } })),
+          true
+        );
+      }
       setIsTransforming(null);
       setTransformStart(null);
       setAspectLocked(false);
-      commitHistory();
     }
-  };
+  }, [isDraggingHandle, nodeDrag, isTransforming, transformStart, updateElement, updateElements]);
+
+  const abandonGestureRef = useRef(abandonGesture);
+  useEffect(() => {
+    abandonGestureRef.current = abandonGesture;
+  }, [abandonGesture]);
+
+  // If the window loses focus mid-gesture, release tracked pointers and clean up
+  // so stale entries never poison future single-finger touches into pinch mode.
+  useEffect(() => {
+    const onBlur = () => {
+      pointers.current.clear();
+      pinch.current = null;
+      abandonGestureRef.current();
+    };
+    window.addEventListener('blur', onBlur);
+    return () => window.removeEventListener('blur', onBlur);
+  }, []);
 
   /**
    * Counts the fingers down and starts the pinch, in the capture phase.
@@ -769,13 +871,20 @@ export const EtchCanvas: React.FC = () => {
    * and leaving the operator resizing the shape with one finger and nothing
    * happening with the other.
    */
-  const handlePointerDownCapture = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handlePointerDownCapture = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Ignore HUD buttons floating inside the canvas host container.
+    if ((e.target as Element | null)?.closest?.('[data-canvas-hud]')) return;
+    // Ignore right-clicks and auxiliary mouse buttons so they never leak into
+    // `pointers.current` and poison subsequent touches into pinch mode.
+    if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 1) return;
+
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     // Taken here, before the selection handles see it, so that a Space-drag
     // which happens to start on a resize handle moves the view and not the part.
     if (pointers.current.size < 2 && (e.button === 1 || (e.button === 0 && spaceHeld))) {
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      capturePointer(e.currentTarget, e.pointerId);
       e.stopPropagation();
       return;
     }
@@ -789,7 +898,8 @@ export const EtchCanvas: React.FC = () => {
     e.stopPropagation();
   };
 
-  const handleMouseDown = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleMouseDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as Element | null)?.closest?.('[data-canvas-hud]')) return;
     if (pinch.current) return;
     if (e.button !== 0) return;
 
@@ -803,7 +913,7 @@ export const EtchCanvas: React.FC = () => {
       const candidates = hit ? rankHits(stack, document.elements, at) : [];
       setStackHint(
         candidates.length > 1
-          ? { index: candidates.indexOf(hit!) + 1, count: candidates.length }
+          ? { index: candidates.indexOf(hit!) + 1, count: candidates.length, candidates }
           : null
       );
 
@@ -815,7 +925,7 @@ export const EtchCanvas: React.FC = () => {
         // shape, only clicking near its outline grabs it so the empty interior space
         // remains clickable to deselect or start a marquee selection.
         const selected = document.elements.filter(
-          (el) => selectedIds.includes(el.id) && !el.locked
+          (el) => selectedIds.includes(el.id) && isPickable(el) && !isElementLocked(el)
         );
         const inside = selected.some((el) => {
           if (el.machining === 'filled') {
@@ -828,6 +938,7 @@ export const EtchCanvas: React.FC = () => {
           return nearOutline(el, raw);
         });
         if (inside && !e.shiftKey) {
+          capturePointer(e.currentTarget, e.pointerId);
           beginTransform(selected[0], 'move', toBedSnapped(e), selected);
           return;
         }
@@ -835,6 +946,7 @@ export const EtchCanvas: React.FC = () => {
         // Empty canvas: start a rubber band. The selection is not cleared until
         // mouse-up, so a marquee that turns out to be a plain click still
         // clears, but Shift+drag can extend the existing selection.
+        capturePointer(e.currentTarget, e.pointerId);
         setMarquee({ x0: raw.x, y0: raw.y, x1: raw.x, y1: raw.y });
         setMarqueeAdditive(e.shiftKey);
         return;
@@ -853,8 +965,11 @@ export const EtchCanvas: React.FC = () => {
       setSelectedIds(next);
 
       const primary = document.elements.find((el) => el.id === hit);
-      const movable = document.elements.filter((el) => next.includes(el.id) && !el.locked);
+      const movable = document.elements.filter(
+        (el) => next.includes(el.id) && isPickable(el) && !isElementLocked(el)
+      );
       if (primary && !e.shiftKey && movable.length > 0) {
+        capturePointer(e.currentTarget, e.pointerId);
         beginTransform(primary, 'move', toBedSnapped(e), movable);
       }
       return;
@@ -864,17 +979,13 @@ export const EtchCanvas: React.FC = () => {
     // mousedown, so anything arriving here is either a click on the path (add a
     // node) or a click elsewhere (pick a different path to edit).
     if (activeTool === 'node-edit') {
-      if (editPath) {
+      if (editPath && selectedElement) {
         const local = toLocal(e, false);
         const hit = closestPointOnPath(editPath, local);
-        // The tolerance is a screen distance, so zooming in does not make the
-        // outline harder to hit. hit.dist is in the element's local units,
-        // which its scale shrinks — without dividing that out, a 5x-scaled
-        // path grabbed clicks from 5x further away than the 6px it looks.
-        const grab =
-          (NODE_GRAB_PX * (coarsePointer ? TOUCH_HANDLE_SCALE : 1)) /
-          (zoom * elementScale(selectedElement));
+        const grab = ((coarsePointer ? 18 : NODE_GRAB_PX) * mmPerCssPx) / elementScale(selectedElement);
         if (hit && hit.dist <= grab) {
+          capturePointer(e.currentTarget, e.pointerId);
+          nodeDragInitialRef.current = { id: selectedElement.id, el: { ...selectedElement } };
           const next = insertNode(editPath, hit.segIndex, hit.t);
           applyNodePath(next, true);
           setActiveNode(hit.segIndex + 1);
@@ -888,57 +999,46 @@ export const EtchCanvas: React.FC = () => {
       return;
     }
 
-    /*
-     * Freehand. The grid-snapped pencil starts on a grid intersection and ends
-     * on one (see handleMouseUp); the fluid pencil starts and ends exactly
-     * where the pointer was.
-     *
-     * Both used to snap their two end points while taking every point between
-     * them raw, which put a hard tick of up to half a grid square on the front
-     * and back of every fluid stroke — the "weird uptick at the start" — and
-     * made a stroke drawn straight fail every straightness test afterwards,
-     * because the line it is measured against is the one through those two
-     * displaced ends.
-     */
     if (activeTool === 'freehand' || activeTool === 'grid-freehand') {
+      capturePointer(e.currentTarget, e.pointerId);
       setIsFreehandDrawing(true);
       setFreehandPoints([activeTool === 'grid-freehand' ? coords : toBed(e)]);
       return;
     }
 
-    /*
-     * The eraser draws like the pencil and lands as a mask. It follows the
-     * document's snap setting rather than having a snapped and an unsnapped
-     * variant: rubbing out one square of a grid-drawn part is the case it is
-     * wanted for, and an eraser that ignored the grid while the drawing was
-     * built on it would never line up with what it is aimed at.
-     */
     if (activeTool === 'erase') {
+      capturePointer(e.currentTarget, e.pointerId);
       setIsFreehandDrawing(true);
       setFreehandPoints([coords]);
       return;
     }
 
     if (activeTool === 'bezier') {
-      // Clicking the first node again closes the path.
+      // Clicking the first node again closes the path (radius scaled in CSS px).
       if (bezierNodes.length > 1) {
         const first = bezierNodes[0];
-        if (Math.hypot(coords.x - first.x, coords.y - first.y) < Math.max(gridSize / 2, 2)) {
+        const raw = toBed(e);
+        const closeRadius = (coarsePointer ? 18 : 10) * mmPerCssPx;
+        if (Math.hypot(raw.x - first.x, raw.y - first.y) < closeRadius) {
           finishBezier(true);
           return;
         }
       }
+      capturePointer(e.currentTarget, e.pointerId);
       setBezierNodes((prev) => [...prev, { x: coords.x, y: coords.y }]);
       setIsDraggingHandle(true);
       return;
     }
 
     if (activeTool === 'fill') {
-      void runFloodFill(toBed(e));
+      // Defer flood-fill to single-pointer pointerup so a two-finger pinch
+      // never accidentally triggers a fill on the first finger's landing.
+      pendingFillRef.current = toBed(e);
       return;
     }
 
     if (['rect', 'circle', 'ellipse', 'line', 'polygon', 'star', 'text'].includes(activeTool)) {
+      capturePointer(e.currentTarget, e.pointerId);
       setIsCreatingShape(true);
       setShapeStart(coords);
       setShapeCurrent(coords);
@@ -947,7 +1047,7 @@ export const EtchCanvas: React.FC = () => {
 
   // ---------------------------------------------------------- Pointer move
 
-  const handleMouseMove = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (pointers.current.has(e.pointerId)) {
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
@@ -961,7 +1061,7 @@ export const EtchCanvas: React.FC = () => {
       const prev = pinch.current;
       const next = pinchState();
       pinch.current = next;
-      const host = e.currentTarget.parentElement as HTMLElement | null;
+      const host = hostRef.current ?? e.currentTarget;
       if (host && prev.dist > 0 && next.dist > 0) {
         const { zoom: z, pan: p } = useStore.getState();
         const target = Math.max(0.2, Math.min(z * (next.dist / prev.dist), 5.0));
@@ -1048,9 +1148,10 @@ export const EtchCanvas: React.FC = () => {
       if (isTransforming === 'move') {
         const dx = coords.x - transformStart.mouseX;
         const dy = coords.y - transformStart.mouseY;
-        for (const m of transformStart.moves) {
-          updateElement(m.id, { x: m.x + dx, y: m.y + dy }, true);
-        }
+        updateElements(
+          transformStart.moves.map((m) => ({ id: m.id, updates: { x: m.x + dx, y: m.y + dy } })),
+          true
+        );
         return;
       }
 
@@ -1075,7 +1176,7 @@ export const EtchCanvas: React.FC = () => {
         const el = document.elements.find(
           (it) => it.id === (transformStart.moves[0]?.id ?? selectedIds[0])
         );
-        if (!el || el.locked) return;
+        if (!el || isElementLocked(el)) return;
 
         if (isTransforming === 'resize') {
           // From the element as it was at grab time, never as it is now: the
@@ -1091,7 +1192,10 @@ export const EtchCanvas: React.FC = () => {
         } else if (isTransforming === 'rotate') {
           const pivot = getPivotInBed(el);
           const angle = (Math.atan2(rawCoords.y - pivot.y, rawCoords.x - pivot.x) * 180) / Math.PI;
-          let next = transformStart.elRot + (angle - transformStart.grabAngle);
+          // Single-axis mirrored shapes invert visual rotation direction under
+          // T · S · R, so negate the delta when scaleX * scaleY < 0.
+          const mirrorSign = Math.sign(el.scaleX ?? 1) * Math.sign(el.scaleY ?? 1) < 0 ? -1 : 1;
+          let next = transformStart.elRot + mirrorSign * (angle - transformStart.grabAngle);
           // Shift steps in fifteens; otherwise the quarter turns are sticky,
           // and Alt lets go of them.
           if (e.shiftKey) next = Math.round(next / 15) * 15;
@@ -1113,19 +1217,22 @@ export const EtchCanvas: React.FC = () => {
           const cos = Math.cos(rad);
           const sin = Math.sin(rad);
 
-          for (const m of transformStart.moves) {
+          const patches = transformStart.moves.map((m) => {
             const p0 = m.pivotBed;
             const dx0 = p0.x - mb.centerX;
             const dy0 = p0.y - mb.centerY;
             const p1x = mb.centerX + dx0 * cos - dy0 * sin;
             const p1y = mb.centerY + dx0 * sin + dy0 * cos;
-            const newRot = normalizeAngle((m.initialEl.rotation || 0) + dAngle);
+            const mirrorSign =
+              Math.sign(m.initialEl.scaleX ?? 1) * Math.sign(m.initialEl.scaleY ?? 1) < 0 ? -1 : 1;
+            const newRot = normalizeAngle((m.initialEl.rotation || 0) + mirrorSign * dAngle);
             const tempEl = { ...m.initialEl, rotation: newRot };
             const localBox = getLocalBBox(tempEl);
             const newX = p1x - (tempEl.scaleX ?? 1) * localBox.centerX;
             const newY = p1y - (tempEl.scaleY ?? 1) * localBox.centerY;
-            updateElement(m.id, { x: newX, y: newY, rotation: newRot }, true);
-          }
+            return { id: m.id, updates: { x: newX, y: newY, rotation: newRot } };
+          });
+          updateElements(patches, true);
         } else if (isTransforming === 'resize') {
           // The corner or edge midpoint opposite the one grabbed is what the
           // whole group is scaled about, so dragging the group's west side
@@ -1150,17 +1257,16 @@ export const EtchCanvas: React.FC = () => {
           const anchorY = north ? mb.minY + mb.height : south ? mb.minY : mb.centerY;
           const dW = west ? -dx : east ? dx : 0;
           const dH = north ? -dy : south ? dy : 0;
-          const newW = Math.max(1, mb.width + dW);
-          const newH = Math.max(1, mb.height + dH);
-          let sxRatio = newW / mb.width;
-          let syRatio = newH / mb.height;
           setAspectLocked(e.shiftKey);
-          if (e.shiftKey) {
-            const sRatio = Math.abs(sxRatio - 1) > Math.abs(syRatio - 1) ? sxRatio : syRatio;
-            sxRatio = syRatio = sRatio;
-          }
+          const { sxRatio, syRatio } = computeMultiResizeRatios(
+            mb.width,
+            mb.height,
+            dW,
+            dH,
+            e.shiftKey
+          );
 
-          for (const m of transformStart.moves) {
+          const patches = transformStart.moves.map((m) => {
             const el0 = m.initialEl;
             const p0 = m.pivotBed;
             const relX = p0.x - anchorX;
@@ -1168,35 +1274,14 @@ export const EtchCanvas: React.FC = () => {
             const p1x = anchorX + relX * sxRatio;
             const p1y = anchorY + relY * syRatio;
 
-            const updates: Partial<EtchElement> = {};
-            // A generated field in a group is still sized rather than scaled,
-            // or its spacing grows with the group and it stops being the hinge
-            // or grille that was asked for. The store re-lays it.
-            if (isGeneratedField(el0)) {
-              updates.w = Math.max(1, (el0.w ?? 0) * sxRatio);
-              updates.h = Math.max(1, (el0.h ?? 0) * syRatio);
-            } else if (el0.type === 'rect') {
-              updates.w = Math.max(0.5, (el0.w ?? 40) * sxRatio);
-              updates.h = Math.max(0.5, (el0.h ?? 25) * syRatio);
-            } else if (el0.type === 'circle') {
-              updates.r = Math.max(0.5, (el0.r ?? 20) * ((sxRatio + syRatio) / 2));
-            } else if (el0.type === 'ellipse') {
-              updates.rx2 = Math.max(0.5, (el0.rx2 ?? 30) * sxRatio);
-              updates.ry2 = Math.max(0.5, (el0.ry2 ?? 20) * syRatio);
-            } else if (el0.type === 'line') {
-              updates.x2 = (el0.x2 ?? 40) * sxRatio;
-              updates.y2 = (el0.y2 ?? 0) * syRatio;
-            } else {
-              updates.scaleX = clampScale((el0.scaleX ?? 1) * sxRatio);
-              updates.scaleY = clampScale((el0.scaleY ?? 1) * syRatio);
-            }
-
+            const updates = computeMultiResizeMemberUpdates(el0, sxRatio, syRatio);
             const tempEl = { ...el0, ...updates };
             const localBox = getLocalBBox(tempEl);
             const newX = p1x - (tempEl.scaleX ?? 1) * localBox.centerX;
             const newY = p1y - (tempEl.scaleY ?? 1) * localBox.centerY;
-            updateElement(m.id, { ...updates, x: newX, y: newY }, true);
-          }
+            return { id: m.id, updates: { ...updates, x: newX, y: newY } };
+          });
+          updateElements(patches, true);
         }
       }
     }
@@ -1204,8 +1289,9 @@ export const EtchCanvas: React.FC = () => {
 
   // ------------------------------------------------------------ Pointer up
 
-  const handleMouseUp = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleMouseUp = (e: React.PointerEvent<HTMLDivElement>) => {
     pointers.current.delete(e.pointerId);
+    releasePointer(e.currentTarget, e.pointerId);
 
     // Lifting one finger out of a pinch ends the view gesture outright. Handing
     // the tools the finger that is still down would draw a stroke the operator
@@ -1216,12 +1302,20 @@ export const EtchCanvas: React.FC = () => {
       return;
     }
 
+    if (pendingFillRef.current) {
+      const seed = pendingFillRef.current;
+      pendingFillRef.current = null;
+      void runFloodFill(seed);
+      return;
+    }
+
     if (isPanning) setIsPanning(false);
     if (isDraggingHandle) setIsDraggingHandle(false);
 
     if (nodeDrag) {
       // One undo entry per gesture, matching how moves and resizes commit.
       setNodeDrag(null);
+      nodeDragInitialRef.current = null;
       commitHistory();
       return;
     }
@@ -1330,10 +1424,9 @@ export const EtchCanvas: React.FC = () => {
         { x: marquee.x0, y: marquee.y0 },
         { x: marquee.x1, y: marquee.y1 }
       );
-      // Below a fraction of a millimetre of travel this was a click on empty
-      // canvas, not a band: clear the selection (unless Shift was held to
-      // extend it).
-      if (Math.max(rect.maxX - rect.minX, rect.maxY - rect.minY) < 0.5) {
+      // Below 4 CSS pixels of travel this was a click on empty canvas, not a
+      // band: clear the selection (unless Shift was held to extend it).
+      if (Math.max(rect.maxX - rect.minX, rect.maxY - rect.minY) < 4 * mmPerCssPx) {
         if (!marqueeAdditive) setSelectedIds([]);
       } else {
         const hits = elementsInMarquee(
@@ -1357,7 +1450,7 @@ export const EtchCanvas: React.FC = () => {
       // Land moves on the grid: every tool snaps at start AND end. The whole
       // group shifts by ONE correction — snapping each element to its own
       // nearest intersection would pull a multi-selection out of alignment.
-      if (isTransforming === 'move' && snapEnabled && transformStart) {
+      if (isTransforming === 'move' && snapEnabled && !e.altKey && transformStart) {
         const live = useStore.getState().document.elements;
         const lead = live.find((it) => it.id === transformStart.moves[0]?.id);
         // Only a real drag lands on the grid. A plain click also opens a move
@@ -1372,10 +1465,11 @@ export const EtchCanvas: React.FC = () => {
           const cx = snapped.x - lead.x;
           const cy = snapped.y - lead.y;
           if (cx !== 0 || cy !== 0) {
-            for (const m of transformStart.moves) {
-              const el = live.find((it) => it.id === m.id);
-              if (el) updateElement(el.id, { x: el.x + cx, y: el.y + cy }, true);
-            }
+            const patches = transformStart.moves
+              .map((m) => live.find((it) => it.id === m.id))
+              .filter((el): el is EtchElement => Boolean(el))
+              .map((el) => ({ id: el.id, updates: { x: el.x + cx, y: el.y + cy } }));
+            if (patches.length > 0) updateElements(patches, true);
           }
         }
       }
@@ -1386,13 +1480,22 @@ export const EtchCanvas: React.FC = () => {
     }
   };
 
-  const handleMouseLeave = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleMouseLeave = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointerOverCanvas.current = false;
     // Touch pointers are implicitly captured, so they only ever "leave" as part
     // of being lifted — which handleMouseUp has already dealt with one event
     // earlier. Running it again here would finish the gesture twice.
     if (e.pointerType !== 'mouse') return;
-    // Releasing outside the canvas used to leave the app stuck mid-drag.
-    if (isPanning || isFreehandDrawing || isCreatingShape || isTransforming || marquee || nodeDrag) {
+    // Releasing outside the canvas without capture used to leave the app stuck mid-drag.
+    if (
+      isPanning ||
+      isDraggingHandle ||
+      isFreehandDrawing ||
+      isCreatingShape ||
+      isTransforming ||
+      marquee ||
+      nodeDrag
+    ) {
       handleMouseUp(e);
     }
   };
@@ -1401,7 +1504,20 @@ export const EtchCanvas: React.FC = () => {
    * The OS taking the gesture away (a system edge-swipe, a call coming in).
    * Without this the canvas keeps a stroke open that will never be finished.
    */
-  const handlePointerCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointers.current.delete(e.pointerId);
+    releasePointer(e.currentTarget, e.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    abandonGesture();
+  };
+
+  /**
+   * If pointer capture is lost unexpectedly (without a preceding pointerup or
+   * pointercancel, which already removed the pointerId from `pointers`), clean
+   * up the tracked pointer and abandon any in-flight gesture.
+   */
+  const handleLostPointerCapture = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointers.current.has(e.pointerId)) return;
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
     abandonGesture();
@@ -1468,15 +1584,7 @@ export const EtchCanvas: React.FC = () => {
           ? localToBed(el, 0, 0)
           : localToBed(el, el.x2 ?? 40, el.y2 ?? 0);
       } else {
-        const b = getBedBBox(el);
-        const west = handle === 'nw' || handle === 'sw' || handle === 'w';
-        const east = handle === 'ne' || handle === 'se' || handle === 'e';
-        const north = handle === 'nw' || handle === 'ne' || handle === 'n';
-        const south = handle === 'sw' || handle === 'se' || handle === 's';
-        handleBed = {
-          x: west ? b.minX : east ? b.minX + b.width : b.centerX,
-          y: north ? b.minY : south ? b.minY + b.height : b.centerY,
-        };
+        handleBed = computeSingleHandleBed(el, handle);
       }
     }
 
@@ -1519,7 +1627,9 @@ export const EtchCanvas: React.FC = () => {
   // outline per member so you can see exactly what is in the set, and rotate
   // and resize handles that rewrite every member's geometry about the box.
   const selectedElements =
-    selectedIds.length > 1 ? document.elements.filter((el) => selectedIds.includes(el.id)) : [];
+    selectedIds.length > 1
+      ? document.elements.filter((el) => selectedIds.includes(el.id) && isPickable(el))
+      : [];
   /**
    * What a group transform is allowed to touch.
    *
@@ -1527,7 +1637,7 @@ export const EtchCanvas: React.FC = () => {
    * but rotating or scaling the group leaves it exactly where it is, which is
    * the rule a group drag already follows (see `movable` above).
    */
-  const movableSelected = selectedElements.filter((el) => !el.locked);
+  const movableSelected = selectedElements.filter((el) => !isElementLocked(el));
   const bedBoxOf = bedBoxOfAll;
 
   const multiBox = selectedElements.length > 1 ? bedBoxOf(selectedElements) : null;
@@ -1546,30 +1656,12 @@ export const EtchCanvas: React.FC = () => {
   // whole overlay is drawn larger, because a rotate knob sized for a mouse
   // cursor is smaller than the fingertip trying to grab it.
   const hs = (coarsePointer ? TOUCH_HANDLE_SCALE : 1) / zoom;
-
-  const bedW = document.width;
-  const bedH = document.height;
-
-  /**
-   * The visible window, in bed millimetres: the stock and a fixed margin.
-   *
-   * It used to be the union of the stock and everything drawn on it, so that
-   * art dragged off the board pulled the view out to include itself. That came
-   * from a real bug — an SVG root clips to its viewBox, and a canvas framed on
-   * the stock alone made off-stock geometry vanish from the screen while still
-   * being in the document and in the G-code.
-   *
-   * But a window that follows the drawing is a window that moves while you
-   * work: every frame of a resize that crosses the stock edge re-frames the
-   * canvas, so the whole drawing lurches under the cursor at the moment you are
-   * trying to be precise with it. The fix for the clipping is `overflow:
-   * visible` on the root (below), which lets geometry outside the box draw
-   * anyway — so the view can stay still and nothing is hidden.
-   */
-  const viewMinX = -BED_MARGIN;
-  const viewMinY = -BED_MARGIN;
-  const viewW = bedW + BED_MARGIN * 2;
-  const viewH = bedH + BED_MARGIN * 2;
+  // Invisible hit targets sized in real CSS pixels (44×44 on touch) converted
+  // into bed mm via `mmPerCssPx` so handles and strokes stay easy to tap on
+  // any bed size or viewport width.
+  const resizeHitSize = (coarsePointer ? 44 : 18) * mmPerCssPx;
+  const handleHitRadius = (coarsePointer ? 22 : 10) * mmPerCssPx;
+  const strokeHitWidth = (coarsePointer ? 24 : 8) * mmPerCssPx;
 
   /**
    * How far past the window the grid is painted.
@@ -1638,18 +1730,57 @@ export const EtchCanvas: React.FC = () => {
 
   return (
     <div
-      className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors"
+      ref={hostRef}
+      className="relative w-full h-full bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors touch-none select-none"
       onPointerEnter={() => (pointerOverCanvas.current = true)}
-      onPointerLeave={() => (pointerOverCanvas.current = false)}
+      onPointerDownCapture={handlePointerDownCapture}
+      onPointerDown={handleMouseDown}
+      onPointerMove={handleMouseMove}
+      onPointerUp={handleMouseUp}
+      onPointerCancel={handlePointerCancel}
+      onLostPointerCapture={handleLostPointerCapture}
+      onPointerLeave={handleMouseLeave}
+      onDoubleClick={(e) => {
+        if ((e.target as Element | null)?.closest?.('[data-canvas-hud]')) return;
+        if (activeTool === 'bezier') {
+          finishBezier(false);
+          return;
+        }
+        // Double-clicking a curve with the select tool drops into node
+        // editing on it, the way every vector editor does — the node tool is
+        // otherwise something you have to know is in the toolbar. Only
+        // path-backed shapes qualify; text keeps its own double-click, which
+        // opens the text prompt.
+        if (activeTool === 'select') {
+          const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey, toBed(e));
+          const el = hit ? document.elements.find((it) => it.id === hit) : null;
+          if (el && isPickable(el) && !isElementLocked(el) && elementNodePath(el)) {
+            setSelectedIds([el.id]);
+            setToolMode('node-edit');
+          }
+        }
+      }}
+      onContextMenu={(e) => {
+        if (activeTool === 'bezier') {
+          e.preventDefault();
+          finishBezier(false);
+        }
+      }}
     >
       <BusyToast show={filling} label="Filling region…" />
       {fillNotice && (
-        <div className="absolute left-1/2 -translate-x-1/2 top-4 z-30 max-w-md px-3 py-2 rounded-lg bg-slate-900/90 text-slate-100 text-xs shadow-lg pointer-events-none">
+        <div
+          role="status"
+          aria-live="polite"
+          className="absolute left-1/2 -translate-x-1/2 top-4 z-30 max-w-md px-3 py-2 rounded-lg bg-slate-900/90 text-slate-100 text-xs shadow-lg pointer-events-none"
+        >
           {fillNotice}
         </div>
       )}
       <svg
         ref={svgRef}
+        role="application"
+        aria-label={`Design canvas (${bedW} × ${bedH} mm)`}
         // How the MCP bridge finds the canvas to photograph it. A ref is no use
         // there: the bridge is a plain function with no view of this component.
         data-etch-canvas
@@ -1676,38 +1807,8 @@ export const EtchCanvas: React.FC = () => {
           */
           overflow: 'visible',
         }}
-        onPointerDownCapture={handlePointerDownCapture}
-        onPointerDown={handleMouseDown}
-        onPointerMove={handleMouseMove}
-        onPointerUp={handleMouseUp}
-        onPointerCancel={handlePointerCancel}
-        onPointerLeave={handleMouseLeave}
-        onDoubleClick={(e) => {
-          if (activeTool === 'bezier') {
-            finishBezier(false);
-            return;
-          }
-          // Double-clicking a curve with the select tool drops into node
-          // editing on it, the way every vector editor does — the node tool is
-          // otherwise something you have to know is in the toolbar. Only
-          // path-backed shapes qualify; text keeps its own double-click, which
-          // opens the text prompt.
-          if (activeTool === 'select') {
-            const hit = pickHit(hitStack(e), document.elements, selectedIds, e.altKey, toBed(e));
-            const el = hit ? document.elements.find((it) => it.id === hit) : null;
-            if (el && !el.locked && elementNodePath(el)) {
-              setSelectedIds([el.id]);
-              setToolMode('node-edit');
-            }
-          }
-        }}
-        onContextMenu={(e) => {
-          if (activeTool === 'bezier') {
-            e.preventDefault();
-            finishBezier(false);
-          }
-        }}
       >
+        <title>Design canvas ({bedW} × {bedH} mm)</title>
         <defs>
           {/*
             The grid is drawn in bed millimetres from document.gridSize, so what
@@ -1904,7 +2005,7 @@ export const EtchCanvas: React.FC = () => {
           // A fat transparent copy of the outline, so hairline strokes are
           // comfortably clickable. `transparent` is a paint, not `none`, so it
           // is a hit target under visiblePainted while drawing nothing.
-          const hit = { fill: 'none', stroke: 'transparent', strokeWidth: Math.max(strokeW, 3) };
+          const hit = { fill: 'none', stroke: 'transparent', strokeWidth: Math.max(strokeW, strokeHitWidth) };
           const textHit = el.type === 'text' ? textHitBoxes.get(el.id) : null;
 
           /**
@@ -2021,6 +2122,7 @@ export const EtchCanvas: React.FC = () => {
                   {...common}
                   fill={fillColor}
                   onDoubleClick={() => {
+                    if (el.locked || layer?.locked) return;
                     const newText = window.prompt('Edit Vector Text:', el.text);
                     if (newText !== null) updateElement(el.id, { text: newText });
                   }}
@@ -2037,6 +2139,7 @@ export const EtchCanvas: React.FC = () => {
                   fill={fillColor === 'none' ? strokeColor : fillColor}
                   strokeWidth={strokeW * 0.3}
                   onDoubleClick={() => {
+                    if (el.locked || layer?.locked) return;
                     const newText = window.prompt('Edit Vector Text:', el.text);
                     if (newText !== null) updateElement(el.id, { text: newText });
                   }}
@@ -2099,7 +2202,7 @@ export const EtchCanvas: React.FC = () => {
                 d={d}
                 fill="none"
                 stroke="transparent"
-                strokeWidth={Math.max(width, 3)}
+                strokeWidth={Math.max(width, strokeHitWidth)}
                 {...caps}
               />
               {reveal && (
@@ -2282,7 +2385,13 @@ export const EtchCanvas: React.FC = () => {
                           key={k}
                           className="cursor-grab active:cursor-grabbing"
                           onPointerDown={(e) => {
+                            if (e.button !== 0) return;
                             e.stopPropagation();
+                            if (hostRef.current) capturePointer(hostRef.current, e.pointerId);
+                            nodeDragInitialRef.current = {
+                              id: selectedElement.id,
+                              el: { ...selectedElement },
+                            };
                             setActiveNode(idx);
                             // Alt breaks the node, so the two sides can point
                             // in different directions.
@@ -2299,7 +2408,7 @@ export const EtchCanvas: React.FC = () => {
                             strokeDasharray={real ? undefined : `${1 * hs},${1 * hs}`}
                             style={{ pointerEvents: 'none' }}
                           />
-                          <circle cx={at.x} cy={at.y} r={4 * hs} fill="transparent" />
+                          <circle cx={at.x} cy={at.y} r={handleHitRadius} fill="transparent" />
                           <circle
                             cx={at.x}
                             cy={at.y}
@@ -2307,6 +2416,7 @@ export const EtchCanvas: React.FC = () => {
                             fill={real ? '#38bdf8' : 'none'}
                             stroke="#38bdf8"
                             strokeWidth={0.35 * hs}
+                            style={{ pointerEvents: 'none' }}
                           />
                         </g>
                       );
@@ -2315,7 +2425,13 @@ export const EtchCanvas: React.FC = () => {
                     <g
                       className="cursor-pointer"
                       onPointerDown={(e) => {
+                        if (e.button !== 0) return;
                         e.stopPropagation();
+                        if (hostRef.current) capturePointer(hostRef.current, e.pointerId);
+                        nodeDragInitialRef.current = {
+                          id: selectedElement.id,
+                          el: { ...selectedElement },
+                        };
                         setActiveNode(idx);
                         setNodeDrag({ index: idx, kind: 'node', mirror: false });
                       }}
@@ -2327,7 +2443,7 @@ export const EtchCanvas: React.FC = () => {
                         setActiveNode(null);
                       }}
                     >
-                      <circle cx={n.x} cy={n.y} r={4 * hs} fill="transparent" />
+                      <circle cx={n.x} cy={n.y} r={handleHitRadius} fill="transparent" />
                       <circle
                         cx={n.x}
                         cy={n.y}
@@ -2335,6 +2451,7 @@ export const EtchCanvas: React.FC = () => {
                         fill={idx === activeIdx ? '#f59e0b' : '#ffffff'}
                         stroke="#f59e0b"
                         strokeWidth={0.4 * hs}
+                        style={{ pointerEvents: 'none' }}
                       />
                     </g>
                   </g>
@@ -2444,15 +2561,17 @@ export const EtchCanvas: React.FC = () => {
                   <g
                     className="cursor-grab active:cursor-grabbing"
                     onPointerDown={(e) => {
+                      if (e.button !== 0) return;
                       e.stopPropagation();
                       if (movableSelected.length === 0) return;
+                      if (hostRef.current) capturePointer(hostRef.current, e.pointerId);
                       beginTransform(movableSelected[0], 'rotate', toBed(e), movableSelected);
                     }}
                   >
                     <circle
                       cx={mbCx}
                       cy={handleBox.minY - 14 * hs}
-                      r={5 * hs}
+                      r={handleHitRadius}
                       fill="transparent"
                     />
                     <circle
@@ -2462,6 +2581,7 @@ export const EtchCanvas: React.FC = () => {
                       fill="#f59e0b"
                       stroke="#ffffff"
                       strokeWidth={0.4 * hs}
+                      style={{ pointerEvents: 'none' }}
                     />
                   </g>
 
@@ -2476,22 +2596,35 @@ export const EtchCanvas: React.FC = () => {
                     { key: 'sw' as const, hx: handleBox.minX, hy: handleBox.maxY, cursor: 'cursor-nesw-resize' },
                     { key: 'w' as const, hx: handleBox.minX, hy: mbCy, cursor: 'cursor-ew-resize' },
                   ]).map((h) => (
-                    <rect
+                    <g
                       key={h.key}
-                      x={h.hx - 1.5 * hs}
-                      y={h.hy - 1.5 * hs}
-                      width={3 * hs}
-                      height={3 * hs}
-                      fill="#f59e0b"
-                      stroke="#ffffff"
-                      strokeWidth={0.3 * hs}
                       className={h.cursor}
                       onPointerDown={(e) => {
+                        if (e.button !== 0) return;
                         e.stopPropagation();
                         if (movableSelected.length === 0) return;
+                        if (hostRef.current) capturePointer(hostRef.current, e.pointerId);
                         beginTransform(movableSelected[0], 'resize', toBed(e), movableSelected, h.key);
                       }}
-                    />
+                    >
+                      <rect
+                        x={h.hx - resizeHitSize / 2}
+                        y={h.hy - resizeHitSize / 2}
+                        width={resizeHitSize}
+                        height={resizeHitSize}
+                        fill="transparent"
+                      />
+                      <rect
+                        x={h.hx - 1.5 * hs}
+                        y={h.hy - 1.5 * hs}
+                        width={3 * hs}
+                        height={3 * hs}
+                        fill="#f59e0b"
+                        stroke="#ffffff"
+                        strokeWidth={0.3 * hs}
+                        style={{ pointerEvents: 'none' }}
+                      />
+                    </g>
                   ))}
                 </>
               );
@@ -2539,88 +2672,98 @@ export const EtchCanvas: React.FC = () => {
                 />
               </g>
 
-              {/* Rotation Handle */}
-              <line
-                x1={selectedLocal.centerX}
-                y1={selectedLocal.minY - hs}
-                x2={selectedLocal.centerX}
-                y2={selectedLocal.minY - 12 * hs}
-                stroke="#f59e0b"
-                strokeWidth={0.6 * hs}
-                style={{ pointerEvents: 'none' }}
-              />
-              <g
-                className="cursor-grab active:cursor-grabbing"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  beginTransform(selectedElement, 'rotate', toBed(e));
-                }}
-              >
-                <circle
-                  cx={selectedLocal.centerX}
-                  cy={selectedLocal.minY - 14 * hs}
-                  r={5 * hs}
-                  fill="transparent"
-                />
-                <circle
-                  cx={selectedLocal.centerX}
-                  cy={selectedLocal.minY - 14 * hs}
-                  r={2.2 * hs}
-                  fill="#f59e0b"
-                  stroke="#ffffff"
-                  strokeWidth={0.4 * hs}
-                />
-              </g>
+              {/* Rotation & Resize Handles — hidden when the element or its layer is locked */}
+              {!isElementLocked(selectedElement) && (
+                <>
+                  {/* Rotation Handle */}
+                  <line
+                    x1={selectedLocal.centerX}
+                    y1={selectedLocal.minY - hs}
+                    x2={selectedLocal.centerX}
+                    y2={selectedLocal.minY - 12 * hs}
+                    stroke="#f59e0b"
+                    strokeWidth={0.6 * hs}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <g
+                    className="cursor-grab active:cursor-grabbing"
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      e.stopPropagation();
+                      if (hostRef.current) capturePointer(hostRef.current, e.pointerId);
+                      beginTransform(selectedElement, 'rotate', toBed(e));
+                    }}
+                  >
+                    <circle
+                      cx={selectedLocal.centerX}
+                      cy={selectedLocal.minY - 14 * hs}
+                      r={handleHitRadius}
+                      fill="transparent"
+                    />
+                    <circle
+                      cx={selectedLocal.centerX}
+                      cy={selectedLocal.minY - 14 * hs}
+                      r={2.2 * hs}
+                      fill="#f59e0b"
+                      stroke="#ffffff"
+                      strokeWidth={0.4 * hs}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  </g>
 
-              {/*
-                Resize knobs: one per corner, because the box looks like it
-                promises that. With only a south-east knob the west side could
-                be reached only by growing east and dragging the shape back,
-                and grabbing the left edge moved the whole element instead.
-
-                A line gets its two ends rather than corners — its box is
-                degenerate (a horizontal line has no height at all) and its
-                direction lives in x2/y2, so an end is the only handle that
-                means anything.
-              */}
-              {(selectedElement.type === 'line'
-                ? [
-                    { key: 'line-start' as const, hx: 0, hy: 0, cursor: 'cursor-crosshair' },
-                    {
-                      key: 'line-end' as const,
-                      hx: (selectedElement.x2 ?? 40) * safeScale(selectedElement.scaleX),
-                      hy: (selectedElement.y2 ?? 0) * safeScale(selectedElement.scaleY),
-                      cursor: 'cursor-crosshair',
-                    },
-                  ]
-                : [
-                    { key: 'nw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY, cursor: 'cursor-nwse-resize' },
-                    { key: 'n' as const, hx: selectedLocal.centerX, hy: selectedLocal.minY, cursor: 'cursor-ns-resize' },
-                    { key: 'ne' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY, cursor: 'cursor-nesw-resize' },
-                    { key: 'e' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.centerY, cursor: 'cursor-ew-resize' },
-                    { key: 'se' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nwse-resize' },
-                    { key: 's' as const, hx: selectedLocal.centerX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-ns-resize' },
-                    { key: 'sw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nesw-resize' },
-                    { key: 'w' as const, hx: selectedLocal.minX, hy: selectedLocal.centerY, cursor: 'cursor-ew-resize' },
-                  ]
-              ).map((h) => (
-                <rect
-                  key={h.key}
-                  x={h.hx - 1.5 * hs}
-                  y={h.hy - 1.5 * hs}
-                  width={3 * hs}
-                  height={3 * hs}
-                  fill="#f59e0b"
-                  stroke="#ffffff"
-                  strokeWidth={0.3 * hs}
-                  className={h.cursor}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    // Raw, not snapped — see the resize branch in handleMouseMove.
-                    beginTransform(selectedElement, 'resize', toBed(e), [selectedElement], h.key);
-                  }}
-                />
-              ))}
+                  {(selectedElement.type === 'line'
+                    ? [
+                        { key: 'line-start' as const, hx: 0, hy: 0, cursor: 'cursor-crosshair' },
+                        {
+                          key: 'line-end' as const,
+                          hx: (selectedElement.x2 ?? 40) * safeScale(selectedElement.scaleX),
+                          hy: (selectedElement.y2 ?? 0) * safeScale(selectedElement.scaleY),
+                          cursor: 'cursor-crosshair',
+                        },
+                      ]
+                    : [
+                        { key: 'nw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY, cursor: 'cursor-nwse-resize' },
+                        { key: 'n' as const, hx: selectedLocal.centerX, hy: selectedLocal.minY, cursor: 'cursor-ns-resize' },
+                        { key: 'ne' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY, cursor: 'cursor-nesw-resize' },
+                        { key: 'e' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.centerY, cursor: 'cursor-ew-resize' },
+                        { key: 'se' as const, hx: selectedLocal.minX + selectedLocal.width, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nwse-resize' },
+                        { key: 's' as const, hx: selectedLocal.centerX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-ns-resize' },
+                        { key: 'sw' as const, hx: selectedLocal.minX, hy: selectedLocal.minY + selectedLocal.height, cursor: 'cursor-nesw-resize' },
+                        { key: 'w' as const, hx: selectedLocal.minX, hy: selectedLocal.centerY, cursor: 'cursor-ew-resize' },
+                      ]
+                  ).map((h) => (
+                    <g
+                      key={h.key}
+                      className={h.cursor}
+                      onPointerDown={(e) => {
+                        if (e.button !== 0) return;
+                        e.stopPropagation();
+                        if (hostRef.current) capturePointer(hostRef.current, e.pointerId);
+                        // Raw, not snapped — see the resize branch in handleMouseMove.
+                        beginTransform(selectedElement, 'resize', toBed(e), [selectedElement], h.key);
+                      }}
+                    >
+                      <rect
+                        x={h.hx - resizeHitSize / 2}
+                        y={h.hy - resizeHitSize / 2}
+                        width={resizeHitSize}
+                        height={resizeHitSize}
+                        fill="transparent"
+                      />
+                      <rect
+                        x={h.hx - 1.5 * hs}
+                        y={h.hy - 1.5 * hs}
+                        width={3 * hs}
+                        height={3 * hs}
+                        fill="#f59e0b"
+                        stroke="#ffffff"
+                        strokeWidth={0.3 * hs}
+                        style={{ pointerEvents: 'none' }}
+                      />
+                    </g>
+                  ))}
+                </>
+              )}
             </g>
           </g>
         )}
@@ -2636,7 +2779,7 @@ export const EtchCanvas: React.FC = () => {
       )}
 
       {/* Marquee hint: which rule this band applies, and how to get the other. */}
-      {marquee && Math.abs(marquee.x1 - marquee.x0) + Math.abs(marquee.y1 - marquee.y0) > 0.5 && (
+      {marquee && Math.abs(marquee.x1 - marquee.x0) + Math.abs(marquee.y1 - marquee.y0) > 4 * mmPerCssPx && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
           {marqueeMode(marquee.x0, marquee.x1) === 'window'
             ? 'Window — selects only what is wholly inside · drag leftward to take anything it touches'
@@ -2646,9 +2789,31 @@ export const EtchCanvas: React.FC = () => {
 
       {/* Overlap hint, after a click on a stack of shapes */}
       {activeTool === 'select' && stackHint && !isTransforming && !marquee && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg pointer-events-none">
-          {stackHint.index} of {stackHint.count} shapes here ·{' '}
-          <kbd className="font-mono">Alt</kbd>-click to select the next one underneath
+        <div
+          data-canvas-hud
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 max-lg:top-3 max-lg:bottom-auto max-lg:left-3 max-lg:right-24 max-lg:translate-x-0 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/85 text-white text-[11px] font-medium shadow-lg"
+        >
+          <span>
+            {stackHint.index} of {stackHint.count} shapes here ·{' '}
+            <kbd className="font-mono">Alt</kbd>-click to cycle
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const nextIdx = stackHint.index % stackHint.candidates.length;
+              const nextId = stackHint.candidates[nextIdx];
+              if (!nextId) return;
+              setSelectedIds([nextId]);
+              setStackHint({
+                ...stackHint,
+                index: nextIdx + 1,
+              });
+            }}
+            className="px-2 py-0.5 max-lg:min-h-8 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold cursor-pointer"
+          >
+            Select Next
+          </button>
         </div>
       )}
 
@@ -2691,20 +2856,233 @@ export const EtchCanvas: React.FC = () => {
         </div>
       )}
 
-      {/* Escape hatch back to the select tool */}
-      {activeTool !== 'select' && (
-        <button
-          onClick={() => setToolMode('select')}
-          className="absolute top-3 right-3 px-2.5 py-1 rounded-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-600 dark:text-slate-300 shadow-sm cursor-pointer"
-        >
-          Done (Esc)
-        </button>
-      )}
+      {/* Contextual touch/quick action pills + Escape hatch back to the select tool */}
+      <div
+        data-canvas-hud
+        onPointerDown={(e) => e.stopPropagation()}
+        className="absolute top-3 right-3 z-20 flex items-center gap-1.5"
+      >
+        {activeTool === 'bezier' && bezierNodes.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => finishBezier(false)}
+              className="px-2.5 py-1 max-lg:min-h-10 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-semibold shadow-sm cursor-pointer"
+            >
+              Finish
+            </button>
+            <button
+              type="button"
+              onClick={cancelBezier}
+              className="px-2.5 py-1 max-lg:min-h-10 rounded-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-rose-600 dark:text-rose-400 shadow-sm cursor-pointer"
+            >
+              Cancel
+            </button>
+          </>
+        )}
+        {activeTool === 'node-edit' && editPath && activeIdx !== null && (
+          <button
+            type="button"
+            onClick={deleteActiveNode}
+            className="px-2.5 py-1 max-lg:min-h-10 rounded-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-rose-600 dark:text-rose-400 shadow-sm cursor-pointer"
+          >
+            Delete Node
+          </button>
+        )}
+        {activeTool !== 'select' && (
+          <button
+            type="button"
+            onClick={() => setToolMode('select')}
+            className="px-2.5 py-1 max-lg:min-h-10 rounded-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-600 dark:text-slate-300 shadow-sm cursor-pointer"
+          >
+            Done (Esc)
+          </button>
+        )}
+      </div>
     </div>
   );
 };
 
 // ------------------------------------------------------------------ helpers
+
+function capturePointer(target: Element, pointerId: number): void {
+  try {
+    target.setPointerCapture(pointerId);
+  } catch {
+    // Synthetic pointer events in tests may not have an active pointerId.
+  }
+}
+
+function releasePointer(target: Element, pointerId: number): void {
+  try {
+    if (target.hasPointerCapture(pointerId)) {
+      target.releasePointerCapture(pointerId);
+    }
+  } catch {
+    // Ignore synthetic events without pointer capture.
+  }
+}
+
+/* eslint-disable react-refresh/only-export-components */
+/**
+ * Returns true when a canvas keyboard shortcut should stand down:
+ * - an accessible modal dialog is open
+ * - focus is inside a text input / contentEditable
+ * - optionally (`blockInteractive`), focus is on an interactive control
+ *   like a button/link/tab where Space or Enter has a native action.
+ */
+export function isKeyboardShortcutBlocked(
+  target: EventTarget | null,
+  options?: { blockInteractive?: boolean }
+): boolean {
+  if (
+    typeof window !== 'undefined' &&
+    window.document.querySelector('[role="dialog"][aria-modal="true"]')
+  ) {
+    return true;
+  }
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return true;
+  if (options?.blockInteractive) {
+    if (el.closest?.('button, a, [role="button"], [role="tab"], input, select, textarea')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Removes trailing zero-length duplicate anchor nodes dropped by a double-click
+ * when finishing a Bezier pen path.
+ */
+export function stripTrailingDuplicateBezierNode(nodes: BezierNode[]): BezierNode[] {
+  const out = [...nodes];
+  while (out.length > 1) {
+    const last = out[out.length - 1];
+    const prev = out[out.length - 2];
+    if (
+      Math.hypot(last.x - prev.x, last.y - prev.y) < 1e-4 &&
+      !last.handleIn &&
+      !last.handleOut
+    ) {
+      out.pop();
+    } else {
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Computes bed-space scale ratios for a multi-selection resize.
+ * Leaves any untouched axis (`dW === 0` or `dH === 0`) at `1` so a flat group
+ * (e.g. horizontal lines with `mb.height = 0.001`) never explodes by 1000×.
+ */
+export function computeMultiResizeRatios(
+  width: number,
+  height: number,
+  dW: number,
+  dH: number,
+  shiftKey: boolean
+): { sxRatio: number; syRatio: number } {
+  let sxRatio = dW === 0 ? 1 : Math.max(1, width + dW) / width;
+  let syRatio = dH === 0 ? 1 : Math.max(1, height + dH) / height;
+  if (shiftKey) {
+    const sRatio = Math.abs(sxRatio - 1) > Math.abs(syRatio - 1) ? sxRatio : syRatio;
+    sxRatio = syRatio = sRatio;
+  }
+  return { sxRatio, syRatio };
+}
+
+/**
+ * Projects bed-space `(sxRatio, syRatio)` onto a rotated element's local X/Y axes
+ * so a 90°-rotated rectangle stretches along the dragged bed axis instead of
+ * the perpendicular axis.
+ */
+export function projectScaleToLocalAxes(
+  sxRatio: number,
+  syRatio: number,
+  rotationDeg: number
+): { localSx: number; localSy: number } {
+  if (Math.abs(sxRatio - syRatio) <= 1e-6 || rotationDeg === 0) {
+    return { localSx: sxRatio, localSy: syRatio };
+  }
+  const rad = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    localSx: Math.hypot(sxRatio * cos, syRatio * sin),
+    localSy: Math.hypot(sxRatio * sin, syRatio * cos),
+  };
+}
+
+/** Computes the dimension/scale patch for one member of a multi-select resize. */
+export function computeMultiResizeMemberUpdates(
+  el0: EtchElement,
+  sxRatio: number,
+  syRatio: number
+): Partial<EtchElement> {
+  const { localSx, localSy } = projectScaleToLocalAxes(sxRatio, syRatio, el0.rotation || 0);
+  const updates: Partial<EtchElement> = {};
+  if (isGeneratedField(el0)) {
+    updates.w = Math.max(1, (el0.w ?? 0) * localSx);
+    updates.h = Math.max(1, (el0.h ?? 0) * localSy);
+  } else if (el0.type === 'rect' || el0.type === 'image') {
+    updates.w = Math.max(0.5, (el0.w ?? 40) * localSx);
+    updates.h = Math.max(0.5, (el0.h ?? 25) * localSy);
+  } else if (el0.type === 'circle') {
+    updates.r = Math.max(0.5, (el0.r ?? 20) * ((localSx + localSy) / 2));
+  } else if (el0.type === 'ellipse') {
+    updates.rx2 = Math.max(0.5, (el0.rx2 ?? 30) * localSx);
+    updates.ry2 = Math.max(0.5, (el0.ry2 ?? 20) * localSy);
+  } else if (el0.type === 'line') {
+    updates.x2 = (el0.x2 ?? 40) * localSx;
+    updates.y2 = (el0.y2 ?? 0) * localSy;
+  } else {
+    updates.scaleX = clampScale((el0.scaleX ?? 1) * localSx);
+    updates.scaleY = clampScale((el0.scaleY ?? 1) * localSy);
+  }
+  return updates;
+}
+
+/**
+ * Computes the bed-space position of a single element's resize handle using
+ * `localToBed` on `getLocalBBox(el)` (accounting for rotation and negative
+ * scale signs) instead of the axis-aligned bed bounding box.
+ */
+export function computeSingleHandleBed(
+  el: EtchElement,
+  handle: ResizeHandle
+): { x: number; y: number } {
+  const lb = getLocalBBox(el);
+  const sx = safeScale(el.scaleX);
+  const sy = safeScale(el.scaleY);
+  const west = handle === 'nw' || handle === 'sw' || handle === 'w';
+  const east = handle === 'ne' || handle === 'se' || handle === 'e';
+  const north = handle === 'nw' || handle === 'ne' || handle === 'n';
+  const south = handle === 'sw' || handle === 'se' || handle === 's';
+  const lx = west
+    ? sx >= 0
+      ? lb.minX
+      : lb.minX + lb.width
+    : east
+      ? sx >= 0
+        ? lb.minX + lb.width
+        : lb.minX
+      : lb.centerX;
+  const ly = north
+    ? sy >= 0
+      ? lb.minY
+      : lb.minY + lb.height
+    : south
+      ? sy >= 0
+        ? lb.minY + lb.height
+        : lb.minY
+      : lb.centerY;
+  return localToBed(el, lx, ly);
+}
 
 /** A zero scale would make the inverse infinite, and a missing one means 1. */
 function safeScale(s: number | undefined): number {

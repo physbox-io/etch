@@ -587,6 +587,7 @@ interface EtchStore {
   pasteClipboard: () => void;
   addElement: (el: EtchElement) => void;
   updateElement: (id: string, updates: Partial<EtchElement>, transient?: boolean) => void;
+  updateElements: (patches: Array<{ id: string; updates: Partial<EtchElement> }>, transient?: boolean) => void;
   commitHistory: () => void;
   deleteElements: (ids: string[]) => void;
   duplicateSelected: () => void;
@@ -1007,6 +1008,16 @@ export function numberedName(name: string, elements: readonly { name: string }[]
   return highest === 0 ? name : `${name} ${highest + 1}`;
 }
 
+function isElementLocked(el: EtchElement, layerById: Map<string, EtchLayer>): boolean {
+  return !!el.locked || !!layerById.get(el.layerId)?.locked;
+}
+
+function isElementVisible(el: EtchElement, layerById: Map<string, EtchLayer>): boolean {
+  if (el.visible === false) return false;
+  const layer = layerById.get(el.layerId);
+  return layer ? layer.visible !== false : true;
+}
+
 export const useStore = create<EtchStore>((set, get) => ({
   document: defaultDoc,
   tabs: [parkedTab(FIRST_TAB_ID, defaultDoc, initialPresetId)],
@@ -1301,11 +1312,17 @@ export const useStore = create<EtchStore>((set, get) => ({
     set((s) => (s.cursor.x === cursor.x && s.cursor.y === cursor.y ? s : { cursor })),
 
   // Grid changes are view settings, not undoable document edits, so they write
-  // straight to the document without pushing a history entry.
+  // straight to the document without pushing a history entry — and keep
+  // `history[historyIndex]` in sync so the first Ctrl+Z is never a no-op.
   setGridSize: (mm) =>
-    set((state) => ({
-      document: { ...state.document, gridSize: Math.max(0.1, Math.min(mm, 100)) },
-    })),
+    set((state) => {
+      const nextDoc = { ...state.document, gridSize: Math.max(0.1, Math.min(mm, 100)) };
+      const nextHistory =
+        state.history[state.historyIndex] === state.document
+          ? state.history.map((h, i) => (i === state.historyIndex ? nextDoc : h))
+          : state.history;
+      return { document: nextDoc, history: nextHistory };
+    }),
 
   /**
    * Resizes the stock. Geometry is left where it is rather than rescaled with
@@ -1329,11 +1346,16 @@ export const useStore = create<EtchStore>((set, get) => ({
         ...(width !== undefined && Number.isFinite(width) ? { width: clamp(width) } : {}),
         ...(height !== undefined && Number.isFinite(height) ? { height: clamp(height) } : {}),
       };
+      const nextHistory =
+        state.history[state.historyIndex] === state.document
+          ? state.history.map((h, i) => (i === state.historyIndex ? document : h))
+          : state.history;
       // The symmetry pivot is a position on the stock, so it follows the stock.
       // Left where it was, shrinking the bed put the mandala centre off the
       // material and every array built from it with it.
       return {
         document,
+        history: nextHistory,
         mandalaSettings: {
           ...state.mandalaSettings,
           centerX: document.width / 2,
@@ -1352,9 +1374,14 @@ export const useStore = create<EtchStore>((set, get) => ({
     })),
 
   toggleSnapToGrid: () =>
-    set((state) => ({
-      document: { ...state.document, snapToGrid: !state.document.snapToGrid },
-    })),
+    set((state) => {
+      const nextDoc = { ...state.document, snapToGrid: !state.document.snapToGrid };
+      const nextHistory =
+        state.history[state.historyIndex] === state.document
+          ? state.history.map((h, i) => (i === state.historyIndex ? nextDoc : h))
+          : state.history;
+      return { document: nextDoc, history: nextHistory };
+    }),
 
   setDocumentName: (name) =>
     set((state) => ({ document: { ...state.document, name } })),
@@ -1739,7 +1766,15 @@ export const useStore = create<EtchStore>((set, get) => ({
       repeatSettings: { ...state.repeatSettings, ...settings },
     })),
 
-  toggleAiPanel: () => set((state) => ({ isAiPanelOpen: !state.isAiPanelOpen })),
+  toggleAiPanel: () =>
+    set((state) => {
+      const next = !state.isAiPanelOpen;
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
+      return {
+        isAiPanelOpen: next,
+        ...(next && isMobile ? { isPropertiesOpen: false } : {}),
+      };
+    }),
   toggleGCodeModal: () => set((state) => ({ isGCodeModalOpen: !state.isGCodeModalOpen })),
   toggleMachineModal: () => set((state) => ({ isMachineModalOpen: !state.isMachineModalOpen })),
   toggleClipArtModal: () => set((state) => ({ isClipArtModalOpen: !state.isClipArtModalOpen })),
@@ -1754,7 +1789,14 @@ export const useStore = create<EtchStore>((set, get) => ({
   openImageImport: (file) => set({ isImageImportOpen: true, imageImportFile: file || null }),
   closeImageImport: () => set({ isImageImportOpen: false, imageImportFile: null }),
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
-  setPropertiesOpen: (open) => set({ isPropertiesOpen: open }),
+  setPropertiesOpen: (open) =>
+    set(() => {
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
+      return {
+        isPropertiesOpen: open,
+        ...(open && isMobile ? { isAiPanelOpen: false } : {}),
+      };
+    }),
 
   openDocs: (tab) => set((state) => ({ isDocsOpen: true, docsTab: tab ?? state.docsTab })),
   closeDocs: () => set({ isDocsOpen: false }),
@@ -1874,66 +1916,75 @@ export const useStore = create<EtchStore>((set, get) => ({
    * the undo stack under hundreds of steps. Call commitHistory() on mouse-up.
    */
   updateElement: (id, updates, transient = false) => {
+    get().updateElements([{ id, updates }], transient);
+  },
+
+  updateElements: (patches, transient = false) => {
+    if (patches.length === 0) return;
     const { document, history, historyIndex } = get();
 
+    const patchById = new Map<string, Partial<EtchElement>>();
+    for (const { id, updates } of patches) {
+      const prev = patchById.get(id);
+      patchById.set(id, prev ? { ...prev, ...updates } : updates);
+    }
+
     let newLayers = document.layers;
-    let newElements = document.elements.map((el) =>
-      el.id === id ? { ...el, ...updates } : el
-    );
+    let newElements = document.elements.map((el) => {
+      const updates = patchById.get(el.id);
+      if (!updates) return el;
 
-    /*
-     * A hinge or a perforation is a rule about spacing, not a shape, so
-     * resizing it re-lays the field instead of stretching it — see
-     * `generatedField.ts` for why that matters on material.
-     *
-     * Here rather than in `computeResize` because the sidebar, the MCP bridge
-     * and a future numeric field all reach the same state through this action,
-     * and a field that re-planned only when dragged would be two behaviours.
-     */
-    if ('w' in updates || 'h' in updates || 'hinge' in updates || 'perforation' in updates) {
-      newElements = newElements.map((el) => {
-        if (el.id !== id) return el;
-        const d = replanField(el);
-        return d === null ? el : { ...el, d };
-      });
-    }
+      let next: EtchElement = { ...el, ...updates };
 
-    /*
-     * A swept curve carries its centreline spine (`el.sweep.spineD` and
-     * `el.bezierNodes`) alongside its closed outline in `el.d`. When the
-     * sidebar or an MCP caller updates `bezierNodes` or `sweep` without a
-     * pre-computed `d`, re-sweep the spine so the closed outline stays in step.
-     * Likewise, a plain bezier updated via `bezierNodes` alone needs `d`
-     * rebuilt from those nodes.
-     */
-    if (('bezierNodes' in updates || 'sweep' in updates) && !('d' in updates)) {
-      newElements = newElements.map((el) => {
-        if (el.id !== id) return el;
-        if (el.sweep) {
-          const closed = /z\s*$/i.test((el.sweep.spineD || '').trim());
+      /*
+       * A hinge or a perforation is a rule about spacing, not a shape, so
+       * resizing it re-lays the field instead of stretching it — see
+       * `generatedField.ts` for why that matters on material.
+       *
+       * Here rather than in `computeResize` because the sidebar, the MCP bridge
+       * and a future numeric field all reach the same state through this action,
+       * and a field that re-planned only when dragged would be two behaviours.
+       */
+      if ('w' in updates || 'h' in updates || 'hinge' in updates || 'perforation' in updates) {
+        const d = replanField(next);
+        if (d !== null) next = { ...next, d };
+      }
+
+      /*
+       * A swept curve carries its centreline spine (`el.sweep.spineD` and
+       * `el.bezierNodes`) alongside its closed outline in `el.d`. When the
+       * sidebar or an MCP caller updates `bezierNodes` or `sweep` without a
+       * pre-computed `d`, re-sweep the spine so the closed outline stays in step.
+       * Likewise, a plain bezier updated via `bezierNodes` alone needs `d`
+       * rebuilt from those nodes.
+       */
+      if (('bezierNodes' in updates || 'sweep' in updates) && !('d' in updates)) {
+        if (next.sweep) {
+          const closed = /z\s*$/i.test((next.sweep.spineD || '').trim());
           const spineD =
-            'bezierNodes' in updates && el.bezierNodes && el.bezierNodes.length >= 2
-              ? nodesToPath(el.bezierNodes, closed)
-              : el.sweep.spineD;
-          const sweptD = resweepLocalSpine(spineD, el.sweep.widths, el.sweep.cap);
-          if (!sweptD) return el;
-          return {
-            ...el,
-            d: sweptD,
-            sweep: {
-              ...el.sweep,
-              spineD,
-              ...('bezierNodes' in updates ? { spineEdited: true } : {}),
-            },
-          };
+            'bezierNodes' in updates && next.bezierNodes && next.bezierNodes.length >= 2
+              ? nodesToPath(next.bezierNodes, closed)
+              : next.sweep.spineD;
+          const sweptD = resweepLocalSpine(spineD, next.sweep.widths, next.sweep.cap);
+          if (sweptD) {
+            next = {
+              ...next,
+              d: sweptD,
+              sweep: {
+                ...next.sweep,
+                spineD,
+                ...('bezierNodes' in updates ? { spineEdited: true } : {}),
+              },
+            };
+          }
+        } else if (next.bezierNodes && next.bezierNodes.length >= 2) {
+          const closed = /z\s*$/i.test((next.d || '').trim());
+          next = { ...next, d: nodesToPath(next.bezierNodes, closed) };
         }
-        if (el.bezierNodes && el.bezierNodes.length >= 2) {
-          const closed = /z\s*$/i.test((el.d || '').trim());
-          return { ...el, d: nodesToPath(el.bezierNodes, closed) };
-        }
-        return el;
-      });
-    }
+      }
+
+      return next;
+    });
 
     /*
       Attaching text to a path turns that path into a guide, so it moves onto a
@@ -1947,14 +1998,13 @@ export const useStore = create<EtchStore>((set, get) => ({
       not quietly stay a guide forever with nothing in the document recording
       where it belonged.
     */
-    if ('textPathId' in updates) {
+    for (const [id, updates] of patchById.entries()) {
+      if (!('textPathId' in updates)) continue;
       const previousAnchorId = document.elements.find((e) => e.id === id)?.textPathId;
       const nextAnchorId = updates.textPathId;
-      // Releasing the path being left behind is `releaseUnusedAnchors` below,
-      // which runs on every edit and so also covers the text being deleted.
 
       if (nextAnchorId && nextAnchorId !== previousAnchorId) {
-        const anchor = document.elements.find((e) => e.id === nextAnchorId);
+        const anchor = newElements.find((e) => e.id === nextAnchorId);
         let ghostLayer = newLayers.find((l) => l.operation === 'ghost');
         if (anchor && !ghostLayer) {
           ghostLayer = {
@@ -2024,6 +2074,7 @@ export const useStore = create<EtchStore>((set, get) => ({
     const { document, selectedIds, history, historyIndex } = get();
     if (selectedIds.length === 0) return;
 
+    const layerById = new Map(document.layers.map((l) => [l.id, l]));
     const byId = new Map(document.elements.map((el) => [el.id, el]));
     const selected = selectedIds.map((id) => byId.get(id)).filter((el): el is EtchElement => !!el);
     if (selected.length === 0) return;
@@ -2036,15 +2087,16 @@ export const useStore = create<EtchStore>((set, get) => ({
     if (selected.length === 1) {
       targetX = document.width / 2;
       targetY = document.height / 2;
-      movers = selected;
+      movers = isElementLocked(selected[0], layerById) ? [] : selected;
     } else {
       const anchor = getBedBBox(selected[0]);
       targetX = anchor.centerX;
       targetY = anchor.centerY;
       // The anchor itself must not move, or lining two things up would shift
       // both and the one you deliberately placed would not stay put.
-      movers = selected.slice(1);
+      movers = selected.slice(1).filter((el) => !isElementLocked(el, layerById));
     }
+    if (movers.length === 0) return;
 
     // Each mover is offset by its own centre, not by the group's: two shapes
     // asked to share a centre have to end up on top of each other, which one
@@ -2139,7 +2191,7 @@ export const useStore = create<EtchStore>((set, get) => ({
         if (tab.id === activeTabId) continue;
         for (const el of tab.document.elements) {
           const sourceLayer = tab.document.layers.find((l) => l.id === el.layerId);
-          if (!sourceLayer || !sourceLayer.visible) continue;
+          if (el.visible === false || !sourceLayer || !sourceLayer.visible) continue;
           const sourceObject = el.objectId
             ? (tab.document.objects ?? []).find((o) => o.id === el.objectId)
             : undefined;
@@ -2166,7 +2218,9 @@ export const useStore = create<EtchStore>((set, get) => ({
      * millimetre without being one part, and clustering them together would
      * weld the six layers of a layered picture into a single lump.
      */
-    const parts: Part[] = clusterParts(document.elements);
+    const activeLayerById = new Map(document.layers.map((l) => [l.id, l]));
+    const activeVisible = document.elements.filter((el) => isElementVisible(el, activeLayerById));
+    const parts: Part[] = clusterParts(activeVisible);
     if (foreign.length) {
       for (const tab of tabs) {
         if (tab.id === activeTabId) continue;
@@ -2259,10 +2313,11 @@ export const useStore = create<EtchStore>((set, get) => ({
   nudgeSelected: (dx, dy) => {
     const { document, selectedIds } = get();
     if (selectedIds.length === 0 || (dx === 0 && dy === 0)) return;
+    const layerById = new Map(document.layers.map((l) => [l.id, l]));
     const moving = new Set(selectedIds);
     let touched = false;
     const elements = document.elements.map((el) => {
-      if (!moving.has(el.id) || el.locked) return el;
+      if (!moving.has(el.id) || isElementLocked(el, layerById)) return el;
       touched = true;
       return { ...el, x: el.x + dx, y: el.y + dy };
     });
@@ -2279,8 +2334,18 @@ export const useStore = create<EtchStore>((set, get) => ({
   },
 
   deleteElements: (ids) => {
-    const { document, history, historyIndex } = get();
-    const newElements = document.elements.filter((el) => !ids.includes(el.id));
+    const { document, history, historyIndex, selectedIds } = get();
+    const layerById = new Map(document.layers.map((l) => [l.id, l]));
+    const requested = new Set(ids);
+    const deleted = new Set<string>();
+    const newElements = document.elements.filter((el) => {
+      if (requested.has(el.id) && !isElementLocked(el, layerById)) {
+        deleted.add(el.id);
+        return false;
+      }
+      return true;
+    });
+    if (deleted.size === 0) return;
     // Deleting the text is one of the ways an anchor path stops being ridden.
     // Pruning is what keeps the objects panel from filling with rows for things
     // that are no longer on the sheet.
@@ -2292,7 +2357,7 @@ export const useStore = create<EtchStore>((set, get) => ({
       document: newDoc,
       history: newHistory,
       historyIndex: newHistory.length - 1,
-      selectedIds: [],
+      selectedIds: selectedIds.filter((id) => !deleted.has(id)),
     });
   },
 
@@ -2305,7 +2370,7 @@ export const useStore = create<EtchStore>((set, get) => ({
   },
 
   pasteClipboard: () => {
-    const { document, clipboard, history, historyIndex } = get();
+    const { document, clipboard, history, historyIndex, activeLayerId } = get();
     if (!clipboard || clipboard.length === 0) return;
 
     // Several things pasted at once land in an object together, for the reason
@@ -2317,20 +2382,51 @@ export const useStore = create<EtchStore>((set, get) => ({
       ? objectNameFor(document, clipboard.map((el) => el.id))
       : '';
 
+    const destLayerIds = new Set(document.layers.map((l) => l.id));
+    const fallbackLayerId = destLayerIds.has(activeLayerId)
+      ? activeLayerId
+      : (document.layers[0]?.id ?? activeLayerId);
+    const destElementIds = new Set(document.elements.map((e) => e.id));
+
     const newIds: string[] = [];
+    const idRemap = new Map<string, string>();
+    const stamp = Date.now();
+    for (let i = 0; i < clipboard.length; i++) {
+      const newId = `el_${stamp}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+      newIds.push(newId);
+      idRemap.set(clipboard[i].id, newId);
+    }
+
     const updatedClipboard: EtchElement[] = [];
 
     const pastedElements: EtchElement[] = clipboard.map((el, i) => {
-      const newId = `el_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
-      newIds.push(newId);
+      const newId = newIds[i];
 
       const offsetEl: EtchElement = {
         ...JSON.parse(JSON.stringify(el)),
         id: newId,
+        layerId: destLayerIds.has(el.layerId) ? el.layerId : fallbackLayerId,
         name: el.name.endsWith('Copy') ? el.name : `${el.name} Copy`,
         x: el.x + 5,
         y: el.y + 5,
       };
+      if (offsetEl.ghostFromLayerId && !destLayerIds.has(offsetEl.ghostFromLayerId)) {
+        delete offsetEl.ghostFromLayerId;
+      }
+      if (offsetEl.textPathId) {
+        if (idRemap.has(offsetEl.textPathId)) {
+          offsetEl.textPathId = idRemap.get(offsetEl.textPathId)!;
+        } else if (!destElementIds.has(offsetEl.textPathId)) {
+          delete offsetEl.textPathId;
+        }
+      }
+      if (offsetEl.textureOf) {
+        if (idRemap.has(offsetEl.textureOf)) {
+          offsetEl.textureOf = idRemap.get(offsetEl.textureOf)!;
+        } else if (!destElementIds.has(offsetEl.textureOf)) {
+          delete offsetEl.textureOf;
+        }
+      }
       if (objectId) offsetEl.objectId = objectId;
       else delete offsetEl.objectId;
 
@@ -2452,20 +2548,29 @@ export const useStore = create<EtchStore>((set, get) => ({
    * that costs a sheet of ply.
    */
   setObjectVisible: (objectId, visible) => {
-    const { document } = get();
+    const { document, selectedIds } = get();
     if (!document.elements.some((el) => el.objectId === objectId)) return;
+    const hiddenIds = !visible
+      ? new Set(document.elements.filter((el) => el.objectId === objectId).map((el) => el.id))
+      : null;
     set({
       document: {
         ...document,
         elements: document.elements.map((el) => (el.objectId === objectId ? { ...el, visible } : el)),
       },
+      ...(hiddenIds ? { selectedIds: selectedIds.filter((id) => !hiddenIds.has(id)) } : {}),
     });
     get().commitHistory();
   },
 
   selectObject: (objectId) => {
     const { document } = get();
-    set({ selectedIds: document.elements.filter((el) => el.objectId === objectId).map((el) => el.id) });
+    const layerById = new Map(document.layers.map((l) => [l.id, l]));
+    set({
+      selectedIds: document.elements
+        .filter((el) => el.objectId === objectId && isElementVisible(el, layerById))
+        .map((el) => el.id),
+    });
   },
 
   /**
@@ -3346,9 +3451,16 @@ export const useStore = create<EtchStore>((set, get) => ({
   },
 
   updateLayer: (layerId, updates, transient) => {
-    const { document } = get();
+    const { document, selectedIds } = get();
     const newLayers = document.layers.map((l) => (l.id === layerId ? { ...l, ...updates } : l));
-    set({ document: { ...document, layers: newLayers } });
+    const prunedSelection =
+      updates.visible === false
+        ? selectedIds.filter((id) => document.elements.find((el) => el.id === id)?.layerId !== layerId)
+        : selectedIds;
+    set({
+      document: { ...document, layers: newLayers },
+      ...(prunedSelection !== selectedIds ? { selectedIds: prunedSelection } : {}),
+    });
     if (!transient) get().commitHistory();
   },
 
